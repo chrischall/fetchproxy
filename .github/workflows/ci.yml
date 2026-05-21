@@ -22,6 +22,12 @@ jobs:
       # field in the root package.json.
       - run: npm ci
 
+      # Build the TS workspaces before tests + typecheck. `@fetchproxy/protocol`'s
+      # `exports` field resolves to `./dist/index.js`, so `server` and
+      # `extension-core` need dist/ on disk to import it during vitest.
+      - name: Build TS workspaces
+        run: npm run build --workspace=@fetchproxy/protocol --workspace=@fetchproxy/server --workspace=@fetchproxy/extension-core
+
       - name: Test (full monorepo via vitest)
         run: npm test
 
