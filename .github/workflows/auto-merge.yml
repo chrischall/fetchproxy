@@ -1,0 +1,50 @@
+name: Auto-merge PRs
+
+# Arm auto-merge on every non-draft PR. The actual merge still waits for
+# branch protection's required `ci` status check, so this is just "merge
+# as soon as CI is green" — no review gate is bypassed by this workflow.
+#
+# Why `pull_request_target` instead of `pull_request`:
+# Dependabot opens PRs with a restricted GITHUB_TOKEN that can't enable
+# auto-merge on `pull_request`. `pull_request_target` runs from the base
+# branch's perspective with the repo's normal token, which both human-
+# authored and dependabot-authored PRs can use. Security-wise this is
+# safe because we never check out or execute PR code — we only call the
+# GitHub API via the `gh` CLI to enable auto-merge.
+
+on:
+  pull_request_target:
+    types: [opened, reopened, ready_for_review, synchronize]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  # Don't pile up auto-merge attempts on rapid pushes. The latest event
+  # supersedes any in-flight job; auto-merge is idempotent so this is safe.
+  group: auto-merge-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  enable-auto-merge:
+    runs-on: ubuntu-latest
+    # Two filters:
+    #   1. Drafts are skipped. Authors mark a PR "ready for review" when
+    #      they want it to land; until then this workflow stays out of the
+    #      way.
+    #   2. Only the repo owner and dependabot get auto-merge. External
+    #      contributors (rare on a personal repo but possible) still go
+    #      through manual review.
+    if: |
+      github.event.pull_request.draft == false &&
+      (github.event.pull_request.user.login == github.repository_owner ||
+       github.event.pull_request.user.login == 'dependabot[bot]')
+    steps:
+      - name: Enable auto-merge via gh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+        # Merge commit (not squash/rebase) — matches the repo's policy.
+        run: |
+          gh pr merge --auto --merge "$PR_URL"
