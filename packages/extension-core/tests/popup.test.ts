@@ -355,6 +355,90 @@ describe('renderPopup', () => {
       expect(container.textContent).not.toContain('Capture request header');
     });
 
+    it('renders re-pair diff: heading "UPDATE", added/removed/kept lists, "Approve update" button', () => {
+      renderPopup(container, {
+        mode: 'pending-pair',
+        pending: {
+          serverName: 'ofw-mcp',
+          version: '0.5.0',
+          domains: ['ourfamilywizard.com'],
+          capabilities: ['fetch', 'read_local_storage', 'read_cookies'],
+          cookieKeys: ['MTOKEN'],
+          localStorageKeys: ['auth', 'tokenExpiry'],
+          pairCode: '111-222',
+        },
+        previous: {
+          capabilities: ['fetch', 'read_local_storage'],
+          cookieKeys: [],
+          localStorageKeys: ['auth'],
+          sessionStorageKeys: [],
+          captureHeaders: [],
+          indexedDbScopes: [],
+          localStoragePointers: [],
+          sessionStoragePointers: [],
+        },
+        onApprove: () => undefined,
+        onCancel: () => undefined,
+      });
+      expect(container.textContent).toContain('UPDATE');
+      expect(container.textContent).toContain('Previously approved');
+      expect(container.textContent).toContain('Now requesting (new)');
+      // 'read_cookies' was added; 'auth' was already approved; 'MTOKEN' is new.
+      expect(container.textContent).toContain('Capability: read_cookies');
+      expect(container.textContent).toContain('Cookie: MTOKEN');
+      expect(container.textContent).toContain('localStorage: tokenExpiry');
+      // The approve button should be labeled "Approve update".
+      const approve = container.querySelector('[data-action="approve"]') as HTMLButtonElement;
+      expect(approve.textContent).toBe('Approve update');
+    });
+
+    it('renders "(none)" when an update has no removals', () => {
+      renderPopup(container, {
+        mode: 'pending-pair',
+        pending: {
+          serverName: 'ofw-mcp',
+          version: '0.5.0',
+          domains: ['ourfamilywizard.com'],
+          capabilities: ['fetch', 'read_local_storage'],
+          localStorageKeys: ['auth', 'tokenExpiry'],
+          pairCode: '111-222',
+        },
+        previous: {
+          capabilities: ['fetch', 'read_local_storage'],
+          cookieKeys: [],
+          localStorageKeys: ['auth'],
+          sessionStorageKeys: [],
+          captureHeaders: [],
+          indexedDbScopes: [],
+          localStoragePointers: [],
+          sessionStoragePointers: [],
+        },
+        onApprove: () => undefined,
+        onCancel: () => undefined,
+      });
+      expect(container.textContent).toContain('No longer requested');
+      expect(container.textContent).toContain('(none)');
+    });
+
+    it('first pair has no previous → standard heading + "Approve" button', () => {
+      renderPopup(container, {
+        mode: 'pending-pair',
+        pending: {
+          serverName: 'opentable-mcp',
+          version: '0.9.1',
+          domains: ['opentable.com'],
+          capabilities: ['fetch'],
+          pairCode: '111-222',
+        },
+        onApprove: () => undefined,
+        onCancel: () => undefined,
+      });
+      expect(container.textContent).toContain('Approve new MCP connection');
+      expect(container.textContent).not.toContain('UPDATE');
+      const approve = container.querySelector('[data-action="approve"]') as HTMLButtonElement;
+      expect(approve.textContent).toBe('Approve');
+    });
+
     it('renders unknown capability as warn (defense in depth)', () => {
       renderPopup(container, {
         mode: 'pending-pair',

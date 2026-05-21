@@ -90,6 +90,22 @@ export type HandleHelloResult =
       identityX25519Pub: string;
       identityEd25519Pub: string;
       sessionNonce: Uint8Array;
+      /**
+       * 0.4.0+: the previously approved scope, when this is a re-pair
+       * (a trust record exists but the scope changed). Used by the
+       * popup to render an "update" diff rather than a fresh pair.
+       * Absent on a brand-new pair.
+       */
+      previousScope?: {
+        capabilities: string[];
+        cookieKeys: string[];
+        localStorageKeys: string[];
+        sessionStorageKeys: string[];
+        captureHeaders: { urlPattern: string; headerName: string }[];
+        indexedDbScopes: IndexedDbScopeDecl[];
+        localStoragePointers: StoragePointerDecl[];
+        sessionStoragePointers: StoragePointerDecl[];
+      };
     }
   | {
       kind: 'auto-trust';
@@ -313,6 +329,28 @@ export async function handleServerHello(
           identityX25519Pub: hello.identityX25519Pub,
           identityEd25519Pub: hello.identityEd25519Pub,
           sessionNonce,
+          // 0.4.0: snapshot the previously approved scope so the popup
+          // can render an "update" diff. The user sees what was added
+          // vs what was already approved.
+          previousScope: {
+            capabilities: [...record.capabilities],
+            cookieKeys: [...record.cookieKeys],
+            localStorageKeys: [...record.localStorageKeys],
+            sessionStorageKeys: [...record.sessionStorageKeys],
+            captureHeaders: record.captureHeaders.map((d) => ({ ...d })),
+            indexedDbScopes: (record.indexedDbScopes ?? []).map((d) => ({
+              origin: d.origin,
+              database: d.database,
+              store: d.store,
+              keys: [...d.keys],
+            })),
+            localStoragePointers: (record.localStoragePointers ?? []).map((d) => ({
+              ...d,
+            })),
+            sessionStoragePointers: (record.sessionStoragePointers ?? []).map((d) => ({
+              ...d,
+            })),
+          },
         };
       }
       // Derive session key with fresh ephemeral keypair.
@@ -425,6 +463,20 @@ interface PendingPairRecord {
   /** 0.4.0+: declared storage-pointer extractions. */
   localStoragePointers: StoragePointerDecl[];
   sessionStoragePointers: StoragePointerDecl[];
+  /**
+   * 0.4.0+: previously approved scope (only present on re-pair).
+   * Popup renders the diff vs the new scope.
+   */
+  previousScope?: {
+    capabilities: string[];
+    cookieKeys: string[];
+    localStorageKeys: string[];
+    sessionStorageKeys: string[];
+    captureHeaders: { urlPattern: string; headerName: string }[];
+    indexedDbScopes: IndexedDbScopeDecl[];
+    localStoragePointers: StoragePointerDecl[];
+    sessionStoragePointers: StoragePointerDecl[];
+  };
   pairCode: string;
   identityHash: string;
   identityX25519Pub: string;
@@ -601,6 +653,7 @@ async function onServerHello(hello: HelloFrameFromServer): Promise<void> {
     indexedDbScopes: [...result.indexedDbScopes],
     localStoragePointers: [...result.localStoragePointers],
     sessionStoragePointers: [...result.sessionStoragePointers],
+    ...(result.previousScope ? { previousScope: result.previousScope } : {}),
     pairCode: result.pairCode,
     identityHash: result.identityHash,
     identityX25519Pub: result.identityX25519Pub,

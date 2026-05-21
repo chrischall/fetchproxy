@@ -35,6 +35,22 @@ const CAPABILITY_DISPLAY: Record<string, CapabilityDisplay> = {
   read_indexed_db: { label: 'Read IndexedDB', warn: true },
 };
 
+/**
+ * 0.4.0+: snapshot of the previously approved scope for an MCP. When
+ * present on a `pending-pair` state, the popup renders an "update"
+ * diff instead of a fresh-pair card.
+ */
+export interface PreviousScope {
+  capabilities: string[];
+  cookieKeys: string[];
+  localStorageKeys: string[];
+  sessionStorageKeys: string[];
+  captureHeaders: { urlPattern: string; headerName: string }[];
+  indexedDbScopes: { origin: string; database: string; store: string; keys: string[] }[];
+  localStoragePointers: { key: string; jsonPointer: string }[];
+  sessionStoragePointers: { key: string; jsonPointer: string }[];
+}
+
 export interface PendingPair {
   serverName: string;
   version: string;
@@ -85,6 +101,13 @@ export type PopupState =
   | {
       mode: 'pending-pair';
       pending: PendingPair;
+      /**
+       * 0.4.0+: when this is a re-pair (scope changed since last
+       * approval), the popup gets the previous scope so it can
+       * render added / removed entries explicitly. Absent on a
+       * fresh pair.
+       */
+      previous?: PreviousScope;
       onApprove: () => void;
       onCancel: () => void;
     };
@@ -125,6 +148,163 @@ function appendCaptureHeadersSubList(
   }
   dd.appendChild(ul);
   dl.appendChild(dd);
+}
+
+function captureHeaderKey(h: { urlPattern: string; headerName: string }): string {
+  return `${h.headerName} from ${h.urlPattern}`;
+}
+
+function idbScopeKey(s: {
+  origin: string;
+  database: string;
+  store: string;
+  keys: string[];
+}): string {
+  return `${s.database}/${s.store}: ${[...s.keys].sort().join(', ')}`;
+}
+
+function pointerKey(p: { key: string; jsonPointer: string }): string {
+  return `${p.key}${p.jsonPointer}`;
+}
+
+function diffLists<T>(
+  prev: readonly T[],
+  curr: readonly T[],
+  keyOf: (x: T) => string,
+): { added: T[]; removed: T[]; kept: T[] } {
+  const prevKeys = new Set(prev.map(keyOf));
+  const currKeys = new Set(curr.map(keyOf));
+  const added = curr.filter((x) => !prevKeys.has(keyOf(x)));
+  const removed = prev.filter((x) => !currKeys.has(keyOf(x)));
+  const kept = curr.filter((x) => prevKeys.has(keyOf(x)));
+  return { added, removed, kept };
+}
+
+/**
+ * 0.4.0+: append three sub-sections (Previously approved / Now
+ * requesting / No longer requested) summarising the diff between the
+ * previous and current scope. Renders only items that differ from
+ * the previous scope as "(new)" / "(removed)", with everything else
+ * shown under "Previously approved".
+ */
+function appendDiffSummary(
+  root: HTMLElement,
+  pending: PendingPair,
+  previous: PreviousScope,
+): void {
+  const dl = elem('dl', { class: 'scope-diff' });
+
+  // Capabilities (compared as strings).
+  const capDiff = diffLists(previous.capabilities, pending.capabilities, (x) => x);
+  // Cookies / local / session storage keys (strings).
+  const cookDiff = diffLists(
+    previous.cookieKeys,
+    pending.cookieKeys ?? [],
+    (x) => x,
+  );
+  const localDiff = diffLists(
+    previous.localStorageKeys,
+    pending.localStorageKeys ?? [],
+    (x) => x,
+  );
+  const sessDiff = diffLists(
+    previous.sessionStorageKeys,
+    pending.sessionStorageKeys ?? [],
+    (x) => x,
+  );
+  const chDiff = diffLists(
+    previous.captureHeaders,
+    pending.captureHeaders ?? [],
+    captureHeaderKey,
+  );
+  const idbDiff = diffLists(
+    previous.indexedDbScopes,
+    pending.indexedDbScopes ?? [],
+    idbScopeKey,
+  );
+  const lpDiff = diffLists(
+    previous.localStoragePointers,
+    [],
+    pointerKey,
+  );
+  const spDiff = diffLists(
+    previous.sessionStoragePointers,
+    [],
+    pointerKey,
+  );
+
+  function pushSection(label: 'Previously approved' | 'Now requesting (new)' | 'No longer requested'): void {
+    dl.appendChild(elem('dt', {}, label));
+  }
+
+  function appendBullet(text: string): void {
+    const dd = elem('dd', {}, text);
+    dl.appendChild(dd);
+  }
+
+  // Previously approved (= prev list minus removed).
+  pushSection('Previously approved');
+  const keptAny =
+    capDiff.kept.length +
+    cookDiff.kept.length +
+    localDiff.kept.length +
+    sessDiff.kept.length +
+    chDiff.kept.length +
+    idbDiff.kept.length;
+  if (keptAny === 0) {
+    appendBullet('(none)');
+  } else {
+    for (const c of capDiff.kept) appendBullet(`Capability: ${c}`);
+    for (const k of cookDiff.kept) appendBullet(`Cookie: ${k}`);
+    for (const k of localDiff.kept) appendBullet(`localStorage: ${k}`);
+    for (const k of sessDiff.kept) appendBullet(`sessionStorage: ${k}`);
+    for (const h of chDiff.kept) appendBullet(`Capture: ${h.headerName} from ${h.urlPattern}`);
+    for (const s of idbDiff.kept) appendBullet(`IndexedDB: ${s.database}/${s.store}`);
+  }
+
+  // Now requesting (new).
+  pushSection('Now requesting (new)');
+  const addedAny =
+    capDiff.added.length +
+    cookDiff.added.length +
+    localDiff.added.length +
+    sessDiff.added.length +
+    chDiff.added.length +
+    idbDiff.added.length;
+  if (addedAny === 0) {
+    appendBullet('(none)');
+  } else {
+    for (const c of capDiff.added) appendBullet(`Capability: ${c}`);
+    for (const k of cookDiff.added) appendBullet(`Cookie: ${k}`);
+    for (const k of localDiff.added) appendBullet(`localStorage: ${k}`);
+    for (const k of sessDiff.added) appendBullet(`sessionStorage: ${k}`);
+    for (const h of chDiff.added) appendBullet(`Capture: ${h.headerName} from ${h.urlPattern}`);
+    for (const s of idbDiff.added) appendBullet(`IndexedDB: ${s.database}/${s.store}`);
+  }
+
+  // No longer requested.
+  pushSection('No longer requested');
+  const removedAny =
+    capDiff.removed.length +
+    cookDiff.removed.length +
+    localDiff.removed.length +
+    sessDiff.removed.length +
+    chDiff.removed.length +
+    idbDiff.removed.length +
+    lpDiff.removed.length +
+    spDiff.removed.length;
+  if (removedAny === 0) {
+    appendBullet('(none)');
+  } else {
+    for (const c of capDiff.removed) appendBullet(`Capability: ${c}`);
+    for (const k of cookDiff.removed) appendBullet(`Cookie: ${k}`);
+    for (const k of localDiff.removed) appendBullet(`localStorage: ${k}`);
+    for (const k of sessDiff.removed) appendBullet(`sessionStorage: ${k}`);
+    for (const h of chDiff.removed) appendBullet(`Capture: ${h.headerName} from ${h.urlPattern}`);
+    for (const s of idbDiff.removed) appendBullet(`IndexedDB: ${s.database}/${s.store}`);
+  }
+
+  root.appendChild(dl);
 }
 
 function appendIndexedDbScopesSubList(
@@ -185,8 +365,21 @@ export function renderPopup(root: HTMLElement, state: PopupState): void {
 
   // pending-pair
   const { pending, onApprove, onCancel } = state;
+  const previous = state.previous;
 
-  root.appendChild(elem('h3', {}, 'Approve new MCP connection?'));
+  root.appendChild(
+    elem(
+      'h3',
+      {},
+      previous
+        ? `${pending.serverName} wants to UPDATE its access`
+        : 'Approve new MCP connection?',
+    ),
+  );
+
+  if (previous) {
+    appendDiffSummary(root, pending, previous);
+  }
 
   const dl = elem('dl');
   dl.appendChild(elem('dt', {}, 'Server'));
@@ -255,7 +448,11 @@ export function renderPopup(root: HTMLElement, state: PopupState): void {
   const cancel = elem('button', { 'data-action': 'cancel', autofocus: 'true' }, 'Cancel');
   cancel.addEventListener('click', onCancel);
 
-  const approve = elem('button', { 'data-action': 'approve' }, 'Approve');
+  const approve = elem(
+    'button',
+    { 'data-action': 'approve' },
+    previous ? 'Approve update' : 'Approve',
+  );
   approve.addEventListener('click', onApprove);
 
   btnRow.appendChild(cancel);
@@ -278,6 +475,9 @@ interface PendingPairRecord {
   sessionStorageKeys?: string[];
   captureHeaders?: { urlPattern: string; headerName: string }[];
   indexedDbScopes?: { origin: string; database: string; store: string; keys: string[] }[];
+  localStoragePointers?: { key: string; jsonPointer: string }[];
+  sessionStoragePointers?: { key: string; jsonPointer: string }[];
+  previousScope?: PreviousScope;
   pairCode: string;
   identityHash: string;
   identityX25519Pub: string;
@@ -325,6 +525,7 @@ async function bootstrap(): Promise<void> {
         })),
         pairCode: pending.pairCode,
       },
+      ...(pending.previousScope ? { previous: pending.previousScope } : {}),
       onApprove: () => {
         void chrome.storage!.local.set({ approvedPair: pending });
         void chrome.storage!.local.remove('pendingPair');
