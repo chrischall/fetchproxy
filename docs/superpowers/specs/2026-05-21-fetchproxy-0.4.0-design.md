@@ -82,7 +82,16 @@ A new helper `loadOrCreateExtensionIdentity()` in
 read+write point. Survives service-worker restarts because it lives
 in chrome.storage.local.
 
-**2. `HelloFrameFromExtension` carries identity + signature.**
+**2. `HelloFrameFromExtension` claims identity. `ReadyFrame` carries the binding signature.**
+
+The handshake order stays as in 0.3.0: extension hello → server hello → ready.
+What changes is that:
+
+- The extension hello carries identity claims (so the host knows
+  whose signature to verify) but no signature yet.
+- The `ReadyFrame` carries the Ed25519 signature over both nonces.
+
+Extension hello (added fields):
 
 ```jsonc
 {
@@ -96,28 +105,26 @@ in chrome.storage.local.
   // NEW in 0.4.0:
   "identityX25519Pub":  "<base64 32B>",
   "identityEd25519Pub": "<base64 32B>",
-  "sessionNonce":       "<base64 ≥16B>",
-  "sessionSig":         "<base64 — Ed25519Sign(extEdPriv, mcpHelloSessionNonce || extSessionNonce)>"
+  "sessionNonce":       "<base64 ≥16B>"
 }
 ```
 
-Critical: the signature **binds the MCP's session nonce** as well as
-the extension's own. This is what prevents a MITM from forwarding the
-real extension's signature blob: it would be a signature over a
-different MCP-side nonce. (MCP's nonce is fresh per connection, so
-relay attempts produce non-verifying signatures unless the attacker
-controls the MCP nonce — which would require being the MCP, not the
-extension.)
+`ReadyFrame` (added field):
 
-Generated in `connect()` after the MCP's server hello arrives — the
-extension can't sign until it knows the MCP's nonce. This means:
+```jsonc
+{
+  "type": "ready",
+  "mcpId": "...",
+  "extensionSessionPub": "<base64 32B>",
+  "sessionSig":          "<base64 — Ed25519Sign(extEdPriv, mcpHelloSessionNonce || extHello.sessionNonce)>"
+}
+```
 
-- The flow is now: MCP sends server hello → extension validates +
-  generates session nonce + signs (MCP nonce || ext nonce) → extension
-  sends extension hello carrying both nonces + signature.
-- (Today the extension hello is sent on `open` before any MCP frames
-  arrive. 0.4.0 inverts the order: the host sends server hello first
-  unconditionally, the extension responds with extension hello.)
+The signature **binds the MCP's session nonce** to the extension's
+nonce. This defeats a MITM relay attack: the relay would either need
+to sign with the real extension's key (impossible without
+compromising the browser process) or use its own key (which makes
+the pair-code mismatch detectable).
 
 **3. Pair code commits to BOTH identities.**
 

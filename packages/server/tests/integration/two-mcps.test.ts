@@ -6,6 +6,9 @@ import { join } from 'node:path';
 import {
   validateFrame,
   generateX25519,
+  generateEd25519,
+  ed25519Sign,
+  concatBytes,
   ecdhX25519,
   hkdfSha256,
   sealInnerFrame,
@@ -86,6 +89,14 @@ describe('integration: two MCPs through one host', () => {
 
     const enc = new TextEncoder();
 
+    // 0.4.0: mock-extension identity used for ReadyFrame signatures.
+    // Both MCPs (host + peer) get the same extension identity since
+    // there's only one WS connection.
+    const extIdX = await generateX25519();
+    const extIdEd = await generateEd25519();
+    const extSessionNonce = new Uint8Array(32);
+    (globalThis.crypto as Crypto).getRandomValues(extSessionNonce);
+
     // Wait for both server hellos to arrive AND respond with ready frames.
     const bothReady = new Promise<void>((resolveBothReady) => {
       const needed = new Set(['opentable-mcp', 'resy-mcp']);
@@ -97,14 +108,14 @@ describe('integration: two MCPs through one host', () => {
 
           if (frame.type === 'hello' && frame.role === 'server') {
             const identityX25519Pub = new Uint8Array(Buffer.from(frame.identityX25519Pub, 'base64'));
-            const sessionNonce = new Uint8Array(Buffer.from(frame.sessionNonce, 'base64'));
+            const mcpSessionNonce = new Uint8Array(Buffer.from(frame.sessionNonce, 'base64'));
 
             // Auto-approve in this test (the pair-code gate is unit-tested elsewhere).
             const ephemeral = await generateX25519();
             const shared = await ecdhX25519(ephemeral.privateKey, identityX25519Pub);
             const sessionKey = await hkdfSha256(
               shared,
-              sessionNonce,
+              mcpSessionNonce,
               enc.encode('fetchproxy/0.1.0/session'),
               32,
             );
@@ -117,10 +128,15 @@ describe('integration: two MCPs through one host', () => {
             serverNameToMcpId.set(frame.serverName, frame.mcpId);
             sessionKeysB64.push(Buffer.from(sessionKey).toString('base64'));
 
+            const sig = await ed25519Sign(
+              extIdEd.privateKey,
+              concatBytes(mcpSessionNonce, extSessionNonce),
+            );
             const ready: ReadyFrame = {
               type: 'ready',
               mcpId: frame.mcpId,
               extensionSessionPub: Buffer.from(ephemeral.publicKey).toString('base64'),
+              sessionSig: Buffer.from(sig).toString('base64'),
             };
             extWs!.send(JSON.stringify(ready));
 
@@ -160,11 +176,14 @@ describe('integration: two MCPs through one host', () => {
       // Send the extension hello to trigger the host to forward server hellos.
       const extHello: HelloFrameFromExtension = {
         type: 'hello',
-        protocolVersion: 1,
+        protocolVersion: 2,
         role: 'extension',
         platform: 'chrome',
         extensionId: 'fetchproxy',
-        version: '0.1.0',
+        version: '0.4.0',
+        identityX25519Pub: Buffer.from(extIdX.publicKey).toString('base64'),
+        identityEd25519Pub: Buffer.from(extIdEd.publicKey).toString('base64'),
+        sessionNonce: Buffer.from(extSessionNonce).toString('base64'),
       };
       extWs!.send(JSON.stringify(extHello));
     });

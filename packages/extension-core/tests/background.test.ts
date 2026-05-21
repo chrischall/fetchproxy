@@ -7,8 +7,18 @@ import {
   ed25519Sign,
   sha256,
   derivePairCode,
+  derivePairCodeFromIds,
+  toB64,
   type HelloFrameFromServer,
 } from '@fetchproxy/protocol';
+
+// Shared fake extension X25519 pub for the background tests. The
+// 0.4.0 pair-code derivation requires the extension's identity pub
+// in addition to the MCP's, so every test passes the same fake pub
+// here. Production background.ts loads this from
+// `loadOrCreateExtensionIdentity`.
+const FAKE_EXT_X25519_PUB = new Uint8Array(32).fill(0xab);
+const FAKE_EXT_X25519_PUB_B64 = toB64(FAKE_EXT_X25519_PUB);
 
 function mockStorage(): void {
   const data: Record<string, unknown> = {};
@@ -97,11 +107,13 @@ describe('handleServerHello', () => {
       ['opentable.com'],
     );
     const trust = new TrustStore('0.2.0');
-    const result = await handleServerHello(hello, { trust });
+    const result = await handleServerHello(hello, { trust, extensionIdentityX25519Pub: FAKE_EXT_X25519_PUB });
     expect(result.kind).toBe('needs-pair');
     if (result.kind === 'needs-pair') {
       const expectedPub = new Uint8Array(Buffer.from(hello.identityX25519Pub, 'base64'));
-      expect(result.pairCode).toBe(await derivePairCode(expectedPub));
+      expect(result.pairCode).toBe(
+        await derivePairCodeFromIds(expectedPub, FAKE_EXT_X25519_PUB),
+      );
       expect(result.serverName).toBe('opentable-mcp');
       expect(result.domains).toEqual(['opentable.com']);
       expect(result.mcpId).toBe('opentable-mcp:0.9.1:a3f7c91d2e8b4f56');
@@ -115,7 +127,7 @@ describe('handleServerHello', () => {
       ['honeybook.com', 'hbsplit.com'],
     );
     const trust = new TrustStore('0.2.0');
-    const result = await handleServerHello(hello, { trust });
+    const result = await handleServerHello(hello, { trust, extensionIdentityX25519Pub: FAKE_EXT_X25519_PUB });
     expect(result.kind).toBe('needs-pair');
     if (result.kind === 'needs-pair') {
       expect(result.domains).toEqual(['honeybook.com', 'hbsplit.com']);
@@ -138,9 +150,11 @@ describe('handleServerHello', () => {
       capabilities: ['fetch'],
       identityX25519Pub: hello.identityX25519Pub,
       identityEd25519Pub: hello.identityEd25519Pub,
+      extensionIdentityX25519Pub: FAKE_EXT_X25519_PUB_B64,
+      extensionIdentityEd25519Pub: FAKE_EXT_X25519_PUB_B64,
     });
 
-    const result = await handleServerHello(hello, { trust });
+    const result = await handleServerHello(hello, { trust, extensionIdentityX25519Pub: FAKE_EXT_X25519_PUB });
     expect(result.kind).toBe('auto-trust');
     if (result.kind === 'auto-trust') {
       expect(result.sessionKey.byteLength).toBe(32);
@@ -167,8 +181,10 @@ describe('handleServerHello', () => {
       capabilities: ['fetch'],
       identityX25519Pub: hello.identityX25519Pub,
       identityEd25519Pub: hello.identityEd25519Pub,
+      extensionIdentityX25519Pub: FAKE_EXT_X25519_PUB_B64,
+      extensionIdentityEd25519Pub: FAKE_EXT_X25519_PUB_B64,
     });
-    const result = await handleServerHello(hello, { trust });
+    const result = await handleServerHello(hello, { trust, extensionIdentityX25519Pub: FAKE_EXT_X25519_PUB });
     expect(result.kind).toBe('auto-trust');
   });
 
@@ -180,7 +196,7 @@ describe('handleServerHello', () => {
     );
     const bad = { ...hello, sessionSig: Buffer.from(new Uint8Array(64).fill(0)).toString('base64') };
     const trust = new TrustStore('0.2.0');
-    const result = await handleServerHello(bad, { trust });
+    const result = await handleServerHello(bad, { trust, extensionIdentityX25519Pub: FAKE_EXT_X25519_PUB });
     expect(result.kind).toBe('reject');
   });
 
@@ -201,8 +217,10 @@ describe('handleServerHello', () => {
       capabilities: ['fetch'],
       identityX25519Pub: hello.identityX25519Pub,
       identityEd25519Pub: hello.identityEd25519Pub,
+      extensionIdentityX25519Pub: FAKE_EXT_X25519_PUB_B64,
+      extensionIdentityEd25519Pub: FAKE_EXT_X25519_PUB_B64,
     });
-    const result = await handleServerHello(hello, { trust });
+    const result = await handleServerHello(hello, { trust, extensionIdentityX25519Pub: FAKE_EXT_X25519_PUB });
     expect(result.kind).toBe('reject');
   });
 
@@ -224,8 +242,10 @@ describe('handleServerHello', () => {
       capabilities: ['fetch'],
       identityX25519Pub: hello.identityX25519Pub,
       identityEd25519Pub: hello.identityEd25519Pub,
+      extensionIdentityX25519Pub: FAKE_EXT_X25519_PUB_B64,
+      extensionIdentityEd25519Pub: FAKE_EXT_X25519_PUB_B64,
     });
-    const result = await handleServerHello(hello, { trust });
+    const result = await handleServerHello(hello, { trust, extensionIdentityX25519Pub: FAKE_EXT_X25519_PUB });
     expect(result.kind).toBe('reject');
   });
 
@@ -238,7 +258,7 @@ describe('handleServerHello', () => {
         undefined, // no capabilities on the wire
       );
       const trust = new TrustStore('0.2.0');
-      const result = await handleServerHello(hello, { trust });
+      const result = await handleServerHello(hello, { trust, extensionIdentityX25519Pub: FAKE_EXT_X25519_PUB });
       expect(result.kind).toBe('needs-pair');
       if (result.kind === 'needs-pair') {
         expect(result.capabilities).toEqual(['fetch']);
@@ -253,7 +273,7 @@ describe('handleServerHello', () => {
         ['fetch', 'read_cookies'],
       );
       const trust = new TrustStore('0.2.0');
-      const result = await handleServerHello(hello, { trust });
+      const result = await handleServerHello(hello, { trust, extensionIdentityX25519Pub: FAKE_EXT_X25519_PUB });
       expect(result.kind).toBe('needs-pair');
       if (result.kind === 'needs-pair') {
         expect(result.capabilities).toEqual(['fetch', 'read_cookies']);
@@ -277,8 +297,10 @@ describe('handleServerHello', () => {
         capabilities: ['fetch', 'read_cookies'],
         identityX25519Pub: hello.identityX25519Pub,
         identityEd25519Pub: hello.identityEd25519Pub,
+        extensionIdentityX25519Pub: FAKE_EXT_X25519_PUB_B64,
+        extensionIdentityEd25519Pub: FAKE_EXT_X25519_PUB_B64,
       });
-      const result = await handleServerHello(hello, { trust });
+      const result = await handleServerHello(hello, { trust, extensionIdentityX25519Pub: FAKE_EXT_X25519_PUB });
       expect(result.kind).toBe('auto-trust');
       if (result.kind === 'auto-trust') {
         expect(result.capabilities).toEqual(['fetch', 'read_cookies']);
@@ -304,8 +326,10 @@ describe('handleServerHello', () => {
         capabilities: ['fetch'],
         identityX25519Pub: hello.identityX25519Pub,
         identityEd25519Pub: hello.identityEd25519Pub,
+        extensionIdentityX25519Pub: FAKE_EXT_X25519_PUB_B64,
+        extensionIdentityEd25519Pub: FAKE_EXT_X25519_PUB_B64,
       });
-      const result = await handleServerHello(hello, { trust });
+      const result = await handleServerHello(hello, { trust, extensionIdentityX25519Pub: FAKE_EXT_X25519_PUB });
       expect(result.kind).toBe('needs-pair');
       if (result.kind === 'needs-pair') {
         expect(result.capabilities).toEqual(['fetch', 'read_cookies']);
@@ -329,8 +353,10 @@ describe('handleServerHello', () => {
         capabilities: ['fetch', 'read_cookies'],
         identityX25519Pub: hello.identityX25519Pub,
         identityEd25519Pub: hello.identityEd25519Pub,
+        extensionIdentityX25519Pub: FAKE_EXT_X25519_PUB_B64,
+        extensionIdentityEd25519Pub: FAKE_EXT_X25519_PUB_B64,
       });
-      const result = await handleServerHello(hello, { trust });
+      const result = await handleServerHello(hello, { trust, extensionIdentityX25519Pub: FAKE_EXT_X25519_PUB });
       expect(result.kind).toBe('needs-pair');
     });
 
@@ -348,7 +374,7 @@ describe('handleServerHello', () => {
         },
       );
       const trust = new TrustStore('0.3.0');
-      const result = await handleServerHello(hello, { trust });
+      const result = await handleServerHello(hello, { trust, extensionIdentityX25519Pub: FAKE_EXT_X25519_PUB });
       expect(result.kind).toBe('needs-pair');
       if (result.kind === 'needs-pair') {
         expect(result.localStorageKeys).toEqual(['auth', 'tokenExpiry']);
@@ -382,8 +408,10 @@ describe('handleServerHello', () => {
         captureHeaders: [],
         identityX25519Pub: hello.identityX25519Pub,
         identityEd25519Pub: hello.identityEd25519Pub,
+        extensionIdentityX25519Pub: FAKE_EXT_X25519_PUB_B64,
+        extensionIdentityEd25519Pub: FAKE_EXT_X25519_PUB_B64,
       });
-      const result = await handleServerHello(hello, { trust });
+      const result = await handleServerHello(hello, { trust, extensionIdentityX25519Pub: FAKE_EXT_X25519_PUB });
       expect(result.kind).toBe('needs-pair');
     });
 
@@ -417,8 +445,10 @@ describe('handleServerHello', () => {
         ],
         identityX25519Pub: hello.identityX25519Pub,
         identityEd25519Pub: hello.identityEd25519Pub,
+        extensionIdentityX25519Pub: FAKE_EXT_X25519_PUB_B64,
+        extensionIdentityEd25519Pub: FAKE_EXT_X25519_PUB_B64,
       });
-      const result = await handleServerHello(hello, { trust });
+      const result = await handleServerHello(hello, { trust, extensionIdentityX25519Pub: FAKE_EXT_X25519_PUB });
       expect(result.kind).toBe('needs-pair');
     });
 
@@ -444,8 +474,10 @@ describe('handleServerHello', () => {
         captureHeaders: [],
         identityX25519Pub: hello.identityX25519Pub,
         identityEd25519Pub: hello.identityEd25519Pub,
+        extensionIdentityX25519Pub: FAKE_EXT_X25519_PUB_B64,
+        extensionIdentityEd25519Pub: FAKE_EXT_X25519_PUB_B64,
       });
-      const result = await handleServerHello(hello, { trust });
+      const result = await handleServerHello(hello, { trust, extensionIdentityX25519Pub: FAKE_EXT_X25519_PUB });
       expect(result.kind).toBe('auto-trust');
       if (result.kind === 'auto-trust') {
         expect(result.localStorageKeys.sort()).toEqual(['auth', 'tokenExpiry']);
@@ -475,8 +507,10 @@ describe('handleServerHello', () => {
         captureHeaders: [],
         identityX25519Pub: hello.identityX25519Pub,
         identityEd25519Pub: hello.identityEd25519Pub,
+        extensionIdentityX25519Pub: FAKE_EXT_X25519_PUB_B64,
+        extensionIdentityEd25519Pub: FAKE_EXT_X25519_PUB_B64,
       });
-      const result = await handleServerHello(hello, { trust });
+      const result = await handleServerHello(hello, { trust, extensionIdentityX25519Pub: FAKE_EXT_X25519_PUB });
       expect(result.kind).toBe('auto-trust');
     });
 
@@ -498,8 +532,10 @@ describe('handleServerHello', () => {
         capabilities: ['fetch', 'read_cookies'],
         identityX25519Pub: hello.identityX25519Pub,
         identityEd25519Pub: hello.identityEd25519Pub,
+        extensionIdentityX25519Pub: FAKE_EXT_X25519_PUB_B64,
+        extensionIdentityEd25519Pub: FAKE_EXT_X25519_PUB_B64,
       });
-      const result = await handleServerHello(hello, { trust });
+      const result = await handleServerHello(hello, { trust, extensionIdentityX25519Pub: FAKE_EXT_X25519_PUB });
       expect(result.kind).toBe('auto-trust');
     });
   });

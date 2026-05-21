@@ -54,6 +54,18 @@ export interface TrustRecord {
   captureHeaders: { urlPattern: string; headerName: string }[];
   identityX25519Pub: string;
   identityEd25519Pub: string;
+  /**
+   * 0.4.0+: the extension's long-term X25519 identity pub at pair
+   * time, base64. Records missing this field are 0.3.0 leftovers and
+   * are treated as missing on read (force re-pair).
+   */
+  extensionIdentityX25519Pub: string;
+  /**
+   * 0.4.0+: the extension's long-term Ed25519 identity pub at pair
+   * time, base64. The MCP host uses this to verify the extension's
+   * ready-frame session signature on subsequent connections.
+   */
+  extensionIdentityEd25519Pub: string;
   pairedAt: number;
   extensionVersionAtPair: string;
 }
@@ -62,12 +74,26 @@ export interface TrustInput {
   serverName: string;
   domains: string[];
   capabilities: string[];
-  cookieKeys: string[];
-  localStorageKeys: string[];
-  sessionStorageKeys: string[];
-  captureHeaders: { urlPattern: string; headerName: string }[];
+  /**
+   * 0.3.0+ scope arrays. Optional only so tests and pre-0.3.0 callers
+   * compile; production `background.ts:onApproval` always provides
+   * the empty array when nothing is declared.
+   */
+  cookieKeys?: string[];
+  localStorageKeys?: string[];
+  sessionStorageKeys?: string[];
+  captureHeaders?: { urlPattern: string; headerName: string }[];
   identityX25519Pub: string;
   identityEd25519Pub: string;
+  /**
+   * 0.4.0+: pinned extension identity. Optional so callers from
+   * tests and 0.3.0-era code paths compile. Production code in
+   * `background.ts:onApproval` always provides both values; absence
+   * is normalised to '' on read, which then mismatches any real
+   * extension pub and forces re-pair.
+   */
+  extensionIdentityX25519Pub?: string;
+  extensionIdentityEd25519Pub?: string;
 }
 
 interface StoredShape {
@@ -106,14 +132,41 @@ export class TrustStore {
       localStorageKeys: Array.isArray(rec.localStorageKeys) ? rec.localStorageKeys : [],
       sessionStorageKeys: Array.isArray(rec.sessionStorageKeys) ? rec.sessionStorageKeys : [],
       captureHeaders: Array.isArray(rec.captureHeaders) ? rec.captureHeaders : [],
+      // 0.4.0: pre-0.4.0 records have no extension identity. Normalise
+      // to '' so `background.ts:handleServerHello` sees a mismatch
+      // against the current extension's pub and triggers re-pair.
+      extensionIdentityX25519Pub:
+        typeof rec.extensionIdentityX25519Pub === 'string'
+          ? rec.extensionIdentityX25519Pub
+          : '',
+      extensionIdentityEd25519Pub:
+        typeof rec.extensionIdentityEd25519Pub === 'string'
+          ? rec.extensionIdentityEd25519Pub
+          : '',
     };
     return normalised;
   }
 
   async put(identityHash: string, input: TrustInput): Promise<void> {
     const stored = await this.load();
+    // Fill defaults for any optional 0.4.0 fields so the stored
+    // record matches the canonical shape on read.
+    const cookieKeys = input.cookieKeys ?? [];
+    const localStorageKeys = input.localStorageKeys ?? [];
+    const sessionStorageKeys = input.sessionStorageKeys ?? [];
+    const captureHeaders = input.captureHeaders ?? [];
     stored.records[identityHash] = {
-      ...input,
+      serverName: input.serverName,
+      domains: input.domains,
+      capabilities: input.capabilities,
+      cookieKeys,
+      localStorageKeys,
+      sessionStorageKeys,
+      captureHeaders,
+      identityX25519Pub: input.identityX25519Pub,
+      identityEd25519Pub: input.identityEd25519Pub,
+      extensionIdentityX25519Pub: input.extensionIdentityX25519Pub ?? '',
+      extensionIdentityEd25519Pub: input.extensionIdentityEd25519Pub ?? '',
       pairedAt: Date.now(),
       extensionVersionAtPair: this.extensionVersion,
     };

@@ -1,5 +1,5 @@
 /**
- * Frame types for fetchproxy protocol v1 (0.2.0+).
+ * Frame types for fetchproxy protocol v2 (0.4.0+).
  *
  * Top-level frames on the wire: hello, ready, frame (encrypted).
  * Inner frames (inside ciphertext): ping, pong, request, response.
@@ -10,9 +10,23 @@
  * 0.2.0 also introduces `capabilities: string[]` on the server hello
  * and a discriminated `op` on inner request/response frames so MCPs
  * can opt into additional verbs beyond `fetch` (e.g. `read_cookies`).
+ *
+ * 0.4.0: PROTOCOL_VERSION bumps 1 → 2. Extension hello frames now
+ * carry an identity X25519 + Ed25519 pub plus a session nonce and a
+ * signature binding the MCP-side hello nonce. Pair codes commit to
+ * BOTH identities (MCP || extension), and trust records persist the
+ * extension's identity so the MCP can verify extension session
+ * signatures on subsequent connections. This is the MITM-as-extension
+ * fix — 0.3.0 ↔ 0.4.0 are NOT interoperable and all packages release
+ * together.
+ *
+ * 0.4.0 also adds `read_indexed_db`, JSON-pointer extraction in
+ * storage reads, and glob patterns in declared key arrays. All
+ * additions within v2 remain wire-additive — only the version bump
+ * itself is a hard break.
  */
 
-export const PROTOCOL_VERSION = 1 as const;
+export const PROTOCOL_VERSION = 2 as const;
 export type Platform = 'chrome' | 'safari' | 'firefox';
 
 /**
@@ -76,7 +90,7 @@ export interface CaptureHeaderDecl {
 
 export interface HelloFrameFromServer {
   type: 'hello';
-  protocolVersion: 1;
+  protocolVersion: 2;
   role: 'server';
   mcpId: string;                  // server:version:rand
   serverName: string;
@@ -118,11 +132,27 @@ export interface HelloFrameFromServer {
 
 export interface HelloFrameFromExtension {
   type: 'hello';
-  protocolVersion: 1;
+  protocolVersion: 2;
   role: 'extension';
   platform: Platform;
   extensionId: string;
   version: string;
+  /**
+   * 0.4.0+: long-term X25519 identity public key, base64 raw 32B.
+   * Used by the MCP server to look up the trusted extension identity
+   * and verify subsequent connections.
+   */
+  identityX25519Pub: string;
+  /**
+   * 0.4.0+: long-term Ed25519 identity public key, base64 raw 32B.
+   * Used to verify the `ReadyFrame.sessionSig`.
+   */
+  identityEd25519Pub: string;
+  /**
+   * 0.4.0+: per-connection nonce, base64 ≥16B. Fresh per WS connect;
+   * binds the `ReadyFrame.sessionSig` to this specific handshake.
+   */
+  sessionNonce: string;
 }
 
 export type HelloFrame = HelloFrameFromServer | HelloFrameFromExtension;
@@ -131,6 +161,15 @@ export interface ReadyFrame {
   type: 'ready';
   mcpId: string;
   extensionSessionPub: string;    // base64 raw 32B (ephemeral extension X25519 pub)
+  /**
+   * 0.4.0+: `Ed25519Sign(extEdPriv, mcpHelloSessionNonce || extHello.sessionNonce)`.
+   * Verified by the MCP host's connection handler against the
+   * extension's claimed `identityEd25519Pub` (from its earlier hello).
+   * Binds both endpoints' fresh-per-connection nonces, so a relay
+   * MITM can neither replay a captured signature nor substitute its
+   * own keypair without producing a visible pair-code mismatch.
+   */
+  sessionSig: string;
 }
 
 export interface EncryptedFrame {

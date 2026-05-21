@@ -15,9 +15,10 @@
 
 import {
   ed25519Verify,
+  ed25519Sign,
   ecdhX25519,
   hkdfSha256,
-  derivePairCode,
+  derivePairCodeFromIds,
   sha256,
   generateX25519,
   sealInnerFrame,
@@ -47,6 +48,7 @@ import { TrustStore } from './trust-store.js';
 import { SessionKeys } from './session-keys.js';
 import { ensureDomainTab } from './ensure-domain-tab.js';
 import { isUrlAllowedForAnyDomain, isTabUrlMatch } from './lib/url-match.js';
+import { loadOrCreateExtensionIdentity, type ExtensionIdentity } from './extension-identity.js';
 
 // -------------------------------------------------------------------
 // 1. Pure decision function (handleServerHello)
@@ -54,6 +56,12 @@ import { isUrlAllowedForAnyDomain, isTabUrlMatch } from './lib/url-match.js';
 
 export interface HandleHelloDeps {
   trust: TrustStore;
+  /**
+   * 0.4.0+: the extension's long-term X25519 identity pub. Used to
+   * derive the joint pair code (`SHA256(mcpPub || extPub)`) so the
+   * popup and the MCP terminal both compute the same code. Required.
+   */
+  extensionIdentityX25519Pub: Uint8Array;
 }
 
 export type HandleHelloResult =
@@ -86,6 +94,12 @@ export type HandleHelloResult =
       captureHeaders: { urlPattern: string; headerName: string }[];
       sessionKey: Uint8Array;
       extensionSessionPub: Uint8Array;
+      /**
+       * 0.4.0+: signing nonce (the MCP-side hello nonce). The caller
+       * uses this together with the extension's per-WS nonce to
+       * produce a `ReadyFrame.sessionSig`.
+       */
+      mcpSessionNonce: Uint8Array;
     };
 
 const enc = new TextEncoder();
@@ -202,54 +216,70 @@ export async function handleServerHello(
     ) {
       return { kind: 'reject', reason: 'serverName/domains mismatch with trust record' };
     }
-    // Conservative: any change in declared scope (capabilities or any of
-    // the 0.3.0 scope arrays) triggers re-pair. The user approved a
-    // specific scope; we won't widen it silently.
-    const scopeChanged =
-      !sameCapabilitySet(record.capabilities, capabilities) ||
-      !sameScopeArrays(record.cookieKeys, scope.cookieKeys) ||
-      !sameScopeArrays(record.localStorageKeys, scope.localStorageKeys) ||
-      !sameScopeArrays(record.sessionStorageKeys, scope.sessionStorageKeys) ||
-      !sameCaptureHeaders(record.captureHeaders, scope.captureHeaders);
-    if (scopeChanged) {
-      const pairCode = await derivePairCode(identityX25519Pub);
+    // 0.4.0: if the stored trust record's extension identity differs
+    // from this extension's current identity, force re-pair. This
+    // catches a wholesale extension reinstall as well as legacy 0.3.0
+    // records (no extensionIdentityX25519Pub field, normalised to '').
+    const recordedExtPubB64 = record.extensionIdentityX25519Pub ?? '';
+    if (recordedExtPubB64 !== toB64(deps.extensionIdentityX25519Pub)) {
+      // Fall through to needs-pair path.
+    } else {
+      // Conservative: any change in declared scope (capabilities or any of
+      // the 0.3.0 scope arrays) triggers re-pair. The user approved a
+      // specific scope; we won't widen it silently.
+      const scopeChanged =
+        !sameCapabilitySet(record.capabilities, capabilities) ||
+        !sameScopeArrays(record.cookieKeys, scope.cookieKeys) ||
+        !sameScopeArrays(record.localStorageKeys, scope.localStorageKeys) ||
+        !sameScopeArrays(record.sessionStorageKeys, scope.sessionStorageKeys) ||
+        !sameCaptureHeaders(record.captureHeaders, scope.captureHeaders);
+      if (scopeChanged) {
+        const pairCode = await derivePairCodeFromIds(
+          identityX25519Pub,
+          deps.extensionIdentityX25519Pub,
+        );
+        return {
+          kind: 'needs-pair',
+          pairCode,
+          identityHash: hash,
+          mcpId: hello.mcpId,
+          serverName: hello.serverName,
+          domains: [...hello.domains],
+          capabilities,
+          ...scope,
+          version: hello.version,
+          identityX25519Pub: hello.identityX25519Pub,
+          identityEd25519Pub: hello.identityEd25519Pub,
+          sessionNonce,
+        };
+      }
+      // Derive session key with fresh ephemeral keypair.
+      const ephemeral = await generateX25519();
+      const shared = await ecdhX25519(ephemeral.privateKey, identityX25519Pub);
+      const sessionKey = await hkdfSha256(
+        shared,
+        sessionNonce,
+        enc.encode('fetchproxy/0.1.0/session'),
+        32,
+      );
       return {
-        kind: 'needs-pair',
-        pairCode,
-        identityHash: hash,
+        kind: 'auto-trust',
         mcpId: hello.mcpId,
-        serverName: hello.serverName,
         domains: [...hello.domains],
         capabilities,
         ...scope,
-        version: hello.version,
-        identityX25519Pub: hello.identityX25519Pub,
-        identityEd25519Pub: hello.identityEd25519Pub,
-        sessionNonce,
+        sessionKey,
+        extensionSessionPub: ephemeral.publicKey,
+        mcpSessionNonce: sessionNonce,
       };
     }
-    // Derive session key with fresh ephemeral keypair.
-    const ephemeral = await generateX25519();
-    const shared = await ecdhX25519(ephemeral.privateKey, identityX25519Pub);
-    const sessionKey = await hkdfSha256(
-      shared,
-      sessionNonce,
-      enc.encode('fetchproxy/0.1.0/session'),
-      32,
-    );
-    return {
-      kind: 'auto-trust',
-      mcpId: hello.mcpId,
-      domains: [...hello.domains],
-      capabilities,
-      ...scope,
-      sessionKey,
-      extensionSessionPub: ephemeral.publicKey,
-    };
   }
 
   // 3. Need pairing.
-  const pairCode = await derivePairCode(identityX25519Pub);
+  const pairCode = await derivePairCodeFromIds(
+    identityX25519Pub,
+    deps.extensionIdentityX25519Pub,
+  );
   return {
     kind: 'needs-pair',
     pairCode,
@@ -339,6 +369,17 @@ let ws: WebSocket | null = null;
 let reconnectAttempt = 0;
 let trust: TrustStore | null = null;
 let sessions: SessionKeys | null = null;
+// 0.4.0+: the extension's long-term identity. Loaded once on boot via
+// `loadOrCreateExtensionIdentity`, then threaded into every hello +
+// every ready-frame signature. Generated on first run, persisted in
+// chrome.storage.local across MV3 service-worker restarts.
+let extIdentity: ExtensionIdentity | null = null;
+// 0.4.0+: per-WS-connection nonce the extension sends in its hello.
+// The MCP host's session signature on the corresponding ReadyFrame
+// commits to (mcpNonce || extNonce), so a relay can neither replay
+// nor substitute a different identity without producing a visibly
+// different pair code.
+let currentExtSessionNonce: Uint8Array | null = null;
 // Track each mcpId's declared domain set so the request handler can enforce
 // the allowlist. 0.2.0+: this is a Map<mcpId, string[]> rather than the
 // 0.1.x Map<mcpId, string> — every URL must match SOME entry to be allowed.
@@ -356,11 +397,19 @@ const mcpSessionStorageKeys = new Map<string, string[]>();
 const mcpCaptureHeaders = new Map<string, { urlPattern: string; headerName: string }[]>();
 
 function connect(): void {
-  if (!trust || !sessions) return;
+  if (!trust || !sessions || !extIdentity) return;
   if (ws && (ws.readyState === WebSocket.CONNECTING || ws.readyState === WebSocket.OPEN)) return;
   ws = new WebSocket(HOST_URL);
   ws.addEventListener('open', () => {
+    if (!extIdentity) return;
     reconnectAttempt = 0;
+    // Fresh per-WS nonce. The corresponding ready-frame signature
+    // commits to (mcpHelloNonce || this nonce), so each WS connect
+    // gets a fresh handshake — replaying a captured ready frame
+    // against a future connection fails.
+    const sessionNonce = new Uint8Array(32);
+    (globalThis.crypto as Crypto).getRandomValues(sessionNonce);
+    currentExtSessionNonce = sessionNonce;
     const extHello: HelloFrameFromExtension = {
       type: 'hello',
       protocolVersion: PROTOCOL_VERSION,
@@ -368,6 +417,9 @@ function connect(): void {
       platform: 'chrome',
       extensionId: 'fetchproxy',
       version: chrome.runtime.getManifest().version,
+      identityX25519Pub: toB64(extIdentity.x25519Pub),
+      identityEd25519Pub: toB64(extIdentity.ed25519Pub),
+      sessionNonce: toB64(sessionNonce),
     };
     ws!.send(JSON.stringify(extHello));
   });
@@ -413,8 +465,11 @@ async function onMessage(data: string): Promise<void> {
 }
 
 async function onServerHello(hello: HelloFrameFromServer): Promise<void> {
-  if (!trust || !sessions) return;
-  const result = await handleServerHello(hello, { trust });
+  if (!trust || !sessions || !extIdentity || !currentExtSessionNonce) return;
+  const result = await handleServerHello(hello, {
+    trust,
+    extensionIdentityX25519Pub: extIdentity.x25519Pub,
+  });
   if (result.kind === 'reject') {
     console.warn(`[fetchproxy] rejected hello for ${hello.mcpId}: ${result.reason}`);
     return;
@@ -437,10 +492,17 @@ async function onServerHello(hello: HelloFrameFromServer): Promise<void> {
         /* fire-and-forget */
       });
     }
+    // 0.4.0: ready frame carries the binding signature so the MCP
+    // host can verify before proceeding.
+    const sessionSig = await ed25519Sign(
+      extIdentity.ed25519Priv,
+      concatBytes(result.mcpSessionNonce, currentExtSessionNonce),
+    );
     const ready: ReadyFrame = {
       type: 'ready',
       mcpId: result.mcpId,
       extensionSessionPub: toB64(result.extensionSessionPub),
+      sessionSig: toB64(sessionSig),
     };
     ws?.send(JSON.stringify(ready));
     return;
@@ -940,7 +1002,7 @@ async function handleCaptureRequestHeaderRequest(
 }
 
 async function onApproval(approved: PendingPairRecord): Promise<void> {
-  if (!trust || !sessions) return;
+  if (!trust || !sessions || !extIdentity || !currentExtSessionNonce) return;
   // Persist trust. Default to ['fetch'] when older popup state somehow
   // omits the field — defensive, the popup always populates it in 0.2.0+.
   const approvedCapabilities =
@@ -960,6 +1022,11 @@ async function onApproval(approved: PendingPairRecord): Promise<void> {
     })),
     identityX25519Pub: approved.identityX25519Pub,
     identityEd25519Pub: approved.identityEd25519Pub,
+    // 0.4.0: remember the extension identity active when the user
+    // approved. A wholesale extension reinstall produces a fresh
+    // keypair and re-triggers the pair flow.
+    extensionIdentityX25519Pub: toB64(extIdentity.x25519Pub),
+    extensionIdentityEd25519Pub: toB64(extIdentity.ed25519Pub),
   });
   // Derive session key.
   const identityPub = fromB64(approved.identityX25519Pub);
@@ -986,11 +1053,18 @@ async function onApproval(approved: PendingPairRecord): Promise<void> {
       /* noop */
     });
   }
-  // Send ready.
+  // 0.4.0: sign over (mcpHelloNonce || extHello.sessionNonce). The
+  // MCP host verifies this against the extension's claimed Ed25519
+  // pub and gates session-key derivation on it.
+  const sessionSig = await ed25519Sign(
+    extIdentity.ed25519Priv,
+    concatBytes(sessionNonce, currentExtSessionNonce),
+  );
   const ready: ReadyFrame = {
     type: 'ready',
     mcpId: approved.mcpId,
     extensionSessionPub: toB64(ephemeral.publicKey),
+    sessionSig: toB64(sessionSig),
   };
   ws?.send(JSON.stringify(ready));
   // Clear popup state.
@@ -1020,7 +1094,15 @@ function maybeBoot(): void {
     if (!approved) return;
     void onApproval(approved).catch((e) => console.error('[fetchproxy] approval:', e));
   });
-  connect();
+  // 0.4.0: load (or generate) the extension's long-term identity
+  // before connecting. The identity is required to construct the
+  // extension hello on WS open.
+  void loadOrCreateExtensionIdentity()
+    .then((id) => {
+      extIdentity = id;
+      connect();
+    })
+    .catch((e) => console.error('[fetchproxy] extension identity boot:', e));
 }
 
 maybeBoot();

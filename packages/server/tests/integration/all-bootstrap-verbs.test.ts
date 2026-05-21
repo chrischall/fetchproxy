@@ -6,6 +6,9 @@ import { join } from 'node:path';
 import {
   validateFrame,
   generateX25519,
+  generateEd25519,
+  ed25519Sign,
+  concatBytes,
   ecdhX25519,
   hkdfSha256,
   sealInnerFrame,
@@ -76,6 +79,13 @@ describe('integration: all 0.3.0 bootstrap verbs', () => {
     let outboundSeq = 0;
     let helloFrame: HelloFrameFromServer | null = null;
 
+    // 0.4.0: mock-extension identity used to sign the ReadyFrame's
+    // (mcpNonce || extNonce) binding signature.
+    const extIdX = await generateX25519();
+    const extIdEd = await generateEd25519();
+    const extSessionNonce = new Uint8Array(32);
+    (globalThis.crypto as Crypto).getRandomValues(extSessionNonce);
+
     const ready = new Promise<void>((resolveReady) => {
       extWs!.on('message', async (data) => {
         try {
@@ -87,20 +97,25 @@ describe('integration: all 0.3.0 bootstrap verbs', () => {
             const identityX25519Pub = new Uint8Array(
               Buffer.from(frame.identityX25519Pub, 'base64'),
             );
-            const sessionNonce = new Uint8Array(Buffer.from(frame.sessionNonce, 'base64'));
+            const mcpSessionNonce = new Uint8Array(Buffer.from(frame.sessionNonce, 'base64'));
             const ephemeral = await generateX25519();
             const shared = await ecdhX25519(ephemeral.privateKey, identityX25519Pub);
             sessionKey = await hkdfSha256(
               shared,
-              sessionNonce,
+              mcpSessionNonce,
               new TextEncoder().encode('fetchproxy/0.1.0/session'),
               32,
             );
             mcpId = frame.mcpId;
+            const sig = await ed25519Sign(
+              extIdEd.privateKey,
+              concatBytes(mcpSessionNonce, extSessionNonce),
+            );
             const readyFrame: ReadyFrame = {
               type: 'ready',
               mcpId,
               extensionSessionPub: Buffer.from(ephemeral.publicKey).toString('base64'),
+              sessionSig: Buffer.from(sig).toString('base64'),
             };
             extWs!.send(JSON.stringify(readyFrame));
             resolveReady();
@@ -158,11 +173,14 @@ describe('integration: all 0.3.0 bootstrap verbs', () => {
       // Send the extension hello so the host forwards the server hello.
       const extHello: HelloFrameFromExtension = {
         type: 'hello',
-        protocolVersion: 1,
+        protocolVersion: 2,
         role: 'extension',
         platform: 'chrome',
         extensionId: 'fetchproxy',
-        version: '0.3.0',
+        version: '0.4.0',
+        identityX25519Pub: Buffer.from(extIdX.publicKey).toString('base64'),
+        identityEd25519Pub: Buffer.from(extIdEd.publicKey).toString('base64'),
+        sessionNonce: Buffer.from(extSessionNonce).toString('base64'),
       };
       extWs!.send(JSON.stringify(extHello));
     });

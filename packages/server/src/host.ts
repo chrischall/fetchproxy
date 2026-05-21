@@ -2,15 +2,19 @@ import { Server as HttpServer } from 'node:http';
 import { WebSocketServer, WebSocket } from 'ws';
 import {
   ecdhX25519,
+  ed25519Verify,
+  concatBytes,
   fromB64,
   hkdfSha256,
   openEncryptedFrame,
   sealInnerFrame,
   validateFrame,
+  derivePairCodeFromIds,
   type Capability,
   type CaptureHeaderDecl,
   type Frame,
   type HelloFrameFromServer,
+  type HelloFrameFromExtension,
   type InnerFrame,
 } from '@fetchproxy/protocol';
 import { buildServerHello } from './build-server-hello.js';
@@ -43,6 +47,13 @@ export interface HostOpts {
   ownLocalStorageKeys?: string[];
   ownSessionStorageKeys?: string[];
   ownCaptureHeaders?: CaptureHeaderDecl[];
+  /**
+   * 0.4.0+: invoked once on receipt of the extension hello with the
+   * joint pair code `SHA256(mcpPub || extPub)`. The MCP can print this
+   * for the user to verify against the popup. Optional — when the
+   * host doesn't need to surface the code, omit it.
+   */
+  onPairCode?: (code: string) => void;
 }
 
 export interface HostHandle {
@@ -109,6 +120,11 @@ export async function startHost(opts: HostOpts): Promise<HostHandle> {
   // any later await.
   ownSessionReady.catch(() => { /* noop */ });
 
+  // 0.4.0: track the extension's hello so we can verify its ReadyFrame
+  // signature against the claimed Ed25519 identity. One extension per
+  // host instance; cleared on disconnect.
+  let extensionHello: HelloFrameFromExtension | null = null;
+
   wss.on('connection', (ws) => {
     let identified: 'extension' | 'peer' | null = null;
     let peerMcpId: string | null = null;
@@ -132,6 +148,22 @@ export async function startHost(opts: HostOpts): Promise<HostHandle> {
           }
           identified = 'extension';
           extensionWs = ws;
+          extensionHello = frame;
+          // 0.4.0: surface the joint pair code now that we know both
+          // identities. The popup is derived from the same inputs in
+          // the same order, so the two codes match iff there's no
+          // MITM between this MCP and the real extension.
+          if (opts.onPairCode) {
+            try {
+              const code = await derivePairCodeFromIds(
+                opts.ownIdentity.x25519Pub,
+                fromB64(frame.identityX25519Pub),
+              );
+              opts.onPairCode(code);
+            } catch (e) {
+              console.error('[fetchproxy] onPairCode threw:', e);
+            }
+          }
           // Send own hello first.
           ws.send(JSON.stringify(ownHello));
           // Then forward any peer hellos that arrived earlier.
@@ -151,6 +183,35 @@ export async function startHost(opts: HostOpts): Promise<HostHandle> {
         // Ready dispatch (extension → server).
         if (frame.type === 'ready') {
           if (frame.mcpId === opts.ownMcpId) {
+            // 0.4.0 mutual auth: verify the extension's signature
+            // over (mcpHelloNonce || extHelloNonce) against the
+            // claimed Ed25519 identity in the extension hello. A
+            // MITM-as-extension process can either substitute its own
+            // identity (visibly different pair code) or relay the
+            // real extension's bytes (signature won't verify because
+            // the MCP nonce differs). Tear the WS down on mismatch.
+            if (!extensionHello) {
+              console.warn('[fetchproxy] ready before extension hello — closing');
+              ws.close(1002, 'ready before extension hello');
+              return;
+            }
+            const extEdPub = fromB64(extensionHello.identityEd25519Pub);
+            const extNonce = fromB64(extensionHello.sessionNonce);
+            const msg = concatBytes(ownSessionNonce, extNonce);
+            const sig = fromB64(frame.sessionSig);
+            let sigOk = false;
+            try {
+              sigOk = await ed25519Verify(extEdPub, msg, sig);
+            } catch {
+              sigOk = false;
+            }
+            if (!sigOk) {
+              console.warn(
+                '[fetchproxy] extension session signature invalid — closing (possible MITM)',
+              );
+              ws.close(1008, 'extension session signature invalid');
+              return;
+            }
             // Derive our own session key.
             const extPub = fromB64(frame.extensionSessionPub);
             const shared = await ecdhX25519(opts.ownIdentity.x25519Priv, extPub);
@@ -203,6 +264,7 @@ export async function startHost(opts: HostOpts): Promise<HostHandle> {
     ws.on('close', () => {
       if (identified === 'extension' && extensionWs === ws) {
         extensionWs = null;
+        extensionHello = null;
         // If the extension dropped before we ever derived our own session key,
         // unblock any pending sendOwnInner awaiter with an actionable error
         // rather than letting them hang forever.

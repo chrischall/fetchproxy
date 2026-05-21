@@ -55,6 +55,14 @@ export interface FetchproxyServerOpts {
   /** 0.3.0+: declared (urlPattern, headerName) pairs for `captureRequestHeader`. */
   captureHeaders?: CaptureHeaderDecl[];
   identityDir?: string;
+  /**
+   * 0.4.0+: invoked once on receipt of the extension hello, with the
+   * joint pair code derived from `SHA256(mcpPub || extPub)`. Used by
+   * MCPs that need to surface the code on stderr or similar for the
+   * user to verify against the browser popup. Optional — fetch-only
+   * MCPs that don't need to print can omit it.
+   */
+  onPairCode?: (code: string) => void;
 }
 
 export interface FetchResult {
@@ -201,6 +209,7 @@ interface ResolvedOpts {
   sessionStorageKeys: string[];
   captureHeaders: CaptureHeaderDecl[];
   identityDir?: string;
+  onPairCode?: (code: string) => void;
 }
 
 const DEFAULT_JSON_OK_STATUSES: readonly number[] = [200, 201, 202, 204];
@@ -309,6 +318,7 @@ export class FetchproxyServer {
         headerName: d.headerName,
       })),
       identityDir: opts.identityDir,
+      onPairCode: opts.onPairCode,
     };
   }
 
@@ -338,6 +348,7 @@ export class FetchproxyServer {
         ownLocalStorageKeys: this.opts.localStorageKeys,
         ownSessionStorageKeys: this.opts.sessionStorageKeys,
         ownCaptureHeaders: this.opts.captureHeaders,
+        onPairCode: this.opts.onPairCode,
       });
       this.hostHandle.onOwnInner((inner) => this.onInner(inner));
     } else {

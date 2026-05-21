@@ -45,11 +45,14 @@ describe('host (concentrator)', () => {
 
     const extHello: HelloFrameFromExtension = {
       type: 'hello',
-      protocolVersion: 1,
+      protocolVersion: 2,
       role: 'extension',
       platform: 'chrome',
       extensionId: 'fetchproxy',
-      version: '0.1.0',
+      version: '0.4.0',
+      identityX25519Pub: 'AAAA',
+      identityEd25519Pub: 'AAAA',
+      sessionNonce: 'AAAA',
     };
     ws.send(JSON.stringify(extHello));
 
@@ -121,11 +124,14 @@ describe('host (concentrator)', () => {
     await new Promise<void>((r) => ws.once('open', () => r()));
     const extHello: HelloFrameFromExtension = {
       type: 'hello',
-      protocolVersion: 1,
+      protocolVersion: 2,
       role: 'extension',
       platform: 'chrome',
       extensionId: 'fetchproxy',
-      version: '0.1.0',
+      version: '0.4.0',
+      identityX25519Pub: 'AAAA',
+      identityEd25519Pub: 'AAAA',
+      sessionNonce: 'AAAA',
     };
     ws.send(JSON.stringify(extHello));
     await new Promise((r) => setTimeout(r, 30));  // let host record the connection
@@ -144,6 +150,17 @@ describe('host (concentrator)', () => {
     // an external observer can distinguish a protocol-shape failure
     // (1002) from a crypto / handler crash (1011). Without this branch
     // the rejection escapes into an unhandled promise.
+    //
+    // 0.4.0: with mutual auth in place, we have to first produce a
+    // valid ed25519 signature on the ReadyFrame so the host doesn't
+    // close with 1008. Only THEN do we hand it an undersized X25519
+    // session pub to provoke the ecdhX25519 throw — which still
+    // routes through the same outer-catch path and still produces
+    // 1011.
+    const { generateX25519: genX, generateEd25519: genEd, ed25519Sign, validateFrame: vf } = await import(
+      '@fetchproxy/protocol'
+    );
+
     const port = 41106;
     const el = await electRole({ host: '127.0.0.1', port });
     if (el.role !== 'host') throw new Error('expected host');
@@ -159,23 +176,41 @@ describe('host (concentrator)', () => {
       ownDomains: ['opentable.com'],
     });
 
-    // Pretend to be the extension. Send a valid extension hello, then
-    // immediately send a ready frame whose extensionSessionPub is
-    // syntactically valid base64 but the wrong length — ecdhX25519
-    // expects a 32-byte X25519 public key and throws otherwise.
-    const ws = new WebSocket(`ws://127.0.0.1:${port}`);
-    await new Promise<void>((r) => ws.once('open', () => r()));
+    // Pretend to be the extension. Generate a real identity so the
+    // signature on the ReadyFrame verifies (the host's pre-crypto
+    // gate runs before the ECDH).
+    const extX = await genX();
+    const extEd = await genEd();
+    const extSessionNonce = new Uint8Array(32).fill(7);
     const extHello: HelloFrameFromExtension = {
       type: 'hello',
-      protocolVersion: 1,
+      protocolVersion: 2,
       role: 'extension',
       platform: 'chrome',
       extensionId: 'fetchproxy',
-      version: '0.1.0',
+      version: '0.4.0',
+      identityX25519Pub: Buffer.from(extX.publicKey).toString('base64'),
+      identityEd25519Pub: Buffer.from(extEd.publicKey).toString('base64'),
+      sessionNonce: Buffer.from(extSessionNonce).toString('base64'),
     };
+    const ws = new WebSocket(`ws://127.0.0.1:${port}`);
+    await new Promise<void>((r) => ws.once('open', () => r()));
+    // Capture the host's hello so we can extract its sessionNonce
+    // (required for the ReadyFrame signature payload).
+    const helloPromise = new Promise<{ sessionNonce: string }>((resolve) => {
+      ws.on('message', (data) => {
+        try {
+          const parsed = vf(JSON.parse(data.toString()));
+          if (parsed.type === 'hello' && parsed.role === 'server') {
+            resolve({ sessionNonce: parsed.sessionNonce });
+          }
+        } catch {
+          // ignore
+        }
+      });
+    });
     ws.send(JSON.stringify(extHello));
-    // Wait for host's hello to come back so we know the connection is established.
-    await new Promise((r) => setTimeout(r, 50));
+    const { sessionNonce: mcpNonceB64 } = await helloPromise;
     // Silence unhandled-error noise from the host-side ws.close before the
     // test-side ws sees a clean close: the host writes a 1011 close frame
     // then terminates, and ws.on('error') would otherwise fire on EPIPE.
@@ -187,11 +222,17 @@ describe('host (concentrator)', () => {
         resolve({ code, reason: reason.toString() }),
       );
     });
+    const mcpNonce = new Uint8Array(Buffer.from(mcpNonceB64, 'base64'));
+    const sigPayload = new Uint8Array(mcpNonce.length + extSessionNonce.length);
+    sigPayload.set(mcpNonce, 0);
+    sigPayload.set(extSessionNonce, mcpNonce.length);
+    const sig = await ed25519Sign(extEd.privateKey, sigPayload);
     const badReady = {
       type: 'ready',
       mcpId: 'opentable-mcp:0.9.1:abc1234567890def',
       // 8 bytes instead of 32 — passes BASE64_RE, fails ECDH.
       extensionSessionPub: Buffer.from(new Uint8Array(8)).toString('base64'),
+      sessionSig: Buffer.from(sig).toString('base64'),
     };
     ws.send(JSON.stringify(badReady));
     const { code } = await closed;
@@ -258,11 +299,14 @@ describe('host (concentrator)', () => {
     await new Promise<void>((r) => ext.once('open', () => r()));
     const extHello: HelloFrameFromExtension = {
       type: 'hello',
-      protocolVersion: 1,
+      protocolVersion: 2,
       role: 'extension',
       platform: 'chrome',
       extensionId: 'fetchproxy',
-      version: '0.1.0',
+      version: '0.4.0',
+      identityX25519Pub: 'AAAA',
+      identityEd25519Pub: 'AAAA',
+      sessionNonce: 'AAAA',
     };
     ext.send(JSON.stringify(extHello));
 
@@ -320,11 +364,14 @@ describe('host (concentrator)', () => {
 
     const extHello: HelloFrameFromExtension = {
       type: 'hello',
-      protocolVersion: 1,
+      protocolVersion: 2,
       role: 'extension',
       platform: 'chrome',
       extensionId: 'fetchproxy',
-      version: '0.1.0',
+      version: '0.4.0',
+      identityX25519Pub: 'AAAA',
+      identityEd25519Pub: 'AAAA',
+      sessionNonce: 'AAAA',
     };
 
     const a = new WebSocket(`ws://127.0.0.1:${port}`);

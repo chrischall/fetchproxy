@@ -279,6 +279,13 @@ function validateHello(raw: Record<string, unknown>): HelloFrame {
     }
     assertString(raw.extensionId, 'hello.extensionId');
     assertString(raw.version, 'hello.version');
+    // 0.4.0+: extension identity. PROTOCOL_VERSION 2 requires the
+    // identity pubs and a session nonce; the binding signature lives
+    // on the subsequent ReadyFrame (which is when the extension has
+    // the MCP's nonce to sign over).
+    assertBase64(raw.identityX25519Pub, 'hello.identityX25519Pub');
+    assertBase64(raw.identityEd25519Pub, 'hello.identityEd25519Pub');
+    assertBase64(raw.sessionNonce, 'hello.sessionNonce');
     return raw as unknown as HelloFrame;
   }
   throw new ProtocolError(`hello.role: must be 'server' or 'extension', got ${String(role)}`);
@@ -288,6 +295,11 @@ function validateReady(raw: Record<string, unknown>): ReadyFrame {
   assertString(raw.mcpId, 'ready.mcpId');
   if (!isValidMcpId(raw.mcpId)) throw new ProtocolError('ready.mcpId: invalid format');
   assertBase64(raw.extensionSessionPub, 'ready.extensionSessionPub');
+  // 0.4.0+: ready frame carries the mutual-auth signature over
+  // `(mcpHelloSessionNonce || extHello.sessionNonce)`. The host verifies
+  // this against the extension's claimed identityEd25519Pub before
+  // deriving the session key.
+  assertBase64(raw.sessionSig, 'ready.sessionSig');
   return raw as unknown as ReadyFrame;
 }
 

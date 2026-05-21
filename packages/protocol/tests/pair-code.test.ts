@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { derivePairCode } from '../src/pair-code.js';
+import { derivePairCode, derivePairCodeFromIds } from '../src/pair-code.js';
 
 describe('pair-code', () => {
   it('produces XXX-XXX format', async () => {
@@ -46,5 +46,48 @@ describe('pair-code', () => {
     for (let i = 0; i < 32; i++) k[i] = i + 1;
     const code = await derivePairCode(k);
     expect(code).toBe('425-966');
+  });
+
+  describe('derivePairCodeFromIds (mutual auth)', () => {
+    it('is deterministic for same (mcpPub, extPub)', async () => {
+      const mcp = new Uint8Array(32).fill(1);
+      const ext = new Uint8Array(32).fill(2);
+      const a = await derivePairCodeFromIds(mcp, ext);
+      const b = await derivePairCodeFromIds(mcp, ext);
+      expect(a).toBe(b);
+    });
+
+    it('produces XXX-XXX format', async () => {
+      const code = await derivePairCodeFromIds(
+        new Uint8Array(32).fill(3),
+        new Uint8Array(32).fill(4),
+      );
+      expect(code).toMatch(/^\d{3}-\d{3}$/);
+    });
+
+    it('order-sensitive: (mcpPub, extPub) differs from (extPub, mcpPub)', async () => {
+      const mcp = new Uint8Array(32).fill(0xa);
+      const ext = new Uint8Array(32).fill(0xb);
+      const ab = await derivePairCodeFromIds(mcp, ext);
+      const ba = await derivePairCodeFromIds(ext, mcp);
+      expect(ab).not.toBe(ba);
+    });
+
+    it('different extension pub produces a different code (MITM detection)', async () => {
+      const mcp = new Uint8Array(32).fill(7);
+      const ext1 = new Uint8Array(32).fill(8);
+      const ext2 = new Uint8Array(32).fill(9);
+      const code1 = await derivePairCodeFromIds(mcp, ext1);
+      const code2 = await derivePairCodeFromIds(mcp, ext2);
+      expect(code1).not.toBe(code2);
+    });
+
+    it('differs from single-arg derivePairCode (binds both sides)', async () => {
+      const mcp = new Uint8Array(32).fill(11);
+      const ext = new Uint8Array(32).fill(12);
+      const joint = await derivePairCodeFromIds(mcp, ext);
+      const mcpOnly = await derivePairCode(mcp);
+      expect(joint).not.toBe(mcpOnly);
+    });
   });
 });

@@ -5,7 +5,7 @@ describe('validateFrame', () => {
   describe('hello (server, v2)', () => {
     const validHello = {
       type: 'hello',
-      protocolVersion: 1,
+      protocolVersion: 2,
       role: 'server',
       mcpId: 'opentable-mcp:0.9.1:a3f7c91d2e8b4f56',
       serverName: 'opentable-mcp',
@@ -35,7 +35,8 @@ describe('validateFrame', () => {
     });
 
     it('rejects wrong protocolVersion', () => {
-      expect(() => validateFrame({ ...validHello, protocolVersion: 2 })).toThrow(/protocolVersion/);
+      expect(() => validateFrame({ ...validHello, protocolVersion: 1 })).toThrow(/protocolVersion/);
+      expect(() => validateFrame({ ...validHello, protocolVersion: 3 })).toThrow(/protocolVersion/);
     });
 
     it('rejects non-base64 identityX25519Pub', () => {
@@ -151,7 +152,7 @@ describe('validateFrame', () => {
   describe('hello (server, 0.3.0 scope decls)', () => {
     const validHello = {
       type: 'hello',
-      protocolVersion: 1,
+      protocolVersion: 2,
       role: 'server',
       mcpId: 'ofw-mcp:0.5.0:a3f7c91d2e8b4f56',
       serverName: 'ofw-mcp',
@@ -315,11 +316,14 @@ describe('validateFrame', () => {
   describe('hello (extension, v2)', () => {
     const validExtHello = {
       type: 'hello',
-      protocolVersion: 1,
+      protocolVersion: 2,
       role: 'extension',
       platform: 'chrome',
       extensionId: 'fetchproxy',
-      version: '0.1.0',
+      version: '0.4.0',
+      identityX25519Pub: 'AAAA',
+      identityEd25519Pub: 'AAAA',
+      sessionNonce: 'AAAA',
     };
 
     it('accepts valid', () => {
@@ -329,6 +333,30 @@ describe('validateFrame', () => {
     it('rejects bad platform', () => {
       expect(() => validateFrame({ ...validExtHello, platform: 'netscape' })).toThrow(/platform/);
     });
+
+    // 0.4.0: mutual-auth identity fields are required on the extension
+    // hello. The matching `sessionSig` lives on the subsequent
+    // ReadyFrame — see the `ready (v2)` test block.
+    it('rejects extension hello missing identityX25519Pub', () => {
+      const { identityX25519Pub: _drop, ...bad } = validExtHello;
+      expect(() => validateFrame(bad)).toThrow(/identityX25519Pub/);
+    });
+
+    it('rejects extension hello missing identityEd25519Pub', () => {
+      const { identityEd25519Pub: _drop, ...bad } = validExtHello;
+      expect(() => validateFrame(bad)).toThrow(/identityEd25519Pub/);
+    });
+
+    it('rejects extension hello missing sessionNonce', () => {
+      const { sessionNonce: _drop, ...bad } = validExtHello;
+      expect(() => validateFrame(bad)).toThrow(/sessionNonce/);
+    });
+
+    it('rejects extension hello with non-base64 identityX25519Pub', () => {
+      expect(() =>
+        validateFrame({ ...validExtHello, identityX25519Pub: '!!!' }),
+      ).toThrow(/identityX25519Pub.*base64/);
+    });
   });
 
   describe('ready (v2)', () => {
@@ -336,6 +364,7 @@ describe('validateFrame', () => {
       type: 'ready',
       mcpId: 'opentable-mcp:0.9.1:a3f7c91d2e8b4f56',
       extensionSessionPub: 'AAAA',
+      sessionSig: 'AAAA',
     };
 
     it('accepts valid', () => {
@@ -343,11 +372,28 @@ describe('validateFrame', () => {
     });
 
     it('rejects when mcpId is missing', () => {
-      expect(() => validateFrame({ type: 'ready', extensionSessionPub: 'AAAA' })).toThrow(/mcpId/);
+      expect(() =>
+        validateFrame({ type: 'ready', extensionSessionPub: 'AAAA', sessionSig: 'AAAA' }),
+      ).toThrow(/mcpId/);
     });
 
     it('rejects when extensionSessionPub is missing', () => {
-      expect(() => validateFrame({ type: 'ready', mcpId: 'opentable-mcp:0.9.1:a3f7c91d2e8b4f56' })).toThrow(/extensionSessionPub/);
+      expect(() =>
+        validateFrame({
+          type: 'ready',
+          mcpId: 'opentable-mcp:0.9.1:a3f7c91d2e8b4f56',
+          sessionSig: 'AAAA',
+        }),
+      ).toThrow(/extensionSessionPub/);
+    });
+
+    it('rejects when sessionSig is missing (0.4.0 mutual-auth field)', () => {
+      const { sessionSig: _drop, ...bad } = validReady;
+      expect(() => validateFrame(bad)).toThrow(/sessionSig/);
+    });
+
+    it('rejects non-base64 sessionSig', () => {
+      expect(() => validateFrame({ ...validReady, sessionSig: '!!!' })).toThrow(/sessionSig.*base64/);
     });
   });
 
@@ -985,8 +1031,11 @@ describe('validateInnerFrame', () => {
       expect(() =>
         validateFrame({
           type: 'hello',
-          protocolVersion: 1,
+          protocolVersion: 2,
           role: 'mystery',
+          // Pad with the rest of the v2 extension/server fields so the
+          // role check is what trips, not a missing-field check.
+          identityX25519Pub: 'AAAA',
         }),
       ).toThrow(/role/);
     });
