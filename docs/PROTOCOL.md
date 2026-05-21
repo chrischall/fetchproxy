@@ -1,8 +1,10 @@
-# fetchproxy protocol (v1, ships with 0.1.0+)
+# fetchproxy protocol (v1, ships with 0.2.0+)
 
 The wire format between MCP servers and the browser extension. JSON-over-WebSocket. Three top-level frame types; all data frames after the handshake are AES-256-GCM encrypted end-to-end between each MCP and the extension.
 
 `PROTOCOL_VERSION` is `1`. The `hello` frame carries it explicitly; mismatches are rejected.
+
+**0.2.0 is wire-incompatible with 0.1.x.** The server hello now carries `domains: string[]` instead of `domain: string` — a single-domain MCP just sends a 1-element array; a multi-domain MCP (e.g. HoneyBook, which spans two hosts) sends multiple. Trust records, popup state, and the per-request allowlist all key off the full set.
 
 ## Big picture
 
@@ -78,6 +80,7 @@ All frames are JSON objects with a `type` discriminator. Unknown `type` closes t
 - Non-positive integers for `seq`
 - Invalid `mcpId` format
 - Non-`http(s)` URLs in inner request fields
+- Empty, non-array, or malformed-hostname `domains` in the server hello
 
 ### Top-level frames (in plaintext on the wire)
 
@@ -93,7 +96,7 @@ Each MCP sends one of these as the very first frame after connecting.
   "mcpId": "opentable-mcp:0.10.0:a3f7c91d2e8b4f56",
   "serverName": "opentable-mcp",
   "version": "0.10.0",
-  "domain": "opentable.com",
+  "domains": ["opentable.com"],
   "identityX25519Pub": "<base64 raw 32B>",
   "identityEd25519Pub": "<base64 raw 32B>",
   "sessionNonce": "<base64 random ≥16B, fresh per connection>",
@@ -101,7 +104,9 @@ Each MCP sends one of these as the very first frame after connecting.
 }
 ```
 
-The signature lets the extension prove the connecting process holds the Ed25519 private key. Re-pair only happens on first sight of a new identity key; subsequent sessions just verify the signature against the stored `identityEd25519Pub`.
+`domains` is a non-empty array of hostnames the MCP is allowed to reach. Each entry must be a valid DNS hostname (≥2 labels, alphanumeric + hyphen, no leading/trailing hyphen). The extension allows a fetch iff its URL host matches one of these entries exactly OR is a subdomain of one of them. Most MCPs send one entry (`["opentable.com"]`); MCPs that legitimately span multiple hosts send all of them (`["honeybook.com", "hbsplit.com"]`).
+
+The signature lets the extension prove the connecting process holds the Ed25519 private key. Re-pair only happens on first sight of a new identity key; subsequent sessions just verify the signature against the stored `identityEd25519Pub`. The trust record also stores the approved `domains` set — a server that later widens the set (or changes `serverName`) is refused auto-trust and falls back to a re-pair prompt.
 
 #### `hello` (extension → host)
 
@@ -187,11 +192,11 @@ The only data verb in v1. The extension fetches `url` from a tab matching `tabUr
 
 Semantics:
 
-- `url`: absolute. Must match the MCP's declared `domain` (or a subdomain of it) — the extension enforces a per-MCP allowlist; cross-domain fetches return `ok: false`.
+- `url`: absolute. Must match one of the MCP's declared `domains` (or a subdomain of one of them) — the extension enforces a per-MCP allowlist; cross-domain fetches return `ok: false`.
 - `method`: any HTTP verb. `GET`, `POST`, `PUT`, `DELETE`, `PATCH`, etc.
 - `headers`: optional. `Cookie`, `User-Agent`, `Origin`, `Referer` are controlled by the browser and ignored if set here. `credentials: 'include'` is always implied.
 - `body`: optional string. The caller serialises JSON.
-- `tabUrl`: required. Prefix-matched against `chrome.tabs.query({})`. First match wins. If no match, the response is `ok: false`. After a successful pair, the extension proactively opens `https://${domain}/` if no matching tab is open.
+- `tabUrl`: required. Prefix-matched against `chrome.tabs.query({})`. First match wins. If no match, the response is `ok: false`. After a successful pair, the extension proactively opens `https://${domains[0]}/` if no matching tab is open. (Future: open a tab for every declared domain.)
 - `op`: only `"fetch"` is accepted in v1. Unknown ops respond with `ok: false`.
 
 **Body size caps:** request body ≤ 1 MB, response body ≤ 5 MB. Larger bodies are rejected with `ok: false`.
@@ -279,18 +284,18 @@ Both sides derive the same key without sending it on the wire. `sessionNonce` is
 {
   "<hex(sha256(identityX25519Pub))>": {
     "serverName": "opentable-mcp",
-    "domain": "opentable.com",
+    "domains": ["opentable.com"],
     "identityX25519Pub": "<base64>",
     "identityEd25519Pub": "<base64>",
     "pairedAt": 1716250000000,
-    "extensionVersionAtPair": "0.1.0"
+    "extensionVersionAtPair": "0.2.0"
   }
 }
 ```
 
-Keyed by identity hash, not port. Trust survives port changes, restarts, and MCP package renames as long as the identity key on disk doesn't change.
+Keyed by identity hash, not port. Trust survives port changes, restarts, and MCP package renames as long as the identity key on disk doesn't change. The `domains` set is compared as a set (order-insensitive); if the MCP at re-connect time declares a different set than the user originally approved, the extension treats the record as missing and falls back to a re-pair prompt.
 
-Major-version bumps of the extension invalidate trust (force re-pair); patch and minor bumps carry trust forward.
+Major-version bumps of the extension invalidate trust (force re-pair); patch and minor bumps carry trust forward. The 0.1.x → 0.2.0 jump is a major-equivalent: 0.1.x trust records would deserialise into an object with no `domains` field and fail the set comparison, so users see a one-time re-pair prompt after upgrading.
 
 ## Multi-MCP concentrator
 
@@ -320,7 +325,7 @@ Host shutdown: peers see WS close and re-race the port. Whoever wins becomes the
 - `eval_js`, `inject_script` — no arbitrary JS execution in tabs.
 - `get_cookies`, `read_storage` — no exfiltration primitives.
 - `click`, `navigate` — no UI automation. Use claude-in-chrome for that.
-- Wildcard / multi-domain MCPs — one MCP, one declared domain. (A future `domains: [...]` extension is sketched in `docs/SECURITY.md` but not implemented.)
+- Wildcard MCPs — the declared `domains` set must be enumerated explicitly. No `*.com` or "any domain" wildcards.
 - Streaming responses — bodies are buffered and returned whole.
 
 These omissions are the security model. See `docs/SECURITY.md`.
