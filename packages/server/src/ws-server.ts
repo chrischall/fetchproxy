@@ -590,12 +590,14 @@ export class FetchproxyServer {
         // Either a fetch response (with status/url/body) or, in theory, a
         // read_cookies one — but read_cookies ids are in the other map, so
         // anything that lands here is a fetch.
-        if (inner.op === 'read_cookies') {
-          // Defensive: should not happen, but if it does, surface as a
-          // protocol error rather than silently dropping the body.
-          fetchCb({ ok: false, error: 'unexpected read_cookies response on fetch awaiter' });
-        } else {
+        // The id-routed pending maps own dispatch, so anything that lands
+        // here is supposed to be a fetch response. Defensively reject any
+        // non-fetch op echo so a wire-misroute can't smuggle a storage /
+        // capture payload into a fetch awaiter.
+        if (inner.op === undefined || inner.op === 'fetch') {
           fetchCb({ ok: true, status: inner.status, url: inner.url, body: inner.body });
+        } else {
+          fetchCb({ ok: false, error: `unexpected ${inner.op} response on fetch awaiter` });
         }
       } else {
         fetchCb({ ok: false, error: inner.error });
@@ -607,7 +609,20 @@ export class FetchproxyServer {
       this.pendingReadCookies.delete(inner.id);
       if (inner.ok) {
         if (inner.op === 'read_cookies') {
-          cookiesCb({ ok: true, cookies: inner.cookies });
+          // Two response shapes accepted: legacy `cookies: string` (0.2.0
+          // extension) and new `values: Record<string,string>` (0.3.0+).
+          // Normalize to a string so the public `readCookies(): Promise<string>`
+          // surface stays back-compat.
+          if (typeof inner.cookies === 'string') {
+            cookiesCb({ ok: true, cookies: inner.cookies });
+          } else if (inner.values) {
+            const joined = Object.entries(inner.values)
+              .map(([k, v]) => `${k}=${v}`)
+              .join('; ');
+            cookiesCb({ ok: true, cookies: joined });
+          } else {
+            cookiesCb({ ok: false, error: 'read_cookies response carried neither cookies nor values' });
+          }
         } else {
           cookiesCb({ ok: false, error: 'unexpected fetch response on read_cookies awaiter' });
         }

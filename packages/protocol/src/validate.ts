@@ -18,6 +18,19 @@ export class ProtocolError extends Error {
 const FORBIDDEN_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
 const BASE64_RE = /^[A-Za-z0-9+/]*={0,2}$/;
 /**
+ * Permitted character set + length for storage/cookie key names declared
+ * in a server hello. Strict enough to round-trip safely in `chrome.cookies.get`,
+ * `localStorage.getItem`, and the popup UI without escaping shenanigans.
+ */
+const SCOPE_KEY_RE = /^[A-Za-z0-9_.\-]{1,256}$/;
+/**
+ * Permitted character set + length for HTTP header names declared in
+ * `captureHeaders`. RFC 7230 tchar is wider, but for declared scope
+ * we keep it tight; this excludes whitespace + special chars that would
+ * be ambiguous in the popup or in storage.
+ */
+const HEADER_NAME_RE = /^[A-Za-z0-9_\-]{1,128}$/;
+/**
  * Strict DNS hostname: ≥2 labels, alphanumeric + hyphen, no leading or
  * trailing hyphen per label. Shared by the protocol validator and the
  * extension's `ensureDomainTab` so server, validator, and extension
@@ -66,6 +79,117 @@ function assertHttpUrl(x: unknown, label: string): asserts x is string {
   }
   if (u.protocol !== 'https:' && u.protocol !== 'http:') {
     throw new ProtocolError(`${label}: must be http(s), got ${u.protocol}`);
+  }
+}
+
+function assertHttpsOriginOnly(x: unknown, label: string): asserts x is string {
+  // Storage reads happen against the credentials of a tab on `origin`. We
+  // refuse http:// origins to keep this from being usable on plaintext
+  // surfaces that aren't a meaningful session anyway.
+  assertString(x, label);
+  let u: URL;
+  try {
+    u = new URL(x);
+  } catch {
+    throw new ProtocolError(`${label}: not a valid URL`);
+  }
+  if (u.protocol !== 'https:') {
+    throw new ProtocolError(`${label}: must be https, got ${u.protocol}`);
+  }
+  if (u.pathname !== '/' && u.pathname !== '') {
+    throw new ProtocolError(`${label}: must be a bare origin (no path)`);
+  }
+  if (u.search || u.hash) {
+    throw new ProtocolError(`${label}: must be a bare origin (no query or fragment)`);
+  }
+}
+
+function assertScopeKeyArray(value: unknown, label: string): void {
+  if (!Array.isArray(value)) {
+    throw new ProtocolError(`${label}: expected array, got ${typeof value}`);
+  }
+  const seen = new Set<string>();
+  for (const k of value) {
+    if (typeof k !== 'string') {
+      throw new ProtocolError(`${label}: entry must be string, got ${typeof k}`);
+    }
+    if (!SCOPE_KEY_RE.test(k)) {
+      throw new ProtocolError(`${label}: invalid key ${JSON.stringify(k)}`);
+    }
+    if (seen.has(k)) {
+      throw new ProtocolError(`${label}: duplicate ${JSON.stringify(k)}`);
+    }
+    seen.add(k);
+  }
+}
+
+function assertCaptureHeadersArray(value: unknown, label: string): void {
+  if (!Array.isArray(value)) {
+    throw new ProtocolError(`${label}: expected array, got ${typeof value}`);
+  }
+  const seen = new Set<string>();
+  for (let i = 0; i < value.length; i++) {
+    const entry = value[i] as unknown;
+    assertObject(entry, `${label}[${i}]`);
+    if (entry.urlPattern === undefined) {
+      throw new ProtocolError(`${label}[${i}].urlPattern: missing`);
+    }
+    if (entry.headerName === undefined) {
+      throw new ProtocolError(`${label}[${i}].headerName: missing`);
+    }
+    if (typeof entry.urlPattern !== 'string') {
+      throw new ProtocolError(
+        `${label}[${i}].urlPattern: expected string, got ${typeof entry.urlPattern}`,
+      );
+    }
+    if (typeof entry.headerName !== 'string') {
+      throw new ProtocolError(
+        `${label}[${i}].headerName: expected string, got ${typeof entry.headerName}`,
+      );
+    }
+    if (!HEADER_NAME_RE.test(entry.headerName)) {
+      throw new ProtocolError(
+        `${label}[${i}].headerName: invalid name ${JSON.stringify(entry.headerName)}`,
+      );
+    }
+    assertCaptureUrlPattern(entry.urlPattern, `${label}[${i}].urlPattern`);
+    const key = `${entry.urlPattern}\x00${entry.headerName}`;
+    if (seen.has(key)) {
+      throw new ProtocolError(
+        `${label}: duplicate ${JSON.stringify({ urlPattern: entry.urlPattern, headerName: entry.headerName })}`,
+      );
+    }
+    seen.add(key);
+    for (const k of Object.keys(entry)) {
+      if (k !== 'urlPattern' && k !== 'headerName') {
+        throw new ProtocolError(`${label}[${i}]: unexpected field ${JSON.stringify(k)}`);
+      }
+    }
+  }
+}
+
+function assertCaptureUrlPattern(pattern: string, label: string): void {
+  // `https://host/path/*` — host fully-qualified, no wildcards in host,
+  // wildcards only in path/query/fragment. We deliberately reject `http:`
+  // (same argument as `assertHttpsOriginOnly`).
+  if (!pattern.startsWith('https://')) {
+    throw new ProtocolError(`${label}: must start with https:// (got ${JSON.stringify(pattern)})`);
+  }
+  const afterScheme = pattern.slice('https://'.length);
+  const slash = afterScheme.indexOf('/');
+  const host = slash === -1 ? afterScheme : afterScheme.slice(0, slash);
+  if (host.length === 0) {
+    throw new ProtocolError(`${label}: missing host (got ${JSON.stringify(pattern)})`);
+  }
+  if (host.includes('*')) {
+    throw new ProtocolError(
+      `${label}: wildcards not permitted in host (got ${JSON.stringify(pattern)})`,
+    );
+  }
+  if (!HOSTNAME_RE.test(host)) {
+    throw new ProtocolError(
+      `${label}: invalid host ${JSON.stringify(host)} in ${JSON.stringify(pattern)}`,
+    );
   }
 }
 
@@ -126,6 +250,21 @@ function validateHello(raw: Record<string, unknown>): HelloFrame {
           );
         }
       }
+    }
+    // 0.3.0: optional scope decls. Each may be absent (older MCPs) or an
+    // array — empty arrays are allowed (declares "no keys"). When present
+    // we validate every entry so a malformed scope can't sneak through.
+    if (raw.cookieKeys !== undefined) {
+      assertScopeKeyArray(raw.cookieKeys, 'hello.cookieKeys');
+    }
+    if (raw.localStorageKeys !== undefined) {
+      assertScopeKeyArray(raw.localStorageKeys, 'hello.localStorageKeys');
+    }
+    if (raw.sessionStorageKeys !== undefined) {
+      assertScopeKeyArray(raw.sessionStorageKeys, 'hello.sessionStorageKeys');
+    }
+    if (raw.captureHeaders !== undefined) {
+      assertCaptureHeadersArray(raw.captureHeaders, 'hello.captureHeaders');
     }
     assertBase64(raw.identityX25519Pub, 'hello.identityX25519Pub');
     assertBase64(raw.identityEd25519Pub, 'hello.identityEd25519Pub');
@@ -204,20 +343,117 @@ function validateInnerRequest(raw: Record<string, unknown>): InnerFrame {
   }
   if (raw.op === 'read_cookies') {
     assertObject(raw.init, 'inner.init');
-    assertHttpUrl(raw.init.tabUrl, 'inner.init.tabUrl');
-    // No other init fields are valid for read_cookies. Trim the
-    // attack surface by rejecting anything else explicitly so a
-    // malformed-but-accepted frame can't smuggle data through.
+    // Two shapes accepted (back-compat through 0.3.0):
+    //   - Legacy 0.2.0: { tabUrl } (returns raw document.cookie string)
+    //   - New 0.3.0:    { origin, keys } (returns values map; HttpOnly visible)
+    // Reject anything that's neither (or both — a hybrid would be a confused-deputy
+    // attack surface).
+    const hasTabUrl = raw.init.tabUrl !== undefined;
+    const hasOrigin = raw.init.origin !== undefined;
+    const hasKeys = raw.init.keys !== undefined;
+    if (hasTabUrl && (hasOrigin || hasKeys)) {
+      throw new ProtocolError(
+        'inner.init: read_cookies cannot mix legacy tabUrl with origin/keys',
+      );
+    }
+    if (hasTabUrl) {
+      assertHttpUrl(raw.init.tabUrl, 'inner.init.tabUrl');
+      for (const k of Object.keys(raw.init)) {
+        if (k !== 'tabUrl') {
+          throw new ProtocolError(`inner.init: unexpected field ${JSON.stringify(k)} on read_cookies`);
+        }
+      }
+      return raw as unknown as InnerFrame;
+    }
+    if (!hasOrigin || !hasKeys) {
+      throw new ProtocolError(
+        'inner.init: read_cookies must carry { origin, keys } (or legacy { tabUrl })',
+      );
+    }
+    assertHttpsOriginOnly(raw.init.origin, 'inner.init.origin');
+    assertNonEmptyKeyArray(raw.init.keys, 'inner.init.keys');
     for (const k of Object.keys(raw.init)) {
-      if (k !== 'tabUrl') {
+      if (k !== 'origin' && k !== 'keys') {
         throw new ProtocolError(`inner.init: unexpected field ${JSON.stringify(k)} on read_cookies`);
       }
     }
     return raw as unknown as InnerFrame;
   }
+  if (raw.op === 'read_local_storage' || raw.op === 'read_session_storage') {
+    assertObject(raw.init, 'inner.init');
+    if (raw.init.origin === undefined) {
+      throw new ProtocolError('inner.init.origin: missing');
+    }
+    if (raw.init.keys === undefined) {
+      throw new ProtocolError('inner.init.keys: missing');
+    }
+    assertHttpsOriginOnly(raw.init.origin, 'inner.init.origin');
+    assertNonEmptyKeyArray(raw.init.keys, 'inner.init.keys');
+    for (const k of Object.keys(raw.init)) {
+      if (k !== 'origin' && k !== 'keys') {
+        throw new ProtocolError(
+          `inner.init: unexpected field ${JSON.stringify(k)} on ${raw.op}`,
+        );
+      }
+    }
+    return raw as unknown as InnerFrame;
+  }
+  if (raw.op === 'capture_request_header') {
+    assertObject(raw.init, 'inner.init');
+    if (raw.init.urlPattern === undefined) {
+      throw new ProtocolError('inner.init.urlPattern: missing');
+    }
+    if (raw.init.headerName === undefined) {
+      throw new ProtocolError('inner.init.headerName: missing');
+    }
+    assertString(raw.init.urlPattern, 'inner.init.urlPattern');
+    assertString(raw.init.headerName, 'inner.init.headerName');
+    if (raw.init.timeoutMs !== undefined) {
+      assertPositiveInt(raw.init.timeoutMs, 'inner.init.timeoutMs');
+    }
+    for (const k of Object.keys(raw.init)) {
+      if (k !== 'urlPattern' && k !== 'headerName' && k !== 'timeoutMs') {
+        throw new ProtocolError(
+          `inner.init: unexpected field ${JSON.stringify(k)} on capture_request_header`,
+        );
+      }
+    }
+    return raw as unknown as InnerFrame;
+  }
   throw new ProtocolError(
-    `inner.op: must be "fetch" or "read_cookies", got ${JSON.stringify(raw.op)}`,
+    `inner.op: must be one of "fetch", "read_cookies", "read_local_storage", "read_session_storage", "capture_request_header"; got ${JSON.stringify(raw.op)}`,
   );
+}
+
+function assertNonEmptyKeyArray(value: unknown, label: string): void {
+  if (!Array.isArray(value)) {
+    throw new ProtocolError(`${label}: expected array, got ${typeof value}`);
+  }
+  if (value.length === 0) {
+    throw new ProtocolError(`${label}: must be non-empty`);
+  }
+  const seen = new Set<string>();
+  for (const k of value) {
+    if (typeof k !== 'string') {
+      throw new ProtocolError(`${label}: entry must be string, got ${typeof k}`);
+    }
+    if (k.length === 0) {
+      throw new ProtocolError(`${label}: empty key not allowed`);
+    }
+    if (seen.has(k)) {
+      throw new ProtocolError(`${label}: duplicate ${JSON.stringify(k)}`);
+    }
+    seen.add(k);
+  }
+}
+
+function assertStringMap(value: unknown, label: string): void {
+  assertObject(value, label);
+  for (const [k, v] of Object.entries(value)) {
+    if (typeof v !== 'string') {
+      throw new ProtocolError(`${label}[${k}]: must be string, got ${typeof v}`);
+    }
+  }
 }
 
 function validateInnerResponse(raw: Record<string, unknown>): InnerFrame {
@@ -234,11 +470,43 @@ function validateInnerResponse(raw: Record<string, unknown>): InnerFrame {
       return raw as unknown as InnerFrame;
     }
     if (op === 'read_cookies') {
-      assertString(raw.cookies, 'inner.cookies');
+      // Either legacy `cookies: string` or new `values: Record<string, string>`.
+      // Reject both (would be ambiguous) and neither (no payload at all).
+      const hasCookies = raw.cookies !== undefined;
+      const hasValues = raw.values !== undefined;
+      if (hasCookies && hasValues) {
+        throw new ProtocolError(
+          'inner.response: read_cookies cannot carry both cookies and values',
+        );
+      }
+      if (!hasCookies && !hasValues) {
+        throw new ProtocolError(
+          'inner.response: read_cookies missing cookies or values',
+        );
+      }
+      if (hasCookies) {
+        assertString(raw.cookies, 'inner.cookies');
+      } else {
+        assertStringMap(raw.values, 'inner.values');
+      }
+      return raw as unknown as InnerFrame;
+    }
+    if (op === 'read_local_storage' || op === 'read_session_storage') {
+      if (raw.values === undefined) {
+        throw new ProtocolError(`inner.values: missing on ${String(op)} response`);
+      }
+      assertStringMap(raw.values, 'inner.values');
+      return raw as unknown as InnerFrame;
+    }
+    if (op === 'capture_request_header') {
+      if (raw.value === undefined) {
+        throw new ProtocolError('inner.value: missing on capture_request_header response');
+      }
+      assertString(raw.value, 'inner.value');
       return raw as unknown as InnerFrame;
     }
     throw new ProtocolError(
-      `inner.op: must be "fetch" or "read_cookies", got ${JSON.stringify(raw.op)}`,
+      `inner.op: unknown success-response op ${JSON.stringify(raw.op)}`,
     );
   }
   if (raw.ok === false) {

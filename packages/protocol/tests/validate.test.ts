@@ -111,6 +111,205 @@ describe('validateFrame', () => {
         validateFrame({ ...validHello, capabilities: ['fetch', 42] }),
       ).toThrow(/capabilities/);
     });
+
+    // 0.3.0: three new capabilities for session-bootstrap.
+    it("accepts capabilities: ['read_local_storage']", () => {
+      expect(() =>
+        validateFrame({ ...validHello, capabilities: ['read_local_storage'] }),
+      ).not.toThrow();
+    });
+
+    it("accepts capabilities: ['read_session_storage']", () => {
+      expect(() =>
+        validateFrame({ ...validHello, capabilities: ['read_session_storage'] }),
+      ).not.toThrow();
+    });
+
+    it("accepts capabilities: ['capture_request_header']", () => {
+      expect(() =>
+        validateFrame({ ...validHello, capabilities: ['capture_request_header'] }),
+      ).not.toThrow();
+    });
+
+    it('accepts all five 0.3.0 capabilities together', () => {
+      expect(() =>
+        validateFrame({
+          ...validHello,
+          capabilities: [
+            'fetch',
+            'read_cookies',
+            'read_local_storage',
+            'read_session_storage',
+            'capture_request_header',
+          ],
+        }),
+      ).not.toThrow();
+    });
+  });
+
+  // 0.3.0: declared scope fields on the server hello.
+  describe('hello (server, 0.3.0 scope decls)', () => {
+    const validHello = {
+      type: 'hello',
+      protocolVersion: 1,
+      role: 'server',
+      mcpId: 'ofw-mcp:0.5.0:a3f7c91d2e8b4f56',
+      serverName: 'ofw-mcp',
+      version: '0.5.0',
+      domains: ['ourfamilywizard.com'],
+      identityX25519Pub: 'AAAA',
+      identityEd25519Pub: 'AAAA',
+      sessionNonce: 'AAAA',
+      sessionSig: 'AAAA',
+    };
+
+    it('accepts hello with all four scope fields', () => {
+      expect(() =>
+        validateFrame({
+          ...validHello,
+          capabilities: [
+            'fetch',
+            'read_cookies',
+            'read_local_storage',
+            'read_session_storage',
+            'capture_request_header',
+          ],
+          cookieKeys: ['MTOKEN', 'CKAT'],
+          localStorageKeys: ['auth', 'tokenExpiry'],
+          sessionStorageKeys: ['anon-id'],
+          captureHeaders: [
+            { urlPattern: 'https://api.honeybook.com/api/v2/*', headerName: 'hb-api-fingerprint' },
+          ],
+        }),
+      ).not.toThrow();
+    });
+
+    it('accepts hello with only localStorageKeys (others default to absent)', () => {
+      expect(() =>
+        validateFrame({
+          ...validHello,
+          capabilities: ['fetch', 'read_local_storage'],
+          localStorageKeys: ['auth'],
+        }),
+      ).not.toThrow();
+    });
+
+    it('accepts hello with empty scope arrays', () => {
+      expect(() =>
+        validateFrame({
+          ...validHello,
+          cookieKeys: [],
+          localStorageKeys: [],
+          sessionStorageKeys: [],
+          captureHeaders: [],
+        }),
+      ).not.toThrow();
+    });
+
+    it('rejects duplicate cookie keys', () => {
+      expect(() =>
+        validateFrame({ ...validHello, cookieKeys: ['MTOKEN', 'MTOKEN'] }),
+      ).toThrow(/cookieKeys.*duplicate/);
+    });
+
+    it('rejects duplicate localStorage keys', () => {
+      expect(() =>
+        validateFrame({ ...validHello, localStorageKeys: ['x', 'x'] }),
+      ).toThrow(/localStorageKeys.*duplicate/);
+    });
+
+    it('rejects duplicate sessionStorage keys', () => {
+      expect(() =>
+        validateFrame({ ...validHello, sessionStorageKeys: ['x', 'x'] }),
+      ).toThrow(/sessionStorageKeys.*duplicate/);
+    });
+
+    it('rejects illegal chars in cookie keys', () => {
+      expect(() =>
+        validateFrame({ ...validHello, cookieKeys: ['has space'] }),
+      ).toThrow(/cookieKeys.*invalid key/);
+    });
+
+    it('rejects illegal chars in localStorage keys', () => {
+      expect(() =>
+        validateFrame({ ...validHello, localStorageKeys: ['has/slash'] }),
+      ).toThrow(/localStorageKeys.*invalid key/);
+    });
+
+    it('rejects empty-string key', () => {
+      expect(() =>
+        validateFrame({ ...validHello, cookieKeys: [''] }),
+      ).toThrow(/cookieKeys.*invalid key/);
+    });
+
+    it('rejects non-array cookieKeys', () => {
+      expect(() =>
+        validateFrame({ ...validHello, cookieKeys: 'MTOKEN' }),
+      ).toThrow(/cookieKeys/);
+    });
+
+    it('rejects non-array captureHeaders', () => {
+      expect(() =>
+        validateFrame({ ...validHello, captureHeaders: {} }),
+      ).toThrow(/captureHeaders/);
+    });
+
+    it('rejects captureHeaders entry missing urlPattern', () => {
+      expect(() =>
+        validateFrame({
+          ...validHello,
+          captureHeaders: [{ headerName: 'X-Foo' }],
+        }),
+      ).toThrow(/captureHeaders.*urlPattern/);
+    });
+
+    it('rejects captureHeaders entry missing headerName', () => {
+      expect(() =>
+        validateFrame({
+          ...validHello,
+          captureHeaders: [{ urlPattern: 'https://x.com/api/*' }],
+        }),
+      ).toThrow(/captureHeaders.*headerName/);
+    });
+
+    it('rejects captureHeaders entry with non-https urlPattern', () => {
+      expect(() =>
+        validateFrame({
+          ...validHello,
+          captureHeaders: [{ urlPattern: 'http://x.com/api/*', headerName: 'X-Foo' }],
+        }),
+      ).toThrow(/captureHeaders.*urlPattern/);
+    });
+
+    it('rejects captureHeaders entry with wildcard in host', () => {
+      expect(() =>
+        validateFrame({
+          ...validHello,
+          captureHeaders: [{ urlPattern: 'https://*.x.com/api/*', headerName: 'X-Foo' }],
+        }),
+      ).toThrow(/captureHeaders.*urlPattern/);
+    });
+
+    it('rejects duplicate captureHeader pair', () => {
+      expect(() =>
+        validateFrame({
+          ...validHello,
+          captureHeaders: [
+            { urlPattern: 'https://x.com/api/*', headerName: 'X-Foo' },
+            { urlPattern: 'https://x.com/api/*', headerName: 'X-Foo' },
+          ],
+        }),
+      ).toThrow(/captureHeaders.*duplicate/);
+    });
+
+    it('rejects captureHeaders header with illegal chars', () => {
+      expect(() =>
+        validateFrame({
+          ...validHello,
+          captureHeaders: [{ urlPattern: 'https://x.com/api/*', headerName: 'has space' }],
+        }),
+      ).toThrow(/captureHeaders.*headerName/);
+    });
   });
 
   describe('hello (extension, v2)', () => {
@@ -417,6 +616,348 @@ describe('validateInnerFrame', () => {
           error: 'huh',
         }),
       ).toThrow(/op/);
+    });
+
+    // 0.3.0: new read_cookies shape (origin + keys → values).
+    it('accepts new read_cookies request shape (origin + keys)', () => {
+      expect(() =>
+        validateInnerFrame({
+          type: 'request',
+          id: 1,
+          op: 'read_cookies',
+          init: { origin: 'https://www.honeybook.com', keys: ['MTOKEN', 'CKAT'] },
+        }),
+      ).not.toThrow();
+    });
+
+    it('accepts new read_cookies response shape (values map)', () => {
+      expect(() =>
+        validateInnerFrame({
+          type: 'response',
+          id: 1,
+          ok: true,
+          op: 'read_cookies',
+          values: { MTOKEN: 'ey...', CKAT: 'abc' },
+        }),
+      ).not.toThrow();
+    });
+
+    it('rejects read_cookies request mixing tabUrl and keys', () => {
+      expect(() =>
+        validateInnerFrame({
+          type: 'request',
+          id: 1,
+          op: 'read_cookies',
+          init: { tabUrl: 'https://x.com/', keys: ['x'] },
+        }),
+      ).toThrow(/read_cookies/);
+    });
+
+    it('rejects new read_cookies request with non-https origin', () => {
+      expect(() =>
+        validateInnerFrame({
+          type: 'request',
+          id: 1,
+          op: 'read_cookies',
+          init: { origin: 'http://x.com', keys: ['k'] },
+        }),
+      ).toThrow(/origin/);
+    });
+
+    it('rejects new read_cookies request with empty keys', () => {
+      expect(() =>
+        validateInnerFrame({
+          type: 'request',
+          id: 1,
+          op: 'read_cookies',
+          init: { origin: 'https://x.com', keys: [] },
+        }),
+      ).toThrow(/keys/);
+    });
+
+    it('rejects new read_cookies request with duplicate keys', () => {
+      expect(() =>
+        validateInnerFrame({
+          type: 'request',
+          id: 1,
+          op: 'read_cookies',
+          init: { origin: 'https://x.com', keys: ['k', 'k'] },
+        }),
+      ).toThrow(/keys.*duplicate/);
+    });
+
+    it('rejects read_cookies response with non-plain values', () => {
+      expect(() =>
+        validateInnerFrame({
+          type: 'response',
+          id: 1,
+          ok: true,
+          op: 'read_cookies',
+          values: 'k=v',
+        }),
+      ).toThrow(/values/);
+    });
+
+    it('rejects read_cookies response with non-string value entry', () => {
+      expect(() =>
+        validateInnerFrame({
+          type: 'response',
+          id: 1,
+          ok: true,
+          op: 'read_cookies',
+          values: { k: 123 },
+        }),
+      ).toThrow(/values/);
+    });
+  });
+
+  describe('read_local_storage / read_session_storage', () => {
+    const validLs = {
+      type: 'request' as const,
+      id: 1,
+      op: 'read_local_storage' as const,
+      init: { origin: 'https://www.ofw.com', keys: ['auth', 'tokenExpiry'] },
+    };
+    const validSs = {
+      type: 'request' as const,
+      id: 1,
+      op: 'read_session_storage' as const,
+      init: { origin: 'https://www.ofw.com', keys: ['anon-id'] },
+    };
+
+    it('accepts a valid read_local_storage request', () => {
+      expect(() => validateInnerFrame(validLs)).not.toThrow();
+    });
+
+    it('accepts a valid read_session_storage request', () => {
+      expect(() => validateInnerFrame(validSs)).not.toThrow();
+    });
+
+    it('rejects read_local_storage missing origin', () => {
+      expect(() =>
+        validateInnerFrame({
+          type: 'request',
+          id: 1,
+          op: 'read_local_storage',
+          init: { keys: ['k'] },
+        }),
+      ).toThrow(/origin/);
+    });
+
+    it('rejects read_local_storage missing keys', () => {
+      expect(() =>
+        validateInnerFrame({
+          type: 'request',
+          id: 1,
+          op: 'read_local_storage',
+          init: { origin: 'https://x.com' },
+        }),
+      ).toThrow(/keys/);
+    });
+
+    it('rejects read_local_storage with non-array keys', () => {
+      expect(() =>
+        validateInnerFrame({
+          type: 'request',
+          id: 1,
+          op: 'read_local_storage',
+          init: { origin: 'https://x.com', keys: 'k' },
+        }),
+      ).toThrow(/keys/);
+    });
+
+    it('rejects read_local_storage with empty keys', () => {
+      expect(() =>
+        validateInnerFrame({
+          type: 'request',
+          id: 1,
+          op: 'read_local_storage',
+          init: { origin: 'https://x.com', keys: [] },
+        }),
+      ).toThrow(/keys/);
+    });
+
+    it('rejects read_local_storage with duplicate keys', () => {
+      expect(() =>
+        validateInnerFrame({
+          type: 'request',
+          id: 1,
+          op: 'read_local_storage',
+          init: { origin: 'https://x.com', keys: ['k', 'k'] },
+        }),
+      ).toThrow(/keys.*duplicate/);
+    });
+
+    it('rejects read_local_storage with http origin', () => {
+      expect(() =>
+        validateInnerFrame({
+          type: 'request',
+          id: 1,
+          op: 'read_local_storage',
+          init: { origin: 'http://x.com', keys: ['k'] },
+        }),
+      ).toThrow(/origin/);
+    });
+
+    it('rejects read_local_storage with origin carrying a path', () => {
+      expect(() =>
+        validateInnerFrame({
+          type: 'request',
+          id: 1,
+          op: 'read_local_storage',
+          init: { origin: 'https://x.com/path', keys: ['k'] },
+        }),
+      ).toThrow(/origin.*bare/);
+    });
+
+    it('accepts read_local_storage success response', () => {
+      expect(() =>
+        validateInnerFrame({
+          type: 'response',
+          id: 1,
+          ok: true,
+          op: 'read_local_storage',
+          values: { auth: 'ey...' },
+        }),
+      ).not.toThrow();
+    });
+
+    it('accepts read_session_storage success response', () => {
+      expect(() =>
+        validateInnerFrame({
+          type: 'response',
+          id: 1,
+          ok: true,
+          op: 'read_session_storage',
+          values: {},
+        }),
+      ).not.toThrow();
+    });
+
+    it('rejects read_local_storage response missing values', () => {
+      expect(() =>
+        validateInnerFrame({
+          type: 'response',
+          id: 1,
+          ok: true,
+          op: 'read_local_storage',
+        }),
+      ).toThrow(/values/);
+    });
+
+    it('rejects read_local_storage response with non-string entry', () => {
+      expect(() =>
+        validateInnerFrame({
+          type: 'response',
+          id: 1,
+          ok: true,
+          op: 'read_local_storage',
+          values: { k: 99 },
+        }),
+      ).toThrow(/values/);
+    });
+  });
+
+  describe('capture_request_header', () => {
+    const validReq = {
+      type: 'request' as const,
+      id: 1,
+      op: 'capture_request_header' as const,
+      init: {
+        urlPattern: 'https://api.honeybook.com/api/v2/*',
+        headerName: 'hb-api-fingerprint',
+      },
+    };
+
+    it('accepts a valid capture_request_header request', () => {
+      expect(() => validateInnerFrame(validReq)).not.toThrow();
+    });
+
+    it('accepts capture_request_header request with timeoutMs', () => {
+      expect(() =>
+        validateInnerFrame({ ...validReq, init: { ...validReq.init, timeoutMs: 10000 } }),
+      ).not.toThrow();
+    });
+
+    it('rejects capture_request_header missing urlPattern', () => {
+      expect(() =>
+        validateInnerFrame({
+          type: 'request',
+          id: 1,
+          op: 'capture_request_header',
+          init: { headerName: 'X-Foo' },
+        }),
+      ).toThrow(/urlPattern/);
+    });
+
+    it('rejects capture_request_header missing headerName', () => {
+      expect(() =>
+        validateInnerFrame({
+          type: 'request',
+          id: 1,
+          op: 'capture_request_header',
+          init: { urlPattern: 'https://x.com/api/*' },
+        }),
+      ).toThrow(/headerName/);
+    });
+
+    it('rejects capture_request_header with negative timeoutMs', () => {
+      expect(() =>
+        validateInnerFrame({ ...validReq, init: { ...validReq.init, timeoutMs: -1 } }),
+      ).toThrow(/timeoutMs/);
+    });
+
+    it('rejects capture_request_header with non-integer timeoutMs', () => {
+      expect(() =>
+        validateInnerFrame({ ...validReq, init: { ...validReq.init, timeoutMs: 1.5 } }),
+      ).toThrow(/timeoutMs/);
+    });
+
+    it('accepts capture_request_header success response', () => {
+      expect(() =>
+        validateInnerFrame({
+          type: 'response',
+          id: 1,
+          ok: true,
+          op: 'capture_request_header',
+          value: 'abc-123',
+        }),
+      ).not.toThrow();
+    });
+
+    it('rejects capture_request_header response missing value', () => {
+      expect(() =>
+        validateInnerFrame({
+          type: 'response',
+          id: 1,
+          ok: true,
+          op: 'capture_request_header',
+        }),
+      ).toThrow(/value/);
+    });
+
+    it('rejects capture_request_header response with non-string value', () => {
+      expect(() =>
+        validateInnerFrame({
+          type: 'response',
+          id: 1,
+          ok: true,
+          op: 'capture_request_header',
+          value: 42,
+        }),
+      ).toThrow(/value/);
+    });
+
+    it('accepts capture_request_header timeout error response', () => {
+      expect(() =>
+        validateInnerFrame({
+          type: 'response',
+          id: 1,
+          ok: false,
+          op: 'capture_request_header',
+          error: 'timeout',
+        }),
+      ).not.toThrow();
     });
   });
 

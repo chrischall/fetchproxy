@@ -29,6 +29,7 @@ import {
   concatBytes,
   PROTOCOL_VERSION,
   type Capability,
+  type CaptureHeaderDecl,
   type Frame,
   type HelloFrameFromServer,
   type HelloFrameFromExtension,
@@ -37,6 +38,9 @@ import {
   type InnerRequest,
   type InnerRequestFetch,
   type InnerRequestReadCookies,
+  type InnerRequestReadLocalStorage,
+  type InnerRequestReadSessionStorage,
+  type InnerRequestCaptureRequestHeader,
   type EncryptedFrame,
 } from '@fetchproxy/protocol';
 import { TrustStore } from './trust-store.js';
@@ -232,6 +236,26 @@ declare const chrome: {
     create: (props: { url: string }) => Promise<{ id?: number; url?: string }>;
     sendMessage: (tabId: number, message: unknown) => Promise<unknown>;
   };
+  cookies?: {
+    get: (
+      details: { url: string; name: string },
+    ) => Promise<{ name: string; value: string } | null>;
+  };
+  webRequest?: {
+    onBeforeSendHeaders: {
+      addListener: (
+        cb: (details: {
+          requestId: string;
+          url: string;
+          method: string;
+          requestHeaders?: { name: string; value?: string }[];
+        }) => void,
+        filter: { urls: string[] },
+        extraInfoSpec?: string[],
+      ) => void;
+      removeListener: (cb: unknown) => void;
+    };
+  };
 };
 
 // Track which mcpId's hello is queued for the popup.
@@ -260,6 +284,13 @@ const mcpDomains = new Map<string, string[]>();
 // reject verbs the MCP didn't ask for at pair time. 0.2.0+: defaults to
 // ['fetch'] when the hello omits the field.
 const mcpCapabilities = new Map<string, string[]>();
+// 0.3.0+: per-mcpId declared scope tables. Each verb checks its inbound
+// request against the matching table, so a misdeclared MCP can't escalate
+// to keys / headers it didn't ask for at pair time.
+const mcpCookieKeys = new Map<string, string[]>();
+const mcpLocalStorageKeys = new Map<string, string[]>();
+const mcpSessionStorageKeys = new Map<string, string[]>();
+const mcpCaptureHeaders = new Map<string, { urlPattern: string; headerName: string }[]>();
 
 function connect(): void {
   if (!trust || !sessions) return;
@@ -284,6 +315,10 @@ function connect(): void {
     sessions?.clear();
     mcpDomains.clear();
     mcpCapabilities.clear();
+    mcpCookieKeys.clear();
+    mcpLocalStorageKeys.clear();
+    mcpSessionStorageKeys.clear();
+    mcpCaptureHeaders.clear();
     scheduleReconnect();
   });
   ws.addEventListener('error', () => {
@@ -420,6 +455,18 @@ async function handleRequest(mcpId: string, req: InnerRequest): Promise<void> {
     await handleReadCookiesRequest(mcpId, req, domains);
     return;
   }
+  if (req.op === 'read_local_storage') {
+    await handleReadStorageRequest(mcpId, req, domains, 'local');
+    return;
+  }
+  if (req.op === 'read_session_storage') {
+    await handleReadStorageRequest(mcpId, req, domains, 'session');
+    return;
+  }
+  if (req.op === 'capture_request_header') {
+    await handleCaptureRequestHeaderRequest(mcpId, req, domains);
+    return;
+  }
 }
 
 async function handleFetchRequest(
@@ -490,28 +537,51 @@ async function handleReadCookiesRequest(
   req: InnerRequestReadCookies,
   domains: string[],
 ): Promise<void> {
-  // The tabUrl must point at the declared domain set — same envelope as
-  // fetch, just enforced through a synthesised URL instead of init.url
-  // (which doesn't exist for read_cookies).
-  if (!isUrlAllowedForAnyDomain(req.init.tabUrl, domains)) {
+  // Two shapes: legacy 0.2.0 `{ tabUrl }` (returns raw document.cookie via
+  // content script) vs new 0.3.0 `{ origin, keys }` (returns a values map
+  // via chrome.cookies.get, which is HttpOnly-visible). Narrow on which
+  // field is present — the validator already guaranteed it's one or the
+  // other, not both.
+  if ('tabUrl' in req.init) {
+    await handleReadCookiesLegacy(mcpId, req.id, req.init.tabUrl, domains);
+    return;
+  }
+  const cookieKeys = mcpCookieKeys.get(mcpId) ?? [];
+  await handleReadCookiesV3(
+    mcpId,
+    req.id,
+    req.init.origin,
+    req.init.keys,
+    domains,
+    cookieKeys,
+  );
+}
+
+async function handleReadCookiesLegacy(
+  mcpId: string,
+  id: number,
+  tabUrl: string,
+  domains: string[],
+): Promise<void> {
+  if (!isUrlAllowedForAnyDomain(tabUrl, domains)) {
     await sendInner(mcpId, {
       type: 'response',
-      id: req.id,
+      id,
       ok: false,
       op: 'read_cookies',
-      error: `tabUrl ${req.init.tabUrl} not in domains [${domains.join(', ')}]`,
+      error: `tabUrl ${tabUrl} not in domains [${domains.join(', ')}]`,
     });
     return;
   }
   const tabs = await chrome.tabs.query({});
-  const match = tabs.find((t) => t.url && isTabUrlMatch(t.url, req.init.tabUrl));
+  const match = tabs.find((t) => t.url && isTabUrlMatch(t.url, tabUrl));
   if (!match || typeof match.id !== 'number') {
     await sendInner(mcpId, {
       type: 'response',
-      id: req.id,
+      id,
       ok: false,
       op: 'read_cookies',
-      error: `no tab matching ${req.init.tabUrl}`,
+      error: `no tab matching ${tabUrl}`,
     });
     return;
   }
@@ -522,7 +592,7 @@ async function handleReadCookiesRequest(
     if (resp.ok) {
       await sendInner(mcpId, {
         type: 'response',
-        id: req.id,
+        id,
         ok: true,
         op: 'read_cookies',
         cookies: resp.cookies,
@@ -530,7 +600,7 @@ async function handleReadCookiesRequest(
     } else {
       await sendInner(mcpId, {
         type: 'response',
-        id: req.id,
+        id,
         ok: false,
         op: 'read_cookies',
         error: resp.error,
@@ -539,12 +609,263 @@ async function handleReadCookiesRequest(
   } catch (e) {
     await sendInner(mcpId, {
       type: 'response',
-      id: req.id,
+      id,
       ok: false,
       op: 'read_cookies',
       error: `tab read_cookies failed: ${String(e)}`,
     });
   }
+}
+
+async function handleReadCookiesV3(
+  mcpId: string,
+  id: number,
+  origin: string,
+  keys: string[],
+  domains: string[],
+  declaredCookieKeys: string[],
+): Promise<void> {
+  // Origin must be in declared domain set.
+  if (!isUrlAllowedForAnyDomain(origin, domains)) {
+    await sendInner(mcpId, {
+      type: 'response',
+      id,
+      ok: false,
+      op: 'read_cookies',
+      error: `origin ${origin} not in domains [${domains.join(', ')}]`,
+    });
+    return;
+  }
+  // Every requested key must be in the declared cookieKeys set. This is
+  // gate #2 (the server-side has its own gate #1) — defense in depth.
+  const declaredSet = new Set(declaredCookieKeys);
+  const undeclared = keys.filter((k) => !declaredSet.has(k));
+  if (undeclared.length > 0) {
+    await sendInner(mcpId, {
+      type: 'response',
+      id,
+      ok: false,
+      op: 'read_cookies',
+      error: `cookie keys not in declared set: ${undeclared.join(', ')}`,
+    });
+    return;
+  }
+  if (!chrome.cookies) {
+    await sendInner(mcpId, {
+      type: 'response',
+      id,
+      ok: false,
+      op: 'read_cookies',
+      error: 'chrome.cookies API not available (extension missing the "cookies" permission?)',
+    });
+    return;
+  }
+  // Probe each requested key through chrome.cookies.get. This is the HttpOnly-
+  // visible path — that's the whole reason 0.3.0 exists. Missing keys are
+  // omitted from the response (no nulls), matching the contract.
+  const values: Record<string, string> = {};
+  for (const key of keys) {
+    try {
+      const got = await chrome.cookies.get({ url: origin, name: key });
+      if (got && typeof got.value === 'string') {
+        values[key] = got.value;
+      }
+    } catch {
+      // ignore individual cookie failure; missing key just stays absent
+    }
+  }
+  await sendInner(mcpId, {
+    type: 'response',
+    id,
+    ok: true,
+    op: 'read_cookies',
+    values,
+  });
+}
+
+async function handleReadStorageRequest(
+  mcpId: string,
+  req: InnerRequestReadLocalStorage | InnerRequestReadSessionStorage,
+  domains: string[],
+  bucket: 'local' | 'session',
+): Promise<void> {
+  const op = req.op;
+  // Pick the right declared-keys table by capability.
+  const declaredKeys =
+    bucket === 'local'
+      ? (mcpLocalStorageKeys.get(mcpId) ?? [])
+      : (mcpSessionStorageKeys.get(mcpId) ?? []);
+  if (!isUrlAllowedForAnyDomain(req.init.origin, domains)) {
+    await sendInner(mcpId, {
+      type: 'response',
+      id: req.id,
+      ok: false,
+      op,
+      error: `origin ${req.init.origin} not in domains [${domains.join(', ')}]`,
+    });
+    return;
+  }
+  const declaredSet = new Set(declaredKeys);
+  const undeclared = req.init.keys.filter((k) => !declaredSet.has(k));
+  if (undeclared.length > 0) {
+    await sendInner(mcpId, {
+      type: 'response',
+      id: req.id,
+      ok: false,
+      op,
+      error: `${bucket}Storage keys not in declared set: ${undeclared.join(', ')}`,
+    });
+    return;
+  }
+  const tabUrl = `${req.init.origin}/`;
+  const tabs = await chrome.tabs.query({});
+  const match = tabs.find((t) => t.url && isTabUrlMatch(t.url, tabUrl));
+  if (!match || typeof match.id !== 'number') {
+    await sendInner(mcpId, {
+      type: 'response',
+      id: req.id,
+      ok: false,
+      op,
+      error: `no tab matching ${tabUrl}`,
+    });
+    return;
+  }
+  try {
+    const resp = (await chrome.tabs.sendMessage(match.id, {
+      kind: bucket === 'local' ? 'fetchproxy-read-local-storage' : 'fetchproxy-read-session-storage',
+      keys: [...req.init.keys],
+    })) as { ok: true; values: Record<string, string> } | { ok: false; error: string };
+    if (resp.ok) {
+      await sendInner(mcpId, {
+        type: 'response',
+        id: req.id,
+        ok: true,
+        op,
+        values: resp.values,
+      });
+    } else {
+      await sendInner(mcpId, {
+        type: 'response',
+        id: req.id,
+        ok: false,
+        op,
+        error: resp.error,
+      });
+    }
+  } catch (e) {
+    await sendInner(mcpId, {
+      type: 'response',
+      id: req.id,
+      ok: false,
+      op,
+      error: `tab ${op} failed: ${String(e)}`,
+    });
+  }
+}
+
+async function handleCaptureRequestHeaderRequest(
+  mcpId: string,
+  req: InnerRequestCaptureRequestHeader,
+  domains: string[],
+): Promise<void> {
+  const declared = mcpCaptureHeaders.get(mcpId) ?? [];
+  const declaredMatch = declared.find(
+    (d) => d.urlPattern === req.init.urlPattern && d.headerName === req.init.headerName,
+  );
+  if (!declaredMatch) {
+    await sendInner(mcpId, {
+      type: 'response',
+      id: req.id,
+      ok: false,
+      op: 'capture_request_header',
+      error: `(urlPattern, headerName) not in declared captureHeaders`,
+    });
+    return;
+  }
+  // urlPattern's host must be a declared domain. The validator already
+  // canonicalised the URL shape so we can just URL-parse the prefix.
+  const host = (() => {
+    try {
+      return new URL(req.init.urlPattern.replace(/\*+/g, 'placeholder')).hostname;
+    } catch {
+      return '';
+    }
+  })();
+  if (!host || !isUrlAllowedForAnyDomain(`https://${host}/`, domains)) {
+    await sendInner(mcpId, {
+      type: 'response',
+      id: req.id,
+      ok: false,
+      op: 'capture_request_header',
+      error: `urlPattern host ${host} not in domains [${domains.join(', ')}]`,
+    });
+    return;
+  }
+  if (!chrome.webRequest) {
+    await sendInner(mcpId, {
+      type: 'response',
+      id: req.id,
+      ok: false,
+      op: 'capture_request_header',
+      error: 'chrome.webRequest API not available (extension missing the "webRequest" permission?)',
+    });
+    return;
+  }
+  const timeoutMs = req.init.timeoutMs ?? 30_000;
+  const wantedHeader = req.init.headerName.toLowerCase();
+  let resolved = false;
+  const listener = (details: {
+    requestHeaders?: { name: string; value?: string }[];
+  }): void => {
+    if (resolved) return;
+    const hdr = details.requestHeaders?.find((h) => h.name.toLowerCase() === wantedHeader);
+    if (!hdr || typeof hdr.value !== 'string') return;
+    resolved = true;
+    try {
+      chrome.webRequest!.onBeforeSendHeaders.removeListener(listener);
+    } catch {
+      // ignore
+    }
+    void sendInner(mcpId, {
+      type: 'response',
+      id: req.id,
+      ok: true,
+      op: 'capture_request_header',
+      value: hdr.value,
+    });
+  };
+  try {
+    chrome.webRequest.onBeforeSendHeaders.addListener(
+      listener,
+      { urls: [req.init.urlPattern] },
+      ['requestHeaders'],
+    );
+  } catch (e) {
+    await sendInner(mcpId, {
+      type: 'response',
+      id: req.id,
+      ok: false,
+      op: 'capture_request_header',
+      error: `webRequest listener registration failed: ${String(e)}`,
+    });
+    return;
+  }
+  setTimeout(() => {
+    if (resolved) return;
+    resolved = true;
+    try {
+      chrome.webRequest!.onBeforeSendHeaders.removeListener(listener);
+    } catch {
+      // ignore
+    }
+    void sendInner(mcpId, {
+      type: 'response',
+      id: req.id,
+      ok: false,
+      op: 'capture_request_header',
+      error: 'timeout',
+    });
+  }, timeoutMs);
 }
 
 async function onApproval(approved: PendingPairRecord): Promise<void> {

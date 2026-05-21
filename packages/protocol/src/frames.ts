@@ -18,18 +18,31 @@ export type Platform = 'chrome' | 'safari' | 'firefox';
 /**
  * Inner-verb capabilities an MCP may declare in its server hello.
  *
- * `'fetch'`       — issue HTTP requests against the user's signed-in tab.
- *                   The default; if `capabilities` is omitted, the extension
- *                   treats it as `['fetch']`.
- * `'read_cookies'` — read non-HttpOnly `document.cookie` from a matching
- *                    tab. Strictly opt-in; surfaces a warning in the pair
- *                    popup so the user sees the elevated trust.
+ * `'fetch'`                 — issue HTTP requests against the user's
+ *                             signed-in tab. The default; if
+ *                             `capabilities` is omitted, the extension
+ *                             treats it as `['fetch']`.
+ * `'read_cookies'`          — read cookies (HttpOnly-visible via
+ *                             `chrome.cookies.get` on 0.3.0+) scoped to
+ *                             declared `cookieKeys`. Strictly opt-in;
+ *                             surfaces a warning in the pair popup so
+ *                             the user sees the elevated trust.
+ * `'read_local_storage'`    — read declared `localStorageKeys` from the
+ *                             matched tab's localStorage. Elevated.
+ * `'read_session_storage'`  — same shape against sessionStorage. Elevated.
+ * `'capture_request_header'`— snapshot the next outgoing request's
+ *                             declared header for a declared urlPattern.
+ *                             Elevated. Single-shot per call.
  *
  * Future additions are wire-additive: unknown capabilities are rejected
- * by the validator, so adding a new verb requires bumping the protocol
- * or extending this union.
+ * by the validator, so adding a new verb requires extending this union.
  */
-export type Capability = 'fetch' | 'read_cookies';
+export type Capability =
+  | 'fetch'
+  | 'read_cookies'
+  | 'read_local_storage'
+  | 'read_session_storage'
+  | 'capture_request_header';
 
 /**
  * Set of capability strings that are valid on the wire. Runtime sibling
@@ -40,7 +53,26 @@ export type Capability = 'fetch' | 'read_cookies';
 export const KNOWN_CAPABILITIES: ReadonlySet<Capability> = new Set<Capability>([
   'fetch',
   'read_cookies',
+  'read_local_storage',
+  'read_session_storage',
+  'capture_request_header',
 ]);
+
+/**
+ * Declaration entry for the `capture_request_header` capability — a
+ * specific (urlPattern, headerName) pair the MCP is allowed to snapshot.
+ * Pinned in the server hello and re-checked on every capture request.
+ */
+export interface CaptureHeaderDecl {
+  /**
+   * HTTPS URL with `*` wildcards permitted in the path. Host portion
+   * must be a fully-qualified hostname (no wildcards). The extension
+   * uses this as a Chrome `webRequest` filter pattern.
+   */
+  urlPattern: string;
+  /** Single HTTP header name to capture (`[A-Za-z0-9\-_]+`, ≤128 chars). */
+  headerName: string;
+}
 
 export interface HelloFrameFromServer {
   type: 'hello';
@@ -64,6 +96,20 @@ export interface HelloFrameFromServer {
    * set.
    */
   capabilities?: Capability[];
+  /**
+   * 0.3.0+: declared cookie names the MCP is allowed to read via
+   * `read_cookies`. The extension refuses requests for any key outside
+   * this set. Empty/absent means no cookie reads are permitted even if
+   * `'read_cookies'` is in `capabilities` (this is the safe default —
+   * the user always sees the explicit list of names in the pair popup).
+   */
+  cookieKeys?: string[];
+  /** 0.3.0+: declared localStorage keys for `read_local_storage`. */
+  localStorageKeys?: string[];
+  /** 0.3.0+: declared sessionStorage keys for `read_session_storage`. */
+  sessionStorageKeys?: string[];
+  /** 0.3.0+: declared (urlPattern, headerName) pairs for `capture_request_header`. */
+  captureHeaders?: CaptureHeaderDecl[];
   identityX25519Pub: string;      // base64 raw 32B
   identityEd25519Pub: string;     // base64 raw 32B
   sessionNonce: string;           // base64 raw ≥16B
@@ -114,13 +160,56 @@ export interface InnerPong {
   type: 'pong';
 }
 
-/** `init` payload for an inner `op: 'read_cookies'` request. */
-export interface ReadCookiesInit {
+/** `init` payload for an inner `op: 'read_cookies'` request (legacy 0.2.0 shape). */
+export interface ReadCookiesInitLegacy {
   /**
    * Coarse prefix the extension uses to pick a tab via
    * `chrome.tabs.query({})`. Same semantics as `FetchInit.tabUrl`.
+   *
+   * Kept for back-compat with 0.2.0 senders. New code uses
+   * `ReadCookiesInitV3` (origin + keys).
    */
   tabUrl: string;
+}
+
+/** 0.3.0 `init` payload for `read_cookies`: origin + declared key subset. */
+export interface ReadCookiesInitV3 {
+  /** Bare HTTPS origin (no path). E.g. `https://www.honeybook.com`. */
+  origin: string;
+  /**
+   * Subset of the MCP's declared `cookieKeys` to read. Extension reads
+   * via `chrome.cookies.get` so HttpOnly cookies ARE visible. Each entry
+   * must appear in the trust record's `cookieKeys`.
+   */
+  keys: string[];
+}
+
+/** Discriminated init for `read_cookies` — 0.2.0 legacy or 0.3.0 new shape. */
+export type ReadCookiesInit = ReadCookiesInitLegacy | ReadCookiesInitV3;
+
+/** 0.3.0 `init` payload for `read_local_storage` / `read_session_storage`. */
+export interface ReadStorageInit {
+  /** Bare HTTPS origin of the tab whose storage is being read. */
+  origin: string;
+  /** Subset of declared `localStorageKeys` / `sessionStorageKeys`. */
+  keys: string[];
+}
+
+/** 0.3.0 `init` payload for `capture_request_header`. */
+export interface CaptureRequestHeaderInit {
+  /**
+   * HTTPS URL pattern (host fully qualified; `*` in path). Must exactly
+   * match an entry in the declared `captureHeaders`.
+   */
+  urlPattern: string;
+  /** Header name to capture (matches the declared entry exactly). */
+  headerName: string;
+  /**
+   * Optional capture timeout in milliseconds. Defaults to 30000 on the
+   * extension if omitted. After the timeout, the response is
+   * `{ ok: false, op: 'capture_request_header', error: 'timeout' }`.
+   */
+  timeoutMs?: number;
 }
 
 export interface InnerRequestFetch {
@@ -137,11 +226,37 @@ export interface InnerRequestReadCookies {
   init: ReadCookiesInit;
 }
 
+export interface InnerRequestReadLocalStorage {
+  type: 'request';
+  id: number;
+  op: 'read_local_storage';
+  init: ReadStorageInit;
+}
+
+export interface InnerRequestReadSessionStorage {
+  type: 'request';
+  id: number;
+  op: 'read_session_storage';
+  init: ReadStorageInit;
+}
+
+export interface InnerRequestCaptureRequestHeader {
+  type: 'request';
+  id: number;
+  op: 'capture_request_header';
+  init: CaptureRequestHeaderInit;
+}
+
 /**
  * Inner request frame. Discriminated by `op` so MCPs can extend the
  * verb set without breaking existing fetch traffic.
  */
-export type InnerRequest = InnerRequestFetch | InnerRequestReadCookies;
+export type InnerRequest =
+  | InnerRequestFetch
+  | InnerRequestReadCookies
+  | InnerRequestReadLocalStorage
+  | InnerRequestReadSessionStorage
+  | InnerRequestCaptureRequestHeader;
 
 export interface InnerResponseFetchOk {
   type: 'response';
@@ -159,11 +274,43 @@ export interface InnerResponseReadCookiesOk {
   ok: true;
   op: 'read_cookies';
   /**
-   * Raw `document.cookie` value (semicolon-separated `k=v` pairs) from
-   * the matched tab. Only non-HttpOnly cookies are visible from page
-   * JS — that is the intentional security model.
+   * Either the legacy raw `document.cookie` string (0.2.0 senders) or
+   * the new 0.3.0 `values` map. Both shapes are accepted by the
+   * validator; new senders always use `values`.
    */
-  cookies: string;
+  cookies?: string;
+  /**
+   * 0.3.0+: cookie name → value map, only including keys that exist.
+   * The extension reads via `chrome.cookies.get` so HttpOnly cookies
+   * are included.
+   */
+  values?: Record<string, string>;
+}
+
+export interface InnerResponseReadLocalStorageOk {
+  type: 'response';
+  id: number;
+  ok: true;
+  op: 'read_local_storage';
+  /** Key → value map, omitting keys that don't exist in storage. */
+  values: Record<string, string>;
+}
+
+export interface InnerResponseReadSessionStorageOk {
+  type: 'response';
+  id: number;
+  ok: true;
+  op: 'read_session_storage';
+  values: Record<string, string>;
+}
+
+export interface InnerResponseCaptureRequestHeaderOk {
+  type: 'response';
+  id: number;
+  ok: true;
+  op: 'capture_request_header';
+  /** Captured header value. */
+  value: string;
 }
 
 /**
@@ -171,7 +318,12 @@ export interface InnerResponseReadCookiesOk {
  * fetch responses (with no `op`) are accepted by the validator for
  * back-compat, but new servers always set it.
  */
-export type InnerResponseOk = InnerResponseFetchOk | InnerResponseReadCookiesOk;
+export type InnerResponseOk =
+  | InnerResponseFetchOk
+  | InnerResponseReadCookiesOk
+  | InnerResponseReadLocalStorageOk
+  | InnerResponseReadSessionStorageOk
+  | InnerResponseCaptureRequestHeaderOk;
 
 export interface InnerResponseError {
   type: 'response';
