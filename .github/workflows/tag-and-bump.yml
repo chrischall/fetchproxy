@@ -97,7 +97,12 @@ jobs:
           "
 
       - name: Rebuild
-        run: npm run build
+        # Build TS packages first (protocol → server → extension-core),
+        # then the Chrome extension. extension-chrome's esbuild bundles
+        # via the workspace symlink and needs protocol's dist/ on disk.
+        run: |
+          npm run build --workspace=@fetchproxy/protocol --workspace=@fetchproxy/server --workspace=@fetchproxy/extension-core
+          npm run build --workspace=@fetchproxy/extension-chrome
 
       - name: Commit and push
         run: |
