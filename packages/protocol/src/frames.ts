@@ -1,65 +1,77 @@
 /**
- * WS frame types for the fetchproxy protocol. JSON-over-WS, one verb
- * (`fetch`) plus lifecycle frames. See docs/PROTOCOL.md for semantics.
+ * Frame types for fetchproxy protocol v1 (0.1.0).
+ *
+ * Top-level frames on the wire: hello, ready, frame (encrypted).
+ * Inner frames (inside ciphertext): ping, pong, request, response.
  */
 
+export const PROTOCOL_VERSION = 1 as const;
 export type Platform = 'chrome' | 'safari' | 'firefox';
 
-/** Extension → Server. Sent immediately after connection. */
-export interface HelloExtension {
+export interface HelloFrameFromServer {
   type: 'hello';
-  role: 'extension';
-  version: string;
-  platform: Platform;
-  extension_id: string;
-}
-
-/** Server → Extension. Sent in response to the extension's hello. */
-export interface HelloServer {
-  type: 'hello';
+  protocolVersion: 1;
   role: 'server';
-  server: string;
+  mcpId: string;                  // server:version:rand
+  serverName: string;
   version: string;
-  /** Domain this MCP is allowed to fetch from. The extension enforces
-   *  this as an allowlist on every fetch request. */
   domain: string;
+  identityX25519Pub: string;      // base64 raw 32B
+  identityEd25519Pub: string;     // base64 raw 32B
+  sessionNonce: string;           // base64 raw ≥16B
+  sessionSig: string;             // base64 — Ed25519Sign(identityEd25519Priv, mcpId || sessionNonce)
 }
 
-export type Hello = HelloExtension | HelloServer;
+export interface HelloFrameFromExtension {
+  type: 'hello';
+  protocolVersion: 1;
+  role: 'extension';
+  platform: Platform;
+  extensionId: string;
+  version: string;
+}
 
-/** Extension → Server. Sent when the extension has at least one tab
- *  matching the server's `domain`. */
-export interface Ready {
+export type HelloFrame = HelloFrameFromServer | HelloFrameFromExtension;
+
+export interface ReadyFrame {
   type: 'ready';
+  mcpId: string;
+  extensionSessionPub: string;    // base64 raw 32B (ephemeral extension X25519 pub)
 }
 
-export interface Ping {
-  type: 'ping';
+export interface EncryptedFrame {
+  type: 'frame';
+  mcpId: string;
+  seq: number;                    // monotonic per direction per session, ≥ 1
+  iv: string;                     // base64 raw 12B
+  ciphertext: string;             // base64 — AES-256-GCM(sessionKey, iv, innerFrameJson)
 }
 
-export interface Pong {
-  type: 'pong';
-}
+export type Frame = HelloFrame | ReadyFrame | EncryptedFrame;
 
-/** Server → Extension. */
-export interface FetchRequest {
-  type: 'request';
-  id: number;
-  op: 'fetch';
-  init: FetchInit;
-}
+// --- Inner frames (inside ciphertext) ---
 
 export interface FetchInit {
   url: string;
   method: string;
   headers?: Record<string, string>;
   body?: string;
-  /** Prefix-matched against open tab URLs; first match wins. */
   tabUrl: string;
 }
 
-/** Extension → Server. */
-export interface FetchResponseOk {
+export interface InnerPing {
+  type: 'ping';
+}
+export interface InnerPong {
+  type: 'pong';
+}
+export interface InnerRequest {
+  type: 'request';
+  id: number;
+  op: 'fetch';
+  init: FetchInit;
+}
+export interface InnerResponseOk {
   type: 'response';
   id: number;
   ok: true;
@@ -67,20 +79,15 @@ export interface FetchResponseOk {
   url: string;
   body: string;
 }
-
-export interface FetchResponseErr {
+export interface InnerResponseError {
   type: 'response';
   id: number;
   ok: false;
   error: string;
 }
-
-export type FetchResponse = FetchResponseOk | FetchResponseErr;
-
-export type Frame =
-  | Hello
-  | Ready
-  | Ping
-  | Pong
-  | FetchRequest
-  | FetchResponse;
+export type InnerFrame =
+  | InnerPing
+  | InnerPong
+  | InnerRequest
+  | InnerResponseOk
+  | InnerResponseError;
