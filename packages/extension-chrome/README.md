@@ -46,5 +46,6 @@ Each release also publishes a packaged `fetchproxy-extension-${VERSION}.zip` on 
 - `manifest_version: 3` (MV3 service worker).
 - `host_permissions: ["<all_urls>"]` — required because per-MCP domains are dynamic and enforced inside the extension, not statically in the manifest.
 - `content_scripts` registers both an isolated-world dispatcher (`content.js`) and a MAIN-world capture helper (`capture-logger.js`) at `<all_urls>`. Routing/allowlist enforcement happens inside the scripts themselves once the background dispatches a request.
+- `permissions: ["alarms"]` — used solely for the MV3 service-worker keepalive (`chrome.alarms` ticks every ~24s to wake the SW from idle so the WS bridge stays reachable between bursts of MCP traffic). No alarm payload, no scheduling beyond the single keepalive.
 
 See the [top-level README](https://github.com/chrischall/fetchproxy#readme) for the architecture and the [protocol reference](https://github.com/chrischall/fetchproxy/blob/main/docs/PROTOCOL.md) for the wire format.

@@ -54,6 +54,7 @@ import { SessionKeys } from './session-keys.js';
 import { ensureDomainTab } from './ensure-domain-tab.js';
 import { isUrlAllowedForAnyDomain, isTabUrlMatch } from './lib/url-match.js';
 import { loadOrCreateExtensionIdentity, type ExtensionIdentity } from './extension-identity.js';
+import { startKeepalive } from './keepalive.js';
 
 // -------------------------------------------------------------------
 // 1. Pure decision function (handleServerHello)
@@ -445,6 +446,7 @@ declare const chrome: {
       removeListener: (cb: unknown) => void;
     };
   };
+  alarms: typeof globalThis.chrome.alarms;
 };
 
 // Track which mcpId's hello is queued for the popup.
@@ -1369,6 +1371,7 @@ function maybeBoot(): void {
     | {
         runtime?: { getManifest?: () => { version: string } };
         storage?: { local?: { onChanged?: { addListener?: unknown } } };
+        alarms?: { create?: unknown; onAlarm?: { addListener?: unknown } };
       }
     | undefined;
   if (
@@ -1384,6 +1387,21 @@ function maybeBoot(): void {
     if (!approved) return;
     void onApproval(approved).catch((e) => console.error('[fetchproxy] approval:', e));
   });
+  // 0.4.1: register the MV3 keepalive alarm before anything else. Each
+  // fire wakes the SW from idle and re-runs connect() — which is a
+  // no-op when the WS is open and a reconnect when it isn't. This is
+  // what keeps the bridge alive between bursts of MCP tool calls
+  // without the user having to open DevTools to pin the worker.
+  // Guarded so unit tests (which don't mock chrome.alarms) still skip.
+  if (
+    typeof c?.alarms?.create === 'function' &&
+    typeof c?.alarms?.onAlarm?.addListener === 'function'
+  ) {
+    startKeepalive({
+      alarms: chrome.alarms,
+      ensureConnected: connect,
+    });
+  }
   // 0.4.0: load (or generate) the extension's long-term identity
   // before connecting. The identity is required to construct the
   // extension hello on WS open.
