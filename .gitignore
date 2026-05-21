@@ -1,0 +1,17 @@
+node_modules/
+dist/
+build/
+.DS_Store
+.env
+*.log
+
+# Per-browser build outputs
+packages/*/dist/
+packages/extension-chrome/build/
+packages/extension-safari/build/
+*.xcuserstate
+*.xcworkspace/xcuserdata/
+
+# Coverage
+coverage/
+.nyc_output/
