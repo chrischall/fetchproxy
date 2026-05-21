@@ -14,18 +14,13 @@ export interface FetchproxyServerOpts {
    * Trust boundary. The extension refuses any fetch outside this domain
    * (or a subdomain of it). Pair-code trust is keyed off the MCP's
    * cryptographic identity together with this domain.
+   *
+   * All convenience-method calls go to `https://${domain}` by default;
+   * pass `{ subdomain: 'www' }` on a per-call basis to target
+   * `https://www.${domain}` instead.
    */
   domain: string;
   identityDir?: string;
-  /**
-   * Hostname (not URL) used as the default prefix for relative paths
-   * passed to `request()` / `get()` / `getJson()` etc., and as the
-   * default tab the extension fetches through. Defaults to `domain`.
-   *
-   * Must equal `domain` or be a subdomain of it — `www.opentable.com`
-   * is allowed when `domain` is `opentable.com`; `evil.com` is not.
-   */
-  subdomain?: string;
 }
 
 export interface FetchResult {
@@ -47,7 +42,17 @@ export interface HttpResponse {
   url: string;
 }
 
-/** Options accepted by `request()` and the verb helpers. */
+/**
+ * Options accepted by `request()` and the verb helpers. `subdomain`
+ * controls per-call which host within the declared domain to target:
+ *
+ *   fp.get('/path')                          → https://${domain}/path
+ *   fp.get('/path', { subdomain: 'www' })    → https://www.${domain}/path
+ *   fp.get('/path', { subdomain: 'api' })    → https://api.${domain}/path
+ *
+ * Must be a single DNS label (or dot-separated labels) without any
+ * URL scheme, path, or slashes.
+ */
 export interface RequestOpts {
   headers?: Record<string, string>;
   body?: string;
@@ -56,12 +61,20 @@ export interface RequestOpts {
    * does not match. A number is matched exactly; an array means "must be in this set".
    */
   expectStatus?: number | number[];
+  /**
+   * Optional subdomain label(s) to prepend to the declared `domain`.
+   * E.g. with `domain: 'opentable.com'`, `subdomain: 'www'` builds the
+   * URL against `https://www.opentable.com`. May be a single label
+   * (`'www'`) or dot-separated labels (`'auth.api'`).
+   */
+  subdomain?: string;
 }
 
 /** Options accepted by JSON/HTML shortcuts (no `body` — provided positionally). */
 export interface BodylessRequestOpts {
   headers?: Record<string, string>;
   expectStatus?: number | number[];
+  subdomain?: string;
 }
 
 /**
@@ -90,30 +103,21 @@ export class FetchproxyHttpError extends Error {
   }
 }
 
-/**
- * Verify that `host` is exactly `domain` or a subdomain of it. Used at
- * construction time on the `subdomain` opt. Hostname-only — rejects
- * anything containing a slash, colon, or whitespace (i.e. URLs and
- * protocol prefixes go through `assertUrlInDomain` below).
- */
-function assertSubdomainOfDomain(field: string, host: string, domain: string): void {
-  if (!host || /[\s/:?#]/.test(host)) {
+/** Single DNS label or dot-separated labels (no scheme, no path). */
+const SUBDOMAIN_LABEL_RE = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$/i;
+
+function assertSubdomainLabel(label: string): void {
+  if (!SUBDOMAIN_LABEL_RE.test(label)) {
     throw new Error(
-      `FetchproxyServer: ${field} must be a hostname (not a URL), got ${JSON.stringify(host)}`,
-    );
-  }
-  const h = host.toLowerCase();
-  const d = domain.toLowerCase();
-  if (h !== d && !h.endsWith('.' + d)) {
-    throw new Error(
-      `FetchproxyServer: ${field} "${h}" is outside declared domain "${d}" — must be "${d}" or a subdomain (e.g. www.${d})`,
+      `FetchproxyServer: subdomain must be a DNS label like "www" or "api" (or dot-separated like "auth.api"), got ${JSON.stringify(label)}`,
     );
   }
 }
 
 /**
  * Verify that a request URL's hostname is the declared `domain` or one
- * of its subdomains. Used at call time on every resolved request URL.
+ * of its subdomains. Used on every resolved request URL — guards against
+ * an absolute URL being passed that escapes the declared domain.
  */
 function assertUrlInDomain(field: string, url: string, domain: string): void {
   let parsed: URL;
@@ -143,8 +147,6 @@ interface ResolvedOpts {
   version: string;
   domain: string;
   identityDir?: string;
-  origin: string;
-  tabUrl: string;
 }
 
 const DEFAULT_JSON_OK_STATUSES: readonly number[] = [200, 201, 202, 204];
@@ -161,12 +163,6 @@ export class FetchproxyServer {
   private identity: Identity | null = null;
 
   constructor(opts: FetchproxyServerOpts) {
-    // Default the subdomain to the trust-boundary domain, then verify it
-    // really is the same domain or a subdomain — catches misconfiguration
-    // at construction time rather than letting every fetch get refused by
-    // the extension's allowlist at runtime.
-    const subdomain = opts.subdomain ?? opts.domain;
-    assertSubdomainOfDomain('subdomain', subdomain, opts.domain);
     this.opts = {
       port: opts.port ?? 37149,
       host: opts.host ?? '127.0.0.1',
@@ -174,8 +170,6 @@ export class FetchproxyServer {
       version: opts.version,
       domain: opts.domain,
       identityDir: opts.identityDir,
-      origin: `https://${subdomain}`,
-      tabUrl: `https://${subdomain}/`,
     };
   }
 
@@ -227,19 +221,29 @@ export class FetchproxyServer {
   }
 
   /**
-   * Convenience wrapper around `fetch()` that resolves relative paths
-   * against the configured `origin`, throws on protocol errors, and
-   * optionally asserts on the response status.
+   * Convenience wrapper around `fetch()`. Builds the URL from a path
+   * + optional subdomain, throws on protocol errors, optionally
+   * asserts on the response status.
+   *
+   * Path resolution:
+   *  - Absolute URL (`https://...`) → used as-is (still guarded against
+   *    leaving the declared domain).
+   *  - Relative path → joined with `https://${subdomain}.${domain}`
+   *    (or `https://${domain}` if no subdomain is given).
    */
   async request(
     method: string,
     path: string,
     opts: RequestOpts = {},
   ): Promise<HttpResponse> {
+    if (opts.subdomain !== undefined) assertSubdomainLabel(opts.subdomain);
+    const host = opts.subdomain
+      ? `${opts.subdomain}.${this.opts.domain}`
+      : this.opts.domain;
     const url =
       path.startsWith('http://') || path.startsWith('https://')
         ? path
-        : `${this.opts.origin}${path}`;
+        : `https://${host}${path}`;
     // Guard: refuse to send any request whose resolved URL leaves the
     // declared domain. The extension would refuse it anyway; this gives
     // the MCP author a clear error at the call site instead of a generic
@@ -248,7 +252,7 @@ export class FetchproxyServer {
     const init: FetchInit = {
       url,
       method,
-      tabUrl: this.opts.tabUrl,
+      tabUrl: `https://${host}/`,
       headers: opts.headers,
       body: opts.body,
     };

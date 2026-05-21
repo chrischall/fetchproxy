@@ -29,11 +29,12 @@ describe('convenience methods', () => {
     // Don't call listen() — we override fetch directly.
   };
 
-  it('request prepends origin to relative paths', async () => {
+  it('request prepends https://${domain} to relative paths', async () => {
     const s = new TestServer(baseOpts);
     s.canned = { ok: true, status: 200, url: 'x', body: 'x' };
     await s.request('GET', '/api/foo');
     expect(s.lastInit!.url).toBe('https://example.com/api/foo');
+    expect(s.lastInit!.tabUrl).toBe('https://example.com/');
   });
 
   it('request uses absolute URL as-is when it stays within the declared domain', async () => {
@@ -45,22 +46,34 @@ describe('convenience methods', () => {
 
   it('request throws on absolute URL outside the declared domain', async () => {
     const s = new TestServer(baseOpts);
-    await expect(s.request('GET', 'https://otherdomain.com/path')).rejects.toThrow(/outside declared domain/);
+    await expect(s.request('GET', 'https://otherdomain.com/path')).rejects.toThrow(
+      /outside declared domain/,
+    );
   });
 
-  it('subdomain overrides the URL prefix and tab host', async () => {
-    const s = new TestServer({ ...baseOpts, subdomain: 'www.example.com' });
+  it('subdomain opt routes to https://${subdomain}.${domain}', async () => {
+    const s = new TestServer(baseOpts);
     s.canned = { ok: true, status: 200, url: 'x', body: 'x' };
-    await s.request('GET', '/api/foo');
+    await s.request('GET', '/api/foo', { subdomain: 'www' });
     expect(s.lastInit!.url).toBe('https://www.example.com/api/foo');
     expect(s.lastInit!.tabUrl).toBe('https://www.example.com/');
   });
 
-  it('default tabUrl is derived from domain when no subdomain is set', async () => {
+  it('subdomain accepts dot-separated labels (e.g. "auth.api")', async () => {
     const s = new TestServer(baseOpts);
     s.canned = { ok: true, status: 200, url: 'x', body: 'x' };
-    await s.request('GET', '/x');
-    expect(s.lastInit!.tabUrl).toBe('https://example.com/');
+    await s.request('GET', '/x', { subdomain: 'auth.api' });
+    expect(s.lastInit!.url).toBe('https://auth.api.example.com/x');
+  });
+
+  it('different subdomain on different calls', async () => {
+    const s = new TestServer(baseOpts);
+    s.canned = { ok: true, status: 200, url: 'x', body: 'x' };
+    await s.get('/x', { subdomain: 'www' });
+    expect(s.lastInit!.url).toBe('https://www.example.com/x');
+    await s.get('/x', { subdomain: 'api' });
+    expect(s.lastInit!.url).toBe('https://api.example.com/x');
+    await s.get('/x');  // no subdomain
     expect(s.lastInit!.url).toBe('https://example.com/x');
   });
 
@@ -128,6 +141,13 @@ describe('convenience methods', () => {
     await expect(s.getJson('/x')).rejects.toThrow(FetchproxyHttpError);
   });
 
+  it('getJson passes subdomain through', async () => {
+    const s = new TestServer(baseOpts);
+    s.canned = { ok: true, status: 200, url: 'x', body: '{}' };
+    await s.getJson('/x', { subdomain: 'api' });
+    expect(s.lastInit!.url).toBe('https://api.example.com/x');
+  });
+
   it('postJson stringifies body and sets Content-Type', async () => {
     const s = new TestServer(baseOpts);
     s.canned = { ok: true, status: 200, url: 'x', body: '{"ok":true}' };
@@ -185,49 +205,58 @@ describe('subdomain guard', () => {
     domain: 'opentable.com',
   };
 
-  it('accepts a subdomain equal to the declared domain', () => {
-    expect(() => new TestServer({ ...baseOpts, subdomain: 'opentable.com' })).not.toThrow();
+  it('rejects a subdomain with a slash', async () => {
+    const s = new TestServer(baseOpts);
+    await expect(s.get('/x', { subdomain: 'www/foo' })).rejects.toThrow(/DNS label/);
   });
 
-  it('accepts a subdomain that is a strict subdomain of the declared domain', () => {
-    expect(() => new TestServer({ ...baseOpts, subdomain: 'www.opentable.com' })).not.toThrow();
-    expect(() => new TestServer({ ...baseOpts, subdomain: 'api.opentable.com' })).not.toThrow();
-    expect(() => new TestServer({ ...baseOpts, subdomain: 'a.b.opentable.com' })).not.toThrow();
+  it('rejects a subdomain with a URL scheme', async () => {
+    const s = new TestServer(baseOpts);
+    await expect(s.get('/x', { subdomain: 'https://www' })).rejects.toThrow(/DNS label/);
   });
 
-  it('rejects a subdomain on a different domain', () => {
-    expect(() => new TestServer({ ...baseOpts, subdomain: 'opentable.evil.com' })).toThrow(
-      /outside declared domain/,
-    );
+  it('rejects a subdomain with a port', async () => {
+    const s = new TestServer(baseOpts);
+    await expect(s.get('/x', { subdomain: 'www:8080' })).rejects.toThrow(/DNS label/);
   });
 
-  it('rejects a hostname that suffix-matches without a dot boundary', () => {
-    expect(() => new TestServer({ ...baseOpts, subdomain: 'badopentable.com' })).toThrow(
-      /outside declared domain/,
-    );
+  it('rejects an empty subdomain', async () => {
+    const s = new TestServer(baseOpts);
+    await expect(s.get('/x', { subdomain: '' })).rejects.toThrow(/DNS label/);
   });
 
-  it('rejects a value that includes a URL scheme', () => {
-    expect(() => new TestServer({ ...baseOpts, subdomain: 'https://www.opentable.com' })).toThrow(
-      /must be a hostname/,
-    );
+  it('rejects a subdomain starting with a dot', async () => {
+    const s = new TestServer(baseOpts);
+    await expect(s.get('/x', { subdomain: '.www' })).rejects.toThrow(/DNS label/);
   });
 
-  it('rejects a value containing a slash or path', () => {
-    expect(() => new TestServer({ ...baseOpts, subdomain: 'opentable.com/path' })).toThrow(
-      /must be a hostname/,
-    );
+  it('rejects a subdomain starting with a hyphen', async () => {
+    const s = new TestServer(baseOpts);
+    await expect(s.get('/x', { subdomain: '-www' })).rejects.toThrow(/DNS label/);
   });
 
-  it('rejects an empty subdomain', () => {
-    expect(() => new TestServer({ ...baseOpts, subdomain: '' })).toThrow(/must be a hostname/);
+  it('accepts a single DNS label', async () => {
+    const s = new TestServer(baseOpts);
+    s.canned = { ok: true, status: 200, url: 'x', body: '' };
+    await expect(s.get('/x', { subdomain: 'www' })).resolves.toBeDefined();
   });
 
-  it('default subdomain (= domain) always passes the guard', () => {
-    expect(() => new TestServer(baseOpts)).not.toThrow();
+  it('accepts dot-separated labels', async () => {
+    const s = new TestServer(baseOpts);
+    s.canned = { ok: true, status: 200, url: 'x', body: '' };
+    await expect(s.get('/x', { subdomain: 'auth.api' })).resolves.toBeDefined();
   });
 
-  it('subdomain comparison is case-insensitive', () => {
-    expect(() => new TestServer({ ...baseOpts, subdomain: 'WWW.OpenTable.com' })).not.toThrow();
+  it('accepts labels with hyphens', async () => {
+    const s = new TestServer(baseOpts);
+    s.canned = { ok: true, status: 200, url: 'x', body: '' };
+    await expect(s.get('/x', { subdomain: 'us-west' })).resolves.toBeDefined();
+  });
+
+  it('subdomain case is preserved in URL', async () => {
+    const s = new TestServer(baseOpts);
+    s.canned = { ok: true, status: 200, url: 'x', body: '' };
+    await s.get('/x', { subdomain: 'WWW' });
+    expect(s.lastInit!.url).toBe('https://WWW.opentable.com/x');
   });
 });
