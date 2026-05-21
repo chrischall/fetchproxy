@@ -60,8 +60,16 @@ jobs:
           node -e "
             const fs = require('fs');
             const next = '${NEXT}';
+            // Every workspace that declares any `@fetchproxy/*` dep
+            // must be in this list — otherwise its ranges stay pinned
+            // to the previous version and downstream consumers end up
+            // with a mixed-version transitive tree (bootstrap@0.4.2 but
+            // protocol/server@0.4.0, etc.). Bootstrap was missing here
+            // through 0.4.2; consumers had to manually `npm update` the
+            // transitives.
             const files = [
               'packages/server/package.json',
+              'packages/bootstrap/package.json',
               'packages/extension-core/package.json',
               'packages/extension-chrome/package.json',
             ];
