@@ -139,6 +139,49 @@ describe('TrustStore (identity-hash keyed)', () => {
     expect(got!.capabilities).toEqual(['fetch', 'read_cookies']);
   });
 
+  it('treats malformed extensionVersionAtPair as a version mismatch (forces re-pair)', async () => {
+    // trust-store.ts:61-63 — `majorOf` guards against empty / NaN inputs
+    // by returning NaN, which never equals NaN under !==. The effect is
+    // that a record written with a bogus "version string" can't be auto-
+    // trusted from a normal extension version. This is the conservative
+    // path the user would actually want (anything weird → re-pair).
+    const store = new TrustStore('0.2.0');
+    const cs = (globalThis as { chrome?: { storage: { local: { set: (kv: Record<string, unknown>) => Promise<void> } } } }).chrome!.storage.local;
+    await cs.set({
+      trustedMcps: {
+        records: {
+          weird: {
+            serverName: 'a',
+            domains: ['a.com'],
+            capabilities: ['fetch'],
+            identityX25519Pub: 'X',
+            identityEd25519Pub: 'Y',
+            pairedAt: 1,
+            extensionVersionAtPair: '', // empty — `head` is '' → !head branch → NaN
+          },
+        },
+      },
+    });
+    expect(await store.get('weird')).toBeNull();
+    // Also exercise the "head is a non-numeric token" branch.
+    await cs.set({
+      trustedMcps: {
+        records: {
+          weird2: {
+            serverName: 'a',
+            domains: ['a.com'],
+            capabilities: ['fetch'],
+            identityX25519Pub: 'X',
+            identityEd25519Pub: 'Y',
+            pairedAt: 1,
+            extensionVersionAtPair: 'next.0.0',
+          },
+        },
+      },
+    });
+    expect(await store.get('weird2')).toBeNull();
+  });
+
   it('normalises pre-capability records to ["fetch"] on read', async () => {
     // Simulate a record stored before 0.2.0 added capabilities by writing
     // directly through the underlying storage layer without the field.
