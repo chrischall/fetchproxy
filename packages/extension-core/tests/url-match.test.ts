@@ -3,6 +3,7 @@ import {
   isUrlAllowedForDomain,
   isUrlAllowedForAnyDomain,
   isTabUrlMatch,
+  isTabUrlOnOrigin,
 } from '../src/lib/url-match.js';
 
 describe('isUrlAllowedForDomain', () => {
@@ -108,5 +109,50 @@ describe('arbitrary subdomain depth (0.3.0 regression)', () => {
 
   it('does not match a suffix collision', () => {
     expect(isUrlAllowedForDomain('https://x.evilinstructure.com/x', 'instructure.com')).toBe(false);
+  });
+});
+
+// 0.4.1: multi-vendor MCPs declare an apex `storageDomain` and the
+// extension must accept tabs on any subdomain of that apex. This is
+// the host-or-subdomain variant of `isTabUrlMatch` — used for tab
+// lookup when the MCP can't predict the exact subdomain at build
+// time (HoneyBook vendor portals, Canvas school subdomains, etc.).
+describe('isTabUrlOnOrigin', () => {
+  it('matches a tab on the exact origin host', () => {
+    expect(isTabUrlOnOrigin('https://hbportal.co/', 'https://hbportal.co')).toBe(true);
+    expect(isTabUrlOnOrigin('https://hbportal.co/app/x', 'https://hbportal.co')).toBe(true);
+  });
+
+  it('matches a tab on any subdomain of the origin host', () => {
+    expect(
+      isTabUrlOnOrigin(
+        'https://thesilkveileventsbyivy.hbportal.co/app/event/x',
+        'https://hbportal.co',
+      ),
+    ).toBe(true);
+    expect(
+      isTabUrlOnOrigin('https://a.b.c.instructure.com/x', 'https://instructure.com'),
+    ).toBe(true);
+  });
+
+  it('honors an explicit-subdomain target — still matches that subdomain', () => {
+    expect(isTabUrlOnOrigin('https://app.example.com/x', 'https://app.example.com')).toBe(true);
+    // … and sub-subdomains of it (rare, but consistent semantics).
+    expect(isTabUrlOnOrigin('https://eu.app.example.com/x', 'https://app.example.com')).toBe(true);
+  });
+
+  it('rejects suffix collisions', () => {
+    expect(isTabUrlOnOrigin('https://evilhbportal.co/', 'https://hbportal.co')).toBe(false);
+    expect(isTabUrlOnOrigin('https://x.evilhbportal.co/', 'https://hbportal.co')).toBe(false);
+  });
+
+  it('rejects unrelated hosts', () => {
+    expect(isTabUrlOnOrigin('https://example.com/x', 'https://hbportal.co')).toBe(false);
+  });
+
+  it('rejects non-http(s) and malformed origins', () => {
+    expect(isTabUrlOnOrigin('https://hbportal.co/', 'not-a-url')).toBe(false);
+    expect(isTabUrlOnOrigin('javascript:alert(1)', 'https://hbportal.co')).toBe(false);
+    expect(isTabUrlOnOrigin('file:///etc/passwd', 'https://hbportal.co')).toBe(false);
   });
 });
