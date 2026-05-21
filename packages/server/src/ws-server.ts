@@ -80,6 +80,33 @@ export class FetchproxyHttpError extends Error {
   }
 }
 
+/**
+ * Verify that `url`'s hostname is the declared `domain` or one of its
+ * subdomains. Used at construction time on `origin` + `tabUrl` and at
+ * call time on every resolved request URL. Throws on mismatch with a
+ * developer-friendly message.
+ */
+function assertHostInDomain(field: string, url: string, domain: string): void {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    throw new Error(`FetchproxyServer: ${field} is not a valid URL: ${JSON.stringify(url)}`);
+  }
+  if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
+    throw new Error(
+      `FetchproxyServer: ${field} must be http(s), got ${parsed.protocol} (${url})`,
+    );
+  }
+  const host = parsed.hostname.toLowerCase();
+  const expected = domain.toLowerCase();
+  if (host !== expected && !host.endsWith('.' + expected)) {
+    throw new Error(
+      `FetchproxyServer: ${field} host "${host}" is outside declared domain "${expected}" — must be "${expected}" or "*.${expected}"`,
+    );
+  }
+}
+
 interface ResolvedOpts {
   port: number;
   host: string;
@@ -106,6 +133,13 @@ export class FetchproxyServer {
 
   constructor(opts: FetchproxyServerOpts) {
     const origin = opts.origin ?? `https://${opts.domain}`;
+    const tabUrl = opts.tabUrl ?? `${origin}/`;
+    // Guard: origin and tabUrl must resolve to a host that the declared
+    // `domain` covers (exact match or subdomain). Catches misconfiguration
+    // at construction time rather than letting every fetch get refused
+    // by the extension's allowlist at runtime.
+    assertHostInDomain('origin', origin, opts.domain);
+    assertHostInDomain('tabUrl', tabUrl, opts.domain);
     this.opts = {
       port: opts.port ?? 37149,
       host: opts.host ?? '127.0.0.1',
@@ -114,7 +148,7 @@ export class FetchproxyServer {
       domain: opts.domain,
       identityDir: opts.identityDir,
       origin,
-      tabUrl: opts.tabUrl ?? `${origin}/`,
+      tabUrl,
     };
   }
 
@@ -179,6 +213,11 @@ export class FetchproxyServer {
       path.startsWith('http://') || path.startsWith('https://')
         ? path
         : `${this.opts.origin}${path}`;
+    // Guard: refuse to send any request whose resolved URL leaves the
+    // declared domain. The extension would refuse it anyway; this gives
+    // the MCP author a clear error at the call site instead of a generic
+    // "domain not allowed" from the bridge.
+    assertHostInDomain('request url', url, this.opts.domain);
     const init: FetchInit = {
       url,
       method,
