@@ -120,7 +120,19 @@ export function validateInnerFrame(raw: unknown): InnerFrame {
     assertObject(raw.init, 'inner.init');
     assertHttpUrl(raw.init.url, 'inner.init.url');
     assertString(raw.init.method, 'inner.init.method');
-    assertString(raw.init.tabUrl, 'inner.init.tabUrl');
+    assertHttpUrl(raw.init.tabUrl, 'inner.init.tabUrl');
+    if (raw.init.headers !== undefined) {
+      // Sweep nested headers object for prototype-pollution keys + non-plain proto.
+      assertObject(raw.init.headers, 'inner.init.headers');
+      for (const [k, v] of Object.entries(raw.init.headers)) {
+        if (typeof v !== 'string') {
+          throw new ProtocolError(`inner.init.headers[${k}]: must be string`);
+        }
+      }
+    }
+    if (raw.init.body !== undefined) {
+      assertString(raw.init.body, 'inner.init.body');
+    }
     return raw as unknown as InnerFrame;
   }
   if (t === 'response') {

@@ -163,6 +163,43 @@ describe('validateInnerFrame', () => {
     })).toThrow(/op/);
   });
 
+  it('rejects request with non-http(s) tabUrl', () => {
+    expect(() => validateInnerFrame({
+      type: 'request', id: 1, op: 'fetch',
+      init: { url: 'https://x', method: 'GET', tabUrl: 'javascript:alert(1)' },
+    })).toThrow(/tabUrl/);
+  });
+
+  it('rejects request with prototype-pollution in headers', () => {
+    expect(() => validateInnerFrame({
+      type: 'request', id: 1, op: 'fetch',
+      init: {
+        url: 'https://x', method: 'GET', tabUrl: 'https://x/',
+        headers: JSON.parse('{"__proto__":{"polluted":true}}'),
+      },
+    })).toThrow();
+  });
+
+  it('rejects request with non-string header value', () => {
+    expect(() => validateInnerFrame({
+      type: 'request', id: 1, op: 'fetch',
+      init: {
+        url: 'https://x', method: 'GET', tabUrl: 'https://x/',
+        headers: { 'X-Foo': 123 as unknown as string },
+      },
+    })).toThrow(/headers/);
+  });
+
+  it('rejects request with non-string body', () => {
+    expect(() => validateInnerFrame({
+      type: 'request', id: 1, op: 'fetch',
+      init: {
+        url: 'https://x', method: 'GET', tabUrl: 'https://x/',
+        body: 123 as unknown as string,
+      },
+    })).toThrow(/body/);
+  });
+
   it('accepts response ok=true', () => {
     expect(() => validateInnerFrame({
       type: 'response', id: 1, ok: true, status: 200,
