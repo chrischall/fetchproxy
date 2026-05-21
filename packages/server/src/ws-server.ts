@@ -12,6 +12,10 @@ export interface FetchproxyServerOpts {
   version: string;
   domain: string;
   identityDir?: string;
+  /** Full URL prefix prepended to relative paths. Defaults to `https://${domain}`. */
+  origin?: string;
+  /** Passed to the extension to pick which tab to fetch through. Defaults to `${origin}/`. */
+  tabUrl?: string;
 }
 
 export interface FetchResult {
@@ -26,6 +30,56 @@ export interface FetchResultError {
   error: string;
 }
 
+/** Public response shape returned by the convenience helpers. */
+export interface HttpResponse {
+  status: number;
+  body: string;
+  url: string;
+}
+
+/** Options accepted by `request()` and the verb helpers. */
+export interface RequestOpts {
+  headers?: Record<string, string>;
+  body?: string;
+  /**
+   * If provided, throws `FetchproxyHttpError` when the response status
+   * does not match. A number is matched exactly; an array means "must be in this set".
+   */
+  expectStatus?: number | number[];
+}
+
+/** Options accepted by JSON/HTML shortcuts (no `body` — provided positionally). */
+export interface BodylessRequestOpts {
+  headers?: Record<string, string>;
+  expectStatus?: number | number[];
+}
+
+/**
+ * Thrown when the fetchproxy bridge itself failed to relay the request
+ * (e.g. no signed-in tab, extension offline, transport error).
+ */
+export class FetchproxyProtocolError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'FetchproxyProtocolError';
+  }
+}
+
+/**
+ * Thrown when the upstream HTTP response did not match an explicit
+ * `expectStatus`. Carries the full response so the caller can inspect
+ * status / body / url.
+ */
+export class FetchproxyHttpError extends Error {
+  constructor(
+    public readonly response: HttpResponse,
+    message?: string,
+  ) {
+    super(message ?? `HTTP ${response.status} on ${response.url}`);
+    this.name = 'FetchproxyHttpError';
+  }
+}
+
 interface ResolvedOpts {
   port: number;
   host: string;
@@ -33,7 +87,11 @@ interface ResolvedOpts {
   version: string;
   domain: string;
   identityDir?: string;
+  origin: string;
+  tabUrl: string;
 }
+
+const DEFAULT_JSON_OK_STATUSES: readonly number[] = [200, 201, 202, 204];
 
 export class FetchproxyServer {
   public role: 'host' | 'peer' | null = null;
@@ -47,6 +105,7 @@ export class FetchproxyServer {
   private identity: Identity | null = null;
 
   constructor(opts: FetchproxyServerOpts) {
+    const origin = opts.origin ?? `https://${opts.domain}`;
     this.opts = {
       port: opts.port ?? 37149,
       host: opts.host ?? '127.0.0.1',
@@ -54,6 +113,8 @@ export class FetchproxyServer {
       version: opts.version,
       domain: opts.domain,
       identityDir: opts.identityDir,
+      origin,
+      tabUrl: opts.tabUrl ?? `${origin}/`,
     };
   }
 
@@ -102,6 +163,142 @@ export class FetchproxyServer {
       await this.peerHandle.sendInner(inner);
     }
     return pending;
+  }
+
+  /**
+   * Convenience wrapper around `fetch()` that resolves relative paths
+   * against the configured `origin`, throws on protocol errors, and
+   * optionally asserts on the response status.
+   */
+  async request(
+    method: string,
+    path: string,
+    opts: RequestOpts = {},
+  ): Promise<HttpResponse> {
+    const url =
+      path.startsWith('http://') || path.startsWith('https://')
+        ? path
+        : `${this.opts.origin}${path}`;
+    const init: FetchInit = {
+      url,
+      method,
+      tabUrl: this.opts.tabUrl,
+      headers: opts.headers,
+      body: opts.body,
+    };
+    const result = await this.fetch(init);
+    if (!result.ok) {
+      throw new FetchproxyProtocolError(result.error);
+    }
+    const response: HttpResponse = {
+      status: result.status,
+      body: result.body,
+      url: result.url,
+    };
+    if (opts.expectStatus !== undefined) {
+      const expected = opts.expectStatus;
+      const matched = Array.isArray(expected)
+        ? expected.includes(response.status)
+        : response.status === expected;
+      if (!matched) {
+        throw new FetchproxyHttpError(response);
+      }
+    }
+    return response;
+  }
+
+  get(path: string, opts: BodylessRequestOpts = {}): Promise<HttpResponse> {
+    return this.request('GET', path, opts);
+  }
+
+  post(
+    path: string,
+    body?: string,
+    opts: BodylessRequestOpts = {},
+  ): Promise<HttpResponse> {
+    return this.request('POST', path, { ...opts, body });
+  }
+
+  put(
+    path: string,
+    body?: string,
+    opts: BodylessRequestOpts = {},
+  ): Promise<HttpResponse> {
+    return this.request('PUT', path, { ...opts, body });
+  }
+
+  patch(
+    path: string,
+    body?: string,
+    opts: BodylessRequestOpts = {},
+  ): Promise<HttpResponse> {
+    return this.request('PATCH', path, { ...opts, body });
+  }
+
+  delete(path: string, opts: BodylessRequestOpts = {}): Promise<HttpResponse> {
+    return this.request('DELETE', path, opts);
+  }
+
+  /**
+   * GET a path and parse the response body as JSON. Throws
+   * `FetchproxyHttpError` if the status is outside the default 2xx
+   * happy-path set (`[200, 201, 202, 204]`); pass a custom
+   * `expectStatus` to override.
+   */
+  async getJson<T = unknown>(
+    path: string,
+    opts: BodylessRequestOpts = {},
+  ): Promise<T> {
+    const response = await this.get(path, this.applyJsonDefaults(opts));
+    return JSON.parse(response.body) as T;
+  }
+
+  /**
+   * POST a JSON body and parse the response body as JSON. The body is
+   * `JSON.stringify`'d; `Content-Type: application/json` is set unless
+   * the caller already provided one. Defaults `expectStatus` to the 2xx
+   * happy-path set.
+   */
+  async postJson<T = unknown>(
+    path: string,
+    body?: unknown,
+    opts: BodylessRequestOpts = {},
+  ): Promise<T> {
+    const headers = { ...(opts.headers ?? {}) };
+    if (body !== undefined && !this.hasContentType(headers)) {
+      headers['Content-Type'] = 'application/json';
+    }
+    const response = await this.request('POST', path, {
+      ...this.applyJsonDefaults(opts),
+      headers,
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+    return JSON.parse(response.body) as T;
+  }
+
+  /**
+   * GET a path and return the response body as a string. Throws
+   * `FetchproxyHttpError` if the status is outside the default 2xx
+   * happy-path set.
+   */
+  async getHtml(
+    path: string,
+    opts: BodylessRequestOpts = {},
+  ): Promise<string> {
+    const response = await this.get(path, this.applyJsonDefaults(opts));
+    return response.body;
+  }
+
+  private applyJsonDefaults(opts: BodylessRequestOpts): BodylessRequestOpts {
+    if (Object.prototype.hasOwnProperty.call(opts, 'expectStatus')) return opts;
+    return { ...opts, expectStatus: [...DEFAULT_JSON_OK_STATUSES] };
+  }
+
+  private hasContentType(headers: Record<string, string>): boolean {
+    for (const key of Object.keys(headers)) {
+      if (key.toLowerCase() === 'content-type') return true;
+    }
+    return false;
   }
 
   private onInner(inner: InnerFrame): void {
