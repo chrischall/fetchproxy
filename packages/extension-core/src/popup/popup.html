@@ -11,37 +11,40 @@
         padding: 12px;
         font-size: 14px;
       }
-      h1 { font-size: 16px; margin: 0 0 12px; }
-      .prompt {
-        background: #fff7e6;
-        border: 1px solid #f5c45e;
-        border-radius: 6px;
-        padding: 12px;
-        margin-bottom: 12px;
+      h3 { font-size: 16px; margin: 0 0 12px; }
+      .pair-code {
+        font-size: 28px;
+        font-weight: bold;
+        text-align: center;
+        margin: 14px 0;
+        letter-spacing: 3px;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
       }
-      .prompt .domain {
-        font-size: 18px;
-        font-weight: 600;
-        color: #b45309;
-        margin: 8px 0;
+      .warn {
+        color: #b91c1c;
+        padding: 8px;
+        background: #fef2f2;
+        border: 1px solid #fca5a5;
+        border-radius: 4px;
       }
-      .prompt .buttons { display: flex; gap: 8px; margin-top: 12px; }
-      .prompt button { flex: 1; padding: 8px; border-radius: 4px; border: 1px solid #ccc; cursor: pointer; }
-      .prompt button.always { background: #2563eb; color: white; border-color: #2563eb; }
-      .prompt button.block { background: #fef2f2; color: #b91c1c; border-color: #fca5a5; }
-      .mcp-row { display: flex; justify-content: space-between; align-items: center; padding: 6px 0; border-bottom: 1px solid #eee; }
-      .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; }
-      .dot.green { background: #22c55e; }
-      .dot.red { background: #ef4444; }
-      .dot.yellow { background: #eab308; }
-      .add-row { margin-top: 12px; display: flex; gap: 6px; }
-      .add-row input { flex: 1; padding: 6px; }
-      .add-row button { padding: 6px 12px; }
-      .empty { color: #6b7280; text-align: center; padding: 16px 0; }
+      .hint { color: #6b7280; font-size: 12px; }
+      .btn-row {
+        display: flex;
+        gap: 8px;
+        justify-content: flex-end;
+        margin-top: 12px;
+      }
+      button { padding: 8px 16px; cursor: pointer; border-radius: 4px; font-size: 14px; }
+      button[data-action="cancel"] { background: #eee; border: 1px solid #ccc; }
+      button[data-action="approve"] { background: #2563eb; color: white; border: 1px solid #2563eb; }
+      dl { margin: 0; }
+      dt { font-weight: bold; color: #374151; }
+      dd { margin: 0 0 8px 12px; color: #111; }
+      ul { padding-left: 20px; margin: 8px 0; }
+      li { padding: 2px 0; }
     </style>
   </head>
   <body>
-    <h1>fetchproxy</h1>
     <div id="root">Loading…</div>
     <script type="module" src="popup.js"></script>
   </body>

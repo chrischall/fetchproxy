@@ -11,6 +11,7 @@
     "@fetchproxy/protocol": "*"
   },
   "devDependencies": {
-    "@types/chrome": "^0.0.270"
+    "@types/chrome": "^0.0.270",
+    "jsdom": "^29.1.1"
   }
 }

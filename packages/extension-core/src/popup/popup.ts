@@ -1,117 +1,207 @@
-import { TrustStore, type TrustedMcp, type McpIdentity } from '../trust-store.js';
+/**
+ * Popup UI for the fetchproxy extension. Three modes:
+ *
+ *   - pending-pair: a new MCP is asking to pair. Show the SAS pair code
+ *     prominently with Approve / Cancel buttons (Cancel default-focused).
+ *   - status: no pending pair; list trusted MCPs (serverName → domain).
+ *   - empty: no pending, no trusted; show a brief connection hint.
+ *
+ * renderPopup is a pure DOM-rendering function (unit-tested). The bottom
+ * of this file is the bootstrap that reads chrome.storage state and
+ * wires Approve/Cancel callbacks to chrome.storage writes the background
+ * script picks up.
+ */
 
-interface ConfiguredPort {
-  port: number;
-  label?: string;
+import { TrustStore } from '../trust-store.js';
+
+const HIGH_RISK_KEYWORDS = ['bank', 'gov', 'mil'];
+
+export interface PendingPair {
+  serverName: string;
+  version: string;
+  domain: string;
+  pairCode: string;
 }
 
-interface PendingTrust extends McpIdentity {
-  requested_at: number;
+export interface TrustedSummary {
+  serverName: string;
+  domain: string;
 }
 
-const trust = new TrustStore(chrome.storage.local);
-const root = document.getElementById('root')!;
-
-const HIGH_RISK_DOMAINS = new Set(['bank', 'gov', 'mil']); // TLD-based; expanded in v2
+export type PopupState =
+  | { mode: 'empty' }
+  | { mode: 'status'; trusted: TrustedSummary[] }
+  | {
+      mode: 'pending-pair';
+      pending: PendingPair;
+      onApprove: () => void;
+      onCancel: () => void;
+    };
 
 function isHighRisk(domain: string): boolean {
-  const tld = domain.split('.').pop();
-  return tld ? HIGH_RISK_DOMAINS.has(tld) : false;
+  const d = domain.toLowerCase();
+  return HIGH_RISK_KEYWORDS.some((k) => d.includes(k));
 }
 
-async function render(): Promise<void> {
-  // 1) Pending trust prompts take priority.
-  const session = await chrome.storage.session.get();
-  const pending: PendingTrust[] = [];
-  for (const [k, v] of Object.entries(session)) {
-    if (k.startsWith('pendingTrust:')) pending.push(v as PendingTrust);
+function elem<K extends keyof HTMLElementTagNameMap>(
+  tag: K,
+  attrs: Partial<Record<string, string>> = {},
+  text?: string,
+): HTMLElementTagNameMap[K] {
+  const e = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) {
+    if (v !== undefined) e.setAttribute(k, v);
   }
-  if (pending.length > 0) {
-    renderPrompt(pending[0]!);
+  if (text !== undefined) e.textContent = text;
+  return e;
+}
+
+export function renderPopup(root: HTMLElement, state: PopupState): void {
+  root.innerHTML = '';
+
+  if (state.mode === 'empty') {
+    root.appendChild(
+      elem('p', {}, 'No MCP servers connected. Start an MCP server, then refresh.'),
+    );
     return;
   }
 
-  // 2) Status view.
-  const local = await chrome.storage.local.get('configuredPorts');
-  const configured: ConfiguredPort[] = (local.configuredPorts as ConfiguredPort[] | undefined) ?? [];
-  const trusted = await trust.list();
-  renderStatus(configured, trusted);
+  if (state.mode === 'status') {
+    root.appendChild(elem('h3', {}, 'Trusted MCPs'));
+    const ul = elem('ul');
+    for (const t of state.trusted) {
+      ul.appendChild(elem('li', {}, `${t.serverName} → ${t.domain}`));
+    }
+    root.appendChild(ul);
+    return;
+  }
+
+  // pending-pair
+  const { pending, onApprove, onCancel } = state;
+
+  root.appendChild(elem('h3', {}, 'Approve new MCP connection?'));
+
+  const dl = elem('dl');
+  const entries: [string, string][] = [
+    ['Server', `${pending.serverName} v${pending.version}`],
+    ['Domain', pending.domain],
+  ];
+  for (const [k, v] of entries) {
+    dl.appendChild(elem('dt', {}, k));
+    dl.appendChild(elem('dd', {}, v));
+  }
+  root.appendChild(dl);
+
+  if (isHighRisk(pending.domain)) {
+    root.appendChild(
+      elem('p', { class: 'warn' }, `WARNING: ${pending.domain} looks high-risk.`),
+    );
+  }
+
+  root.appendChild(elem('div', { class: 'pair-code' }, pending.pairCode));
+
+  root.appendChild(
+    elem(
+      'p',
+      { class: 'hint' },
+      "Verify this code matches the one shown in the server's terminal before approving.",
+    ),
+  );
+
+  const btnRow = elem('div', { class: 'btn-row' });
+
+  const cancel = elem('button', { 'data-action': 'cancel', autofocus: 'true' }, 'Cancel');
+  cancel.addEventListener('click', onCancel);
+
+  const approve = elem('button', { 'data-action': 'approve' }, 'Approve');
+  approve.addEventListener('click', onApprove);
+
+  btnRow.appendChild(cancel);
+  btnRow.appendChild(approve);
+  root.appendChild(btnRow);
 }
 
-function renderPrompt(p: PendingTrust): void {
-  const risky = isHighRisk(p.domain);
-  root.innerHTML = `
-    <div class="prompt">
-      <div>A new MCP server wants to relay HTTP requests through your browser:</div>
-      <div class="domain">${escape(p.domain)}</div>
-      <div style="font-size: 12px; color: #6b7280;">
-        Server: ${escape(p.server)} v${escape(p.version)}<br>
-        Port: ${p.port}
-      </div>
-      ${risky ? `<div style="margin-top: 8px; color: #b91c1c;">⚠️ High-risk domain (${escape(p.domain.split('.').pop() ?? '')}).</div>` : ''}
-      <div class="buttons">
-        <button class="block" id="block">Block</button>
-        <button id="once">Allow once</button>
-        <button class="always" id="always">Always allow</button>
-      </div>
-    </div>
-  `;
-  document.getElementById('block')!.addEventListener('click', async () => {
-    await chrome.storage.session.remove(`pendingTrust:${p.port}`);
-    render();
-  });
-  document.getElementById('once')!.addEventListener('click', async () => {
-    await trust.approve({ port: p.port, server: p.server, domain: p.domain, version: p.version }, 'once');
-    await chrome.storage.session.remove(`pendingTrust:${p.port}`);
-    render();
-  });
-  document.getElementById('always')!.addEventListener('click', async () => {
-    await trust.approve({ port: p.port, server: p.server, domain: p.domain, version: p.version }, 'always');
-    await chrome.storage.session.remove(`pendingTrust:${p.port}`);
-    render();
-  });
+// -------------------------------------------------------------------
+// Bootstrap (runs in popup context only — skipped in tests)
+// -------------------------------------------------------------------
+
+interface PendingPairRecord {
+  mcpId: string;
+  serverName: string;
+  version: string;
+  domain: string;
+  pairCode: string;
+  identityHash: string;
+  identityX25519Pub: string;
+  identityEd25519Pub: string;
+  sessionNonceB64: string;
 }
 
-function renderStatus(configured: ConfiguredPort[], trusted: TrustedMcp[]): void {
-  const rows = configured.map((c) => {
-    const t = trusted.find((m) => m.port === c.port);
-    const dot = t ? '<span class="dot green"></span>' : '<span class="dot yellow"></span>';
-    const label = t ? `${escape(t.server)} (${escape(t.domain)})` : `Port ${c.port} — waiting for trust`;
-    return `<div class="mcp-row">${dot}${label}<button data-port="${c.port}" class="remove">Remove</button></div>`;
-  });
-  root.innerHTML = `
-    ${rows.length === 0 ? '<div class="empty">No MCP servers configured. Add one below.</div>' : rows.join('')}
-    <div class="add-row">
-      <input id="port-input" type="number" placeholder="Port (e.g. 37149)">
-      <button id="add">Add</button>
-    </div>
-  `;
-  document.querySelectorAll<HTMLButtonElement>('button.remove').forEach((btn) => {
-    btn.addEventListener('click', async () => {
-      const port = Number(btn.dataset.port);
-      const local = await chrome.storage.local.get('configuredPorts');
-      const list = ((local.configuredPorts as ConfiguredPort[] | undefined) ?? []).filter((c) => c.port !== port);
-      await chrome.storage.local.set({ configuredPorts: list });
-      const found = trusted.find((m) => m.port === port);
-      if (found) await trust.revoke({ port: found.port, server: found.server, domain: found.domain });
-      render();
+declare const chrome: {
+  runtime?: { getManifest: () => { version: string } };
+  storage?: {
+    local: {
+      get: (k: string | string[]) => Promise<Record<string, unknown>>;
+      set: (kv: Record<string, unknown>) => Promise<void>;
+      remove: (k: string) => Promise<void>;
+    };
+  };
+};
+
+async function bootstrap(): Promise<void> {
+  const root = document.getElementById('root');
+  if (!root) return;
+  if (typeof chrome === 'undefined' || !chrome.storage) {
+    renderPopup(root, { mode: 'empty' });
+    return;
+  }
+  const got = await chrome.storage.local.get(['pendingPair']);
+  const pending = got['pendingPair'] as PendingPairRecord | undefined;
+  if (pending) {
+    renderPopup(root, {
+      mode: 'pending-pair',
+      pending: {
+        serverName: pending.serverName,
+        version: pending.version,
+        domain: pending.domain,
+        pairCode: pending.pairCode,
+      },
+      onApprove: () => {
+        void chrome.storage!.local.set({ approvedPair: pending });
+        void chrome.storage!.local.remove('pendingPair');
+        renderPopup(root, { mode: 'status', trusted: [] });
+      },
+      onCancel: () => {
+        void chrome.storage!.local.remove('pendingPair');
+        renderPopup(root, { mode: 'empty' });
+      },
     });
-  });
-  document.getElementById('add')!.addEventListener('click', async () => {
-    const input = document.getElementById('port-input') as HTMLInputElement;
-    const port = Number(input.value);
-    if (!Number.isInteger(port) || port < 1 || port > 65535) return;
-    const local = await chrome.storage.local.get('configuredPorts');
-    const list = ((local.configuredPorts as ConfiguredPort[] | undefined) ?? []).filter((c) => c.port !== port);
-    list.push({ port });
-    await chrome.storage.local.set({ configuredPorts: list });
-    render();
-  });
+    return;
+  }
+  const ev = chrome.runtime?.getManifest().version ?? '0.1.0';
+  const trust = new TrustStore(ev);
+  const records = await trust.list();
+  const trustedList = Object.values(records).map((r) => ({
+    serverName: r.serverName,
+    domain: r.domain,
+  }));
+  if (trustedList.length === 0) {
+    renderPopup(root, { mode: 'empty' });
+  } else {
+    renderPopup(root, { mode: 'status', trusted: trustedList });
+  }
 }
 
-function escape(s: string): string {
-  return s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!);
+// Only run in popup context, not under vitest.
+if (
+  typeof document !== 'undefined' &&
+  typeof window !== 'undefined' &&
+  document.getElementById('root')
+) {
+  // In jsdom tests we put <div id="root"></div> in document.body but we
+  // don't want bootstrap firing on import. The check below distinguishes:
+  // a real popup has chrome.storage; jsdom doesn't.
+  if (typeof (globalThis as { chrome?: unknown }).chrome !== 'undefined') {
+    void bootstrap();
+  }
 }
-
-render();
-chrome.storage.onChanged.addListener(() => render());
