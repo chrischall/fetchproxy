@@ -578,6 +578,358 @@ describe('readCookies()', () => {
   });
 });
 
+// -------------------------------------------------------------------
+// 0.3.0 — scope declarations + new bootstrap verbs.
+// -------------------------------------------------------------------
+
+describe('0.3.0 scope declarations on FetchproxyServer', () => {
+  it('rejects an unknown cookieKeys entry at the call site', async () => {
+    const s = new FetchproxyServer({
+      serverName: 'ofw-mcp',
+      version: '0.5.0',
+      domains: ['ourfamilywizard.com'],
+      capabilities: ['fetch', 'read_cookies'],
+      cookieKeys: ['MTOKEN', 'CKAT'],
+    });
+    installFakeHost(s);
+    await expect(s.readCookies({ keys: ['NOT_DECLARED'] })).rejects.toThrow(
+      /not in declared cookieKeys/,
+    );
+  });
+
+  it('rejects readCookies({ keys }) when no cookieKeys were declared', async () => {
+    const s = new FetchproxyServer({
+      serverName: 'ofw-mcp',
+      version: '0.5.0',
+      domains: ['ourfamilywizard.com'],
+      capabilities: ['fetch', 'read_cookies'],
+    });
+    installFakeHost(s);
+    await expect(s.readCookies({ keys: ['anything'] })).rejects.toThrow(
+      /not in declared cookieKeys/,
+    );
+  });
+
+  it('emits the new {origin, keys} inner shape when keys is provided', async () => {
+    const s = new FetchproxyServer({
+      serverName: 'ofw-mcp',
+      version: '0.5.0',
+      domains: ['ourfamilywizard.com'],
+      capabilities: ['fetch', 'read_cookies'],
+      cookieKeys: ['MTOKEN', 'CKAT'],
+    });
+    const fake = installFakeHost(s);
+    const promise = s.readCookies({ keys: ['MTOKEN'] });
+    await new Promise((r) => setTimeout(r, 0));
+    const inner = fake.lastInner();
+    expect(inner).not.toBeNull();
+    expect(inner!.type).toBe('request');
+    if (inner!.op === 'read_cookies') {
+      expect('origin' in inner!.init).toBe(true);
+      if ('origin' in inner!.init) {
+        expect(inner!.init.origin).toBe('https://ourfamilywizard.com');
+        expect(inner!.init.keys).toEqual(['MTOKEN']);
+      }
+    }
+    fake.reply({
+      type: 'response',
+      id: inner!.id,
+      ok: true,
+      op: 'read_cookies',
+      values: { MTOKEN: 'ey...' },
+    });
+    // Back-compat surface is a Promise<string>, so the values map is
+    // serialised the same way `document.cookie` would render.
+    await expect(promise).resolves.toBe('MTOKEN=ey...');
+  });
+
+  it("readCookies() without keys arg keeps the legacy {tabUrl} shape", async () => {
+    const s = new FetchproxyServer({
+      serverName: 'test-mcp',
+      version: '0.0.1',
+      domains: ['example.com'],
+      capabilities: ['fetch', 'read_cookies'],
+    });
+    const fake = installFakeHost(s);
+    const promise = s.readCookies();
+    await new Promise((r) => setTimeout(r, 0));
+    const inner = fake.lastInner();
+    if (inner!.op === 'read_cookies' && 'tabUrl' in inner!.init) {
+      expect(inner!.init.tabUrl).toBe('https://example.com/');
+    } else {
+      throw new Error('expected legacy tabUrl shape');
+    }
+    fake.reply({
+      type: 'response',
+      id: inner!.id,
+      ok: true,
+      op: 'read_cookies',
+      cookies: 'k=v',
+    });
+    await expect(promise).resolves.toBe('k=v');
+  });
+});
+
+describe('readLocalStorage()', () => {
+  it('throws if "read_local_storage" was not declared', async () => {
+    const s = new FetchproxyServer({
+      serverName: 'ofw-mcp',
+      version: '0.5.0',
+      domains: ['ourfamilywizard.com'],
+      // no capabilities decl -> defaults to ['fetch']
+      localStorageKeys: ['auth'],
+    });
+    installFakeHost(s);
+    await expect(s.readLocalStorage({ keys: ['auth'] })).rejects.toThrow(
+      /read_local_storage/,
+    );
+  });
+
+  it('throws if called before listen()', async () => {
+    const s = new FetchproxyServer({
+      serverName: 'ofw-mcp',
+      version: '0.5.0',
+      domains: ['ourfamilywizard.com'],
+      capabilities: ['fetch', 'read_local_storage'],
+      localStorageKeys: ['auth'],
+    });
+    await expect(s.readLocalStorage({ keys: ['auth'] })).rejects.toThrow(/before listen/);
+  });
+
+  it('rejects an undeclared localStorage key', async () => {
+    const s = new FetchproxyServer({
+      serverName: 'ofw-mcp',
+      version: '0.5.0',
+      domains: ['ourfamilywizard.com'],
+      capabilities: ['fetch', 'read_local_storage'],
+      localStorageKeys: ['auth'],
+    });
+    installFakeHost(s);
+    await expect(s.readLocalStorage({ keys: ['nope'] })).rejects.toThrow(
+      /not in declared localStorageKeys/,
+    );
+  });
+
+  it('rejects an empty keys arg', async () => {
+    const s = new FetchproxyServer({
+      serverName: 'ofw-mcp',
+      version: '0.5.0',
+      domains: ['ourfamilywizard.com'],
+      capabilities: ['fetch', 'read_local_storage'],
+      localStorageKeys: ['auth'],
+    });
+    installFakeHost(s);
+    await expect(s.readLocalStorage({ keys: [] })).rejects.toThrow(/non-empty/);
+  });
+
+  it('emits a read_local_storage inner request and resolves to values', async () => {
+    const s = new FetchproxyServer({
+      serverName: 'ofw-mcp',
+      version: '0.5.0',
+      domains: ['ourfamilywizard.com'],
+      capabilities: ['fetch', 'read_local_storage'],
+      localStorageKeys: ['auth', 'tokenExpiry'],
+    });
+    const fake = installFakeHost(s);
+    const promise = s.readLocalStorage({ keys: ['auth', 'tokenExpiry'] });
+    await new Promise((r) => setTimeout(r, 0));
+    const inner = fake.lastInner();
+    expect(inner).not.toBeNull();
+    expect(inner!.op).toBe('read_local_storage');
+    if (inner!.op === 'read_local_storage') {
+      expect(inner!.init.origin).toBe('https://ourfamilywizard.com');
+      expect(inner!.init.keys).toEqual(['auth', 'tokenExpiry']);
+    }
+    fake.reply({
+      type: 'response',
+      id: inner!.id,
+      ok: true,
+      op: 'read_local_storage',
+      values: { auth: 'ey...', tokenExpiry: '1730000000000' },
+    });
+    await expect(promise).resolves.toEqual({
+      auth: 'ey...',
+      tokenExpiry: '1730000000000',
+    });
+  });
+
+  it('surfaces an error response as FetchproxyProtocolError', async () => {
+    const s = new FetchproxyServer({
+      serverName: 'ofw-mcp',
+      version: '0.5.0',
+      domains: ['ourfamilywizard.com'],
+      capabilities: ['fetch', 'read_local_storage'],
+      localStorageKeys: ['auth'],
+    });
+    const fake = installFakeHost(s);
+    const promise = s.readLocalStorage({ keys: ['auth'] });
+    await new Promise((r) => setTimeout(r, 0));
+    const inner = fake.lastInner();
+    fake.reply({
+      type: 'response',
+      id: inner!.id,
+      ok: false,
+      op: 'read_local_storage',
+      error: 'no tab matching',
+    });
+    await expect(promise).rejects.toThrow(FetchproxyProtocolError);
+  });
+});
+
+describe('readSessionStorage()', () => {
+  it('throws if "read_session_storage" was not declared', async () => {
+    const s = new FetchproxyServer({
+      serverName: 'ofw-mcp',
+      version: '0.5.0',
+      domains: ['ourfamilywizard.com'],
+    });
+    installFakeHost(s);
+    await expect(s.readSessionStorage({ keys: ['x'] })).rejects.toThrow(
+      /read_session_storage/,
+    );
+  });
+
+  it('emits a read_session_storage inner request', async () => {
+    const s = new FetchproxyServer({
+      serverName: 'ofw-mcp',
+      version: '0.5.0',
+      domains: ['ourfamilywizard.com'],
+      capabilities: ['fetch', 'read_session_storage'],
+      sessionStorageKeys: ['anon-id'],
+    });
+    const fake = installFakeHost(s);
+    const promise = s.readSessionStorage({ keys: ['anon-id'] });
+    await new Promise((r) => setTimeout(r, 0));
+    const inner = fake.lastInner();
+    expect(inner!.op).toBe('read_session_storage');
+    fake.reply({
+      type: 'response',
+      id: inner!.id,
+      ok: true,
+      op: 'read_session_storage',
+      values: { 'anon-id': 'abc' },
+    });
+    await expect(promise).resolves.toEqual({ 'anon-id': 'abc' });
+  });
+});
+
+describe('captureRequestHeader()', () => {
+  const headerOpts = {
+    serverName: 'honeybook-mcp',
+    version: '0.1.0',
+    domains: ['honeybook.com'],
+    capabilities: ['fetch', 'capture_request_header'] as const,
+    captureHeaders: [
+      { urlPattern: 'https://api.honeybook.com/api/v2/*', headerName: 'hb-api-fingerprint' },
+    ],
+  };
+
+  it('throws if "capture_request_header" was not declared', async () => {
+    const s = new FetchproxyServer({
+      serverName: 'honeybook-mcp',
+      version: '0.1.0',
+      domains: ['honeybook.com'],
+    });
+    installFakeHost(s);
+    await expect(
+      s.captureRequestHeader({
+        urlPattern: 'https://api.honeybook.com/api/v2/*',
+        headerName: 'hb-api-fingerprint',
+      }),
+    ).rejects.toThrow(/capture_request_header/);
+  });
+
+  it('rejects an undeclared (urlPattern, headerName) pair', async () => {
+    const s = new FetchproxyServer(headerOpts);
+    installFakeHost(s);
+    await expect(
+      s.captureRequestHeader({
+        urlPattern: 'https://api.honeybook.com/api/v3/*',
+        headerName: 'hb-api-fingerprint',
+      }),
+    ).rejects.toThrow(/not declared/);
+  });
+
+  it('rejects an undeclared headerName even when urlPattern matches', async () => {
+    const s = new FetchproxyServer(headerOpts);
+    installFakeHost(s);
+    await expect(
+      s.captureRequestHeader({
+        urlPattern: 'https://api.honeybook.com/api/v2/*',
+        headerName: 'X-Other',
+      }),
+    ).rejects.toThrow(/not declared/);
+  });
+
+  it('emits a capture_request_header inner request and resolves to the value', async () => {
+    const s = new FetchproxyServer(headerOpts);
+    const fake = installFakeHost(s);
+    const promise = s.captureRequestHeader({
+      urlPattern: 'https://api.honeybook.com/api/v2/*',
+      headerName: 'hb-api-fingerprint',
+    });
+    await new Promise((r) => setTimeout(r, 0));
+    const inner = fake.lastInner();
+    expect(inner).not.toBeNull();
+    expect(inner!.op).toBe('capture_request_header');
+    if (inner!.op === 'capture_request_header') {
+      expect(inner!.init.urlPattern).toBe('https://api.honeybook.com/api/v2/*');
+      expect(inner!.init.headerName).toBe('hb-api-fingerprint');
+    }
+    fake.reply({
+      type: 'response',
+      id: inner!.id,
+      ok: true,
+      op: 'capture_request_header',
+      value: 'fp-abc123',
+    });
+    await expect(promise).resolves.toBe('fp-abc123');
+  });
+
+  it('threads timeoutMs onto the inner request', async () => {
+    const s = new FetchproxyServer(headerOpts);
+    const fake = installFakeHost(s);
+    const promise = s.captureRequestHeader({
+      urlPattern: 'https://api.honeybook.com/api/v2/*',
+      headerName: 'hb-api-fingerprint',
+      timeoutMs: 5000,
+    });
+    await new Promise((r) => setTimeout(r, 0));
+    const inner = fake.lastInner();
+    if (inner!.op === 'capture_request_header') {
+      expect(inner!.init.timeoutMs).toBe(5000);
+    }
+    fake.reply({
+      type: 'response',
+      id: inner!.id,
+      ok: true,
+      op: 'capture_request_header',
+      value: 'x',
+    });
+    await promise;
+  });
+
+  it('surfaces a timeout error response as FetchproxyProtocolError', async () => {
+    const s = new FetchproxyServer(headerOpts);
+    const fake = installFakeHost(s);
+    const promise = s.captureRequestHeader({
+      urlPattern: 'https://api.honeybook.com/api/v2/*',
+      headerName: 'hb-api-fingerprint',
+    });
+    await new Promise((r) => setTimeout(r, 0));
+    const inner = fake.lastInner();
+    fake.reply({
+      type: 'response',
+      id: inner!.id,
+      ok: false,
+      op: 'capture_request_header',
+      error: 'timeout',
+    });
+    await expect(promise).rejects.toThrow(FetchproxyProtocolError);
+    await expect(promise).rejects.toThrow(/timeout/);
+  });
+});
+
 describe('URL guard (assertUrlInDomains)', () => {
   it('rejects path arg that cannot be parsed as a URL', async () => {
     // ws-server.ts:153 — `new URL(...)` throw caught and re-wrapped.

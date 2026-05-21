@@ -1,5 +1,11 @@
 import { generateMcpId, KNOWN_CAPABILITIES } from '@fetchproxy/protocol';
-import type { Capability, InnerFrame, FetchInit } from '@fetchproxy/protocol';
+import type {
+  Capability,
+  CaptureHeaderDecl,
+  InnerFrame,
+  FetchInit,
+  ReadCookiesInitV3,
+} from '@fetchproxy/protocol';
 import { electRole } from './election.js';
 import { startHost, type HostHandle } from './host.js';
 import { startPeer, type PeerHandle } from './peer.js';
@@ -33,6 +39,21 @@ export interface FetchproxyServerOpts {
    * Changing the set after a pair forces the user to re-approve.
    */
   capabilities?: Capability[];
+  /**
+   * 0.3.0+: declared cookie names the MCP is allowed to read via
+   * `readCookies({ keys })`. Each call's `keys` is checked subset-of this
+   * list at the call site (gate #1); the extension re-checks against the
+   * pair-approved trust record (gate #2). Empty/absent means cookie
+   * reads with explicit keys are not permitted — back-compat
+   * `readCookies()` without `keys` arg still works.
+   */
+  cookieKeys?: string[];
+  /** 0.3.0+: declared localStorage keys for `readLocalStorage`. */
+  localStorageKeys?: string[];
+  /** 0.3.0+: declared sessionStorage keys for `readSessionStorage`. */
+  sessionStorageKeys?: string[];
+  /** 0.3.0+: declared (urlPattern, headerName) pairs for `captureRequestHeader`. */
+  captureHeaders?: CaptureHeaderDecl[];
   identityDir?: string;
 }
 
@@ -175,6 +196,10 @@ interface ResolvedOpts {
   version: string;
   domains: string[];
   capabilities: Capability[];
+  cookieKeys: string[];
+  localStorageKeys: string[];
+  sessionStorageKeys: string[];
+  captureHeaders: CaptureHeaderDecl[];
   identityDir?: string;
 }
 
@@ -225,6 +250,18 @@ export class FetchproxyServer {
     number,
     (r: ReadCookiesResult | ReadCookiesResultError) => void
   >();
+  // 0.3.0+: storage-read awaiters resolve a values map directly. We split
+  // them off from `pending` (fetch) and `pendingReadCookies` (legacy
+  // string-shape) so the response routing in `onInner` stays linear.
+  private pendingStorage = new Map<
+    number,
+    { resolve: (v: Record<string, string>) => void; reject: (e: Error) => void }
+  >();
+  // 0.3.0+: capture-header awaiters resolve a single string.
+  private pendingCapture = new Map<
+    number,
+    { resolve: (v: string) => void; reject: (e: Error) => void }
+  >();
   private mcpId: string | null = null;
   private identity: Identity | null = null;
 
@@ -264,6 +301,13 @@ export class FetchproxyServer {
       version: opts.version,
       domains: [...opts.domains],
       capabilities,
+      cookieKeys: [...(opts.cookieKeys ?? [])],
+      localStorageKeys: [...(opts.localStorageKeys ?? [])],
+      sessionStorageKeys: [...(opts.sessionStorageKeys ?? [])],
+      captureHeaders: (opts.captureHeaders ?? []).map((d) => ({
+        urlPattern: d.urlPattern,
+        headerName: d.headerName,
+      })),
       identityDir: opts.identityDir,
     };
   }
@@ -290,6 +334,10 @@ export class FetchproxyServer {
         ownVersion: this.opts.version,
         ownDomains: this.opts.domains,
         ownCapabilities: this.opts.capabilities,
+        ownCookieKeys: this.opts.cookieKeys,
+        ownLocalStorageKeys: this.opts.localStorageKeys,
+        ownSessionStorageKeys: this.opts.sessionStorageKeys,
+        ownCaptureHeaders: this.opts.captureHeaders,
       });
       this.hostHandle.onOwnInner((inner) => this.onInner(inner));
     } else {
@@ -303,6 +351,10 @@ export class FetchproxyServer {
         version: this.opts.version,
         domains: this.opts.domains,
         capabilities: this.opts.capabilities,
+        cookieKeys: this.opts.cookieKeys,
+        localStorageKeys: this.opts.localStorageKeys,
+        sessionStorageKeys: this.opts.sessionStorageKeys,
+        captureHeaders: this.opts.captureHeaders,
       });
       this.peerHandle.onInner((inner) => this.onInner(inner));
     }
@@ -508,7 +560,7 @@ export class FetchproxyServer {
    * the request (no signed-in tab, extension offline, etc.).
    */
   async readCookies(
-    opts: { domain?: string; subdomain?: string } = {},
+    opts: { domain?: string; subdomain?: string; keys?: string[] } = {},
   ): Promise<string> {
     if (!this.opts.capabilities.includes('read_cookies')) {
       throw new Error(
@@ -521,14 +573,25 @@ export class FetchproxyServer {
     if (opts.subdomain !== undefined) assertSubdomainLabel(opts.subdomain);
     const baseDomain = this.resolveBaseDomain(opts.domain);
     const host = opts.subdomain ? `${opts.subdomain}.${baseDomain}` : baseDomain;
-    const tabUrl = `https://${host}/`;
     const id = this.nextRequestId++;
-    const inner: InnerFrame = {
-      type: 'request',
-      id,
-      op: 'read_cookies',
-      init: { tabUrl },
-    };
+    let inner: InnerFrame;
+    if (opts.keys !== undefined) {
+      // 0.3.0 shape: origin + keys → values. Enforce keys ⊆ declared
+      // cookieKeys at the call site (gate #1). Extension re-checks on
+      // its end (gate #2).
+      this.assertScopeSubset(opts.keys, this.opts.cookieKeys, 'cookieKeys');
+      const initV3: ReadCookiesInitV3 = {
+        origin: `https://${host}`,
+        keys: [...opts.keys],
+      };
+      inner = { type: 'request', id, op: 'read_cookies', init: initV3 };
+    } else {
+      // Legacy 0.2.0 shape — kept for back-compat with callers that
+      // don't pass `keys`. The extension routes this through the
+      // document.cookie path (non-HttpOnly only).
+      const tabUrl = `https://${host}/`;
+      inner = { type: 'request', id, op: 'read_cookies', init: { tabUrl } };
+    }
     const pending = new Promise<ReadCookiesResult | ReadCookiesResultError>((resolve) => {
       this.pendingReadCookies.set(id, resolve);
     });
@@ -542,6 +605,145 @@ export class FetchproxyServer {
       throw new FetchproxyProtocolError(result.error);
     }
     return result.cookies;
+  }
+
+  /**
+   * 0.3.0+: read declared localStorage keys from the user's signed-in
+   * tab. Requires `'read_local_storage'` in capabilities AND each key
+   * to be in declared `localStorageKeys`. Returns a `Record<string, string>`
+   * including only keys that exist in storage.
+   */
+  async readLocalStorage(opts: {
+    domain?: string;
+    subdomain?: string;
+    keys: string[];
+  }): Promise<Record<string, string>> {
+    return this.readStorageImpl('read_local_storage', this.opts.localStorageKeys, opts, 'localStorageKeys');
+  }
+
+  /**
+   * 0.3.0+: read declared sessionStorage keys. Identical shape to
+   * `readLocalStorage` but against sessionStorage.
+   */
+  async readSessionStorage(opts: {
+    domain?: string;
+    subdomain?: string;
+    keys: string[];
+  }): Promise<Record<string, string>> {
+    return this.readStorageImpl(
+      'read_session_storage',
+      this.opts.sessionStorageKeys,
+      opts,
+      'sessionStorageKeys',
+    );
+  }
+
+  private async readStorageImpl(
+    op: 'read_local_storage' | 'read_session_storage',
+    declaredKeys: string[],
+    opts: { domain?: string; subdomain?: string; keys: string[] },
+    declLabel: string,
+  ): Promise<Record<string, string>> {
+    if (!this.opts.capabilities.includes(op)) {
+      throw new Error(
+        `FetchproxyServer.${op === 'read_local_storage' ? 'readLocalStorage' : 'readSessionStorage'}(): MCP did not declare ${JSON.stringify(op)} in capabilities`,
+      );
+    }
+    if (!this.hostHandle && !this.peerHandle) {
+      throw new Error(`FetchproxyServer.${op} called before listen() — not listening`);
+    }
+    if (!Array.isArray(opts.keys) || opts.keys.length === 0) {
+      throw new Error(`FetchproxyServer.${op}: opts.keys must be a non-empty array`);
+    }
+    this.assertScopeSubset(opts.keys, declaredKeys, declLabel);
+    if (opts.subdomain !== undefined) assertSubdomainLabel(opts.subdomain);
+    const baseDomain = this.resolveBaseDomain(opts.domain);
+    const host = opts.subdomain ? `${opts.subdomain}.${baseDomain}` : baseDomain;
+    const id = this.nextRequestId++;
+    const inner: InnerFrame = {
+      type: 'request',
+      id,
+      op,
+      init: { origin: `https://${host}`, keys: [...opts.keys] },
+    };
+    const pending = new Promise<Record<string, string>>((resolve, reject) => {
+      this.pendingStorage.set(id, { resolve, reject });
+    });
+    if (this.hostHandle) {
+      await this.hostHandle.sendOwnInner(inner);
+    } else if (this.peerHandle) {
+      await this.peerHandle.sendInner(inner);
+    }
+    return pending;
+  }
+
+  /**
+   * 0.3.0+: snapshot the next outgoing request's named header. Single-
+   * shot: the extension registers a one-time `webRequest` listener
+   * filtered on `urlPattern`, captures the named header on the first
+   * match, removes itself, and resolves with the value. Times out
+   * after `timeoutMs` (default 30s on the extension).
+   *
+   * `(urlPattern, headerName)` must exactly match a declared entry in
+   * `FetchproxyServerOpts.captureHeaders`.
+   */
+  async captureRequestHeader(opts: {
+    urlPattern: string;
+    headerName: string;
+    timeoutMs?: number;
+  }): Promise<string> {
+    if (!this.opts.capabilities.includes('capture_request_header')) {
+      throw new Error(
+        'FetchproxyServer.captureRequestHeader(): MCP did not declare "capture_request_header" in capabilities',
+      );
+    }
+    if (!this.hostHandle && !this.peerHandle) {
+      throw new Error('FetchproxyServer.captureRequestHeader called before listen() — not listening');
+    }
+    const declared = this.opts.captureHeaders.find(
+      (d) => d.urlPattern === opts.urlPattern && d.headerName === opts.headerName,
+    );
+    if (!declared) {
+      throw new Error(
+        `FetchproxyServer.captureRequestHeader: (urlPattern=${JSON.stringify(opts.urlPattern)}, headerName=${JSON.stringify(opts.headerName)}) not declared in captureHeaders`,
+      );
+    }
+    const id = this.nextRequestId++;
+    const inner: InnerFrame = {
+      type: 'request',
+      id,
+      op: 'capture_request_header',
+      init: {
+        urlPattern: opts.urlPattern,
+        headerName: opts.headerName,
+        ...(opts.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
+      },
+    };
+    const pending = new Promise<string>((resolve, reject) => {
+      this.pendingCapture.set(id, { resolve, reject });
+    });
+    if (this.hostHandle) {
+      await this.hostHandle.sendOwnInner(inner);
+    } else if (this.peerHandle) {
+      await this.peerHandle.sendInner(inner);
+    }
+    return pending;
+  }
+
+  private assertScopeSubset(
+    requested: readonly string[],
+    declared: readonly string[],
+    label: string,
+  ): void {
+    const declaredSet = new Set(declared);
+    const undeclared = requested.filter((k) => !declaredSet.has(k));
+    if (undeclared.length > 0) {
+      throw new Error(
+        `FetchproxyServer: requested key(s) [${undeclared
+          .map((k) => JSON.stringify(k))
+          .join(', ')}] not in declared ${label} [${declared.map((k) => JSON.stringify(k)).join(', ')}]`,
+      );
+    }
   }
 
   private resolveBaseDomain(domain: string | undefined): string {
@@ -601,6 +803,45 @@ export class FetchproxyServer {
         }
       } else {
         fetchCb({ ok: false, error: inner.error });
+      }
+      return;
+    }
+    const storageCb = this.pendingStorage.get(inner.id);
+    if (storageCb) {
+      this.pendingStorage.delete(inner.id);
+      if (inner.ok) {
+        if (
+          (inner.op === 'read_local_storage' || inner.op === 'read_session_storage') &&
+          inner.values
+        ) {
+          storageCb.resolve({ ...inner.values });
+        } else {
+          storageCb.reject(
+            new FetchproxyProtocolError(
+              `unexpected ${String(inner.op)} response on storage awaiter`,
+            ),
+          );
+        }
+      } else {
+        storageCb.reject(new FetchproxyProtocolError(inner.error));
+      }
+      return;
+    }
+    const captureCb = this.pendingCapture.get(inner.id);
+    if (captureCb) {
+      this.pendingCapture.delete(inner.id);
+      if (inner.ok) {
+        if (inner.op === 'capture_request_header' && typeof inner.value === 'string') {
+          captureCb.resolve(inner.value);
+        } else {
+          captureCb.reject(
+            new FetchproxyProtocolError(
+              `unexpected ${String(inner.op)} response on capture awaiter`,
+            ),
+          );
+        }
+      } else {
+        captureCb.reject(new FetchproxyProtocolError(inner.error));
       }
       return;
     }

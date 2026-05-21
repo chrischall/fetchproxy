@@ -4,6 +4,7 @@ import {
   ed25519Sign,
   toB64,
   type Capability,
+  type CaptureHeaderDecl,
   type HelloFrameFromServer,
 } from '@fetchproxy/protocol';
 import type { Identity } from './identity.js';
@@ -22,6 +23,11 @@ export interface BuildServerHelloOpts {
   domains: string[];
   /** Optional. Defaults to `['fetch']` to preserve pre-capability behavior. */
   capabilities?: Capability[];
+  /** 0.3.0+: declared scope. Omitted from the wire when empty/absent. */
+  cookieKeys?: string[];
+  localStorageKeys?: string[];
+  sessionStorageKeys?: string[];
+  captureHeaders?: CaptureHeaderDecl[];
 }
 
 /**
@@ -43,7 +49,7 @@ export async function buildServerHello(
     opts.identity.ed25519Priv,
     concatBytes(new TextEncoder().encode(opts.mcpId), sessionNonce),
   );
-  return {
+  const hello: HelloFrameFromServer = {
     type: 'hello',
     protocolVersion: PROTOCOL_VERSION,
     role: 'server',
@@ -57,4 +63,23 @@ export async function buildServerHello(
     sessionNonce: toB64(sessionNonce),
     sessionSig: toB64(sig),
   };
+  // Only emit non-empty scope fields. Keeps the wire compact for the
+  // fetch-only common case and makes the security-significant decls
+  // (which the popup shows the user) obvious by their presence.
+  if (opts.cookieKeys && opts.cookieKeys.length > 0) {
+    hello.cookieKeys = [...opts.cookieKeys];
+  }
+  if (opts.localStorageKeys && opts.localStorageKeys.length > 0) {
+    hello.localStorageKeys = [...opts.localStorageKeys];
+  }
+  if (opts.sessionStorageKeys && opts.sessionStorageKeys.length > 0) {
+    hello.sessionStorageKeys = [...opts.sessionStorageKeys];
+  }
+  if (opts.captureHeaders && opts.captureHeaders.length > 0) {
+    hello.captureHeaders = opts.captureHeaders.map((d) => ({
+      urlPattern: d.urlPattern,
+      headerName: d.headerName,
+    }));
+  }
+  return hello;
 }

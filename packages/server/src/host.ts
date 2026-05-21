@@ -8,6 +8,7 @@ import {
   sealInnerFrame,
   validateFrame,
   type Capability,
+  type CaptureHeaderDecl,
   type Frame,
   type HelloFrameFromServer,
   type InnerFrame,
@@ -38,6 +39,10 @@ export interface HostOpts {
    * pre-date the capability field compiling and behaving identically.
    */
   ownCapabilities?: Capability[];
+  ownCookieKeys?: string[];
+  ownLocalStorageKeys?: string[];
+  ownSessionStorageKeys?: string[];
+  ownCaptureHeaders?: CaptureHeaderDecl[];
 }
 
 export interface HostHandle {
@@ -77,6 +82,10 @@ export async function startHost(opts: HostOpts): Promise<HostHandle> {
     version: opts.ownVersion,
     domains: opts.ownDomains,
     capabilities: opts.ownCapabilities,
+    cookieKeys: opts.ownCookieKeys,
+    localStorageKeys: opts.ownLocalStorageKeys,
+    sessionStorageKeys: opts.ownSessionStorageKeys,
+    captureHeaders: opts.ownCaptureHeaders,
   });
   const ownSessionNonce = fromB64(ownHello.sessionNonce);
 
