@@ -93,11 +93,28 @@ export interface TrustedSummary {
   serverName: string;
   domains: string[];
   capabilities?: string[];
+  /**
+   * 0.4.2+: the SHA-256 hash of the MCP's X25519 identity pub. Used as
+   * the chrome.storage.local trust-record key, and as the argument to
+   * `TrustStore.remove(...)` when the user clicks revoke in the popup.
+   * Optional in older callers; required for the revoke button to render.
+   */
+  identityHash?: string;
 }
 
 export type PopupState =
   | { mode: 'empty' }
-  | { mode: 'status'; trusted: TrustedSummary[] }
+  | {
+      mode: 'status';
+      trusted: TrustedSummary[];
+      /**
+       * 0.4.2+: invoked with the trusted entry's `identityHash` when
+       * the user clicks the revoke (✕) button. The popup calls
+       * `TrustStore.remove(identityHash)` and re-renders. Optional —
+       * absent in unit-tests that don't exercise the revoke flow.
+       */
+      onRevoke?: (identityHash: string) => void;
+    }
   | {
       mode: 'pending-pair';
       pending: PendingPair;
@@ -355,9 +372,34 @@ export function renderPopup(root: HTMLElement, state: PopupState): void {
 
   if (state.mode === 'status') {
     root.appendChild(elem('h3', {}, 'Trusted MCPs'));
-    const ul = elem('ul');
+    if (state.trusted.length === 0) {
+      root.appendChild(elem('p', { class: 'hint' }, 'No trusted MCPs yet.'));
+      return;
+    }
+    const ul = elem('ul', { class: 'trusted-list' });
     for (const t of state.trusted) {
-      ul.appendChild(elem('li', {}, `${t.serverName} → ${t.domains.join(', ')}`));
+      const li = elem('li', { class: 'trusted-entry' });
+      li.appendChild(
+        elem('span', { class: 'trusted-label' }, `${t.serverName} → ${t.domains.join(', ')}`),
+      );
+      // 0.4.2+: revoke button. Only rendered when both an onRevoke
+      // callback and an identityHash are available — older tests and
+      // legacy callers without identityHash still get the read-only
+      // list as before.
+      if (state.onRevoke && t.identityHash) {
+        const btn = elem(
+          'button',
+          { 'data-action': 'revoke', 'data-identity-hash': t.identityHash, title: 'Revoke trust' },
+          '✕',
+        );
+        btn.addEventListener('click', () => {
+          // Inline confirmation — the popup is too small for a modal.
+          if (!window.confirm(`Revoke trust for ${t.serverName}?`)) return;
+          state.onRevoke!(t.identityHash!);
+        });
+        li.appendChild(btn);
+      }
+      ul.appendChild(li);
     }
     root.appendChild(ul);
     return;
@@ -541,7 +583,8 @@ async function bootstrap(): Promise<void> {
   const ev = chrome.runtime?.getManifest().version ?? '0.2.0';
   const trust = new TrustStore(ev);
   const records = await trust.list();
-  const trustedList = Object.values(records).map((r) => ({
+  const trustedList = Object.entries(records).map(([identityHash, r]) => ({
+    identityHash,
     serverName: r.serverName,
     domains: [...r.domains],
     capabilities: r.capabilities ? [...r.capabilities] : ['fetch'],
@@ -549,7 +592,26 @@ async function bootstrap(): Promise<void> {
   if (trustedList.length === 0) {
     renderPopup(root, { mode: 'empty' });
   } else {
-    renderPopup(root, { mode: 'status', trusted: trustedList });
+    // 0.4.2+: handle revoke clicks. TrustStore.remove() is the only
+    // mutation here; we re-render fresh from disk so the list reflects
+    // the live storage state.
+    const onRevoke = (identityHash: string): void => {
+      void trust.remove(identityHash).then(async () => {
+        const refreshed = await trust.list();
+        const next = Object.entries(refreshed).map(([h, rec]) => ({
+          identityHash: h,
+          serverName: rec.serverName,
+          domains: [...rec.domains],
+          capabilities: rec.capabilities ? [...rec.capabilities] : ['fetch'],
+        }));
+        if (next.length === 0) {
+          renderPopup(root, { mode: 'empty' });
+        } else {
+          renderPopup(root, { mode: 'status', trusted: next, onRevoke });
+        }
+      });
+    };
+    renderPopup(root, { mode: 'status', trusted: trustedList, onRevoke });
   }
 }
 

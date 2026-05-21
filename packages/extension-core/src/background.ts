@@ -447,7 +447,77 @@ declare const chrome: {
     };
   };
   alarms: typeof globalThis.chrome.alarms;
+  action?: {
+    setBadgeText: (details: { text: string }) => Promise<void> | void;
+    setBadgeBackgroundColor: (details: { color: string }) => Promise<void> | void;
+    openPopup?: () => Promise<void>;
+  };
 };
+
+// -------------------------------------------------------------------
+// 0.4.2: action badge + auto-popup attempt
+//
+// The pair flow used to surface only when the user manually opened
+// the extension popup — easy to miss. Now we paint a red "!" badge
+// on the toolbar icon whenever a pending pair is queued, and
+// (best-effort) try `chrome.action.openPopup()` to surface it
+// without the user having to click. The badge clears once the
+// pending pair is removed (approved, dismissed, or trust landed).
+//
+// `openPopup()` is restricted: generally requires a recent user
+// gesture and only available in Chrome 127+ from MV3 background.
+// We swallow exceptions so unsupported environments still get the
+// badge — the badge alone is enough to make the pending pair
+// visible.
+// -------------------------------------------------------------------
+
+const BADGE_PAIR_PENDING_TEXT = '!';
+const BADGE_PAIR_PENDING_COLOR = '#dc2626';
+
+function setPairPendingBadge(): void {
+  const c = (globalThis as { chrome?: { action?: unknown } }).chrome;
+  const action = c?.action as
+    | {
+        setBadgeText: (d: { text: string }) => Promise<void> | void;
+        setBadgeBackgroundColor?: (d: { color: string }) => Promise<void> | void;
+        openPopup?: () => Promise<void>;
+      }
+    | undefined;
+  if (!action || typeof action.setBadgeText !== 'function') return;
+  try {
+    void action.setBadgeText({ text: BADGE_PAIR_PENDING_TEXT });
+    if (typeof action.setBadgeBackgroundColor === 'function') {
+      void action.setBadgeBackgroundColor({ color: BADGE_PAIR_PENDING_COLOR });
+    }
+  } catch (e) {
+    console.warn('[fetchproxy] setBadge:', e);
+  }
+  // Best-effort auto-open. Chrome 127+ MV3 allows openPopup() from
+  // background in some contexts; otherwise it throws either sync
+  // or async — both swallowed so the badge alone still wins.
+  if (typeof action.openPopup === 'function') {
+    try {
+      void action.openPopup().catch(() => {
+        /* expected in older Chrome / no-gesture contexts */
+      });
+    } catch {
+      /* sync throw — older Chrome */
+    }
+  }
+}
+
+function clearPairPendingBadge(): void {
+  const c = (globalThis as { chrome?: { action?: unknown } }).chrome;
+  const action = c?.action as
+    | { setBadgeText: (d: { text: string }) => Promise<void> | void }
+    | undefined;
+  if (!action || typeof action.setBadgeText !== 'function') return;
+  try {
+    void action.setBadgeText({ text: '' });
+  } catch (e) {
+    console.warn('[fetchproxy] clearBadge:', e);
+  }
+}
 
 // Track which mcpId's hello is queued for the popup.
 interface PendingPairRecord {
@@ -663,6 +733,11 @@ async function onServerHello(hello: HelloFrameFromServer): Promise<void> {
     sessionNonceB64: toB64(result.sessionNonce),
   };
   await chrome.storage.local.set({ [PENDING_PAIR_KEY]: pending });
+  // 0.4.2: surface the pending pair without making the user discover
+  // it manually — paint the action-icon badge and best-effort try to
+  // open the popup. Both no-op in environments that don't expose
+  // chrome.action (unit tests, older Chrome).
+  setPairPendingBadge();
 }
 
 async function onEncryptedFrame(frame: EncryptedFrame): Promise<void> {
@@ -1364,6 +1439,8 @@ async function onApproval(approved: PendingPairRecord): Promise<void> {
   // Clear popup state.
   await chrome.storage.local.remove(PENDING_PAIR_KEY);
   await chrome.storage.local.remove(APPROVED_PAIR_KEY);
+  // 0.4.2: the pending pair has been approved — clear the badge.
+  clearPairPendingBadge();
 }
 
 // Boot: only run in a real MV3 service worker context. Skipped under vitest
@@ -1386,8 +1463,24 @@ function maybeBoot(): void {
   sessions = new SessionKeys();
   chrome.storage.local.onChanged.addListener((changes) => {
     const approved = changes[APPROVED_PAIR_KEY]?.newValue as PendingPairRecord | undefined;
-    if (!approved) return;
-    void onApproval(approved).catch((e) => console.error('[fetchproxy] approval:', e));
+    if (approved) {
+      void onApproval(approved).catch((e) => console.error('[fetchproxy] approval:', e));
+    }
+    // 0.4.2: keep the badge in sync with the pending-pair state.
+    // Cancel (popup) and the user-driven X removes the key without
+    // going through onApproval, so this is the catch-all clear point.
+    if (PENDING_PAIR_KEY in changes) {
+      const next = changes[PENDING_PAIR_KEY]?.newValue;
+      if (next) setPairPendingBadge();
+      else clearPairPendingBadge();
+    }
+  });
+  // 0.4.2: on SW boot, repaint the badge from current storage so a
+  // pending pair survives a service-worker eviction without losing
+  // its visual indicator.
+  void chrome.storage.local.get(PENDING_PAIR_KEY).then((got) => {
+    if (got[PENDING_PAIR_KEY]) setPairPendingBadge();
+    else clearPairPendingBadge();
   });
   // 0.4.1: register the MV3 keepalive alarm before anything else. Each
   // fire wakes the SW from idle and re-runs connect() — which is a
