@@ -95,6 +95,14 @@ export async function startHost(opts: HostOpts): Promise<HostHandle> {
   const peers = new Map<string, PeerSlot>();
   const ownInnerListeners: ((inner: InnerFrame) => void)[] = [];
   let ownSession: SessionState | null = null;
+  // Deferred promise that resolves the first time the extension's ready frame
+  // arrives and we derive the session key. `sendOwnInner` awaits this so a
+  // caller can issue fetch() without racing the handshake — the host's session
+  // is set asynchronously from a WS message handler.
+  let resolveOwnSession!: (s: SessionState) => void;
+  const ownSessionReady: Promise<SessionState> = new Promise<SessionState>((resolve) => {
+    resolveOwnSession = resolve;
+  });
 
   wss.on('connection', (ws) => {
     let identified: 'extension' | 'peer' | null = null;
@@ -146,7 +154,10 @@ export async function startHost(opts: HostOpts): Promise<HostHandle> {
             enc.encode('fetchproxy/0.1.0/session'),
             32,
           );
-          ownSession = new SessionState(key);
+          if (!ownSession) {
+            ownSession = new SessionState(key);
+            resolveOwnSession(ownSession);
+          }
         } else {
           const slot = peers.get(frame.mcpId);
           if (slot) slot.ws.send(JSON.stringify(frame));
@@ -183,15 +194,28 @@ export async function startHost(opts: HostOpts): Promise<HostHandle> {
   return {
     close: () =>
       new Promise<void>((resolve) => {
+        // Forcibly terminate any still-attached clients (extension + peers) so
+        // `wss.close()` can drain — by default `ws` only stops accepting new
+        // connections and waits for existing ones to close on their own. In
+        // production a host shutdown should drop its peers too.
+        for (const client of wss.clients) {
+          try {
+            client.terminate();
+          } catch {
+            // ignore — best-effort cleanup
+          }
+        }
         wss.close(() => resolve());
       }),
     sendOwnInner: async (inner) => {
-      if (!ownSession) throw new Error('host: no session yet');
+      // Wait for the extension's ready frame to land and the session key to be
+      // derived — mirrors the peer's `sendInner` which awaits `sessionPromise`.
+      const session = await ownSessionReady;
       if (!extensionWs) throw new Error('host: no extension connected');
       const sealed = await sealInnerFrame(
-        ownSession.sessionKey,
+        session.sessionKey,
         opts.ownMcpId,
-        ownSession.nextOutboundSeq(),
+        session.nextOutboundSeq(),
         inner,
       );
       extensionWs.send(JSON.stringify(sealed));
