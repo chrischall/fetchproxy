@@ -12,6 +12,9 @@ packages/extension-safari/build/
 *.xcuserstate
 *.xcworkspace/xcuserdata/
 
+# TypeScript incremental build info
+*.tsbuildinfo
+
 # Coverage
 coverage/
 .nyc_output/
