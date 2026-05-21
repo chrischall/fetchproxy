@@ -18,14 +18,14 @@
 
 **Files:**
 - Create: `packages/protocol/src/crypto.ts`
-- Test: `packages/protocol/test/crypto.test.ts`
+- Test: `packages/protocol/tests/crypto.test.ts`
 
 Web Crypto subset shared by Node and browser, exported as async functions.
 
 - [ ] **Step 1: Write failing tests**
 
 ```typescript
-// packages/protocol/test/crypto.test.ts
+// packages/protocol/tests/crypto.test.ts
 import { describe, it, expect } from 'vitest';
 import {
   generateX25519,
@@ -242,7 +242,7 @@ Expected: PASS — 6/6.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add packages/protocol/src/crypto.ts packages/protocol/test/crypto.test.ts
+git add packages/protocol/src/crypto.ts packages/protocol/tests/crypto.test.ts
 git commit -m "feat(protocol): Web Crypto wrappers for X25519, Ed25519, HKDF, AES-GCM"
 ```
 
@@ -250,12 +250,12 @@ git commit -m "feat(protocol): Web Crypto wrappers for X25519, Ed25519, HKDF, AE
 
 **Files:**
 - Create: `packages/protocol/src/mcp-id.ts`
-- Test: `packages/protocol/test/mcp-id.test.ts`
+- Test: `packages/protocol/tests/mcp-id.test.ts`
 
 - [ ] **Step 1: Write failing tests**
 
 ```typescript
-// packages/protocol/test/mcp-id.test.ts
+// packages/protocol/tests/mcp-id.test.ts
 import { describe, it, expect } from 'vitest';
 import { generateMcpId, parseMcpId, isValidMcpId } from '../src/mcp-id.js';
 
@@ -348,7 +348,7 @@ Expected: PASS.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add packages/protocol/src/mcp-id.ts packages/protocol/test/mcp-id.test.ts
+git add packages/protocol/src/mcp-id.ts packages/protocol/tests/mcp-id.test.ts
 git commit -m "feat(protocol): mcpId generator + parser (server:version:rand)"
 ```
 
@@ -356,12 +356,12 @@ git commit -m "feat(protocol): mcpId generator + parser (server:version:rand)"
 
 **Files:**
 - Create: `packages/protocol/src/pair-code.ts`
-- Test: `packages/protocol/test/pair-code.test.ts`
+- Test: `packages/protocol/tests/pair-code.test.ts`
 
 - [ ] **Step 1: Write failing tests**
 
 ```typescript
-// packages/protocol/test/pair-code.test.ts
+// packages/protocol/tests/pair-code.test.ts
 import { describe, it, expect } from 'vitest';
 import { derivePairCode } from '../src/pair-code.js';
 
@@ -426,7 +426,7 @@ Expected: PASS.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add packages/protocol/src/pair-code.ts packages/protocol/test/pair-code.test.ts
+git add packages/protocol/src/pair-code.ts packages/protocol/tests/pair-code.test.ts
 git commit -m "feat(protocol): derive 6-digit pair code from identity pub (SAS pattern)"
 ```
 
@@ -435,12 +435,12 @@ git commit -m "feat(protocol): derive 6-digit pair code from identity pub (SAS p
 **Files:**
 - Modify: `packages/protocol/src/frames.ts`
 - Modify: `packages/protocol/src/validate.ts`
-- Test: `packages/protocol/test/frames.test.ts` (extend)
+- Test: `packages/protocol/tests/frames.test.ts` (extend)
 
 - [ ] **Step 1: Write failing tests**
 
 ```typescript
-// Add to packages/protocol/test/validate.test.ts (extend existing test file)
+// Add to packages/protocol/tests/validate.test.ts (extend existing test file)
 import { validateFrame } from '../src/validate.js';
 
 describe('validate hello-v2', () => {
@@ -776,7 +776,7 @@ Expected: PASS — all tests including legacy ones still green.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add packages/protocol/src/frames.ts packages/protocol/src/validate.ts packages/protocol/src/index.ts packages/protocol/test/
+git add packages/protocol/src/frames.ts packages/protocol/src/validate.ts packages/protocol/src/index.ts packages/protocol/tests/
 git commit -m "feat(protocol): 0.1.0 frame types — hello-v2, ready-v2, encrypted frame, inner frames"
 ```
 
@@ -784,12 +784,12 @@ git commit -m "feat(protocol): 0.1.0 frame types — hello-v2, ready-v2, encrypt
 
 **Files:**
 - Create: `packages/protocol/src/seal.ts`
-- Test: `packages/protocol/test/seal.test.ts`
+- Test: `packages/protocol/tests/seal.test.ts`
 
 - [ ] **Step 1: Write failing tests**
 
 ```typescript
-// packages/protocol/test/seal.test.ts
+// packages/protocol/tests/seal.test.ts
 import { describe, it, expect } from 'vitest';
 import { sealInnerFrame, openEncryptedFrame } from '../src/seal.js';
 import type { InnerFrame, EncryptedFrame } from '../src/frames.js';
@@ -913,7 +913,7 @@ Expected: PASS, all tests still green.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add packages/protocol/src/seal.ts packages/protocol/test/seal.test.ts packages/protocol/src/index.ts
+git add packages/protocol/src/seal.ts packages/protocol/tests/seal.test.ts packages/protocol/src/index.ts
 git commit -m "feat(protocol): seal/open helpers bridging inner frames and AES-GCM ciphertext"
 ```
 
@@ -927,12 +927,12 @@ git commit -m "feat(protocol): seal/open helpers bridging inner frames and AES-G
 
 **Files:**
 - Create: `packages/server/src/identity.ts`
-- Test: `packages/server/test/identity.test.ts`
+- Test: `packages/server/tests/identity.test.ts`
 
 - [ ] **Step 1: Write failing tests**
 
 ```typescript
-// packages/server/test/identity.test.ts
+// packages/server/tests/identity.test.ts
 import { describe, it, expect, beforeEach } from 'vitest';
 import { mkdtempSync, rmSync, statSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -1081,7 +1081,7 @@ Expected: PASS — 6/6.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add packages/server/src/identity.ts packages/server/test/identity.test.ts
+git add packages/server/src/identity.ts packages/server/tests/identity.test.ts
 git commit -m "feat(server): load-or-create persistent identity keypair at ~/.fetchproxy/identity"
 ```
 
@@ -1089,12 +1089,12 @@ git commit -m "feat(server): load-or-create persistent identity keypair at ~/.fe
 
 **Files:**
 - Create: `packages/server/src/election.ts`
-- Test: `packages/server/test/election.test.ts`
+- Test: `packages/server/tests/election.test.ts`
 
 - [ ] **Step 1: Write failing tests**
 
 ```typescript
-// packages/server/test/election.test.ts
+// packages/server/tests/election.test.ts
 import { describe, it, expect, afterEach } from 'vitest';
 import { electRole } from '../src/election.js';
 import { createServer, Server as HttpServer } from 'node:http';
@@ -1197,7 +1197,7 @@ Expected: PASS — 3/3.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add packages/server/src/election.ts packages/server/test/election.test.ts
+git add packages/server/src/election.ts packages/server/tests/election.test.ts
 git commit -m "feat(server): TCP bind-or-dial election for host vs peer role"
 ```
 
@@ -1205,12 +1205,12 @@ git commit -m "feat(server): TCP bind-or-dial election for host vs peer role"
 
 **Files:**
 - Create: `packages/server/src/session.ts`
-- Test: `packages/server/test/session.test.ts`
+- Test: `packages/server/tests/session.test.ts`
 
 - [ ] **Step 1: Write failing tests**
 
 ```typescript
-// packages/server/test/session.test.ts
+// packages/server/tests/session.test.ts
 import { describe, it, expect } from 'vitest';
 import { SessionState } from '../src/session.js';
 
@@ -1277,7 +1277,7 @@ Expected: PASS — 3/3.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add packages/server/src/session.ts packages/server/test/session.test.ts
+git add packages/server/src/session.ts packages/server/tests/session.test.ts
 git commit -m "feat(server): per-peer session state with monotonic seq + replay rejection"
 ```
 
@@ -1285,14 +1285,14 @@ git commit -m "feat(server): per-peer session state with monotonic seq + replay 
 
 **Files:**
 - Create: `packages/server/src/peer.ts`
-- Test: `packages/server/test/peer.test.ts`
+- Test: `packages/server/tests/peer.test.ts`
 
 - [ ] **Step 1: Write failing tests**
 
 Tests use a fake WS server that speaks the expected protocol just enough to validate the peer's send sequence.
 
 ```typescript
-// packages/server/test/peer.test.ts
+// packages/server/tests/peer.test.ts
 import { describe, it, expect, afterEach } from 'vitest';
 import { WebSocketServer, WebSocket } from 'ws';
 import {
@@ -1507,7 +1507,7 @@ Expected: PASS.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add packages/server/src/peer.ts packages/server/test/peer.test.ts
+git add packages/server/src/peer.ts packages/server/tests/peer.test.ts
 git commit -m "feat(server): peer client — dial host, signed hello, encrypted I/O"
 ```
 
@@ -1515,7 +1515,7 @@ git commit -m "feat(server): peer client — dial host, signed hello, encrypted 
 
 **Files:**
 - Create: `packages/server/src/host.ts`
-- Test: `packages/server/test/host.test.ts`
+- Test: `packages/server/tests/host.test.ts`
 
 This is the biggest task. The host:
 1. Owns the HTTP server (from election).
@@ -1527,7 +1527,7 @@ This is the biggest task. The host:
 - [ ] **Step 1: Write failing tests**
 
 ```typescript
-// packages/server/test/host.test.ts
+// packages/server/tests/host.test.ts
 import { describe, it, expect, afterEach } from 'vitest';
 import { WebSocket } from 'ws';
 import {
@@ -1823,7 +1823,7 @@ Expected: PASS.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add packages/server/src/host.ts packages/server/test/host.test.ts
+git add packages/server/src/host.ts packages/server/tests/host.test.ts
 git commit -m "feat(server): concentrator host — WS server, peer multiplexer, own-MCP session"
 ```
 
@@ -1832,7 +1832,7 @@ git commit -m "feat(server): concentrator host — WS server, peer multiplexer, 
 **Files:**
 - Modify: `packages/server/src/ws-server.ts`
 - Modify: `packages/server/src/index.ts`
-- Test: `packages/server/test/ws-server.test.ts` (update)
+- Test: `packages/server/tests/ws-server.test.ts` (update)
 
 The public API stays as `FetchproxyServer`. Internally it now:
 1. Loads identity.
@@ -1845,7 +1845,7 @@ This collapses the two paths behind a single `fetch(init)` method.
 - [ ] **Step 1: Write failing tests**
 
 ```typescript
-// packages/server/test/ws-server.test.ts (replace existing test file)
+// packages/server/tests/ws-server.test.ts (replace existing test file)
 import { describe, it, expect, afterEach } from 'vitest';
 import { WebSocket } from 'ws';
 import { FetchproxyServer } from '../src/index.js';
@@ -2033,7 +2033,7 @@ Expected: PASS — including ws-server.test.ts.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add packages/server/src/ws-server.ts packages/server/src/index.ts packages/server/test/ws-server.test.ts
+git add packages/server/src/ws-server.ts packages/server/src/index.ts packages/server/tests/ws-server.test.ts
 git commit -m "feat(server): FetchproxyServer orchestrator — election → host or peer role"
 ```
 
@@ -2047,12 +2047,12 @@ git commit -m "feat(server): FetchproxyServer orchestrator — election → host
 
 **Files:**
 - Modify: `packages/extension-core/src/trust-store.ts`
-- Modify: `packages/extension-core/test/trust-store.test.ts`
+- Modify: `packages/extension-core/tests/trust-store.test.ts`
 
 - [ ] **Step 1: Write failing tests**
 
 ```typescript
-// packages/extension-core/test/trust-store.test.ts — replace
+// packages/extension-core/tests/trust-store.test.ts — replace
 import { describe, it, expect, beforeEach } from 'vitest';
 import { TrustStore } from '../src/trust-store.js';
 
@@ -2213,7 +2213,7 @@ Expected: PASS.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add packages/extension-core/src/trust-store.ts packages/extension-core/test/trust-store.test.ts
+git add packages/extension-core/src/trust-store.ts packages/extension-core/tests/trust-store.test.ts
 git commit -m "refactor(extension-core): trust store keyed by identity hash; drop port from key"
 ```
 
@@ -2221,12 +2221,12 @@ git commit -m "refactor(extension-core): trust store keyed by identity hash; dro
 
 **Files:**
 - Create: `packages/extension-core/src/session-keys.ts`
-- Test: `packages/extension-core/test/session-keys.test.ts`
+- Test: `packages/extension-core/tests/session-keys.test.ts`
 
 - [ ] **Step 1: Write failing tests**
 
 ```typescript
-// packages/extension-core/test/session-keys.test.ts
+// packages/extension-core/tests/session-keys.test.ts
 import { describe, it, expect } from 'vitest';
 import { SessionKeys } from '../src/session-keys.js';
 
@@ -2324,29 +2324,168 @@ Expected: PASS.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add packages/extension-core/src/session-keys.ts packages/extension-core/test/session-keys.test.ts
+git add packages/extension-core/src/session-keys.ts packages/extension-core/tests/session-keys.test.ts
 git commit -m "feat(extension-core): per-mcpId session key cache with replay protection"
 ```
 
-### Task 14: Background.ts multiplexed routing
+### Task 14: ensureDomainTab helper
+
+**Files:**
+- Create: `packages/extension-core/src/ensure-domain-tab.ts`
+- Test: `packages/extension-core/tests/ensure-domain-tab.test.ts`
+
+After a successful pair (or auto-trust on a known MCP), the extension ensures a tab matching the MCP's `domain` is open — if none exists, it opens `https://<domain>/` in a new tab. The fetch RPC machinery needs a matching tab to issue same-origin `window.fetch` calls, so this avoids the "first fetch fails because no tab" footgun.
+
+- [ ] **Step 1: Write failing tests**
+
+```typescript
+// packages/extension-core/tests/ensure-domain-tab.test.ts
+import { describe, it, expect, beforeEach } from 'vitest';
+import { ensureDomainTab } from '../src/ensure-domain-tab.js';
+
+interface FakeTab {
+  id: number;
+  url: string;
+}
+
+function mockTabs(initial: FakeTab[]) {
+  let nextId = 1000;
+  const tabs: FakeTab[] = [...initial];
+  const created: FakeTab[] = [];
+  (globalThis as { chrome?: unknown }).chrome = {
+    tabs: {
+      query: async (q: { url?: string | string[] }) => {
+        if (!q.url) return [...tabs];
+        const patterns = Array.isArray(q.url) ? q.url : [q.url];
+        // Translate `*://opentable.com/*` style patterns to a host match.
+        return tabs.filter((t) =>
+          patterns.some((p) => {
+            const host = p.replace(/^\*:\/\//, '').replace(/\/\*$/, '').toLowerCase();
+            try {
+              const u = new URL(t.url);
+              return u.hostname === host || u.hostname.endsWith('.' + host);
+            } catch {
+              return false;
+            }
+          }),
+        );
+      },
+      create: async (props: { url: string }) => {
+        const tab: FakeTab = { id: nextId++, url: props.url };
+        created.push(tab);
+        tabs.push(tab);
+        return tab;
+      },
+    },
+  };
+  return { tabs, created };
+}
+
+describe('ensureDomainTab', () => {
+  it('does nothing when a matching tab already exists', async () => {
+    const { created } = mockTabs([{ id: 1, url: 'https://www.opentable.com/somewhere' }]);
+    const result = await ensureDomainTab('opentable.com');
+    expect(result.opened).toBe(false);
+    expect(created).toEqual([]);
+  });
+
+  it('opens a new tab when no tab matches', async () => {
+    const { created } = mockTabs([{ id: 1, url: 'https://example.com/' }]);
+    const result = await ensureDomainTab('opentable.com');
+    expect(result.opened).toBe(true);
+    expect(created).toHaveLength(1);
+    expect(created[0].url).toBe('https://opentable.com/');
+  });
+
+  it('matches subdomains', async () => {
+    const { created } = mockTabs([{ id: 1, url: 'https://www.opentable.com/users' }]);
+    const result = await ensureDomainTab('opentable.com');
+    expect(result.opened).toBe(false);
+    expect(created).toEqual([]);
+  });
+
+  it('refuses to open if the domain is not a valid hostname', async () => {
+    mockTabs([]);
+    await expect(ensureDomainTab('not a domain')).rejects.toThrow();
+    await expect(ensureDomainTab('')).rejects.toThrow();
+    await expect(ensureDomainTab('opentable.com/path')).rejects.toThrow();
+  });
+});
+```
+
+- [ ] **Step 2: Run tests to verify failure**
+
+```
+cd packages/extension-core && npx vitest run tests/ensure-domain-tab.test.ts
+```
+Expected: FAIL.
+
+- [ ] **Step 3: Implement**
+
+```typescript
+// packages/extension-core/src/ensure-domain-tab.ts
+declare const chrome: {
+  tabs: {
+    query: (q: { url?: string | string[] }) => Promise<{ id?: number; url?: string }[]>;
+    create: (props: { url: string }) => Promise<{ id?: number; url?: string }>;
+  };
+};
+
+const HOSTNAME_RE = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$/i;
+
+export interface EnsureDomainTabResult {
+  opened: boolean;
+}
+
+export async function ensureDomainTab(domain: string): Promise<EnsureDomainTabResult> {
+  if (!domain || !HOSTNAME_RE.test(domain)) {
+    throw new Error(`ensureDomainTab: invalid domain ${JSON.stringify(domain)}`);
+  }
+  const patterns = [
+    `*://${domain}/*`,
+    `*://*.${domain}/*`,
+  ];
+  const tabs = await chrome.tabs.query({ url: patterns });
+  if (tabs.length > 0) return { opened: false };
+  await chrome.tabs.create({ url: `https://${domain}/` });
+  return { opened: true };
+}
+```
+
+- [ ] **Step 4: Run tests to verify pass**
+
+```
+cd packages/extension-core && npx vitest run tests/ensure-domain-tab.test.ts
+```
+Expected: PASS — 4/4.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add packages/extension-core/src/ensure-domain-tab.ts packages/extension-core/tests/ensure-domain-tab.test.ts
+git commit -m "feat(extension-core): ensureDomainTab — open MCP domain tab after pairing if absent"
+```
+
+### Task 15: Background.ts multiplexed routing
 
 **Files:**
 - Modify: `packages/extension-core/src/background.ts`
-- Test: `packages/extension-core/test/background.test.ts` (replace)
+- Test: `packages/extension-core/tests/background.test.ts` (replace)
 
 This is the biggest extension-side task. The background script now:
-1. Holds extension identity from `loadOrCreateExtensionIdentity`.
-2. Maintains one WS to the host (auto-reconnect with backoff).
-3. On `hello` from server: look up identity in `TrustStore`; if unknown, queue pair prompt; if known, derive session key + send `ready`.
-4. On `frame`: look up `mcpId` in `SessionKeys`, decrypt, dispatch inner frame.
-5. On approval from popup: persist to trust store, derive session, send `ready`.
+1. Maintains one WS to the host (auto-reconnect with backoff).
+2. On `hello` from server: pass to `handleServerHello`. If `kind === 'auto-trust'` → call `ensureDomainTab(hello.domain)`, then send `ready`. If `kind === 'needs-pair'` → enqueue pair prompt for the popup.
+3. On `frame`: look up `mcpId` in `SessionKeys`, decrypt, dispatch inner frame.
+4. On approval signal from popup: persist trust record, derive session key (same logic as the auto-trust branch in `handleServerHello`), call `ensureDomainTab(hello.domain)`, then send `ready`.
+
+`ensureDomainTab` is fire-and-forget — its result doesn't gate the `ready` frame, because tab open + page load takes longer than the handshake. The server's first `fetch` may still race the tab load; that's acceptable (same behavior as today, but at least the tab exists).
 
 Because tests for the full WS dance are heavy, this task's tests focus on the **pair-prompt decision tree** + the **handshake key derivation**, with WS itself mocked.
 
 - [ ] **Step 1: Write failing tests**
 
 ```typescript
-// packages/extension-core/test/background.test.ts
+// packages/extension-core/tests/background.test.ts
 import { describe, it, expect, beforeEach } from 'vitest';
 import { handleServerHello } from '../src/background.js';
 import { TrustStore } from '../src/trust-store.js';
@@ -2596,16 +2735,16 @@ Expected: PASS — 3/3.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add packages/extension-core/src/background.ts packages/extension-core/test/background.test.ts
+git add packages/extension-core/src/background.ts packages/extension-core/tests/background.test.ts
 git commit -m "feat(extension-core): handleServerHello — signature verify, trust lookup, key derivation"
 ```
 
-### Task 15: Popup pair-code prefilled UI
+### Task 16: Popup pair-code prefilled UI
 
 **Files:**
 - Modify: `packages/extension-core/src/popup/popup.ts`
 - Modify: `packages/extension-core/src/popup/popup.html`
-- Test: `packages/extension-core/test/popup.test.ts` (replace)
+- Test: `packages/extension-core/tests/popup.test.ts` (replace)
 
 The popup now has three view modes:
 - **pending-pair**: shows server-name, domain, pair code, [Cancel] [Approve] buttons (default focus on Cancel).
@@ -2617,7 +2756,7 @@ The pending-pair view's `Approve` click writes a record to `chrome.storage.local
 - [ ] **Step 1: Write failing tests**
 
 ```typescript
-// packages/extension-core/test/popup.test.ts — replace
+// packages/extension-core/tests/popup.test.ts — replace
 import { describe, it, expect, beforeEach } from 'vitest';
 import { renderPopup, type PopupState } from '../src/popup/popup.js';
 
@@ -2855,7 +2994,7 @@ Expected: PASS — 5/5.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add packages/extension-core/src/popup/ packages/extension-core/test/popup.test.ts
+git add packages/extension-core/src/popup/ packages/extension-core/tests/popup.test.ts
 git commit -m "feat(extension-core): popup pair-prompt with prefilled code (cancel-default focus)"
 ```
 
@@ -2863,17 +3002,17 @@ git commit -m "feat(extension-core): popup pair-prompt with prefilled code (canc
 
 ## Phase D — Wiring + migration + ship
 
-### Task 16: Two-MCP-one-host integration test
+### Task 17: Two-MCP-one-host integration test
 
 **Files:**
-- Create: `packages/server/test/integration/two-mcps.test.ts`
+- Create: `packages/server/tests/integration/two-mcps.test.ts`
 
 End-to-end test in Node: stand up MCP A (host), MCP B (peer), a mock extension WS client, do a `fetch` from each MCP, verify the responses route correctly + ciphertext is encrypted under different session keys.
 
 - [ ] **Step 1: Write failing test**
 
 ```typescript
-// packages/server/test/integration/two-mcps.test.ts
+// packages/server/tests/integration/two-mcps.test.ts
 import { describe, it, expect, afterEach } from 'vitest';
 import { WebSocket } from 'ws';
 import { FetchproxyServer } from '../../src/index.js';
@@ -3050,11 +3189,11 @@ Expected: PASS — all tests including integration.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add packages/server/test/integration/two-mcps.test.ts
+git add packages/server/tests/integration/two-mcps.test.ts
 git commit -m "test: two-MCPs-one-host end-to-end integration (host + peer + extension mock)"
 ```
 
-### Task 17: Update extension-chrome bundle config
+### Task 18: Update extension-chrome bundle config
 
 **Files:**
 - Modify: `packages/extension-chrome/build.ts`
@@ -3089,7 +3228,7 @@ git add packages/extension-chrome/manifest.json
 git commit -m "chore(extension-chrome): bump to 0.1.0"
 ```
 
-### Task 18: Bump package versions
+### Task 19: Bump package versions
 
 **Files:**
 - Modify: `packages/protocol/package.json` → version 0.1.0
@@ -3113,7 +3252,7 @@ git add packages/*/package.json package-lock.json
 git commit -m "chore: bump all packages to 0.1.0"
 ```
 
-### Task 19: Publish @fetchproxy/protocol and @fetchproxy/server 0.1.0
+### Task 20: Publish @fetchproxy/protocol and @fetchproxy/server 0.1.0
 
 **Steps:**
 
@@ -3136,7 +3275,7 @@ Run: `git tag v0.1.0 && git push origin main --tags`
 Run: `npm view @fetchproxy/protocol version && npm view @fetchproxy/server version`
 Expected: both `0.1.0`.
 
-### Task 20: Migrate opentable-mcp to fetchproxy 0.1.0
+### Task 21: Migrate opentable-mcp to fetchproxy 0.1.0
 
 **Files (in /Users/chris/git/opentable-mcp):**
 - Modify: `package.json` — bump `@fetchproxy/server` to `^0.1.0`; bump opentable-mcp version to `0.10.0`

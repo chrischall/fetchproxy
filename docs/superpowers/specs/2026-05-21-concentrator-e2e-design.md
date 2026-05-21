@@ -120,14 +120,17 @@ First connection from an unknown `mcpId`:
 3. Extension computes `pairCode = SHA256(identityX25519Pub) → 6 digits`.
 4. Extension shows popup: server-name, version, domain, **pair code prefilled**, [Cancel] [Approve] buttons.
 5. User reads pair code from MCP's stderr (or `~/.fetchproxy/pending/<server-name>.txt`), confirms popup matches, clicks Approve.
-6. Extension stores trust record (see below), generates an ephemeral X25519 keypair, computes `shared = ECDH(extEphemeralPriv, mcpIdentityX25519Pub)`, derives `sessionKey = HKDF-SHA256(shared, salt=sessionNonce, info="fetchproxy/0.1.0/session", 32)`, sends `ready` frame with the ephemeral public key as `extensionSessionPub`.
-7. MCP receives `ready`, computes `shared = ECDH(mcpIdentityX25519Priv, extEphemeralPub)`, derives the same `sessionKey` via the same HKDF (ECDH is symmetric).
+6. Extension stores trust record (see below), then ensures a tab matching the MCP's `domain` is open — if none exists, the extension opens `https://<domain>/` in a new tab. (The `ready` handshake completes before the tab finishes loading; the server's first fetch may need to wait for the page to settle, which is the same behavior as today.)
+7. Extension generates an ephemeral X25519 keypair, computes `shared = ECDH(extEphemeralPriv, mcpIdentityX25519Pub)`, derives `sessionKey = HKDF-SHA256(shared, salt=sessionNonce, info="fetchproxy/0.1.0/session", 32)`, sends `ready` frame with the ephemeral public key as `extensionSessionPub`.
+8. MCP receives `ready`, computes `shared = ECDH(mcpIdentityX25519Priv, extEphemeralPub)`, derives the same `sessionKey` via the same HKDF (ECDH is symmetric).
 
 Subsequent connections from a known `mcpId`:
 
 1. Same `hello`.
 2. Extension recognizes `identityX25519Pub`, verifies `sessionSig` against `identityEd25519Pub`.
-3. Skip pair-code prompt. Generate `extensionSessionPub`, send `ready`, derive `sessionKey`.
+3. Skip pair-code prompt.
+4. Ensure a tab matching `domain` exists; open `https://<domain>/` if none.
+5. Generate `extensionSessionPub`, send `ready`, derive `sessionKey`.
 
 ### Encrypted frames
 
