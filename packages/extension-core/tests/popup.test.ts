@@ -41,6 +41,85 @@ describe('renderPopup', () => {
     expect(container.textContent).toContain('hbsplit.com');
   });
 
+  // 0.4.2: revoke (✕) button on each trusted-MCP entry — only rendered
+  // when both `onRevoke` and per-entry `identityHash` are provided.
+  // Without either, the list is read-only (back-compat with older tests).
+  describe('revoke button', () => {
+    it('does not render revoke buttons when onRevoke is omitted', () => {
+      renderPopup(container, {
+        mode: 'status',
+        trusted: [
+          { serverName: 'opentable-mcp', domains: ['opentable.com'], identityHash: 'h1' },
+        ],
+      });
+      expect(container.querySelector('button[data-action="revoke"]')).toBeNull();
+    });
+
+    it('does not render a revoke button when identityHash is missing', () => {
+      renderPopup(container, {
+        mode: 'status',
+        trusted: [{ serverName: 'legacy-mcp', domains: ['legacy.com'] }],
+        onRevoke: () => undefined,
+      });
+      expect(container.querySelector('button[data-action="revoke"]')).toBeNull();
+    });
+
+    it('renders a revoke button per entry when both onRevoke + identityHash are present', () => {
+      renderPopup(container, {
+        mode: 'status',
+        trusted: [
+          { serverName: 'opentable-mcp', domains: ['opentable.com'], identityHash: 'h1' },
+          { serverName: 'resy-mcp', domains: ['resy.com'], identityHash: 'h2' },
+        ],
+        onRevoke: () => undefined,
+      });
+      const buttons = container.querySelectorAll('button[data-action="revoke"]');
+      expect(buttons).toHaveLength(2);
+      expect(buttons[0]?.getAttribute('data-identity-hash')).toBe('h1');
+      expect(buttons[1]?.getAttribute('data-identity-hash')).toBe('h2');
+    });
+
+    it('invokes onRevoke with the entry identityHash after confirmation', () => {
+      const calls: string[] = [];
+      const origConfirm = window.confirm;
+      window.confirm = (): boolean => true;
+      try {
+        renderPopup(container, {
+          mode: 'status',
+          trusted: [
+            { serverName: 'opentable-mcp', domains: ['opentable.com'], identityHash: 'h1' },
+          ],
+          onRevoke: (h) => calls.push(h),
+        });
+        const btn = container.querySelector('button[data-action="revoke"]') as HTMLButtonElement;
+        btn.click();
+        expect(calls).toEqual(['h1']);
+      } finally {
+        window.confirm = origConfirm;
+      }
+    });
+
+    it('does NOT call onRevoke when the user cancels the confirmation', () => {
+      const calls: string[] = [];
+      const origConfirm = window.confirm;
+      window.confirm = (): boolean => false;
+      try {
+        renderPopup(container, {
+          mode: 'status',
+          trusted: [
+            { serverName: 'opentable-mcp', domains: ['opentable.com'], identityHash: 'h1' },
+          ],
+          onRevoke: (h) => calls.push(h),
+        });
+        const btn = container.querySelector('button[data-action="revoke"]') as HTMLButtonElement;
+        btn.click();
+        expect(calls).toEqual([]);
+      } finally {
+        window.confirm = origConfirm;
+      }
+    });
+  });
+
   it('renders pending-pair with code prominent + cancel default-focused', () => {
     const state: PopupState = {
       mode: 'pending-pair',
