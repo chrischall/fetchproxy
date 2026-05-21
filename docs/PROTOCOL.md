@@ -6,6 +6,8 @@ The wire format between MCP servers and the browser extension. JSON-over-WebSock
 
 **0.2.0 is wire-incompatible with 0.1.x.** The server hello now carries `domains: string[]` instead of `domain: string` — a single-domain MCP just sends a 1-element array; a multi-domain MCP (e.g. HoneyBook, which spans two hosts) sends multiple. Trust records, popup state, and the per-request allowlist all key off the full set.
 
+0.2.0 also adds `capabilities: string[]` to the server hello and discriminates inner request/response frames by `op`. Existing fetch-only MCPs need no changes — `capabilities` is optional on the wire and defaults to `['fetch']` — but new verbs like `read_cookies` are opt-in and forced through the pair flow.
+
 ## Big picture
 
 ```
@@ -81,6 +83,8 @@ All frames are JSON objects with a `type` discriminator. Unknown `type` closes t
 - Invalid `mcpId` format
 - Non-`http(s)` URLs in inner request fields
 - Empty, non-array, or malformed-hostname `domains` in the server hello
+- Empty, non-array, non-string, or unknown-value `capabilities` in the server hello
+- Inner requests/responses with unknown `op`
 
 ### Top-level frames (in plaintext on the wire)
 
@@ -97,6 +101,7 @@ Each MCP sends one of these as the very first frame after connecting.
   "serverName": "opentable-mcp",
   "version": "0.10.0",
   "domains": ["opentable.com"],
+  "capabilities": ["fetch"],          // optional — defaults to ["fetch"]
   "identityX25519Pub": "<base64 raw 32B>",
   "identityEd25519Pub": "<base64 raw 32B>",
   "sessionNonce": "<base64 random ≥16B, fresh per connection>",
@@ -105,6 +110,13 @@ Each MCP sends one of these as the very first frame after connecting.
 ```
 
 `domains` is a non-empty array of hostnames the MCP is allowed to reach. Each entry must be a valid DNS hostname (≥2 labels, alphanumeric + hyphen, no leading/trailing hyphen). The extension allows a fetch iff its URL host matches one of these entries exactly OR is a subdomain of one of them. Most MCPs send one entry (`["opentable.com"]`); MCPs that legitimately span multiple hosts send all of them (`["honeybook.com", "hbsplit.com"]`).
+
+`capabilities` is an optional non-empty array of inner-verb capability strings the MCP wants the extension to expose. Known values:
+
+- `"fetch"` — issue HTTP requests against the user's signed-in tab. Default; if `capabilities` is omitted, the extension treats it as `["fetch"]`.
+- `"read_cookies"` — read non-HttpOnly `document.cookie` from a matching tab. Strictly opt-in; the popup shows a visible warning so the user notices the elevated trust.
+
+Unknown values are rejected at validation time. The trust record stores the approved capability set; if the same MCP later declares a different set (upgrade or downgrade), the extension treats it as a re-pair and prompts the user again. The check is order-insensitive — `["fetch", "read_cookies"]` and `["read_cookies", "fetch"]` are equivalent.
 
 The signature lets the extension prove the connecting process holds the Ed25519 private key. Re-pair only happens on first sight of a new identity key; subsequent sessions just verify the signature against the stored `identityEd25519Pub`. The trust record also stores the approved `domains` set — a server that later widens the set (or changes `serverName`) is refused auto-trust and falls back to a re-pair prompt.
 
@@ -170,7 +182,11 @@ Keepalive. Either side sends `ping` every ~20s; the other answers `pong`. Keeps 
 
 #### `request` (server → extension)
 
-The only data verb in v1. The extension fetches `url` from a tab matching `tabUrl`.
+Inner requests are discriminated by `op`. v1 defines two verbs: `fetch` (always available, the default) and `read_cookies` (opt-in via `capabilities`). The extension rejects any request whose `op` was not declared in the MCP's hello.
+
+##### `op: "fetch"`
+
+The extension issues `window.fetch(url, ...)` from a tab matching `tabUrl`.
 
 ```jsonc
 {
@@ -197,33 +213,66 @@ Semantics:
 - `headers`: optional. `Cookie`, `User-Agent`, `Origin`, `Referer` are controlled by the browser and ignored if set here. `credentials: 'include'` is always implied.
 - `body`: optional string. The caller serialises JSON.
 - `tabUrl`: required. Prefix-matched against `chrome.tabs.query({})`. First match wins. If no match, the response is `ok: false`. After a successful pair, the extension proactively opens `https://${domains[0]}/` if no matching tab is open. (Future: open a tab for every declared domain.)
-- `op`: only `"fetch"` is accepted in v1. Unknown ops respond with `ok: false`.
 
 **Body size caps:** request body ≤ 1 MB, response body ≤ 5 MB. Larger bodies are rejected with `ok: false`.
 
-#### `response` (extension → server)
+##### `op: "read_cookies"`
+
+The extension returns `document.cookie` from a tab matching `tabUrl`. Only non-HttpOnly cookies are visible to page JS — that's the intentional security model.
 
 ```jsonc
-// Success — HTTP outcome of any status, including 4xx/5xx
+{
+  "type": "request",
+  "id": 2,
+  "op": "read_cookies",
+  "init": {
+    "tabUrl": "https://www.creditkarma.com/" // prefix-matched, same as fetch
+  }
+}
+```
+
+Semantics:
+
+- `tabUrl`: required. Same matching rules as `fetch`; must also map to one of the MCP's declared `domains` (or a subdomain of one). No other `init` fields are permitted.
+- The MCP must have declared `"read_cookies"` in its hello `capabilities` AND the user must have approved that set at pair time. Otherwise the response is `{ok: false, op: "read_cookies", error: "capability ... not granted ..."}`.
+
+#### `response` (extension → server)
+
+Successful responses carry an `op` discriminator that matches the request. Existing 0.1.x senders that omit `op` are still accepted by the validator for the fetch shape (back-compat) — but new senders always set it.
+
+```jsonc
+// Success — fetch outcome
 {
   "type": "response",
   "id": 1,
   "ok": true,
+  "op": "fetch",
   "status": 200,
   "url": "https://www.opentable.com/user/dining-dashboard",
   "body": "<html>..."
 }
 
-// Protocol-level failure (no tab, content-script not injected, fetch threw)
+// Success — read_cookies outcome
+{
+  "type": "response",
+  "id": 2,
+  "ok": true,
+  "op": "read_cookies",
+  "cookies": "sid=abc; csrf=xyz"
+}
+
+// Protocol-level failure (no tab, content-script not injected, fetch threw,
+// capability not granted)
 {
   "type": "response",
   "id": 1,
   "ok": false,
+  "op": "fetch",                          // op echo; omitted on legacy transport-level errors
   "error": "no tab matching https://www.opentable.com/"
 }
 ```
 
-`ok: false` is reserved for protocol-level failures. HTTP-level errors (404, 500, 403) come back as `ok: true` with the relevant `status`. Callers handle non-2xx themselves.
+`ok: false` is reserved for protocol-level failures. HTTP-level errors (404, 500, 403) come back as `ok: true, op: "fetch"` with the relevant `status`. Callers handle non-2xx themselves.
 
 ## Cryptographic handshake
 
@@ -285,6 +334,7 @@ Both sides derive the same key without sending it on the wire. `sessionNonce` is
   "<hex(sha256(identityX25519Pub))>": {
     "serverName": "opentable-mcp",
     "domains": ["opentable.com"],
+    "capabilities": ["fetch"],
     "identityX25519Pub": "<base64>",
     "identityEd25519Pub": "<base64>",
     "pairedAt": 1716250000000,
@@ -293,7 +343,7 @@ Both sides derive the same key without sending it on the wire. `sessionNonce` is
 }
 ```
 
-Keyed by identity hash, not port. Trust survives port changes, restarts, and MCP package renames as long as the identity key on disk doesn't change. The `domains` set is compared as a set (order-insensitive); if the MCP at re-connect time declares a different set than the user originally approved, the extension treats the record as missing and falls back to a re-pair prompt.
+Keyed by identity hash, not port. Trust survives port changes, restarts, and MCP package renames as long as the identity key on disk doesn't change. The `domains` AND `capabilities` sets are compared as sets (order-insensitive); if the MCP at re-connect time declares a different set than the user originally approved (e.g. adds `"read_cookies"`), the extension treats the record as missing and falls back to a re-pair prompt. Records persisted before 0.2.0 added the `capabilities` field are normalised to `["fetch"]` on read.
 
 Major-version bumps of the extension invalidate trust (force re-pair); patch and minor bumps carry trust forward. The 0.1.x → 0.2.0 jump is a major-equivalent: 0.1.x trust records would deserialise into an object with no `domains` field and fail the set comparison, so users see a one-time re-pair prompt after upgrading.
 
@@ -323,9 +373,10 @@ Host shutdown: peers see WS close and re-race the port. Whoever wins becomes the
 ## What's not in the protocol (closed by design)
 
 - `eval_js`, `inject_script` — no arbitrary JS execution in tabs.
-- `get_cookies`, `read_storage` — no exfiltration primitives.
+- `read_storage` (localStorage, IndexedDB) — no general exfiltration primitives. `read_cookies` is a deliberate, narrow exception: the user explicitly opts in at pair time, and only non-HttpOnly cookies are visible to page JS.
 - `click`, `navigate` — no UI automation. Use claude-in-chrome for that.
 - Wildcard MCPs — the declared `domains` set must be enumerated explicitly. No `*.com` or "any domain" wildcards.
+- Wildcard capabilities — the declared `capabilities` set must be enumerated explicitly. Unknown capability strings are rejected by the validator.
 - Streaming responses — bodies are buffered and returned whole.
 
 These omissions are the security model. See `docs/SECURITY.md`.
