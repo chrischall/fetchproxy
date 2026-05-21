@@ -1,17 +1,6 @@
 import type { Capability, Frame, HelloFrame, ReadyFrame, EncryptedFrame, InnerFrame } from './frames.js';
-import { PROTOCOL_VERSION } from './frames.js';
+import { KNOWN_CAPABILITIES, PROTOCOL_VERSION } from './frames.js';
 import { isValidMcpId } from './mcp-id.js';
-
-/**
- * Set of capability strings the validator recognises on the wire. Keep
- * in sync with the `Capability` union in `frames.ts`. Any other string
- * is rejected so an unrecognised verb can't sneak through to the
- * extension's per-mcp gating.
- */
-const KNOWN_CAPABILITIES: ReadonlySet<Capability> = new Set<Capability>([
-  'fetch',
-  'read_cookies',
-]);
 
 export class ProtocolError extends Error {
   constructor(message: string) {
@@ -22,10 +11,14 @@ export class ProtocolError extends Error {
 
 const FORBIDDEN_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
 const BASE64_RE = /^[A-Za-z0-9+/]*={0,2}$/;
-// Strict DNS hostname: ≥2 labels, alphanumeric + hyphen, no leading/trailing
-// hyphen per label. Mirrors the pattern used in ensure-domain-tab.ts so the
-// server, protocol, and extension agree on what is a "valid hostname".
-const HOSTNAME_RE = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$/i;
+/**
+ * Strict DNS hostname: ≥2 labels, alphanumeric + hyphen, no leading or
+ * trailing hyphen per label. Shared by the protocol validator and the
+ * extension's `ensureDomainTab` so server, validator, and extension
+ * agree on what counts as a "valid hostname".
+ */
+export const HOSTNAME_RE =
+  /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$/i;
 
 function assertObject(x: unknown, label: string): asserts x is Record<string, unknown> {
   if (typeof x !== 'object' || x === null || Array.isArray(x)) {

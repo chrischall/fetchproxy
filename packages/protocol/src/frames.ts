@@ -31,6 +31,17 @@ export type Platform = 'chrome' | 'safari' | 'firefox';
  */
 export type Capability = 'fetch' | 'read_cookies';
 
+/**
+ * Set of capability strings that are valid on the wire. Runtime sibling
+ * of the `Capability` union — kept here so validators in any package
+ * (server, extension, protocol) can share one source of truth without
+ * each defining their own private `Set`.
+ */
+export const KNOWN_CAPABILITIES: ReadonlySet<Capability> = new Set<Capability>([
+  'fetch',
+  'read_cookies',
+]);
+
 export interface HelloFrameFromServer {
   type: 'hello';
   protocolVersion: 1;

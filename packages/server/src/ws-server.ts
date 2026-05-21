@@ -1,14 +1,9 @@
-import { generateMcpId } from '@fetchproxy/protocol';
+import { generateMcpId, KNOWN_CAPABILITIES } from '@fetchproxy/protocol';
 import type { Capability, InnerFrame, FetchInit } from '@fetchproxy/protocol';
 import { electRole } from './election.js';
 import { startHost, type HostHandle } from './host.js';
 import { startPeer, type PeerHandle } from './peer.js';
 import { loadOrCreateIdentity, type Identity } from './identity.js';
-
-const KNOWN_CAPABILITIES: ReadonlySet<Capability> = new Set<Capability>([
-  'fetch',
-  'read_cookies',
-]);
 
 export interface FetchproxyServerOpts {
   port?: number;

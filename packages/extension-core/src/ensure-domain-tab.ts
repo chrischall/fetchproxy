@@ -11,16 +11,14 @@
  * is not awaited (it would race the ready frame anyway).
  */
 
+import { HOSTNAME_RE } from '@fetchproxy/protocol';
+
 declare const chrome: {
   tabs: {
     query: (q: { url?: string | string[] }) => Promise<{ id?: number; url?: string }[]>;
     create: (props: { url: string }) => Promise<{ id?: number; url?: string }>;
   };
 };
-
-// Strict hostname pattern: at least two labels (no bare TLDs), each label
-// alphanumeric + hyphen (no underscores, no leading/trailing hyphen).
-const HOSTNAME_RE = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$/i;
 
 export interface EnsureDomainTabResult {
   opened: boolean;
