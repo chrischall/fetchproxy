@@ -32,14 +32,14 @@ describe('TrustStore (identity-hash keyed)', () => {
     const store = new TrustStore('0.1.0');
     await store.put('hash1', {
       serverName: 'opentable-mcp',
-      domain: 'opentable.com',
+      domains: ['opentable.com'],
       identityX25519Pub: 'AAAA',
       identityEd25519Pub: 'BBBB',
     });
     const got = await store.get('hash1');
     expect(got).not.toBeNull();
     expect(got!.serverName).toBe('opentable-mcp');
-    expect(got!.domain).toBe('opentable.com');
+    expect(got!.domains).toEqual(['opentable.com']);
     expect(got!.identityX25519Pub).toBe('AAAA');
     expect(got!.extensionVersionAtPair).toBe('0.1.0');
     expect(typeof got!.pairedAt).toBe('number');
@@ -49,7 +49,7 @@ describe('TrustStore (identity-hash keyed)', () => {
     const s1 = new TrustStore('0.1.0');
     await s1.put('hash1', {
       serverName: 'opentable-mcp',
-      domain: 'opentable.com',
+      domains: ['opentable.com'],
       identityX25519Pub: 'AAAA',
       identityEd25519Pub: 'BBBB',
     });
@@ -61,7 +61,7 @@ describe('TrustStore (identity-hash keyed)', () => {
     const s1 = new TrustStore('0.1.0');
     await s1.put('hash1', {
       serverName: 'opentable-mcp',
-      domain: 'opentable.com',
+      domains: ['opentable.com'],
       identityX25519Pub: 'AAAA',
       identityEd25519Pub: 'BBBB',
     });
@@ -75,7 +75,7 @@ describe('TrustStore (identity-hash keyed)', () => {
     const store = new TrustStore('0.1.0');
     await store.put('hash1', {
       serverName: 'a',
-      domain: 'a.com',
+      domains: ['a.com'],
       identityX25519Pub: 'X',
       identityEd25519Pub: 'Y',
     });
@@ -86,10 +86,10 @@ describe('TrustStore (identity-hash keyed)', () => {
   it('list returns all records', async () => {
     const store = new TrustStore('0.1.0');
     await store.put('hash1', {
-      serverName: 'a', domain: 'a.com', identityX25519Pub: 'X', identityEd25519Pub: 'Y',
+      serverName: 'a', domains: ['a.com'], identityX25519Pub: 'X', identityEd25519Pub: 'Y',
     });
     await store.put('hash2', {
-      serverName: 'b', domain: 'b.com', identityX25519Pub: 'X', identityEd25519Pub: 'Y',
+      serverName: 'b', domains: ['b.com'], identityX25519Pub: 'X', identityEd25519Pub: 'Y',
     });
     const all = await store.list();
     expect(Object.keys(all)).toHaveLength(2);
@@ -100,12 +100,25 @@ describe('TrustStore (identity-hash keyed)', () => {
   it('put overwrites existing record', async () => {
     const store = new TrustStore('0.1.0');
     await store.put('hash1', {
-      serverName: 'old', domain: 'a.com', identityX25519Pub: 'X', identityEd25519Pub: 'Y',
+      serverName: 'old', domains: ['a.com'], identityX25519Pub: 'X', identityEd25519Pub: 'Y',
     });
     await store.put('hash1', {
-      serverName: 'new', domain: 'a.com', identityX25519Pub: 'X', identityEd25519Pub: 'Y',
+      serverName: 'new', domains: ['a.com'], identityX25519Pub: 'X', identityEd25519Pub: 'Y',
     });
     const got = await store.get('hash1');
     expect(got!.serverName).toBe('new');
+  });
+
+  it('persists and retrieves a multi-domain trust record', async () => {
+    const store = new TrustStore('0.1.0');
+    await store.put('hashm', {
+      serverName: 'honeybook-mcp',
+      domains: ['honeybook.com', 'hbsplit.com'],
+      identityX25519Pub: 'AAAA',
+      identityEd25519Pub: 'BBBB',
+    });
+    const got = await store.get('hashm');
+    expect(got).not.toBeNull();
+    expect(got!.domains).toEqual(['honeybook.com', 'hbsplit.com']);
   });
 });

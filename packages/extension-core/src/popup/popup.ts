@@ -19,13 +19,18 @@ const HIGH_RISK_KEYWORDS = ['bank', 'gov', 'mil'];
 export interface PendingPair {
   serverName: string;
   version: string;
-  domain: string;
+  /**
+   * Non-empty array of hostnames the MCP declared. The popup renders
+   * each as a separate list entry so the user can see exactly which
+   * sites this MCP would gain access to.
+   */
+  domains: string[];
   pairCode: string;
 }
 
 export interface TrustedSummary {
   serverName: string;
-  domain: string;
+  domains: string[];
 }
 
 export type PopupState =
@@ -41,6 +46,10 @@ export type PopupState =
 function isHighRisk(domain: string): boolean {
   const d = domain.toLowerCase();
   return HIGH_RISK_KEYWORDS.some((k) => d.includes(k));
+}
+
+function anyHighRisk(domains: readonly string[]): boolean {
+  return domains.some(isHighRisk);
 }
 
 function elem<K extends keyof HTMLElementTagNameMap>(
@@ -70,7 +79,7 @@ export function renderPopup(root: HTMLElement, state: PopupState): void {
     root.appendChild(elem('h3', {}, 'Trusted MCPs'));
     const ul = elem('ul');
     for (const t of state.trusted) {
-      ul.appendChild(elem('li', {}, `${t.serverName} → ${t.domain}`));
+      ul.appendChild(elem('li', {}, `${t.serverName} → ${t.domains.join(', ')}`));
     }
     root.appendChild(ul);
     return;
@@ -82,19 +91,22 @@ export function renderPopup(root: HTMLElement, state: PopupState): void {
   root.appendChild(elem('h3', {}, 'Approve new MCP connection?'));
 
   const dl = elem('dl');
-  const entries: [string, string][] = [
-    ['Server', `${pending.serverName} v${pending.version}`],
-    ['Domain', pending.domain],
-  ];
-  for (const [k, v] of entries) {
-    dl.appendChild(elem('dt', {}, k));
-    dl.appendChild(elem('dd', {}, v));
+  dl.appendChild(elem('dt', {}, 'Server'));
+  dl.appendChild(elem('dd', {}, `${pending.serverName} v${pending.version}`));
+  dl.appendChild(elem('dt', {}, pending.domains.length === 1 ? 'Domain' : 'Domains'));
+  const dd = elem('dd');
+  const ulDomains = elem('ul', { class: 'domains' });
+  for (const d of pending.domains) {
+    ulDomains.appendChild(elem('li', {}, d));
   }
+  dd.appendChild(ulDomains);
+  dl.appendChild(dd);
   root.appendChild(dl);
 
-  if (isHighRisk(pending.domain)) {
+  if (anyHighRisk(pending.domains)) {
+    const hr = pending.domains.find(isHighRisk) ?? pending.domains[0]!;
     root.appendChild(
-      elem('p', { class: 'warn' }, `WARNING: ${pending.domain} looks high-risk.`),
+      elem('p', { class: 'warn' }, `WARNING: ${hr} looks high-risk.`),
     );
   }
 
@@ -129,7 +141,7 @@ interface PendingPairRecord {
   mcpId: string;
   serverName: string;
   version: string;
-  domain: string;
+  domains: string[];
   pairCode: string;
   identityHash: string;
   identityX25519Pub: string;
@@ -163,7 +175,7 @@ async function bootstrap(): Promise<void> {
       pending: {
         serverName: pending.serverName,
         version: pending.version,
-        domain: pending.domain,
+        domains: [...pending.domains],
         pairCode: pending.pairCode,
       },
       onApprove: () => {
@@ -178,12 +190,12 @@ async function bootstrap(): Promise<void> {
     });
     return;
   }
-  const ev = chrome.runtime?.getManifest().version ?? '0.1.0';
+  const ev = chrome.runtime?.getManifest().version ?? '0.2.0';
   const trust = new TrustStore(ev);
   const records = await trust.list();
   const trustedList = Object.values(records).map((r) => ({
     serverName: r.serverName,
-    domain: r.domain,
+    domains: [...r.domains],
   }));
   if (trustedList.length === 0) {
     renderPopup(root, { mode: 'empty' });

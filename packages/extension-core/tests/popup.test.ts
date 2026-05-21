@@ -21,8 +21,8 @@ describe('renderPopup', () => {
     const state: PopupState = {
       mode: 'status',
       trusted: [
-        { serverName: 'opentable-mcp', domain: 'opentable.com' },
-        { serverName: 'resy-mcp', domain: 'resy.com' },
+        { serverName: 'opentable-mcp', domains: ['opentable.com'] },
+        { serverName: 'resy-mcp', domains: ['resy.com'] },
       ],
     };
     renderPopup(container, state);
@@ -32,13 +32,22 @@ describe('renderPopup', () => {
     expect(container.textContent).toContain('resy.com');
   });
 
+  it('renders multi-domain trusted MCP with all hosts listed', () => {
+    renderPopup(container, {
+      mode: 'status',
+      trusted: [{ serverName: 'honeybook-mcp', domains: ['honeybook.com', 'hbsplit.com'] }],
+    });
+    expect(container.textContent).toContain('honeybook.com');
+    expect(container.textContent).toContain('hbsplit.com');
+  });
+
   it('renders pending-pair with code prominent + cancel default-focused', () => {
     const state: PopupState = {
       mode: 'pending-pair',
       pending: {
         serverName: 'opentable-mcp',
         version: '0.9.1',
-        domain: 'opentable.com',
+        domains: ['opentable.com'],
         pairCode: '472-918',
       },
       onApprove: () => undefined,
@@ -55,6 +64,24 @@ describe('renderPopup', () => {
     expect(cancel.getAttribute('autofocus')).not.toBeNull();
   });
 
+  it('renders pending-pair with multiple domains all visible', () => {
+    renderPopup(container, {
+      mode: 'pending-pair',
+      pending: {
+        serverName: 'honeybook-mcp',
+        version: '0.0.1',
+        domains: ['honeybook.com', 'hbsplit.com'],
+        pairCode: '123-456',
+      },
+      onApprove: () => undefined,
+      onCancel: () => undefined,
+    });
+    expect(container.textContent).toContain('honeybook.com');
+    expect(container.textContent).toContain('hbsplit.com');
+    // Header should pluralise ("Domains" rather than "Domain") for multi.
+    expect(container.textContent).toContain('Domains');
+  });
+
   it('calls onApprove when Approve clicked', () => {
     let called = false;
     renderPopup(container, {
@@ -62,7 +89,7 @@ describe('renderPopup', () => {
       pending: {
         serverName: 'opentable-mcp',
         version: '0.9.1',
-        domain: 'opentable.com',
+        domains: ['opentable.com'],
         pairCode: '472-918',
       },
       onApprove: () => {
@@ -81,7 +108,7 @@ describe('renderPopup', () => {
       pending: {
         serverName: 'opentable-mcp',
         version: '0.9.1',
-        domain: 'opentable.com',
+        domains: ['opentable.com'],
         pairCode: '472-918',
       },
       onApprove: () => undefined,
@@ -99,7 +126,7 @@ describe('renderPopup', () => {
       pending: {
         serverName: 'some-bank-mcp',
         version: '0.0.1',
-        domain: 'chase.bank',
+        domains: ['chase.bank'],
         pairCode: '111-222',
       },
       onApprove: () => undefined,
@@ -114,7 +141,7 @@ describe('renderPopup', () => {
       pending: {
         serverName: 'some-mcp',
         version: '0.0.1',
-        domain: 'irs.gov',
+        domains: ['irs.gov'],
         pairCode: '111-222',
       },
       onApprove: () => undefined,
@@ -129,12 +156,27 @@ describe('renderPopup', () => {
       pending: {
         serverName: 'opentable-mcp',
         version: '0.9.1',
-        domain: 'opentable.com',
+        domains: ['opentable.com'],
         pairCode: '111-222',
       },
       onApprove: () => undefined,
       onCancel: () => undefined,
     });
     expect(container.textContent?.toLowerCase()).not.toContain('high-risk');
+  });
+
+  it('shows high-risk warning when ANY of the multiple domains is risky', () => {
+    renderPopup(container, {
+      mode: 'pending-pair',
+      pending: {
+        serverName: 'mixed-mcp',
+        version: '0.0.1',
+        domains: ['benign.com', 'chase.bank'],
+        pairCode: '111-222',
+      },
+      onApprove: () => undefined,
+      onCancel: () => undefined,
+    });
+    expect(container.textContent?.toLowerCase()).toContain('high-risk');
   });
 });

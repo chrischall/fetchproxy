@@ -24,7 +24,12 @@ const STORAGE_KEY = 'trustedMcps';
 
 export interface TrustRecord {
   serverName: string;
-  domain: string;
+  /**
+   * Non-empty array of hostnames the user approved this MCP to reach
+   * at pair time. The extension's per-request allowlist check passes
+   * any URL whose host matches (exactly or as a subdomain) any entry.
+   */
+  domains: string[];
   identityX25519Pub: string;
   identityEd25519Pub: string;
   pairedAt: number;
@@ -33,7 +38,7 @@ export interface TrustRecord {
 
 export interface TrustInput {
   serverName: string;
-  domain: string;
+  domains: string[];
   identityX25519Pub: string;
   identityEd25519Pub: string;
 }

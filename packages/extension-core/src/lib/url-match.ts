@@ -26,6 +26,21 @@ export function isUrlAllowedForDomain(url: string, allowedDomain: string): boole
 }
 
 /**
+ * Returns true iff `url` is on ANY of the allowed domains (or a subdomain
+ * of one). Used by the extension's per-request allowlist check for
+ * multi-domain MCPs.
+ */
+export function isUrlAllowedForAnyDomain(
+  url: string,
+  allowedDomains: readonly string[],
+): boolean {
+  for (const d of allowedDomains) {
+    if (isUrlAllowedForDomain(url, d)) return true;
+  }
+  return false;
+}
+
+/**
  * Returns true iff a tab's URL begins with the prefix the MCP server
  * supplied in `init.tabUrl`. The MCP picks a coarse prefix
  * ("https://www.opentable.com/") and the extension finds the first

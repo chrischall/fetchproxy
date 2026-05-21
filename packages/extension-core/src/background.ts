@@ -1,9 +1,12 @@
 /**
- * Background service worker for fetchproxy 0.1.0.
+ * Background service worker for fetchproxy 0.2.0.
  *
  * Connects to one host MCP at ws://127.0.0.1:37149. The host multiplexes
  * all peer MCPs through that one pipe. Each MCP↔extension session has its
  * own AES-256-GCM session key derived via ECDH at handshake.
+ *
+ * 0.2.0 change: trust and the per-request allowlist key off `domains[]`
+ * (a non-empty array) rather than a singular `domain`.
  *
  * handleServerHello (pure function below) is the security-critical decision
  * point: verify signature, look up trust, decide auto-trust vs pair-prompt vs
@@ -32,7 +35,7 @@ import {
 import { TrustStore } from './trust-store.js';
 import { SessionKeys } from './session-keys.js';
 import { ensureDomainTab } from './ensure-domain-tab.js';
-import { isUrlAllowedForDomain, isTabUrlMatch } from './lib/url-match.js';
+import { isUrlAllowedForAnyDomain, isTabUrlMatch } from './lib/url-match.js';
 
 // -------------------------------------------------------------------
 // 1. Pure decision function (handleServerHello)
@@ -50,7 +53,7 @@ export type HandleHelloResult =
       identityHash: string;
       mcpId: string;
       serverName: string;
-      domain: string;
+      domains: string[];
       version: string;
       identityX25519Pub: string;
       identityEd25519Pub: string;
@@ -59,7 +62,7 @@ export type HandleHelloResult =
   | {
       kind: 'auto-trust';
       mcpId: string;
-      domain: string;
+      domains: string[];
       sessionKey: Uint8Array;
       extensionSessionPub: Uint8Array;
     };
@@ -93,6 +96,19 @@ function toHex(bytes: Uint8Array): string {
   return s;
 }
 
+/**
+ * Order-insensitive equality for two domain lists. The trust record's
+ * `domains` and the server hello's `domains` must declare the same set
+ * (the user approved THIS set); a permutation is fine.
+ */
+function sameDomainSet(a: readonly string[], b: readonly string[]): boolean {
+  if (a.length !== b.length) return false;
+  const sa = [...a].map((s) => s.toLowerCase()).sort();
+  const sb = [...b].map((s) => s.toLowerCase()).sort();
+  for (let i = 0; i < sa.length; i++) if (sa[i] !== sb[i]) return false;
+  return true;
+}
+
 export async function handleServerHello(
   hello: HelloFrameFromServer,
   deps: HandleHelloDeps,
@@ -120,8 +136,11 @@ export async function handleServerHello(
   const record = await deps.trust.get(hash);
 
   if (record) {
-    if (record.serverName !== hello.serverName || record.domain !== hello.domain) {
-      return { kind: 'reject', reason: 'serverName/domain mismatch with trust record' };
+    if (
+      record.serverName !== hello.serverName ||
+      !sameDomainSet(record.domains, hello.domains)
+    ) {
+      return { kind: 'reject', reason: 'serverName/domains mismatch with trust record' };
     }
     // Derive session key with fresh ephemeral keypair.
     const ephemeral = await generateX25519();
@@ -135,7 +154,7 @@ export async function handleServerHello(
     return {
       kind: 'auto-trust',
       mcpId: hello.mcpId,
-      domain: hello.domain,
+      domains: [...hello.domains],
       sessionKey,
       extensionSessionPub: ephemeral.publicKey,
     };
@@ -149,7 +168,7 @@ export async function handleServerHello(
     identityHash: hash,
     mcpId: hello.mcpId,
     serverName: hello.serverName,
-    domain: hello.domain,
+    domains: [...hello.domains],
     version: hello.version,
     identityX25519Pub: hello.identityX25519Pub,
     identityEd25519Pub: hello.identityEd25519Pub,
@@ -193,7 +212,7 @@ interface PendingPairRecord {
   mcpId: string;
   serverName: string;
   version: string;
-  domain: string;
+  domains: string[];
   pairCode: string;
   identityHash: string;
   identityX25519Pub: string;
@@ -205,8 +224,10 @@ let ws: WebSocket | null = null;
 let reconnectAttempt = 0;
 let trust: TrustStore | null = null;
 let sessions: SessionKeys | null = null;
-// Track each mcpId's domain so the request handler can enforce the allowlist.
-const mcpDomains = new Map<string, string>();
+// Track each mcpId's declared domain set so the request handler can enforce
+// the allowlist. 0.2.0+: this is a Map<mcpId, string[]> rather than the
+// 0.1.x Map<mcpId, string> — every URL must match SOME entry to be allowed.
+const mcpDomains = new Map<string, string[]>();
 
 function connect(): void {
   if (!trust || !sessions) return;
@@ -269,10 +290,17 @@ async function onServerHello(hello: HelloFrameFromServer): Promise<void> {
   }
   if (result.kind === 'auto-trust') {
     sessions.set(result.mcpId, result.sessionKey);
-    mcpDomains.set(result.mcpId, result.domain);
-    void ensureDomainTab(result.domain).catch(() => {
-      /* fire-and-forget */
-    });
+    mcpDomains.set(result.mcpId, [...result.domains]);
+    // TODO: open tabs for ALL declared domains. For 0.2.0 we open one
+    // (the first declared) — multi-domain MCPs (HoneyBook spans two
+    // hosts) ought to surface a tab for each, but a single open tab is
+    // the minimum to make the first fetch succeed.
+    const firstDomain = result.domains[0];
+    if (firstDomain !== undefined) {
+      void ensureDomainTab(firstDomain).catch(() => {
+        /* fire-and-forget */
+      });
+    }
     const ready: ReadyFrame = {
       type: 'ready',
       mcpId: result.mcpId,
@@ -286,7 +314,7 @@ async function onServerHello(hello: HelloFrameFromServer): Promise<void> {
     mcpId: result.mcpId,
     serverName: result.serverName,
     version: result.version,
-    domain: result.domain,
+    domains: [...result.domains],
     pairCode: result.pairCode,
     identityHash: result.identityHash,
     identityX25519Pub: result.identityX25519Pub,
@@ -325,22 +353,22 @@ async function sendInner(mcpId: string, inner: InnerFrame): Promise<void> {
 }
 
 async function handleRequest(mcpId: string, req: InnerRequest): Promise<void> {
-  const domain = mcpDomains.get(mcpId);
-  if (!domain) {
+  const domains = mcpDomains.get(mcpId);
+  if (!domains || domains.length === 0) {
     await sendInner(mcpId, {
       type: 'response',
       id: req.id,
       ok: false,
-      error: 'no domain for mcpId',
+      error: 'no domains for mcpId',
     });
     return;
   }
-  if (!isUrlAllowedForDomain(req.init.url, domain)) {
+  if (!isUrlAllowedForAnyDomain(req.init.url, domains)) {
     await sendInner(mcpId, {
       type: 'response',
       id: req.id,
       ok: false,
-      error: `url ${req.init.url} not in domain ${domain}`,
+      error: `url ${req.init.url} not in domains [${domains.join(', ')}]`,
     });
     return;
   }
@@ -388,7 +416,7 @@ async function onApproval(approved: PendingPairRecord): Promise<void> {
   // Persist trust.
   await trust.put(approved.identityHash, {
     serverName: approved.serverName,
-    domain: approved.domain,
+    domains: [...approved.domains],
     identityX25519Pub: approved.identityX25519Pub,
     identityEd25519Pub: approved.identityEd25519Pub,
   });
@@ -404,10 +432,14 @@ async function onApproval(approved: PendingPairRecord): Promise<void> {
     32,
   );
   sessions.set(approved.mcpId, sessionKey);
-  mcpDomains.set(approved.mcpId, approved.domain);
-  void ensureDomainTab(approved.domain).catch(() => {
-    /* noop */
-  });
+  mcpDomains.set(approved.mcpId, [...approved.domains]);
+  // TODO: open tabs for ALL declared domains. See auto-trust path above.
+  const firstDomain = approved.domains[0];
+  if (firstDomain !== undefined) {
+    void ensureDomainTab(firstDomain).catch(() => {
+      /* noop */
+    });
+  }
   // Send ready.
   const ready: ReadyFrame = {
     type: 'ready',

@@ -1,5 +1,9 @@
 import { describe, it, expect } from 'vitest';
-import { isUrlAllowedForDomain, isTabUrlMatch } from '../src/lib/url-match.js';
+import {
+  isUrlAllowedForDomain,
+  isUrlAllowedForAnyDomain,
+  isTabUrlMatch,
+} from '../src/lib/url-match.js';
 
 describe('isUrlAllowedForDomain', () => {
   it('allows exact domain', () => {
@@ -28,6 +32,45 @@ describe('isUrlAllowedForDomain', () => {
 
   it('rejects malformed URLs', () => {
     expect(isUrlAllowedForDomain('not a url', 'opentable.com')).toBe(false);
+  });
+});
+
+describe('isUrlAllowedForAnyDomain', () => {
+  it('allows a URL on any of the declared domains', () => {
+    expect(
+      isUrlAllowedForAnyDomain('https://opentable.com/x', ['opentable.com', 'resy.com']),
+    ).toBe(true);
+    expect(
+      isUrlAllowedForAnyDomain('https://resy.com/x', ['opentable.com', 'resy.com']),
+    ).toBe(true);
+  });
+
+  it('allows a subdomain of any declared domain', () => {
+    expect(
+      isUrlAllowedForAnyDomain('https://api.resy.com/x', ['opentable.com', 'resy.com']),
+    ).toBe(true);
+  });
+
+  it('rejects a URL outside the declared domain set', () => {
+    expect(
+      isUrlAllowedForAnyDomain('https://evil.com/x', ['opentable.com', 'resy.com']),
+    ).toBe(false);
+  });
+
+  it('rejects suffix-attack against any declared domain', () => {
+    expect(
+      isUrlAllowedForAnyDomain('https://evilopentable.com/x', ['opentable.com', 'resy.com']),
+    ).toBe(false);
+  });
+
+  it('returns false for empty domain set', () => {
+    expect(isUrlAllowedForAnyDomain('https://opentable.com/x', [])).toBe(false);
+  });
+
+  it('rejects non-http(s) schemes for every domain in the set', () => {
+    expect(
+      isUrlAllowedForAnyDomain('javascript:alert(1)', ['opentable.com', 'resy.com']),
+    ).toBe(false);
   });
 });
 
