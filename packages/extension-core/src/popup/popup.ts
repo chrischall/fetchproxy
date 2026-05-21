@@ -46,6 +46,15 @@ export interface PendingPair {
    * warning markers next to elevated-trust verbs like `read_cookies`.
    */
   capabilities: string[];
+  /**
+   * 0.3.0+: declared scope arrays. Each renders into a sub-list under
+   * the capability that uses it, so the user sees exactly which keys /
+   * headers they are approving by name. Empty arrays render nothing.
+   */
+  cookieKeys?: string[];
+  localStorageKeys?: string[];
+  sessionStorageKeys?: string[];
+  captureHeaders?: { urlPattern: string; headerName: string }[];
   pairCode: string;
 }
 
@@ -72,6 +81,35 @@ function isHighRisk(domain: string): boolean {
 
 function anyHighRisk(domains: readonly string[]): boolean {
   return domains.some(isHighRisk);
+}
+
+function appendScopeSubList(
+  dl: HTMLElement,
+  label: string,
+  keys: readonly string[] | undefined,
+): void {
+  if (!keys || keys.length === 0) return;
+  dl.appendChild(elem('dt', { class: 'cap-warn' }, label));
+  const dd = elem('dd', { class: 'cap-warn' });
+  const ul = elem('ul', { class: 'scope-keys' });
+  for (const k of keys) ul.appendChild(elem('li', {}, k));
+  dd.appendChild(ul);
+  dl.appendChild(dd);
+}
+
+function appendCaptureHeadersSubList(
+  dl: HTMLElement,
+  entries: readonly { urlPattern: string; headerName: string }[] | undefined,
+): void {
+  if (!entries || entries.length === 0) return;
+  dl.appendChild(elem('dt', { class: 'cap-warn' }, 'Capture request header'));
+  const dd = elem('dd', { class: 'cap-warn' });
+  const ul = elem('ul', { class: 'capture-headers' });
+  for (const e of entries) {
+    ul.appendChild(elem('li', {}, `"${e.headerName}" from ${e.urlPattern}`));
+  }
+  dd.appendChild(ul);
+  dl.appendChild(dd);
 }
 
 function elem<K extends keyof HTMLElementTagNameMap>(
@@ -145,6 +183,15 @@ export function renderPopup(root: HTMLElement, state: PopupState): void {
   }
   ddCaps.appendChild(ulCaps);
   dl.appendChild(ddCaps);
+
+  // 0.3.0+: itemise each non-empty scope array. The user approves the
+  // exact set of names, not just "this MCP can read storage" — so the
+  // pair popup MUST show them.
+  appendScopeSubList(dl, 'Read cookies', pending.cookieKeys);
+  appendScopeSubList(dl, 'Read localStorage', pending.localStorageKeys);
+  appendScopeSubList(dl, 'Read sessionStorage', pending.sessionStorageKeys);
+  appendCaptureHeadersSubList(dl, pending.captureHeaders);
+
   root.appendChild(dl);
 
   if (anyHighRisk(pending.domains)) {
@@ -187,6 +234,10 @@ interface PendingPairRecord {
   version: string;
   domains: string[];
   capabilities: string[];
+  cookieKeys?: string[];
+  localStorageKeys?: string[];
+  sessionStorageKeys?: string[];
+  captureHeaders?: { urlPattern: string; headerName: string }[];
   pairCode: string;
   identityHash: string;
   identityX25519Pub: string;
@@ -222,6 +273,10 @@ async function bootstrap(): Promise<void> {
         version: pending.version,
         domains: [...pending.domains],
         capabilities: [...(pending.capabilities ?? ['fetch'])],
+        cookieKeys: [...(pending.cookieKeys ?? [])],
+        localStorageKeys: [...(pending.localStorageKeys ?? [])],
+        sessionStorageKeys: [...(pending.sessionStorageKeys ?? [])],
+        captureHeaders: (pending.captureHeaders ?? []).map((d) => ({ ...d })),
         pairCode: pending.pairCode,
       },
       onApprove: () => {

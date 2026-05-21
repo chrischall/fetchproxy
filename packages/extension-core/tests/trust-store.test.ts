@@ -182,6 +182,76 @@ describe('TrustStore (identity-hash keyed)', () => {
     expect(await store.get('weird2')).toBeNull();
   });
 
+  it('round-trips 0.3.0 scope fields (cookieKeys, localStorageKeys, etc.)', async () => {
+    const store = new TrustStore('0.3.0');
+    await store.put('hash3', {
+      serverName: 'ofw-mcp',
+      domains: ['ourfamilywizard.com'],
+      capabilities: ['fetch', 'read_local_storage'],
+      cookieKeys: [],
+      localStorageKeys: ['auth', 'tokenExpiry'],
+      sessionStorageKeys: [],
+      captureHeaders: [],
+      identityX25519Pub: 'AAAA',
+      identityEd25519Pub: 'BBBB',
+    });
+    const got = await store.get('hash3');
+    expect(got).not.toBeNull();
+    expect(got!.localStorageKeys).toEqual(['auth', 'tokenExpiry']);
+    expect(got!.cookieKeys).toEqual([]);
+    expect(got!.sessionStorageKeys).toEqual([]);
+    expect(got!.captureHeaders).toEqual([]);
+  });
+
+  it('round-trips captureHeaders entries', async () => {
+    const store = new TrustStore('0.3.0');
+    await store.put('hashh', {
+      serverName: 'honeybook-mcp',
+      domains: ['honeybook.com'],
+      capabilities: ['fetch', 'capture_request_header'],
+      cookieKeys: [],
+      localStorageKeys: [],
+      sessionStorageKeys: [],
+      captureHeaders: [
+        { urlPattern: 'https://api.honeybook.com/api/v2/*', headerName: 'hb-api-fingerprint' },
+      ],
+      identityX25519Pub: 'AAAA',
+      identityEd25519Pub: 'BBBB',
+    });
+    const got = await store.get('hashh');
+    expect(got).not.toBeNull();
+    expect(got!.captureHeaders).toEqual([
+      { urlPattern: 'https://api.honeybook.com/api/v2/*', headerName: 'hb-api-fingerprint' },
+    ]);
+  });
+
+  it('normalises pre-0.3.0 records to empty scope arrays on read', async () => {
+    const store = new TrustStore('0.3.0');
+    const cs = (globalThis as { chrome?: { storage: { local: { set: (kv: Record<string, unknown>) => Promise<void> } } } }).chrome!.storage.local;
+    await cs.set({
+      trustedMcps: {
+        records: {
+          legacy2: {
+            serverName: 'legacy-mcp',
+            domains: ['legacy.example'],
+            capabilities: ['fetch', 'read_cookies'],
+            identityX25519Pub: 'X',
+            identityEd25519Pub: 'Y',
+            pairedAt: 1,
+            extensionVersionAtPair: '0.3.0',
+            // No 0.3.0 scope fields.
+          },
+        },
+      },
+    });
+    const got = await store.get('legacy2');
+    expect(got).not.toBeNull();
+    expect(got!.cookieKeys).toEqual([]);
+    expect(got!.localStorageKeys).toEqual([]);
+    expect(got!.sessionStorageKeys).toEqual([]);
+    expect(got!.captureHeaders).toEqual([]);
+  });
+
   it('normalises pre-capability records to ["fetch"] on read', async () => {
     // Simulate a record stored before 0.2.0 added capabilities by writing
     // directly through the underlying storage layer without the field.

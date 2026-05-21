@@ -39,7 +39,19 @@ async function buildServerHello(
   mcpId: string,
   serverName: string,
   domains: string[],
-  capabilities?: ('fetch' | 'read_cookies')[],
+  capabilities?: (
+    | 'fetch'
+    | 'read_cookies'
+    | 'read_local_storage'
+    | 'read_session_storage'
+    | 'capture_request_header'
+  )[],
+  scope?: Partial<{
+    cookieKeys: string[];
+    localStorageKeys: string[];
+    sessionStorageKeys: string[];
+    captureHeaders: { urlPattern: string; headerName: string }[];
+  }>,
 ): Promise<HelloFrameFromServer> {
   const x = await generateX25519();
   const ed = await generateEd25519();
@@ -48,7 +60,7 @@ async function buildServerHello(
     ed.privateKey,
     concat(new TextEncoder().encode(mcpId), sessionNonce),
   );
-  return {
+  const hello: HelloFrameFromServer = {
     type: 'hello',
     protocolVersion: 1,
     role: 'server',
@@ -62,6 +74,17 @@ async function buildServerHello(
     sessionNonce: Buffer.from(sessionNonce).toString('base64'),
     sessionSig: Buffer.from(sig).toString('base64'),
   };
+  if (scope?.cookieKeys && scope.cookieKeys.length > 0) hello.cookieKeys = [...scope.cookieKeys];
+  if (scope?.localStorageKeys && scope.localStorageKeys.length > 0) {
+    hello.localStorageKeys = [...scope.localStorageKeys];
+  }
+  if (scope?.sessionStorageKeys && scope.sessionStorageKeys.length > 0) {
+    hello.sessionStorageKeys = [...scope.sessionStorageKeys];
+  }
+  if (scope?.captureHeaders && scope.captureHeaders.length > 0) {
+    hello.captureHeaders = scope.captureHeaders.map((d) => ({ ...d }));
+  }
+  return hello;
 }
 
 describe('handleServerHello', () => {
@@ -309,6 +332,152 @@ describe('handleServerHello', () => {
       });
       const result = await handleServerHello(hello, { trust });
       expect(result.kind).toBe('needs-pair');
+    });
+
+    it('surfaces declared scope arrays on needs-pair (0.3.0)', async () => {
+      const hello = await buildServerHello(
+        'ofw-mcp:0.5.0:1234567890abcdef',
+        'ofw-mcp',
+        ['ourfamilywizard.com'],
+        ['fetch', 'read_local_storage', 'capture_request_header'],
+        {
+          localStorageKeys: ['auth', 'tokenExpiry'],
+          captureHeaders: [
+            { urlPattern: 'https://api.ourfamilywizard.com/v1/*', headerName: 'x-csrf' },
+          ],
+        },
+      );
+      const trust = new TrustStore('0.3.0');
+      const result = await handleServerHello(hello, { trust });
+      expect(result.kind).toBe('needs-pair');
+      if (result.kind === 'needs-pair') {
+        expect(result.localStorageKeys).toEqual(['auth', 'tokenExpiry']);
+        expect(result.captureHeaders).toEqual([
+          { urlPattern: 'https://api.ourfamilywizard.com/v1/*', headerName: 'x-csrf' },
+        ]);
+        expect(result.cookieKeys).toEqual([]);
+        expect(result.sessionStorageKeys).toEqual([]);
+      }
+    });
+
+    it('falls back to needs-pair when a new localStorage key is declared', async () => {
+      const hello = await buildServerHello(
+        'ofw-mcp:0.5.0:1234567890abcdef',
+        'ofw-mcp',
+        ['ourfamilywizard.com'],
+        ['fetch', 'read_local_storage'],
+        { localStorageKeys: ['auth', 'tokenExpiry'] },
+      );
+      const trust = new TrustStore('0.3.0');
+      const idHash = Buffer.from(
+        await sha256(new Uint8Array(Buffer.from(hello.identityX25519Pub, 'base64'))),
+      ).toString('hex');
+      await trust.put(idHash, {
+        serverName: 'ofw-mcp',
+        domains: ['ourfamilywizard.com'],
+        capabilities: ['fetch', 'read_local_storage'],
+        cookieKeys: [],
+        localStorageKeys: ['auth'], // tokenExpiry added since
+        sessionStorageKeys: [],
+        captureHeaders: [],
+        identityX25519Pub: hello.identityX25519Pub,
+        identityEd25519Pub: hello.identityEd25519Pub,
+      });
+      const result = await handleServerHello(hello, { trust });
+      expect(result.kind).toBe('needs-pair');
+    });
+
+    it('falls back to needs-pair when a new captureHeader is declared', async () => {
+      const hello = await buildServerHello(
+        'honeybook-mcp:0.1.0:abcdef1234567890',
+        'honeybook-mcp',
+        ['honeybook.com'],
+        ['fetch', 'capture_request_header'],
+        {
+          captureHeaders: [
+            { urlPattern: 'https://api.honeybook.com/api/v2/*', headerName: 'hb-api-fingerprint' },
+            { urlPattern: 'https://api.honeybook.com/api/v3/*', headerName: 'hb-api-fingerprint' },
+          ],
+        },
+      );
+      const trust = new TrustStore('0.3.0');
+      const idHash = Buffer.from(
+        await sha256(new Uint8Array(Buffer.from(hello.identityX25519Pub, 'base64'))),
+      ).toString('hex');
+      // Trust record only includes v2 — v3 added since.
+      await trust.put(idHash, {
+        serverName: 'honeybook-mcp',
+        domains: ['honeybook.com'],
+        capabilities: ['fetch', 'capture_request_header'],
+        cookieKeys: [],
+        localStorageKeys: [],
+        sessionStorageKeys: [],
+        captureHeaders: [
+          { urlPattern: 'https://api.honeybook.com/api/v2/*', headerName: 'hb-api-fingerprint' },
+        ],
+        identityX25519Pub: hello.identityX25519Pub,
+        identityEd25519Pub: hello.identityEd25519Pub,
+      });
+      const result = await handleServerHello(hello, { trust });
+      expect(result.kind).toBe('needs-pair');
+    });
+
+    it('auto-trusts when scope set matches (permutation OK)', async () => {
+      const hello = await buildServerHello(
+        'ofw-mcp:0.5.0:1234567890abcdef',
+        'ofw-mcp',
+        ['ourfamilywizard.com'],
+        ['fetch', 'read_local_storage'],
+        { localStorageKeys: ['tokenExpiry', 'auth'] }, // different order
+      );
+      const trust = new TrustStore('0.3.0');
+      const idHash = Buffer.from(
+        await sha256(new Uint8Array(Buffer.from(hello.identityX25519Pub, 'base64'))),
+      ).toString('hex');
+      await trust.put(idHash, {
+        serverName: 'ofw-mcp',
+        domains: ['ourfamilywizard.com'],
+        capabilities: ['fetch', 'read_local_storage'],
+        cookieKeys: [],
+        localStorageKeys: ['auth', 'tokenExpiry'], // original order
+        sessionStorageKeys: [],
+        captureHeaders: [],
+        identityX25519Pub: hello.identityX25519Pub,
+        identityEd25519Pub: hello.identityEd25519Pub,
+      });
+      const result = await handleServerHello(hello, { trust });
+      expect(result.kind).toBe('auto-trust');
+      if (result.kind === 'auto-trust') {
+        expect(result.localStorageKeys.sort()).toEqual(['auth', 'tokenExpiry']);
+      }
+    });
+
+    it('auto-trusts when scope is empty and hello declares no scope', async () => {
+      // The common path for fetch-only MCPs (Pattern B): hello carries
+      // no scope fields, trust record persists `[]` for each, no re-pair.
+      const hello = await buildServerHello(
+        'opentable-mcp:0.9.1:a3f7c91d2e8b4f56',
+        'opentable-mcp',
+        ['opentable.com'],
+        ['fetch'],
+      );
+      const trust = new TrustStore('0.3.0');
+      const idHash = Buffer.from(
+        await sha256(new Uint8Array(Buffer.from(hello.identityX25519Pub, 'base64'))),
+      ).toString('hex');
+      await trust.put(idHash, {
+        serverName: 'opentable-mcp',
+        domains: ['opentable.com'],
+        capabilities: ['fetch'],
+        cookieKeys: [],
+        localStorageKeys: [],
+        sessionStorageKeys: [],
+        captureHeaders: [],
+        identityX25519Pub: hello.identityX25519Pub,
+        identityEd25519Pub: hello.identityEd25519Pub,
+      });
+      const result = await handleServerHello(hello, { trust });
+      expect(result.kind).toBe('auto-trust');
     });
 
     it('auto-trusts when capability set is a set-equal permutation', async () => {

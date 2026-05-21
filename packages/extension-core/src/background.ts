@@ -66,6 +66,10 @@ export type HandleHelloResult =
       serverName: string;
       domains: string[];
       capabilities: string[];
+      cookieKeys: string[];
+      localStorageKeys: string[];
+      sessionStorageKeys: string[];
+      captureHeaders: { urlPattern: string; headerName: string }[];
       version: string;
       identityX25519Pub: string;
       identityEd25519Pub: string;
@@ -76,6 +80,10 @@ export type HandleHelloResult =
       mcpId: string;
       domains: string[];
       capabilities: string[];
+      cookieKeys: string[];
+      localStorageKeys: string[];
+      sessionStorageKeys: string[];
+      captureHeaders: { urlPattern: string; headerName: string }[];
       sessionKey: Uint8Array;
       extensionSessionPub: Uint8Array;
     };
@@ -117,6 +125,47 @@ function effectiveCapabilities(hello: HelloFrameFromServer): Capability[] {
     : [...DEFAULT_CAPABILITIES];
 }
 
+interface DeclaredScope {
+  cookieKeys: string[];
+  localStorageKeys: string[];
+  sessionStorageKeys: string[];
+  captureHeaders: { urlPattern: string; headerName: string }[];
+}
+
+function declaredScope(hello: HelloFrameFromServer): DeclaredScope {
+  return {
+    cookieKeys: [...(hello.cookieKeys ?? [])],
+    localStorageKeys: [...(hello.localStorageKeys ?? [])],
+    sessionStorageKeys: [...(hello.sessionStorageKeys ?? [])],
+    captureHeaders: (hello.captureHeaders ?? []).map((d) => ({
+      urlPattern: d.urlPattern,
+      headerName: d.headerName,
+    })),
+  };
+}
+
+function sameScopeArrays(a: readonly string[], b: readonly string[]): boolean {
+  if (a.length !== b.length) return false;
+  const sa = [...a].sort();
+  const sb = [...b].sort();
+  for (let i = 0; i < sa.length; i++) if (sa[i] !== sb[i]) return false;
+  return true;
+}
+
+function sameCaptureHeaders(
+  a: readonly { urlPattern: string; headerName: string }[],
+  b: readonly { urlPattern: string; headerName: string }[],
+): boolean {
+  if (a.length !== b.length) return false;
+  const norm = (
+    arr: readonly { urlPattern: string; headerName: string }[],
+  ): string[] => arr.map((d) => `${d.urlPattern}\x00${d.headerName}`).sort();
+  const sa = norm(a);
+  const sb = norm(b);
+  for (let i = 0; i < sa.length; i++) if (sa[i] !== sb[i]) return false;
+  return true;
+}
+
 export async function handleServerHello(
   hello: HelloFrameFromServer,
   deps: HandleHelloDeps,
@@ -144,6 +193,8 @@ export async function handleServerHello(
   const record = await deps.trust.get(hash);
   const capabilities = effectiveCapabilities(hello);
 
+  const scope = declaredScope(hello);
+
   if (record) {
     if (
       record.serverName !== hello.serverName ||
@@ -151,11 +202,16 @@ export async function handleServerHello(
     ) {
       return { kind: 'reject', reason: 'serverName/domains mismatch with trust record' };
     }
-    if (!sameCapabilitySet(record.capabilities, capabilities)) {
-      // Capability upgrade (or downgrade) since the last pair. Conservative:
-      // drop trust + show the popup so the user can review what the MCP now
-      // wants. The trust-store `.put()` will overwrite the old record once
-      // they approve.
+    // Conservative: any change in declared scope (capabilities or any of
+    // the 0.3.0 scope arrays) triggers re-pair. The user approved a
+    // specific scope; we won't widen it silently.
+    const scopeChanged =
+      !sameCapabilitySet(record.capabilities, capabilities) ||
+      !sameScopeArrays(record.cookieKeys, scope.cookieKeys) ||
+      !sameScopeArrays(record.localStorageKeys, scope.localStorageKeys) ||
+      !sameScopeArrays(record.sessionStorageKeys, scope.sessionStorageKeys) ||
+      !sameCaptureHeaders(record.captureHeaders, scope.captureHeaders);
+    if (scopeChanged) {
       const pairCode = await derivePairCode(identityX25519Pub);
       return {
         kind: 'needs-pair',
@@ -165,6 +221,7 @@ export async function handleServerHello(
         serverName: hello.serverName,
         domains: [...hello.domains],
         capabilities,
+        ...scope,
         version: hello.version,
         identityX25519Pub: hello.identityX25519Pub,
         identityEd25519Pub: hello.identityEd25519Pub,
@@ -185,6 +242,7 @@ export async function handleServerHello(
       mcpId: hello.mcpId,
       domains: [...hello.domains],
       capabilities,
+      ...scope,
       sessionKey,
       extensionSessionPub: ephemeral.publicKey,
     };
@@ -200,6 +258,7 @@ export async function handleServerHello(
     serverName: hello.serverName,
     domains: [...hello.domains],
     capabilities,
+    ...scope,
     version: hello.version,
     identityX25519Pub: hello.identityX25519Pub,
     identityEd25519Pub: hello.identityEd25519Pub,
@@ -265,6 +324,10 @@ interface PendingPairRecord {
   version: string;
   domains: string[];
   capabilities: string[];
+  cookieKeys: string[];
+  localStorageKeys: string[];
+  sessionStorageKeys: string[];
+  captureHeaders: { urlPattern: string; headerName: string }[];
   pairCode: string;
   identityHash: string;
   identityX25519Pub: string;
@@ -360,6 +423,10 @@ async function onServerHello(hello: HelloFrameFromServer): Promise<void> {
     sessions.set(result.mcpId, result.sessionKey);
     mcpDomains.set(result.mcpId, [...result.domains]);
     mcpCapabilities.set(result.mcpId, [...result.capabilities]);
+    mcpCookieKeys.set(result.mcpId, [...result.cookieKeys]);
+    mcpLocalStorageKeys.set(result.mcpId, [...result.localStorageKeys]);
+    mcpSessionStorageKeys.set(result.mcpId, [...result.sessionStorageKeys]);
+    mcpCaptureHeaders.set(result.mcpId, [...result.captureHeaders]);
     // TODO: open tabs for ALL declared domains. For 0.2.0 we open one
     // (the first declared) — multi-domain MCPs (HoneyBook spans two
     // hosts) ought to surface a tab for each, but a single open tab is
@@ -385,6 +452,10 @@ async function onServerHello(hello: HelloFrameFromServer): Promise<void> {
     version: result.version,
     domains: [...result.domains],
     capabilities: [...result.capabilities],
+    cookieKeys: [...result.cookieKeys],
+    localStorageKeys: [...result.localStorageKeys],
+    sessionStorageKeys: [...result.sessionStorageKeys],
+    captureHeaders: [...result.captureHeaders],
     pairCode: result.pairCode,
     identityHash: result.identityHash,
     identityX25519Pub: result.identityX25519Pub,
@@ -880,6 +951,13 @@ async function onApproval(approved: PendingPairRecord): Promise<void> {
     serverName: approved.serverName,
     domains: [...approved.domains],
     capabilities: approvedCapabilities,
+    cookieKeys: [...(approved.cookieKeys ?? [])],
+    localStorageKeys: [...(approved.localStorageKeys ?? [])],
+    sessionStorageKeys: [...(approved.sessionStorageKeys ?? [])],
+    captureHeaders: (approved.captureHeaders ?? []).map((d) => ({
+      urlPattern: d.urlPattern,
+      headerName: d.headerName,
+    })),
     identityX25519Pub: approved.identityX25519Pub,
     identityEd25519Pub: approved.identityEd25519Pub,
   });
@@ -897,6 +975,10 @@ async function onApproval(approved: PendingPairRecord): Promise<void> {
   sessions.set(approved.mcpId, sessionKey);
   mcpDomains.set(approved.mcpId, [...approved.domains]);
   mcpCapabilities.set(approved.mcpId, approvedCapabilities);
+  mcpCookieKeys.set(approved.mcpId, [...(approved.cookieKeys ?? [])]);
+  mcpLocalStorageKeys.set(approved.mcpId, [...(approved.localStorageKeys ?? [])]);
+  mcpSessionStorageKeys.set(approved.mcpId, [...(approved.sessionStorageKeys ?? [])]);
+  mcpCaptureHeaders.set(approved.mcpId, (approved.captureHeaders ?? []).map((d) => ({ ...d })));
   // TODO: open tabs for ALL declared domains. See auto-trust path above.
   const firstDomain = approved.domains[0];
   if (firstDomain !== undefined) {

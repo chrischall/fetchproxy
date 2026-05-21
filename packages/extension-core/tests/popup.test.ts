@@ -230,6 +230,109 @@ describe('renderPopup', () => {
       expect(warnLi!.textContent).toContain('Read cookies');
     });
 
+    it('renders cookieKeys as a comma-separated list when read_cookies declared', () => {
+      renderPopup(container, {
+        mode: 'pending-pair',
+        pending: {
+          serverName: 'honeybook-mcp',
+          version: '0.1.0',
+          domains: ['honeybook.com'],
+          capabilities: ['fetch', 'read_cookies'],
+          cookieKeys: ['hb_user_token', 'hb_session'],
+          pairCode: '111-222',
+        },
+        onApprove: () => undefined,
+        onCancel: () => undefined,
+      });
+      expect(container.textContent).toContain('hb_user_token');
+      expect(container.textContent).toContain('hb_session');
+    });
+
+    it('renders localStorageKeys when read_local_storage declared', () => {
+      renderPopup(container, {
+        mode: 'pending-pair',
+        pending: {
+          serverName: 'ofw-mcp',
+          version: '0.5.0',
+          domains: ['ourfamilywizard.com'],
+          capabilities: ['fetch', 'read_local_storage'],
+          localStorageKeys: ['auth', 'tokenExpiry'],
+          pairCode: '111-222',
+        },
+        onApprove: () => undefined,
+        onCancel: () => undefined,
+      });
+      expect(container.textContent).toContain('Read localStorage');
+      expect(container.textContent).toContain('auth');
+      expect(container.textContent).toContain('tokenExpiry');
+    });
+
+    it('renders sessionStorageKeys when read_session_storage declared', () => {
+      renderPopup(container, {
+        mode: 'pending-pair',
+        pending: {
+          serverName: 'some-mcp',
+          version: '0.0.1',
+          domains: ['x.com'],
+          capabilities: ['fetch', 'read_session_storage'],
+          sessionStorageKeys: ['anon-id'],
+          pairCode: '111-222',
+        },
+        onApprove: () => undefined,
+        onCancel: () => undefined,
+      });
+      expect(container.textContent).toContain('Read sessionStorage');
+      expect(container.textContent).toContain('anon-id');
+    });
+
+    it('renders capture-header entries each on their own line', () => {
+      renderPopup(container, {
+        mode: 'pending-pair',
+        pending: {
+          serverName: 'honeybook-mcp',
+          version: '0.1.0',
+          domains: ['honeybook.com'],
+          capabilities: ['fetch', 'capture_request_header'],
+          captureHeaders: [
+            { urlPattern: 'https://api.honeybook.com/api/v2/*', headerName: 'hb-api-fingerprint' },
+            { urlPattern: 'https://api.honeybook.com/api/v3/*', headerName: 'hb-api-fingerprint' },
+          ],
+          pairCode: '111-222',
+        },
+        onApprove: () => undefined,
+        onCancel: () => undefined,
+      });
+      expect(container.textContent).toContain('Capture request header');
+      expect(container.textContent).toContain('api/v2/*');
+      expect(container.textContent).toContain('api/v3/*');
+      expect(container.textContent).toContain('hb-api-fingerprint');
+    });
+
+    it('omits scope sub-lists when their declared array is empty', () => {
+      // Pattern B (fetch-only) MCPs should NOT see any of the new
+      // sub-lists rendered — the popup stays minimal.
+      renderPopup(container, {
+        mode: 'pending-pair',
+        pending: {
+          serverName: 'opentable-mcp',
+          version: '0.9.1',
+          domains: ['opentable.com'],
+          capabilities: ['fetch'],
+          cookieKeys: [],
+          localStorageKeys: [],
+          sessionStorageKeys: [],
+          captureHeaders: [],
+          pairCode: '111-222',
+        },
+        onApprove: () => undefined,
+        onCancel: () => undefined,
+      });
+      expect(container.textContent).not.toContain('Read cookies:');
+      expect(container.textContent).not.toContain('Read localStorage');
+      expect(container.textContent).not.toContain('Read sessionStorage');
+      expect(container.textContent).not.toContain('Capture request header');
+    });
+
     it('renders unknown capability as warn (defense in depth)', () => {
       renderPopup(container, {
         mode: 'pending-pair',

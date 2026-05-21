@@ -45,7 +45,9 @@
   "permissions": [
     "storage",
     "tabs",
-    "scripting"
+    "scripting",
+    "cookies",
+    "webRequest"
   ],
   "host_permissions": [
     "<all_urls>"

@@ -87,3 +87,26 @@ describe('isTabUrlMatch', () => {
     expect(isTabUrlMatch('https://www.opentable.com/', 'https://www.opentable.com/')).toBe(true);
   });
 });
+
+// 0.3.0 regression: Canvas serves arbitrarily-deep subdomains
+// (a.b.c.instructure.com); confirm the existing match logic handles them.
+describe('arbitrary subdomain depth (0.3.0 regression)', () => {
+  it('matches arbitrary-depth subdomains against the declared root', () => {
+    expect(isUrlAllowedForDomain('https://a.b.c.instructure.com/x', 'instructure.com')).toBe(true);
+    expect(
+      isUrlAllowedForAnyDomain('https://a.b.c.instructure.com/x', ['instructure.com']),
+    ).toBe(true);
+  });
+
+  it('still matches the bare root domain', () => {
+    expect(isUrlAllowedForDomain('https://instructure.com/x', 'instructure.com')).toBe(true);
+  });
+
+  it('does not match an unrelated host', () => {
+    expect(isUrlAllowedForDomain('https://a.b.c.othersite.com/x', 'instructure.com')).toBe(false);
+  });
+
+  it('does not match a suffix collision', () => {
+    expect(isUrlAllowedForDomain('https://x.evilinstructure.com/x', 'instructure.com')).toBe(false);
+  });
+});

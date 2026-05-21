@@ -38,6 +38,20 @@ export interface TrustRecord {
    * normalised to `['fetch']` on read.
    */
   capabilities: string[];
+  /**
+   * 0.3.0+: declared cookie names the user approved for `read_cookies`.
+   * Compared as a set; any change forces re-pair. Pre-0.3.0 records
+   * carry `[]`, which means no key-scoped cookie reads are permitted
+   * (the legacy `tabUrl` cookie path is still available since it has
+   * its own coarser trust gate via the capability).
+   */
+  cookieKeys: string[];
+  /** 0.3.0+: declared localStorage key set. */
+  localStorageKeys: string[];
+  /** 0.3.0+: declared sessionStorage key set. */
+  sessionStorageKeys: string[];
+  /** 0.3.0+: declared (urlPattern, headerName) pairs for capture_request_header. */
+  captureHeaders: { urlPattern: string; headerName: string }[];
   identityX25519Pub: string;
   identityEd25519Pub: string;
   pairedAt: number;
@@ -48,6 +62,10 @@ export interface TrustInput {
   serverName: string;
   domains: string[];
   capabilities: string[];
+  cookieKeys: string[];
+  localStorageKeys: string[];
+  sessionStorageKeys: string[];
+  captureHeaders: { urlPattern: string; headerName: string }[];
   identityX25519Pub: string;
   identityEd25519Pub: string;
 }
@@ -77,10 +95,19 @@ export class TrustStore {
     // `capabilities` array. Normalise to ['fetch'] so the caller can compare
     // without checking for undefined; the user only approved fetch back
     // then, so anything more requires a re-pair.
-    if (!Array.isArray(rec.capabilities)) {
-      return { ...rec, capabilities: ['fetch'] };
-    }
-    return rec;
+    // Pre-0.3.0 records lack the scope arrays; normalise to `[]` on read
+    // so callers can compare without undefined checks. A new hello that
+    // declares non-empty scope will then fall out as a set mismatch and
+    // trigger re-pair, which is the correct behavior.
+    const normalised: TrustRecord = {
+      ...rec,
+      capabilities: Array.isArray(rec.capabilities) ? rec.capabilities : ['fetch'],
+      cookieKeys: Array.isArray(rec.cookieKeys) ? rec.cookieKeys : [],
+      localStorageKeys: Array.isArray(rec.localStorageKeys) ? rec.localStorageKeys : [],
+      sessionStorageKeys: Array.isArray(rec.sessionStorageKeys) ? rec.sessionStorageKeys : [],
+      captureHeaders: Array.isArray(rec.captureHeaders) ? rec.captureHeaders : [],
+    };
+    return normalised;
   }
 
   async put(identityHash: string, input: TrustInput): Promise<void> {
