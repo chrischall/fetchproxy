@@ -90,10 +90,14 @@ See [`docs/PROTOCOL.md`](docs/PROTOCOL.md) for full WS frame schemas. One verb t
 
 ## Security model
 
-- WS server binds to `127.0.0.1` only. Same-machine processes can connect.
-- The protocol's only data verb is `fetch`. A malicious local process can read pages the user is signed into — but it could also typically read the cookie jar directly on the same machine, so this isn't a new exposure.
-- No `eval_js`. No `get_cookies`. No `set_cookies`. The minimum-permission shape is intentional.
-- Each MCP-server connection runs on its own port (configured in the extension popup). The extension never auto-trusts unknown ports.
+Full threat model and defenses live in [`docs/SECURITY.md`](docs/SECURITY.md). Headline posture:
+
+- **Local trust boundary.** fetchproxy is a single-user, same-machine product. WS binds `127.0.0.1` only. Multi-user shared machines are out of scope.
+- **Explicit trust prompt.** First connection from a new `(port, server-name, domain)` tuple does NOT auto-trust. The extension popup shows the user a permission prompt with the domain in large type. "Always allow" persists; anything else re-prompts on next connection.
+- **Per-MCP domain allowlist.** Each MCP declares its domain (`"opentable.com"`) in the `hello` frame. The extension rejects any fetch outside that domain — so a compromised `opentable-mcp` can leak OpenTable data, but cannot ALSO be used against your bank, email, or Slack.
+- **No automation primitives.** No `eval_js`, no `get_cookies`, no DOM access, no navigation. The minimum-permission shape is intentional — a hostile MCP that gets past the trust prompt can read pages on its declared domain and that's it.
+- **Webpage drive-by defenses.** WS upgrades from public-origin pages get rejected (Origin allowlist + Chrome Private Network Access support).
+- **Honest about the expansion.** fetchproxy DOES expand the local attack surface — Chrome cookies aren't freely readable by every local process, but a trusted fetchproxy MCP can act AS the browser without prompting Keychain. If you don't trust everything else on your user account, fetchproxy isn't for you.
 
 ## License
 
