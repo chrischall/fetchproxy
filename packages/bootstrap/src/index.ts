@@ -61,6 +61,31 @@ export interface BootstrapOpts {
   domains: string[];
   declare: Declarations;
   /**
+   * 0.4.1+: which declared domain bootstrap's cookie / localStorage /
+   * sessionStorage / indexedDb reads should target. Required when
+   * `domains` has more than one entry; otherwise defaults to the only
+   * declared domain. `captureHeaders` is unaffected — the extension
+   * derives the host from each `urlPattern`.
+   *
+   * Example (HoneyBook spans `honeybook.com` for the API
+   * `hb-api-fingerprint` capture and `hbportal.co` for the vendor
+   * portal where `jStorage` lives):
+   *
+   *   bootstrap({
+   *     domains: ['honeybook.com', 'hbportal.co'],
+   *     storageDomain: 'hbportal.co', // jStorage reads target the vendor portal tab
+   *     declare: { localStoragePointers: [...], captureHeaders: [...] },
+   *   });
+   */
+  storageDomain?: string;
+  /**
+   * 0.4.1+: optional subdomain selector applied to the resolved
+   * storage domain (e.g. `www`, `app`). The extension matches a tab
+   * whose host equals `${subdomain}.${storageDomain}`. Most MCPs
+   * leave this unset — the apex-domain match is sufficient.
+   */
+  storageSubdomain?: string;
+  /**
    * 0.4.0+: invoked once on receipt of the extension hello with the
    * joint pair code. Used by MCPs that need to surface the code on
    * stderr or via a chat notification for the user to verify against
@@ -89,9 +114,17 @@ export interface BootstrapOpts {
 export interface BootstrapServer {
   listen(): Promise<void>;
   close(): Promise<void>;
-  readCookies(opts: { keys: string[] }): Promise<string>;
-  readLocalStorage(opts: { keys: string[] }): Promise<Record<string, string>>;
-  readSessionStorage(opts: { keys: string[] }): Promise<Record<string, string>>;
+  readCookies(opts: { keys: string[]; domain?: string; subdomain?: string }): Promise<string>;
+  readLocalStorage(opts: {
+    keys: string[];
+    domain?: string;
+    subdomain?: string;
+  }): Promise<Record<string, string>>;
+  readSessionStorage(opts: {
+    keys: string[];
+    domain?: string;
+    subdomain?: string;
+  }): Promise<Record<string, string>>;
   captureRequestHeader(opts: {
     urlPattern: string;
     headerName: string;
@@ -100,6 +133,8 @@ export interface BootstrapServer {
     database: string;
     store: string;
     keys: string[];
+    domain?: string;
+    subdomain?: string;
   }): Promise<Record<string, unknown>>;
 }
 
@@ -112,10 +147,14 @@ export interface BootstrapServer {
 interface PointerCapableServer extends BootstrapServer {
   readLocalStorage(opts: {
     keys: string[];
+    domain?: string;
+    subdomain?: string;
     pointers?: Record<string, { storageKey: string; jsonPointer: string }>;
   }): Promise<Record<string, string>>;
   readSessionStorage(opts: {
     keys: string[];
+    domain?: string;
+    subdomain?: string;
     pointers?: Record<string, { storageKey: string; jsonPointer: string }>;
   }): Promise<Record<string, string>>;
 }
@@ -225,11 +264,22 @@ export async function bootstrap(opts: BootstrapOpts): Promise<Session> {
     })),
     onPairCode: opts.onPairCode,
   });
+  // 0.4.1: pre-build the storage-domain selector once. Used by every
+  // per-tab read (cookies / localStorage / sessionStorage / indexedDb).
+  // captureRequestHeader is unaffected — the extension derives the
+  // host from each entry's `urlPattern`.
+  const storageDomainOpts: { domain?: string; subdomain?: string } = {};
+  if (opts.storageDomain !== undefined) storageDomainOpts.domain = opts.storageDomain;
+  if (opts.storageSubdomain !== undefined) storageDomainOpts.subdomain = opts.storageSubdomain;
+
   try {
     await server.listen();
     const cookies: Record<string, string> = {};
     if (opts.declare.cookies.length > 0) {
-      const joined = await server.readCookies({ keys: opts.declare.cookies });
+      const joined = await server.readCookies({
+        keys: opts.declare.cookies,
+        ...storageDomainOpts,
+      });
       for (const piece of joined.split('; ')) {
         if (!piece) continue;
         const eq = piece.indexOf('=');
@@ -250,6 +300,7 @@ export async function bootstrap(opts: BootstrapOpts): Promise<Session> {
       const stub = server as PointerCapableServer;
       localStorage = await stub.readLocalStorage({
         keys: allKeys,
+        ...storageDomainOpts,
         ...(localStoragePointers.length > 0 ? { pointers } : {}),
       });
     }
@@ -263,6 +314,7 @@ export async function bootstrap(opts: BootstrapOpts): Promise<Session> {
       const stub = server as PointerCapableServer;
       sessionStorage = await stub.readSessionStorage({
         keys: allKeys,
+        ...storageDomainOpts,
         ...(sessionStoragePointers.length > 0 ? { pointers } : {}),
       });
     }
@@ -297,6 +349,7 @@ export async function bootstrap(opts: BootstrapOpts): Promise<Session> {
         database: d.database,
         store: d.store,
         keys: [...d.keys],
+        ...storageDomainOpts,
       });
       indexedDbBucket[`${d.database}/${d.store}`] = values;
     }
