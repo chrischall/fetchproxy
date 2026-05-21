@@ -1,0 +1,62 @@
+import { describe, it, expect, afterEach } from 'vitest';
+import { createServer, Server as HttpServer } from 'node:http';
+import { electRole } from '../src/election.js';
+
+describe('election', () => {
+  const cleanup: HttpServer[] = [];
+
+  afterEach(async () => {
+    await Promise.all(
+      cleanup.splice(0).map(
+        (s) => new Promise<void>((r) => s.close(() => r())),
+      ),
+    );
+  });
+
+  it('returns host when port is free', async () => {
+    const port = 41999;
+    const result = await electRole({ host: '127.0.0.1', port });
+    expect(result.role).toBe('host');
+    if (result.role === 'host') {
+      expect(result.server.listening).toBe(true);
+      cleanup.push(result.server);
+    }
+  });
+
+  it('returns peer when port is taken', async () => {
+    const port = 41998;
+    const blocker = createServer().listen(port, '127.0.0.1');
+    await new Promise<void>((r) => blocker.once('listening', () => r()));
+    cleanup.push(blocker);
+    const result = await electRole({ host: '127.0.0.1', port });
+    expect(result.role).toBe('peer');
+  });
+
+  it('host role can be released and re-won', async () => {
+    const port = 41997;
+    const first = await electRole({ host: '127.0.0.1', port });
+    expect(first.role).toBe('host');
+    if (first.role === 'host') {
+      await new Promise<void>((r) => first.server.close(() => r()));
+    }
+    const second = await electRole({ host: '127.0.0.1', port });
+    expect(second.role).toBe('host');
+    if (second.role === 'host') {
+      cleanup.push(second.server);
+    }
+  });
+
+  it('host server binds to the requested host (127.0.0.1, not 0.0.0.0)', async () => {
+    const port = 41996;
+    const result = await electRole({ host: '127.0.0.1', port });
+    expect(result.role).toBe('host');
+    if (result.role === 'host') {
+      const addr = result.server.address();
+      // node returns AddressInfo when listening on TCP
+      if (addr && typeof addr === 'object') {
+        expect(addr.address).toBe('127.0.0.1');
+      }
+      cleanup.push(result.server);
+    }
+  });
+});
