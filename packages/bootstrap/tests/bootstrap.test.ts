@@ -16,11 +16,17 @@ import {
 interface StubCalls {
   listen: number;
   close: number;
-  readCookies: { keys: string[] }[];
-  readLocalStorage: { keys: string[] }[];
-  readSessionStorage: { keys: string[] }[];
+  readCookies: { keys: string[]; domain?: string; subdomain?: string }[];
+  readLocalStorage: { keys: string[]; domain?: string; subdomain?: string }[];
+  readSessionStorage: { keys: string[]; domain?: string; subdomain?: string }[];
   captureRequestHeader: { urlPattern: string; headerName: string }[];
-  readIndexedDb: { database: string; store: string; keys: string[] }[];
+  readIndexedDb: {
+    database: string;
+    store: string;
+    keys: string[];
+    domain?: string;
+    subdomain?: string;
+  }[];
   constructorOpts: unknown[];
 }
 
@@ -58,8 +64,12 @@ function makeStubFactory(opts?: {
       close: async () => {
         calls.close++;
       },
-      readCookies: async (callOpts: { keys: string[] }) => {
-        calls.readCookies.push({ keys: [...callOpts.keys] });
+      readCookies: async (callOpts: { keys: string[]; domain?: string; subdomain?: string }) => {
+        calls.readCookies.push({
+          keys: [...callOpts.keys],
+          ...(callOpts.domain !== undefined ? { domain: callOpts.domain } : {}),
+          ...(callOpts.subdomain !== undefined ? { subdomain: callOpts.subdomain } : {}),
+        });
         if (opts?.throwOn === 'readCookies') throw new Error('readCookies failed');
         // Stub returns the joined cookies form; bootstrap parses it.
         const c = opts?.cookies ?? {};
@@ -67,13 +77,29 @@ function makeStubFactory(opts?: {
           .map(([k, v]) => `${k}=${v}`)
           .join('; ');
       },
-      readLocalStorage: async (callOpts: { keys: string[] }) => {
-        calls.readLocalStorage.push({ keys: [...callOpts.keys] });
+      readLocalStorage: async (callOpts: {
+        keys: string[];
+        domain?: string;
+        subdomain?: string;
+      }) => {
+        calls.readLocalStorage.push({
+          keys: [...callOpts.keys],
+          ...(callOpts.domain !== undefined ? { domain: callOpts.domain } : {}),
+          ...(callOpts.subdomain !== undefined ? { subdomain: callOpts.subdomain } : {}),
+        });
         if (opts?.throwOn === 'readLocalStorage') throw new Error('readLocalStorage failed');
         return { ...(opts?.localStorage ?? {}) };
       },
-      readSessionStorage: async (callOpts: { keys: string[] }) => {
-        calls.readSessionStorage.push({ keys: [...callOpts.keys] });
+      readSessionStorage: async (callOpts: {
+        keys: string[];
+        domain?: string;
+        subdomain?: string;
+      }) => {
+        calls.readSessionStorage.push({
+          keys: [...callOpts.keys],
+          ...(callOpts.domain !== undefined ? { domain: callOpts.domain } : {}),
+          ...(callOpts.subdomain !== undefined ? { subdomain: callOpts.subdomain } : {}),
+        });
         if (opts?.throwOn === 'readSessionStorage') throw new Error('readSessionStorage failed');
         return { ...(opts?.sessionStorage ?? {}) };
       },
@@ -85,11 +111,19 @@ function makeStubFactory(opts?: {
         if (opts?.throwOn === 'captureRequestHeader') throw new Error('captureRequestHeader failed');
         return opts?.capturedHeaders?.[callOpts.headerName] ?? '';
       },
-      readIndexedDb: async (callOpts: { database: string; store: string; keys: string[] }) => {
+      readIndexedDb: async (callOpts: {
+        database: string;
+        store: string;
+        keys: string[];
+        domain?: string;
+        subdomain?: string;
+      }) => {
         calls.readIndexedDb.push({
           database: callOpts.database,
           store: callOpts.store,
           keys: [...callOpts.keys],
+          ...(callOpts.domain !== undefined ? { domain: callOpts.domain } : {}),
+          ...(callOpts.subdomain !== undefined ? { subdomain: callOpts.subdomain } : {}),
         });
         if (opts?.throwOn === 'readIndexedDb') throw new Error('readIndexedDb failed');
         const key = `${callOpts.database}/${callOpts.store}`;
@@ -449,6 +483,86 @@ describe('bootstrap()', () => {
         _serverFactory: factory,
       });
       expect(session.indexedDb).toEqual({});
+    });
+  });
+
+  // 0.4.1: multi-domain MCPs must tell bootstrap which declared domain
+  // the cookie / storage / IDB reads target. Without this, the server
+  // throws "this MCP declared multiple domains [...] — pass { domain }".
+  describe('storageDomain selector', () => {
+    it('threads storageDomain to readCookies / readLocalStorage / readSessionStorage / readIndexedDb', async () => {
+      const { factory, calls } = makeStubFactory({
+        cookies: { sid: 'abc' },
+        localStorage: { token: 'tok' },
+        sessionStorage: { x: 'y' },
+        capturedHeaders: { 'hb-api-fingerprint': 'fp' },
+        indexedDb: { 'db/store': { k: 'v' } },
+      });
+      await bootstrap({
+        serverName: 'honeybook-mcp',
+        version: '0.1.13',
+        domains: ['honeybook.com', 'hbportal.co'],
+        storageDomain: 'hbportal.co',
+        declare: {
+          cookies: ['sid'],
+          localStorage: ['token'],
+          sessionStorage: ['x'],
+          captureHeaders: [
+            { urlPattern: 'https://api.honeybook.com/api/v2/*', headerName: 'hb-api-fingerprint' },
+          ],
+          indexedDb: [{ origin: 'https://hbportal.co', database: 'db', store: 'store', keys: ['k'] }],
+        },
+        _serverFactory: factory,
+      });
+      expect(calls.readCookies).toEqual([{ keys: ['sid'], domain: 'hbportal.co' }]);
+      expect(calls.readLocalStorage).toEqual([{ keys: ['token'], domain: 'hbportal.co' }]);
+      expect(calls.readSessionStorage).toEqual([{ keys: ['x'], domain: 'hbportal.co' }]);
+      expect(calls.readIndexedDb).toEqual([
+        { database: 'db', store: 'store', keys: ['k'], domain: 'hbportal.co' },
+      ]);
+      // captureRequestHeader continues to derive host from urlPattern — no domain field.
+      expect(calls.captureRequestHeader).toEqual([
+        { urlPattern: 'https://api.honeybook.com/api/v2/*', headerName: 'hb-api-fingerprint' },
+      ]);
+    });
+
+    it('threads storageSubdomain alongside storageDomain', async () => {
+      const { factory, calls } = makeStubFactory({ localStorage: {} });
+      await bootstrap({
+        serverName: 'example-mcp',
+        version: '0.0.1',
+        domains: ['example.com'],
+        storageDomain: 'example.com',
+        storageSubdomain: 'app',
+        declare: {
+          cookies: [],
+          localStorage: ['k'],
+          sessionStorage: [],
+          captureHeaders: [],
+        },
+        _serverFactory: factory,
+      });
+      expect(calls.readLocalStorage).toEqual([
+        { keys: ['k'], domain: 'example.com', subdomain: 'app' },
+      ]);
+    });
+
+    it('omits domain/subdomain when storageDomain is unset (single-domain MCPs)', async () => {
+      const { factory, calls } = makeStubFactory({ localStorage: { k: 'v' } });
+      await bootstrap({
+        serverName: 'opentable-mcp',
+        version: '0.9.1',
+        domains: ['opentable.com'],
+        declare: {
+          cookies: [],
+          localStorage: ['k'],
+          sessionStorage: [],
+          captureHeaders: [],
+        },
+        _serverFactory: factory,
+      });
+      // No domain key on the call — server uses the only declared domain.
+      expect(calls.readLocalStorage).toEqual([{ keys: ['k'] }]);
     });
   });
 });
