@@ -16,7 +16,7 @@ describe('FetchproxyServer (orchestrator)', () => {
       port: 41050,
       serverName: 'opentable-mcp',
       version: '0.9.1',
-      domain: 'opentable.com',
+      domains: ['opentable.com'],
       identityDir: mkdtempSync(join(tmpdir(), 'fp-srv-')),
     });
     servers.push(srv);
@@ -30,7 +30,7 @@ describe('FetchproxyServer (orchestrator)', () => {
       port: 41051,
       serverName: 'opentable-mcp',
       version: '0.9.1',
-      domain: 'opentable.com',
+      domains: ['opentable.com'],
       identityDir: dir,
     });
     servers.push(a);
@@ -41,7 +41,7 @@ describe('FetchproxyServer (orchestrator)', () => {
       port: 41051,
       serverName: 'resy-mcp',
       version: '0.0.1',
-      domain: 'resy.com',
+      domains: ['resy.com'],
       identityDir: dir,
     });
     servers.push(b);
@@ -54,7 +54,7 @@ describe('FetchproxyServer (orchestrator)', () => {
       port: 41052,
       serverName: 'opentable-mcp',
       version: '0.9.1',
-      domain: 'opentable.com',
+      domains: ['opentable.com'],
       identityDir: mkdtempSync(join(tmpdir(), 'fp-srv-')),
     });
     // Don't push to servers — never started, no close needed.
@@ -68,7 +68,7 @@ describe('FetchproxyServer (orchestrator)', () => {
       port: 41053,
       serverName: 'opentable-mcp',
       version: '0.9.1',
-      domain: 'opentable.com',
+      domains: ['opentable.com'],
       identityDir: mkdtempSync(join(tmpdir(), 'fp-srv-')),
     });
     await srv.listen();

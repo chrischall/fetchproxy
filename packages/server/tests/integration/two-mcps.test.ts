@@ -40,7 +40,7 @@ describe('integration: two MCPs through one host', () => {
       port,
       serverName: 'opentable-mcp',
       version: '0.9.1',
-      domain: 'opentable.com',
+      domains: ['opentable.com'],
       identityDir: idDir,
     });
     await a.listen();
@@ -50,7 +50,7 @@ describe('integration: two MCPs through one host', () => {
       port,
       serverName: 'resy-mcp',
       version: '0.0.1',
-      domain: 'resy.com',
+      domains: ['resy.com'],
       identityDir: idDir,
     });
     await b.listen();
@@ -67,7 +67,7 @@ describe('integration: two MCPs through one host', () => {
     interface Track {
       sessionKey?: Uint8Array;
       mcpId: string;
-      domain: string;
+      domains: string[];
     }
     const tracks = new Map<string, Track>();      // by mcpId
     const serverNameToMcpId = new Map<string, string>();
@@ -112,7 +112,7 @@ describe('integration: two MCPs through one host', () => {
             tracks.set(frame.mcpId, {
               sessionKey,
               mcpId: frame.mcpId,
-              domain: frame.domain,
+              domains: [...frame.domains],
             });
             serverNameToMcpId.set(frame.serverName, frame.mcpId);
             sessionKeysB64.push(Buffer.from(sessionKey).toString('base64'));

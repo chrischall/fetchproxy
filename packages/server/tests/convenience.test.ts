@@ -25,7 +25,7 @@ describe('convenience methods', () => {
   const baseOpts = {
     serverName: 'test-mcp',
     version: '0.0.1',
-    domain: 'example.com',
+    domains: ['example.com'],
     // Don't call listen() — we override fetch directly.
   };
 
@@ -202,7 +202,7 @@ describe('subdomain guard', () => {
   const baseOpts = {
     serverName: 'test-mcp',
     version: '0.0.1',
-    domain: 'opentable.com',
+    domains: ['opentable.com'],
   };
 
   it('rejects a subdomain with a slash', async () => {
@@ -258,5 +258,105 @@ describe('subdomain guard', () => {
     s.canned = { ok: true, status: 200, url: 'x', body: '' };
     await s.get('/x', { subdomain: 'WWW' });
     expect(s.lastInit!.url).toBe('https://WWW.opentable.com/x');
+  });
+});
+
+describe('multi-domain MCPs', () => {
+  const multiOpts = {
+    serverName: 'test-mcp',
+    version: '0.0.1',
+    domains: ['honeybook.com', 'hbsplit.com'],
+  };
+
+  it('ctor rejects empty domains array', () => {
+    expect(
+      () =>
+        new TestServer({
+          serverName: 'test-mcp',
+          version: '0.0.1',
+          domains: [],
+        }),
+    ).toThrow(/non-empty/);
+  });
+
+  it('ctor rejects non-array domains', () => {
+    expect(
+      () =>
+        new TestServer({
+          serverName: 'test-mcp',
+          version: '0.0.1',
+          // @ts-expect-error — intentional bad input
+          domains: 'honeybook.com',
+        }),
+    ).toThrow(/non-empty/);
+  });
+
+  it('single-domain MCP works without per-call domain opt', async () => {
+    const s = new TestServer({
+      serverName: 'test-mcp',
+      version: '0.0.1',
+      domains: ['example.com'],
+    });
+    s.canned = { ok: true, status: 200, url: 'x', body: '' };
+    await s.get('/x');
+    expect(s.lastInit!.url).toBe('https://example.com/x');
+  });
+
+  it('multi-domain MCP throws when domain opt omitted', async () => {
+    const s = new TestServer(multiOpts);
+    s.canned = { ok: true, status: 200, url: 'x', body: '' };
+    await expect(s.get('/x')).rejects.toThrow(/multiple domains/);
+  });
+
+  it('multi-domain MCP resolves with valid domain opt', async () => {
+    const s = new TestServer(multiOpts);
+    s.canned = { ok: true, status: 200, url: 'x', body: '' };
+    await s.get('/x', { domain: 'honeybook.com' });
+    expect(s.lastInit!.url).toBe('https://honeybook.com/x');
+    expect(s.lastInit!.tabUrl).toBe('https://honeybook.com/');
+    await s.get('/y', { domain: 'hbsplit.com' });
+    expect(s.lastInit!.url).toBe('https://hbsplit.com/y');
+  });
+
+  it('multi-domain MCP combines domain + subdomain', async () => {
+    const s = new TestServer(multiOpts);
+    s.canned = { ok: true, status: 200, url: 'x', body: '' };
+    await s.get('/x', { domain: 'honeybook.com', subdomain: 'api' });
+    expect(s.lastInit!.url).toBe('https://api.honeybook.com/x');
+    expect(s.lastInit!.tabUrl).toBe('https://api.honeybook.com/');
+  });
+
+  it('multi-domain MCP throws when domain opt is not in declared list', async () => {
+    const s = new TestServer(multiOpts);
+    s.canned = { ok: true, status: 200, url: 'x', body: '' };
+    await expect(s.get('/x', { domain: 'evil.com' })).rejects.toThrow(
+      /not in the declared domains/,
+    );
+  });
+
+  it('multi-domain MCP: absolute URLs into any declared domain are accepted', async () => {
+    const s = new TestServer(multiOpts);
+    s.canned = { ok: true, status: 200, url: 'x', body: '' };
+    await s.get('https://api.honeybook.com/x', { domain: 'honeybook.com' });
+    expect(s.lastInit!.url).toBe('https://api.honeybook.com/x');
+    await s.get('https://www.hbsplit.com/x', { domain: 'hbsplit.com' });
+    expect(s.lastInit!.url).toBe('https://www.hbsplit.com/x');
+  });
+
+  it('multi-domain MCP: absolute URL outside the domain set is rejected', async () => {
+    const s = new TestServer(multiOpts);
+    await expect(
+      s.get('https://otherdomain.com/x', { domain: 'honeybook.com' }),
+    ).rejects.toThrow(/outside declared domains/);
+  });
+
+  it('postJson and getJson pass domain through', async () => {
+    const s = new TestServer(multiOpts);
+    s.canned = { ok: true, status: 200, url: 'x', body: '{}' };
+    await s.getJson('/x', { domain: 'honeybook.com' });
+    expect(s.lastInit!.url).toBe('https://honeybook.com/x');
+    await s.postJson('/y', { a: 1 }, { domain: 'hbsplit.com' });
+    expect(s.lastInit!.url).toBe('https://hbsplit.com/y');
+    expect(s.lastInit!.method).toBe('POST');
   });
 });

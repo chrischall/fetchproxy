@@ -52,7 +52,7 @@ describe('peer client', () => {
       mcpId: 'opentable-mcp:0.9.1:a3f7c91d2e8b4f56',
       serverName: 'opentable-mcp',
       version: '0.9.1',
-      domain: 'opentable.com',
+      domains: ['opentable.com'],
     });
 
     const hello = await helloPromise;
@@ -62,7 +62,7 @@ describe('peer client', () => {
     expect(hello.mcpId).toBe('opentable-mcp:0.9.1:a3f7c91d2e8b4f56');
     expect(hello.serverName).toBe('opentable-mcp');
     expect(hello.version).toBe('0.9.1');
-    expect(hello.domain).toBe('opentable.com');
+    expect(hello.domains).toEqual(['opentable.com']);
 
     // Identity pub keys round-trip from the identity file
     const identityX25519Pub = new Uint8Array(Buffer.from(hello.identityX25519Pub, 'base64'));
@@ -96,7 +96,7 @@ describe('peer client', () => {
       mcpId: 'opentable-mcp:0.9.1:a3f7c91d2e8b4f56',
       serverName: 'opentable-mcp',
       version: '0.9.1',
-      domain: 'opentable.com',
+      domains: ['opentable.com'],
     });
 
     await expect(peer.sendInner({ type: 'ping' })).rejects.toThrow(

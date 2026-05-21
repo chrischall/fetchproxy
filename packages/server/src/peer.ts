@@ -20,7 +20,7 @@ export interface PeerOpts {
   mcpId: string;
   serverName: string;
   version: string;
-  domain: string;
+  domains: string[];
 }
 
 export interface PeerHandle {
@@ -55,7 +55,7 @@ export async function startPeer(opts: PeerOpts): Promise<PeerHandle> {
     mcpId: opts.mcpId,
     serverName: opts.serverName,
     version: opts.version,
-    domain: opts.domain,
+    domains: [...opts.domains],
     identityX25519Pub: toB64(opts.identity.x25519Pub),
     identityEd25519Pub: toB64(opts.identity.ed25519Pub),
     sessionNonce: toB64(sessionNonce),

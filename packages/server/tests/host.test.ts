@@ -33,7 +33,7 @@ describe('host (concentrator)', () => {
       ownMcpId: 'opentable-mcp:0.9.1:abc1234567890def',
       ownServerName: 'opentable-mcp',
       ownVersion: '0.9.1',
-      ownDomain: 'opentable.com',
+      ownDomains: ['opentable.com'],
     });
 
     const ws = new WebSocket(`ws://127.0.0.1:${port}`);
@@ -66,7 +66,7 @@ describe('host (concentrator)', () => {
     });
     const ownHello = await ownHelloPromise;
     expect(ownHello.serverName).toBe('opentable-mcp');
-    expect(ownHello.domain).toBe('opentable.com');
+    expect(ownHello.domains).toEqual(['opentable.com']);
     expect(() => validateFrame(ownHello)).not.toThrow();
 
     ws.close();
@@ -85,7 +85,7 @@ describe('host (concentrator)', () => {
       ownMcpId: 'opentable-mcp:0.9.1:abc1234567890def',
       ownServerName: 'opentable-mcp',
       ownVersion: '0.9.1',
-      ownDomain: 'opentable.com',
+      ownDomains: ['opentable.com'],
     });
 
     // Connect with an Origin header that simulates a public webpage.
@@ -112,7 +112,7 @@ describe('host (concentrator)', () => {
       ownMcpId: 'opentable-mcp:0.9.1:abc1234567890def',
       ownServerName: 'opentable-mcp',
       ownVersion: '0.9.1',
-      ownDomain: 'opentable.com',
+      ownDomains: ['opentable.com'],
     });
 
     // Mock extension: open the WS, send hello, then disconnect without ready.
@@ -148,7 +148,7 @@ describe('host (concentrator)', () => {
       ownMcpId: 'opentable-mcp:0.9.1:abc1234567890def',
       ownServerName: 'opentable-mcp',
       ownVersion: '0.9.1',
-      ownDomain: 'opentable.com',
+      ownDomains: ['opentable.com'],
     });
 
     const extHello: HelloFrameFromExtension = {

@@ -30,7 +30,7 @@ export interface HostOpts {
   ownMcpId: string;
   ownServerName: string;
   ownVersion: string;
-  ownDomain: string;
+  ownDomains: string[];
 }
 
 export interface HostHandle {
@@ -84,7 +84,7 @@ export async function startHost(opts: HostOpts): Promise<HostHandle> {
     mcpId: opts.ownMcpId,
     serverName: opts.ownServerName,
     version: opts.ownVersion,
-    domain: opts.ownDomain,
+    domains: [...opts.ownDomains],
     identityX25519Pub: toB64(opts.ownIdentity.x25519Pub),
     identityEd25519Pub: toB64(opts.ownIdentity.ed25519Pub),
     sessionNonce: toB64(ownSessionNonce),

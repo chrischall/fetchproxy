@@ -11,15 +11,20 @@ export interface FetchproxyServerOpts {
   serverName: string;
   version: string;
   /**
-   * Trust boundary. The extension refuses any fetch outside this domain
-   * (or a subdomain of it). Pair-code trust is keyed off the MCP's
-   * cryptographic identity together with this domain.
+   * Trust boundary. Non-empty array of hostnames. The extension refuses
+   * any fetch outside these domains (or any subdomain of them).
+   * Pair-code trust is keyed off the MCP's cryptographic identity together
+   * with this set.
    *
-   * All convenience-method calls go to `https://${domain}` by default;
-   * pass `{ subdomain: 'www' }` on a per-call basis to target
-   * `https://www.${domain}` instead.
+   * Single-domain ergonomics: with `domains: ['opentable.com']`, all
+   * convenience-method calls default to `https://opentable.com` and
+   * `{ subdomain: 'www' }` targets `https://www.opentable.com`.
+   *
+   * Multi-domain MCPs (e.g. `domains: ['honeybook.com', 'hbsplit.com']`)
+   * must specify `{ domain: 'honeybook.com' }` on every per-call request
+   * so the resolver knows which base to use.
    */
-  domain: string;
+  domains: string[];
   identityDir?: string;
 }
 
@@ -44,14 +49,18 @@ export interface HttpResponse {
 
 /**
  * Options accepted by `request()` and the verb helpers. `subdomain`
- * controls per-call which host within the declared domain to target:
+ * controls per-call which host within the declared domain to target;
+ * `domain` picks which base domain (only meaningful when the MCP
+ * declared more than one):
  *
- *   fp.get('/path')                          → https://${domain}/path
- *   fp.get('/path', { subdomain: 'www' })    → https://www.${domain}/path
- *   fp.get('/path', { subdomain: 'api' })    → https://api.${domain}/path
+ *   fp.get('/path')                                          → https://${domains[0]}/path
+ *   fp.get('/path', { subdomain: 'www' })                    → https://www.${domains[0]}/path
+ *   fp.get('/path', { domain: 'b.com', subdomain: 'api' })   → https://api.b.com/path
  *
- * Must be a single DNS label (or dot-separated labels) without any
- * URL scheme, path, or slashes.
+ * `subdomain` must be a single DNS label (or dot-separated labels)
+ * without any URL scheme, path, or slashes.
+ * `domain` must exactly equal one of the entries in
+ * `FetchproxyServerOpts.domains`.
  */
 export interface RequestOpts {
   headers?: Record<string, string>;
@@ -62,12 +71,19 @@ export interface RequestOpts {
    */
   expectStatus?: number | number[];
   /**
-   * Optional subdomain label(s) to prepend to the declared `domain`.
-   * E.g. with `domain: 'opentable.com'`, `subdomain: 'www'` builds the
+   * Optional subdomain label(s) to prepend to the chosen base domain.
+   * E.g. with base `'opentable.com'`, `subdomain: 'www'` builds the
    * URL against `https://www.opentable.com`. May be a single label
    * (`'www'`) or dot-separated labels (`'auth.api'`).
    */
   subdomain?: string;
+  /**
+   * Optional base domain selector for multi-domain MCPs. Must match one
+   * of the entries in `FetchproxyServerOpts.domains` exactly. Required
+   * on every per-call request when the MCP declared multiple domains;
+   * may be omitted when only one domain is declared.
+   */
+  domain?: string;
 }
 
 /** Options accepted by JSON/HTML shortcuts (no `body` — provided positionally). */
@@ -75,6 +91,7 @@ export interface BodylessRequestOpts {
   headers?: Record<string, string>;
   expectStatus?: number | number[];
   subdomain?: string;
+  domain?: string;
 }
 
 /**
@@ -115,11 +132,12 @@ function assertSubdomainLabel(label: string): void {
 }
 
 /**
- * Verify that a request URL's hostname is the declared `domain` or one
- * of its subdomains. Used on every resolved request URL — guards against
- * an absolute URL being passed that escapes the declared domain.
+ * Verify that a request URL's hostname is one of the declared `domains`
+ * or a subdomain of one of them. Used on every resolved request URL —
+ * guards against an absolute URL being passed that escapes the declared
+ * domain set.
  */
-function assertUrlInDomain(field: string, url: string, domain: string): void {
+function assertUrlInDomains(field: string, url: string, domains: readonly string[]): void {
   let parsed: URL;
   try {
     parsed = new URL(url);
@@ -132,12 +150,14 @@ function assertUrlInDomain(field: string, url: string, domain: string): void {
     );
   }
   const host = parsed.hostname.toLowerCase();
-  const expected = domain.toLowerCase();
-  if (host !== expected && !host.endsWith('.' + expected)) {
-    throw new Error(
-      `FetchproxyServer: ${field} host "${host}" is outside declared domain "${expected}" — must be "${expected}" or a subdomain`,
-    );
+  for (const d of domains) {
+    const expected = d.toLowerCase();
+    if (host === expected || host.endsWith('.' + expected)) return;
   }
+  const declared = domains.map((d) => JSON.stringify(d)).join(', ');
+  throw new Error(
+    `FetchproxyServer: ${field} host "${host}" is outside declared domains [${declared}] — must be one of them or a subdomain`,
+  );
 }
 
 interface ResolvedOpts {
@@ -145,7 +165,7 @@ interface ResolvedOpts {
   host: string;
   serverName: string;
   version: string;
-  domain: string;
+  domains: string[];
   identityDir?: string;
 }
 
@@ -163,12 +183,17 @@ export class FetchproxyServer {
   private identity: Identity | null = null;
 
   constructor(opts: FetchproxyServerOpts) {
+    if (!Array.isArray(opts.domains) || opts.domains.length === 0) {
+      throw new Error(
+        'FetchproxyServer: opts.domains must be a non-empty array of hostnames',
+      );
+    }
     this.opts = {
       port: opts.port ?? 37149,
       host: opts.host ?? '127.0.0.1',
       serverName: opts.serverName,
       version: opts.version,
-      domain: opts.domain,
+      domains: [...opts.domains],
       identityDir: opts.identityDir,
     };
   }
@@ -185,7 +210,7 @@ export class FetchproxyServer {
         ownMcpId: this.mcpId,
         ownServerName: this.opts.serverName,
         ownVersion: this.opts.version,
-        ownDomain: this.opts.domain,
+        ownDomains: this.opts.domains,
       });
       this.hostHandle.onOwnInner((inner) => this.onInner(inner));
     } else {
@@ -197,7 +222,7 @@ export class FetchproxyServer {
         mcpId: this.mcpId,
         serverName: this.opts.serverName,
         version: this.opts.version,
-        domain: this.opts.domain,
+        domains: this.opts.domains,
       });
       this.peerHandle.onInner((inner) => this.onInner(inner));
     }
@@ -222,14 +247,20 @@ export class FetchproxyServer {
 
   /**
    * Convenience wrapper around `fetch()`. Builds the URL from a path
-   * + optional subdomain, throws on protocol errors, optionally
-   * asserts on the response status.
+   * + optional subdomain + optional domain selector, throws on
+   * protocol errors, optionally asserts on the response status.
    *
    * Path resolution:
    *  - Absolute URL (`https://...`) → used as-is (still guarded against
-   *    leaving the declared domain).
-   *  - Relative path → joined with `https://${subdomain}.${domain}`
-   *    (or `https://${domain}` if no subdomain is given).
+   *    leaving the declared domain set).
+   *  - Relative path → joined with `https://${subdomain}.${baseDomain}`
+   *    (or `https://${baseDomain}` if no subdomain is given).
+   *
+   * Base-domain selection:
+   *  - Single-domain MCP (`domains: ['x.com']`): `opts.domain` is optional;
+   *    `domains[0]` is used by default.
+   *  - Multi-domain MCP: `opts.domain` is required and must equal one of
+   *    the declared domains exactly.
    */
   async request(
     method: string,
@@ -237,18 +268,19 @@ export class FetchproxyServer {
     opts: RequestOpts = {},
   ): Promise<HttpResponse> {
     if (opts.subdomain !== undefined) assertSubdomainLabel(opts.subdomain);
+    const baseDomain = this.resolveBaseDomain(opts.domain);
     const host = opts.subdomain
-      ? `${opts.subdomain}.${this.opts.domain}`
-      : this.opts.domain;
+      ? `${opts.subdomain}.${baseDomain}`
+      : baseDomain;
     const url =
       path.startsWith('http://') || path.startsWith('https://')
         ? path
         : `https://${host}${path}`;
     // Guard: refuse to send any request whose resolved URL leaves the
-    // declared domain. The extension would refuse it anyway; this gives
-    // the MCP author a clear error at the call site instead of a generic
-    // "domain not allowed" from the bridge.
-    assertUrlInDomain('request url', url, this.opts.domain);
+    // declared domain set. The extension would refuse it anyway; this
+    // gives the MCP author a clear error at the call site instead of a
+    // generic "domain not allowed" from the bridge.
+    assertUrlInDomains('request url', url, this.opts.domains);
     const init: FetchInit = {
       url,
       method,
@@ -357,6 +389,27 @@ export class FetchproxyServer {
   ): Promise<string> {
     const response = await this.get(path, this.applyJsonDefaults(opts));
     return response.body;
+  }
+
+  private resolveBaseDomain(domain: string | undefined): string {
+    if (domain !== undefined) {
+      if (!this.opts.domains.includes(domain)) {
+        const declared = this.opts.domains.map((d) => JSON.stringify(d)).join(', ');
+        throw new Error(
+          `FetchproxyServer: opts.domain ${JSON.stringify(domain)} is not in the declared domains [${declared}]`,
+        );
+      }
+      return domain;
+    }
+    if (this.opts.domains.length === 1) {
+      // Safe: length-checked above. Non-null assertion is required because
+      // noUncheckedIndexedAccess types this as `string | undefined`.
+      return this.opts.domains[0]!;
+    }
+    const declared = this.opts.domains.map((d) => JSON.stringify(d)).join(', ');
+    throw new Error(
+      `FetchproxyServer: this MCP declared multiple domains [${declared}] — pass { domain: '<one of them>' } on every per-call request`,
+    );
   }
 
   private applyJsonDefaults(opts: BodylessRequestOpts): BodylessRequestOpts {
