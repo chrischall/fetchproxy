@@ -1,6 +1,6 @@
 {
   "name": "@fetchproxy/protocol",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "WebSocket frame types + runtime validators for fetchproxy.",
   "type": "module",
   "main": "./dist/index.js",
@@ -11,7 +11,9 @@
       "types": "./dist/index.d.ts"
     }
   },
-  "files": ["dist"],
+  "files": [
+    "dist"
+  ],
   "scripts": {
     "build": "tsc -b"
   },
