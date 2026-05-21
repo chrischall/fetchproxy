@@ -1,79 +1,111 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { TrustStore, type TrustedMcp } from '../src/trust-store.js';
+import { describe, it, expect, beforeEach } from 'vitest';
+import { TrustStore } from '../src/trust-store.js';
 
-// Mock chrome.storage.local
-function mockStorage() {
-  const store = new Map<string, unknown>();
-  return {
-    get: vi.fn(async (keys?: string | string[]) => {
-      if (!keys) return Object.fromEntries(store);
-      const list = Array.isArray(keys) ? keys : [keys];
-      const out: Record<string, unknown> = {};
-      for (const k of list) {
-        if (store.has(k)) out[k] = store.get(k);
-      }
-      return out;
-    }),
-    set: vi.fn(async (items: Record<string, unknown>) => {
-      for (const [k, v] of Object.entries(items)) store.set(k, v);
-    }),
-    remove: vi.fn(async (keys: string | string[]) => {
-      const list = Array.isArray(keys) ? keys : [keys];
-      for (const k of list) store.delete(k);
-    }),
+function mockStorage(): { data: Record<string, unknown> } {
+  const data: Record<string, unknown> = {};
+  (globalThis as { chrome?: unknown }).chrome = {
+    storage: {
+      local: {
+        get: async (k: string | string[]) => {
+          const ks = Array.isArray(k) ? k : [k];
+          const out: Record<string, unknown> = {};
+          for (const x of ks) if (x in data) out[x] = data[x];
+          return out;
+        },
+        set: async (kv: Record<string, unknown>) => Object.assign(data, kv),
+        remove: async (k: string) => { delete data[k]; },
+      },
+    },
   };
+  return { data };
 }
 
-describe('TrustStore', () => {
-  let storage: ReturnType<typeof mockStorage>;
-  let trust: TrustStore;
+describe('TrustStore (identity-hash keyed)', () => {
+  beforeEach(() => mockStorage());
 
-  beforeEach(() => {
-    storage = mockStorage();
-    trust = new TrustStore(storage as unknown as chrome.storage.StorageArea);
+  it('returns null for unknown identity hash', async () => {
+    const store = new TrustStore('0.1.0');
+    expect(await store.get('abc')).toBeNull();
   });
 
-  it('returns null for an unknown (port, server, domain) tuple', async () => {
-    expect(await trust.lookup({ port: 37149, server: 'opentable-mcp', domain: 'opentable.com', version: '0.9.1' }))
-      .toBeNull();
+  it('persists and retrieves a trust record', async () => {
+    const store = new TrustStore('0.1.0');
+    await store.put('hash1', {
+      serverName: 'opentable-mcp',
+      domain: 'opentable.com',
+      identityX25519Pub: 'AAAA',
+      identityEd25519Pub: 'BBBB',
+    });
+    const got = await store.get('hash1');
+    expect(got).not.toBeNull();
+    expect(got!.serverName).toBe('opentable-mcp');
+    expect(got!.domain).toBe('opentable.com');
+    expect(got!.identityX25519Pub).toBe('AAAA');
+    expect(got!.extensionVersionAtPair).toBe('0.1.0');
+    expect(typeof got!.pairedAt).toBe('number');
   });
 
-  it('persists an "always allow" decision and finds it back', async () => {
-    await trust.approve({ port: 37149, server: 'opentable-mcp', domain: 'opentable.com', version: '0.9.1' }, 'always');
-    const found = await trust.lookup({ port: 37149, server: 'opentable-mcp', domain: 'opentable.com', version: '0.9.1' });
-    expect(found?.approval).toBe('always');
+  it('invalidates trust on extension major version bump', async () => {
+    const s1 = new TrustStore('0.1.0');
+    await s1.put('hash1', {
+      serverName: 'opentable-mcp',
+      domain: 'opentable.com',
+      identityX25519Pub: 'AAAA',
+      identityEd25519Pub: 'BBBB',
+    });
+    const s2 = new TrustStore('1.0.0');
+    expect(await s2.get('hash1')).toBeNull();
   });
 
-  it('re-prompts (returns null) when the version major changes', async () => {
-    await trust.approve({ port: 37149, server: 'opentable-mcp', domain: 'opentable.com', version: '0.9.1' }, 'always');
-    const found = await trust.lookup({ port: 37149, server: 'opentable-mcp', domain: 'opentable.com', version: '1.0.0' });
-    expect(found).toBeNull();
+  it('preserves trust on patch/minor version bump', async () => {
+    const s1 = new TrustStore('0.1.0');
+    await s1.put('hash1', {
+      serverName: 'opentable-mcp',
+      domain: 'opentable.com',
+      identityX25519Pub: 'AAAA',
+      identityEd25519Pub: 'BBBB',
+    });
+    const s2a = new TrustStore('0.1.5');
+    expect(await s2a.get('hash1')).not.toBeNull();
+    const s2b = new TrustStore('0.2.0');
+    expect(await s2b.get('hash1')).not.toBeNull();
   });
 
-  it('does not re-prompt on patch version bump', async () => {
-    await trust.approve({ port: 37149, server: 'opentable-mcp', domain: 'opentable.com', version: '0.9.1' }, 'always');
-    const found = await trust.lookup({ port: 37149, server: 'opentable-mcp', domain: 'opentable.com', version: '0.9.2' });
-    expect(found?.approval).toBe('always');
+  it('remove drops the record', async () => {
+    const store = new TrustStore('0.1.0');
+    await store.put('hash1', {
+      serverName: 'a',
+      domain: 'a.com',
+      identityX25519Pub: 'X',
+      identityEd25519Pub: 'Y',
+    });
+    await store.remove('hash1');
+    expect(await store.get('hash1')).toBeNull();
   });
 
-  it('re-prompts when the domain changes', async () => {
-    await trust.approve({ port: 37149, server: 'opentable-mcp', domain: 'opentable.com', version: '0.9.1' }, 'always');
-    const found = await trust.lookup({ port: 37149, server: 'opentable-mcp', domain: 'yourbank.com', version: '0.9.1' });
-    expect(found).toBeNull();
+  it('list returns all records', async () => {
+    const store = new TrustStore('0.1.0');
+    await store.put('hash1', {
+      serverName: 'a', domain: 'a.com', identityX25519Pub: 'X', identityEd25519Pub: 'Y',
+    });
+    await store.put('hash2', {
+      serverName: 'b', domain: 'b.com', identityX25519Pub: 'X', identityEd25519Pub: 'Y',
+    });
+    const all = await store.list();
+    expect(Object.keys(all)).toHaveLength(2);
+    expect(all['hash1']!.serverName).toBe('a');
+    expect(all['hash2']!.serverName).toBe('b');
   });
 
-  it('revokes an approval', async () => {
-    await trust.approve({ port: 37149, server: 'opentable-mcp', domain: 'opentable.com', version: '0.9.1' }, 'always');
-    await trust.revoke({ port: 37149, server: 'opentable-mcp', domain: 'opentable.com' });
-    expect(await trust.lookup({ port: 37149, server: 'opentable-mcp', domain: 'opentable.com', version: '0.9.1' }))
-      .toBeNull();
-  });
-
-  it('lists all trusted MCPs', async () => {
-    await trust.approve({ port: 37149, server: 'opentable-mcp', domain: 'opentable.com', version: '0.9.1' }, 'always');
-    await trust.approve({ port: 37148, server: 'resy-mcp', domain: 'resy.com', version: '0.1.0' }, 'always');
-    const list = await trust.list();
-    expect(list).toHaveLength(2);
-    expect(list.map((m: TrustedMcp) => m.server).sort()).toEqual(['opentable-mcp', 'resy-mcp']);
+  it('put overwrites existing record', async () => {
+    const store = new TrustStore('0.1.0');
+    await store.put('hash1', {
+      serverName: 'old', domain: 'a.com', identityX25519Pub: 'X', identityEd25519Pub: 'Y',
+    });
+    await store.put('hash1', {
+      serverName: 'new', domain: 'a.com', identityX25519Pub: 'X', identityEd25519Pub: 'Y',
+    });
+    const got = await store.get('hash1');
+    expect(got!.serverName).toBe('new');
   });
 });
