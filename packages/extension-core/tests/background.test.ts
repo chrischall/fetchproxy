@@ -39,6 +39,7 @@ async function buildServerHello(
   mcpId: string,
   serverName: string,
   domains: string[],
+  capabilities?: ('fetch' | 'read_cookies')[],
 ): Promise<HelloFrameFromServer> {
   const x = await generateX25519();
   const ed = await generateEd25519();
@@ -55,6 +56,7 @@ async function buildServerHello(
     serverName,
     version: '0.9.1',
     domains: [...domains],
+    ...(capabilities ? { capabilities: [...capabilities] } : {}),
     identityX25519Pub: Buffer.from(x.publicKey).toString('base64'),
     identityEd25519Pub: Buffer.from(ed.publicKey).toString('base64'),
     sessionNonce: Buffer.from(sessionNonce).toString('base64'),
@@ -110,6 +112,7 @@ describe('handleServerHello', () => {
     await trust.put(idHash, {
       serverName: 'opentable-mcp',
       domains: ['opentable.com'],
+      capabilities: ['fetch'],
       identityX25519Pub: hello.identityX25519Pub,
       identityEd25519Pub: hello.identityEd25519Pub,
     });
@@ -138,6 +141,7 @@ describe('handleServerHello', () => {
     await trust.put(idHash, {
       serverName: 'honeybook-mcp',
       domains: ['hbsplit.com', 'honeybook.com'],
+      capabilities: ['fetch'],
       identityX25519Pub: hello.identityX25519Pub,
       identityEd25519Pub: hello.identityEd25519Pub,
     });
@@ -171,6 +175,7 @@ describe('handleServerHello', () => {
     await trust.put(idHash, {
       serverName: 'resy-mcp',
       domains: ['opentable.com'],
+      capabilities: ['fetch'],
       identityX25519Pub: hello.identityX25519Pub,
       identityEd25519Pub: hello.identityEd25519Pub,
     });
@@ -193,10 +198,140 @@ describe('handleServerHello', () => {
     await trust.put(idHash, {
       serverName: 'honeybook-mcp',
       domains: ['honeybook.com'],
+      capabilities: ['fetch'],
       identityX25519Pub: hello.identityX25519Pub,
       identityEd25519Pub: hello.identityEd25519Pub,
     });
     const result = await handleServerHello(hello, { trust });
     expect(result.kind).toBe('reject');
+  });
+
+  describe('capabilities', () => {
+    it("defaults capabilities to ['fetch'] when the hello omits the field", async () => {
+      const hello = await buildServerHello(
+        'opentable-mcp:0.9.1:a3f7c91d2e8b4f56',
+        'opentable-mcp',
+        ['opentable.com'],
+        undefined, // no capabilities on the wire
+      );
+      const trust = new TrustStore('0.2.0');
+      const result = await handleServerHello(hello, { trust });
+      expect(result.kind).toBe('needs-pair');
+      if (result.kind === 'needs-pair') {
+        expect(result.capabilities).toEqual(['fetch']);
+      }
+    });
+
+    it('surfaces declared capabilities on needs-pair', async () => {
+      const hello = await buildServerHello(
+        'credit-karma-mcp:0.0.1:1234567890abcdef',
+        'credit-karma-mcp',
+        ['creditkarma.com'],
+        ['fetch', 'read_cookies'],
+      );
+      const trust = new TrustStore('0.2.0');
+      const result = await handleServerHello(hello, { trust });
+      expect(result.kind).toBe('needs-pair');
+      if (result.kind === 'needs-pair') {
+        expect(result.capabilities).toEqual(['fetch', 'read_cookies']);
+      }
+    });
+
+    it('surfaces declared capabilities on auto-trust', async () => {
+      const hello = await buildServerHello(
+        'credit-karma-mcp:0.0.1:1234567890abcdef',
+        'credit-karma-mcp',
+        ['creditkarma.com'],
+        ['fetch', 'read_cookies'],
+      );
+      const trust = new TrustStore('0.2.0');
+      const idHash = Buffer.from(
+        await sha256(new Uint8Array(Buffer.from(hello.identityX25519Pub, 'base64'))),
+      ).toString('hex');
+      await trust.put(idHash, {
+        serverName: 'credit-karma-mcp',
+        domains: ['creditkarma.com'],
+        capabilities: ['fetch', 'read_cookies'],
+        identityX25519Pub: hello.identityX25519Pub,
+        identityEd25519Pub: hello.identityEd25519Pub,
+      });
+      const result = await handleServerHello(hello, { trust });
+      expect(result.kind).toBe('auto-trust');
+      if (result.kind === 'auto-trust') {
+        expect(result.capabilities).toEqual(['fetch', 'read_cookies']);
+      }
+    });
+
+    it('falls back to needs-pair when an MCP adds a capability (upgrade)', async () => {
+      const hello = await buildServerHello(
+        'credit-karma-mcp:0.0.1:1234567890abcdef',
+        'credit-karma-mcp',
+        ['creditkarma.com'],
+        ['fetch', 'read_cookies'],
+      );
+      const trust = new TrustStore('0.2.0');
+      const idHash = Buffer.from(
+        await sha256(new Uint8Array(Buffer.from(hello.identityX25519Pub, 'base64'))),
+      ).toString('hex');
+      // Previously paired without read_cookies — the upgrade should
+      // force the user to re-approve rather than silently auto-trusting.
+      await trust.put(idHash, {
+        serverName: 'credit-karma-mcp',
+        domains: ['creditkarma.com'],
+        capabilities: ['fetch'],
+        identityX25519Pub: hello.identityX25519Pub,
+        identityEd25519Pub: hello.identityEd25519Pub,
+      });
+      const result = await handleServerHello(hello, { trust });
+      expect(result.kind).toBe('needs-pair');
+      if (result.kind === 'needs-pair') {
+        expect(result.capabilities).toEqual(['fetch', 'read_cookies']);
+      }
+    });
+
+    it('falls back to needs-pair when an MCP drops a capability (downgrade)', async () => {
+      const hello = await buildServerHello(
+        'credit-karma-mcp:0.0.1:1234567890abcdef',
+        'credit-karma-mcp',
+        ['creditkarma.com'],
+        ['fetch'],
+      );
+      const trust = new TrustStore('0.2.0');
+      const idHash = Buffer.from(
+        await sha256(new Uint8Array(Buffer.from(hello.identityX25519Pub, 'base64'))),
+      ).toString('hex');
+      await trust.put(idHash, {
+        serverName: 'credit-karma-mcp',
+        domains: ['creditkarma.com'],
+        capabilities: ['fetch', 'read_cookies'],
+        identityX25519Pub: hello.identityX25519Pub,
+        identityEd25519Pub: hello.identityEd25519Pub,
+      });
+      const result = await handleServerHello(hello, { trust });
+      expect(result.kind).toBe('needs-pair');
+    });
+
+    it('auto-trusts when capability set is a set-equal permutation', async () => {
+      const hello = await buildServerHello(
+        'credit-karma-mcp:0.0.1:1234567890abcdef',
+        'credit-karma-mcp',
+        ['creditkarma.com'],
+        ['read_cookies', 'fetch'],
+      );
+      const trust = new TrustStore('0.2.0');
+      const idHash = Buffer.from(
+        await sha256(new Uint8Array(Buffer.from(hello.identityX25519Pub, 'base64'))),
+      ).toString('hex');
+      // Same elements, opposite order — still a match.
+      await trust.put(idHash, {
+        serverName: 'credit-karma-mcp',
+        domains: ['creditkarma.com'],
+        capabilities: ['fetch', 'read_cookies'],
+        identityX25519Pub: hello.identityX25519Pub,
+        identityEd25519Pub: hello.identityEd25519Pub,
+      });
+      const result = await handleServerHello(hello, { trust });
+      expect(result.kind).toBe('auto-trust');
+    });
   });
 });

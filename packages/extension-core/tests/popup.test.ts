@@ -48,6 +48,7 @@ describe('renderPopup', () => {
         serverName: 'opentable-mcp',
         version: '0.9.1',
         domains: ['opentable.com'],
+        capabilities: ['fetch'],
         pairCode: '472-918',
       },
       onApprove: () => undefined,
@@ -71,6 +72,7 @@ describe('renderPopup', () => {
         serverName: 'honeybook-mcp',
         version: '0.0.1',
         domains: ['honeybook.com', 'hbsplit.com'],
+        capabilities: ['fetch'],
         pairCode: '123-456',
       },
       onApprove: () => undefined,
@@ -90,6 +92,7 @@ describe('renderPopup', () => {
         serverName: 'opentable-mcp',
         version: '0.9.1',
         domains: ['opentable.com'],
+        capabilities: ['fetch'],
         pairCode: '472-918',
       },
       onApprove: () => {
@@ -109,6 +112,7 @@ describe('renderPopup', () => {
         serverName: 'opentable-mcp',
         version: '0.9.1',
         domains: ['opentable.com'],
+        capabilities: ['fetch'],
         pairCode: '472-918',
       },
       onApprove: () => undefined,
@@ -127,6 +131,7 @@ describe('renderPopup', () => {
         serverName: 'some-bank-mcp',
         version: '0.0.1',
         domains: ['chase.bank'],
+        capabilities: ['fetch'],
         pairCode: '111-222',
       },
       onApprove: () => undefined,
@@ -142,6 +147,7 @@ describe('renderPopup', () => {
         serverName: 'some-mcp',
         version: '0.0.1',
         domains: ['irs.gov'],
+        capabilities: ['fetch'],
         pairCode: '111-222',
       },
       onApprove: () => undefined,
@@ -157,6 +163,7 @@ describe('renderPopup', () => {
         serverName: 'opentable-mcp',
         version: '0.9.1',
         domains: ['opentable.com'],
+        capabilities: ['fetch'],
         pairCode: '111-222',
       },
       onApprove: () => undefined,
@@ -172,11 +179,72 @@ describe('renderPopup', () => {
         serverName: 'mixed-mcp',
         version: '0.0.1',
         domains: ['benign.com', 'chase.bank'],
+        capabilities: ['fetch'],
         pairCode: '111-222',
       },
       onApprove: () => undefined,
       onCancel: () => undefined,
     });
     expect(container.textContent?.toLowerCase()).toContain('high-risk');
+  });
+
+  describe('capabilities', () => {
+    it('renders fetch capability without warning marker', () => {
+      renderPopup(container, {
+        mode: 'pending-pair',
+        pending: {
+          serverName: 'opentable-mcp',
+          version: '0.9.1',
+          domains: ['opentable.com'],
+          capabilities: ['fetch'],
+          pairCode: '111-222',
+        },
+        onApprove: () => undefined,
+        onCancel: () => undefined,
+      });
+      expect(container.textContent).toContain('Capabilities');
+      expect(container.textContent).toContain('HTTP fetches');
+      // No warning marker for fetch-only.
+      expect(container.textContent ?? '').not.toContain('⚠️');
+    });
+
+    it('renders read_cookies with a visible warning marker', () => {
+      renderPopup(container, {
+        mode: 'pending-pair',
+        pending: {
+          serverName: 'credit-karma-mcp',
+          version: '0.0.1',
+          domains: ['creditkarma.com'],
+          capabilities: ['fetch', 'read_cookies'],
+          pairCode: '111-222',
+        },
+        onApprove: () => undefined,
+        onCancel: () => undefined,
+      });
+      expect(container.textContent).toContain('HTTP fetches');
+      expect(container.textContent).toContain('Read cookies');
+      // Warning marker present on the elevated-trust verb.
+      expect(container.textContent ?? '').toContain('⚠️');
+      const warnLi = container.querySelector('li.cap-warn');
+      expect(warnLi).not.toBeNull();
+      expect(warnLi!.textContent).toContain('Read cookies');
+    });
+
+    it('renders unknown capability as warn (defense in depth)', () => {
+      renderPopup(container, {
+        mode: 'pending-pair',
+        pending: {
+          serverName: 'future-mcp',
+          version: '0.0.1',
+          domains: ['future.example'],
+          // @ts-expect-error - testing forward-compat with unknown verbs
+          capabilities: ['fetch', 'frobnicate'],
+          pairCode: '111-222',
+        },
+        onApprove: () => undefined,
+        onCancel: () => undefined,
+      });
+      expect(container.textContent ?? '').toContain('⚠️');
+    });
   });
 });

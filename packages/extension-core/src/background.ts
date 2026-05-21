@@ -24,12 +24,15 @@ import {
   openEncryptedFrame,
   validateFrame,
   PROTOCOL_VERSION,
+  type Capability,
   type Frame,
   type HelloFrameFromServer,
   type HelloFrameFromExtension,
   type ReadyFrame,
   type InnerFrame,
   type InnerRequest,
+  type InnerRequestFetch,
+  type InnerRequestReadCookies,
   type EncryptedFrame,
 } from '@fetchproxy/protocol';
 import { TrustStore } from './trust-store.js';
@@ -54,6 +57,7 @@ export type HandleHelloResult =
       mcpId: string;
       serverName: string;
       domains: string[];
+      capabilities: string[];
       version: string;
       identityX25519Pub: string;
       identityEd25519Pub: string;
@@ -63,6 +67,7 @@ export type HandleHelloResult =
       kind: 'auto-trust';
       mcpId: string;
       domains: string[];
+      capabilities: string[];
       sessionKey: Uint8Array;
       extensionSessionPub: Uint8Array;
     };
@@ -109,6 +114,28 @@ function sameDomainSet(a: readonly string[], b: readonly string[]): boolean {
   return true;
 }
 
+/**
+ * Order-insensitive equality for two capability lists. A capability
+ * upgrade (e.g. fetch → fetch+read_cookies) is conservative: we want
+ * the user to re-approve when the MCP asks for more access.
+ */
+function sameCapabilitySet(a: readonly string[], b: readonly string[]): boolean {
+  if (a.length !== b.length) return false;
+  const sa = [...a].sort();
+  const sb = [...b].sort();
+  for (let i = 0; i < sa.length; i++) if (sa[i] !== sb[i]) return false;
+  return true;
+}
+
+/** Default capability set when the server hello doesn't carry one. */
+const DEFAULT_CAPABILITIES: readonly Capability[] = ['fetch'];
+
+function effectiveCapabilities(hello: HelloFrameFromServer): Capability[] {
+  return hello.capabilities && hello.capabilities.length > 0
+    ? [...hello.capabilities]
+    : [...DEFAULT_CAPABILITIES];
+}
+
 export async function handleServerHello(
   hello: HelloFrameFromServer,
   deps: HandleHelloDeps,
@@ -134,6 +161,7 @@ export async function handleServerHello(
   // 2. Look up trust.
   const hash = toHex(await sha256(identityX25519Pub));
   const record = await deps.trust.get(hash);
+  const capabilities = effectiveCapabilities(hello);
 
   if (record) {
     if (
@@ -141,6 +169,26 @@ export async function handleServerHello(
       !sameDomainSet(record.domains, hello.domains)
     ) {
       return { kind: 'reject', reason: 'serverName/domains mismatch with trust record' };
+    }
+    if (!sameCapabilitySet(record.capabilities, capabilities)) {
+      // Capability upgrade (or downgrade) since the last pair. Conservative:
+      // drop trust + show the popup so the user can review what the MCP now
+      // wants. The trust-store `.put()` will overwrite the old record once
+      // they approve.
+      const pairCode = await derivePairCode(identityX25519Pub);
+      return {
+        kind: 'needs-pair',
+        pairCode,
+        identityHash: hash,
+        mcpId: hello.mcpId,
+        serverName: hello.serverName,
+        domains: [...hello.domains],
+        capabilities,
+        version: hello.version,
+        identityX25519Pub: hello.identityX25519Pub,
+        identityEd25519Pub: hello.identityEd25519Pub,
+        sessionNonce,
+      };
     }
     // Derive session key with fresh ephemeral keypair.
     const ephemeral = await generateX25519();
@@ -155,6 +203,7 @@ export async function handleServerHello(
       kind: 'auto-trust',
       mcpId: hello.mcpId,
       domains: [...hello.domains],
+      capabilities,
       sessionKey,
       extensionSessionPub: ephemeral.publicKey,
     };
@@ -169,6 +218,7 @@ export async function handleServerHello(
     mcpId: hello.mcpId,
     serverName: hello.serverName,
     domains: [...hello.domains],
+    capabilities,
     version: hello.version,
     identityX25519Pub: hello.identityX25519Pub,
     identityEd25519Pub: hello.identityEd25519Pub,
@@ -213,6 +263,7 @@ interface PendingPairRecord {
   serverName: string;
   version: string;
   domains: string[];
+  capabilities: string[];
   pairCode: string;
   identityHash: string;
   identityX25519Pub: string;
@@ -228,6 +279,10 @@ let sessions: SessionKeys | null = null;
 // the allowlist. 0.2.0+: this is a Map<mcpId, string[]> rather than the
 // 0.1.x Map<mcpId, string> — every URL must match SOME entry to be allowed.
 const mcpDomains = new Map<string, string[]>();
+// Track each mcpId's declared capability set so the request handler can
+// reject verbs the MCP didn't ask for at pair time. 0.2.0+: defaults to
+// ['fetch'] when the hello omits the field.
+const mcpCapabilities = new Map<string, string[]>();
 
 function connect(): void {
   if (!trust || !sessions) return;
@@ -251,6 +306,7 @@ function connect(): void {
   ws.addEventListener('close', () => {
     sessions?.clear();
     mcpDomains.clear();
+    mcpCapabilities.clear();
     scheduleReconnect();
   });
   ws.addEventListener('error', () => {
@@ -291,6 +347,7 @@ async function onServerHello(hello: HelloFrameFromServer): Promise<void> {
   if (result.kind === 'auto-trust') {
     sessions.set(result.mcpId, result.sessionKey);
     mcpDomains.set(result.mcpId, [...result.domains]);
+    mcpCapabilities.set(result.mcpId, [...result.capabilities]);
     // TODO: open tabs for ALL declared domains. For 0.2.0 we open one
     // (the first declared) — multi-domain MCPs (HoneyBook spans two
     // hosts) ought to surface a tab for each, but a single open tab is
@@ -315,6 +372,7 @@ async function onServerHello(hello: HelloFrameFromServer): Promise<void> {
     serverName: result.serverName,
     version: result.version,
     domains: [...result.domains],
+    capabilities: [...result.capabilities],
     pairCode: result.pairCode,
     identityHash: result.identityHash,
     identityX25519Pub: result.identityX25519Pub,
@@ -363,11 +421,41 @@ async function handleRequest(mcpId: string, req: InnerRequest): Promise<void> {
     });
     return;
   }
+  const capabilities = mcpCapabilities.get(mcpId) ?? ['fetch'];
+  if (!capabilities.includes(req.op)) {
+    // Capability gate. The MCP didn't ask for this verb at pair time —
+    // refuse with an op-echoing error so the server-side awaiter can
+    // surface a clear message rather than blame the transport.
+    await sendInner(mcpId, {
+      type: 'response',
+      id: req.id,
+      ok: false,
+      op: req.op,
+      error: `capability ${JSON.stringify(req.op)} not granted (declared: [${capabilities.join(', ')}])`,
+    });
+    return;
+  }
+  if (req.op === 'fetch') {
+    await handleFetchRequest(mcpId, req, domains);
+    return;
+  }
+  if (req.op === 'read_cookies') {
+    await handleReadCookiesRequest(mcpId, req, domains);
+    return;
+  }
+}
+
+async function handleFetchRequest(
+  mcpId: string,
+  req: InnerRequestFetch,
+  domains: string[],
+): Promise<void> {
   if (!isUrlAllowedForAnyDomain(req.init.url, domains)) {
     await sendInner(mcpId, {
       type: 'response',
       id: req.id,
       ok: false,
+      op: 'fetch',
       error: `url ${req.init.url} not in domains [${domains.join(', ')}]`,
     });
     return;
@@ -380,6 +468,7 @@ async function handleRequest(mcpId: string, req: InnerRequest): Promise<void> {
       type: 'response',
       id: req.id,
       ok: false,
+      op: 'fetch',
       error: `no tab matching ${req.init.tabUrl}`,
     });
     return;
@@ -394,29 +483,105 @@ async function handleRequest(mcpId: string, req: InnerRequest): Promise<void> {
         type: 'response',
         id: req.id,
         ok: true,
+        op: 'fetch',
         status: resp.status,
         url: resp.url,
         body: resp.body,
       });
     } else {
-      await sendInner(mcpId, { type: 'response', id: req.id, ok: false, error: resp.error });
+      await sendInner(mcpId, {
+        type: 'response',
+        id: req.id,
+        ok: false,
+        op: 'fetch',
+        error: resp.error,
+      });
     }
   } catch (e) {
     await sendInner(mcpId, {
       type: 'response',
       id: req.id,
       ok: false,
+      op: 'fetch',
       error: `tab fetch failed: ${String(e)}`,
+    });
+  }
+}
+
+async function handleReadCookiesRequest(
+  mcpId: string,
+  req: InnerRequestReadCookies,
+  domains: string[],
+): Promise<void> {
+  // The tabUrl must point at the declared domain set — same envelope as
+  // fetch, just enforced through a synthesised URL instead of init.url
+  // (which doesn't exist for read_cookies).
+  if (!isUrlAllowedForAnyDomain(req.init.tabUrl, domains)) {
+    await sendInner(mcpId, {
+      type: 'response',
+      id: req.id,
+      ok: false,
+      op: 'read_cookies',
+      error: `tabUrl ${req.init.tabUrl} not in domains [${domains.join(', ')}]`,
+    });
+    return;
+  }
+  const tabs = await chrome.tabs.query({});
+  const match = tabs.find((t) => t.url && isTabUrlMatch(t.url, req.init.tabUrl));
+  if (!match || typeof match.id !== 'number') {
+    await sendInner(mcpId, {
+      type: 'response',
+      id: req.id,
+      ok: false,
+      op: 'read_cookies',
+      error: `no tab matching ${req.init.tabUrl}`,
+    });
+    return;
+  }
+  try {
+    const resp = (await chrome.tabs.sendMessage(match.id, {
+      kind: 'fetchproxy-read-cookies',
+    })) as { ok: true; cookies: string } | { ok: false; error: string };
+    if (resp.ok) {
+      await sendInner(mcpId, {
+        type: 'response',
+        id: req.id,
+        ok: true,
+        op: 'read_cookies',
+        cookies: resp.cookies,
+      });
+    } else {
+      await sendInner(mcpId, {
+        type: 'response',
+        id: req.id,
+        ok: false,
+        op: 'read_cookies',
+        error: resp.error,
+      });
+    }
+  } catch (e) {
+    await sendInner(mcpId, {
+      type: 'response',
+      id: req.id,
+      ok: false,
+      op: 'read_cookies',
+      error: `tab read_cookies failed: ${String(e)}`,
     });
   }
 }
 
 async function onApproval(approved: PendingPairRecord): Promise<void> {
   if (!trust || !sessions) return;
-  // Persist trust.
+  // Persist trust. Default to ['fetch'] when older popup state somehow
+  // omits the field — defensive, the popup always populates it in 0.2.0+.
+  const approvedCapabilities =
+    approved.capabilities && approved.capabilities.length > 0
+      ? [...approved.capabilities]
+      : ['fetch'];
   await trust.put(approved.identityHash, {
     serverName: approved.serverName,
     domains: [...approved.domains],
+    capabilities: approvedCapabilities,
     identityX25519Pub: approved.identityX25519Pub,
     identityEd25519Pub: approved.identityEd25519Pub,
   });
@@ -433,6 +598,7 @@ async function onApproval(approved: PendingPairRecord): Promise<void> {
   );
   sessions.set(approved.mcpId, sessionKey);
   mcpDomains.set(approved.mcpId, [...approved.domains]);
+  mcpCapabilities.set(approved.mcpId, approvedCapabilities);
   // TODO: open tabs for ALL declared domains. See auto-trust path above.
   const firstDomain = approved.domains[0];
   if (firstDomain !== undefined) {

@@ -36,12 +36,24 @@ interface FetchError {
 }
 
 chrome.runtime.onMessage.addListener((msg: { kind?: string; init?: FetchInit }, _sender, sendResponse) => {
-  if (msg.kind !== 'fetchproxy-fetch' || !msg.init) return false;
-
-  void runFetch(msg.init)
-    .then(sendResponse)
-    .catch((e: unknown) => sendResponse({ ok: false, error: (e as Error).message } satisfies FetchError));
-  return true; // tells Chrome we'll respond asynchronously
+  if (msg.kind === 'fetchproxy-fetch' && msg.init) {
+    void runFetch(msg.init)
+      .then(sendResponse)
+      .catch((e: unknown) => sendResponse({ ok: false, error: (e as Error).message } satisfies FetchError));
+    return true; // tells Chrome we'll respond asynchronously
+  }
+  if (msg.kind === 'fetchproxy-read-cookies') {
+    // Synchronous: `document.cookie` is a string getter on a same-origin
+    // page. HttpOnly cookies are not visible to page JS — that is the
+    // entire security model for this verb.
+    try {
+      sendResponse({ ok: true, cookies: document.cookie });
+    } catch (e) {
+      sendResponse({ ok: false, error: `document.cookie threw: ${(e as Error).message}` });
+    }
+    return false;
+  }
+  return false;
 });
 
 async function runFetch(init: FetchInit): Promise<FetchResponse | FetchError> {

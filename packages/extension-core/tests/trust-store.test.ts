@@ -33,6 +33,7 @@ describe('TrustStore (identity-hash keyed)', () => {
     await store.put('hash1', {
       serverName: 'opentable-mcp',
       domains: ['opentable.com'],
+      capabilities: ['fetch'],
       identityX25519Pub: 'AAAA',
       identityEd25519Pub: 'BBBB',
     });
@@ -76,6 +77,7 @@ describe('TrustStore (identity-hash keyed)', () => {
     await store.put('hash1', {
       serverName: 'a',
       domains: ['a.com'],
+      capabilities: ['fetch'],
       identityX25519Pub: 'X',
       identityEd25519Pub: 'Y',
     });
@@ -86,10 +88,10 @@ describe('TrustStore (identity-hash keyed)', () => {
   it('list returns all records', async () => {
     const store = new TrustStore('0.1.0');
     await store.put('hash1', {
-      serverName: 'a', domains: ['a.com'], identityX25519Pub: 'X', identityEd25519Pub: 'Y',
+      serverName: 'a', domains: ['a.com'], capabilities: ['fetch'], identityX25519Pub: 'X', identityEd25519Pub: 'Y',
     });
     await store.put('hash2', {
-      serverName: 'b', domains: ['b.com'], identityX25519Pub: 'X', identityEd25519Pub: 'Y',
+      serverName: 'b', domains: ['b.com'], capabilities: ['fetch'], identityX25519Pub: 'X', identityEd25519Pub: 'Y',
     });
     const all = await store.list();
     expect(Object.keys(all)).toHaveLength(2);
@@ -100,10 +102,10 @@ describe('TrustStore (identity-hash keyed)', () => {
   it('put overwrites existing record', async () => {
     const store = new TrustStore('0.1.0');
     await store.put('hash1', {
-      serverName: 'old', domains: ['a.com'], identityX25519Pub: 'X', identityEd25519Pub: 'Y',
+      serverName: 'old', domains: ['a.com'], capabilities: ['fetch'], identityX25519Pub: 'X', identityEd25519Pub: 'Y',
     });
     await store.put('hash1', {
-      serverName: 'new', domains: ['a.com'], identityX25519Pub: 'X', identityEd25519Pub: 'Y',
+      serverName: 'new', domains: ['a.com'], capabilities: ['fetch'], identityX25519Pub: 'X', identityEd25519Pub: 'Y',
     });
     const got = await store.get('hash1');
     expect(got!.serverName).toBe('new');
@@ -114,11 +116,52 @@ describe('TrustStore (identity-hash keyed)', () => {
     await store.put('hashm', {
       serverName: 'honeybook-mcp',
       domains: ['honeybook.com', 'hbsplit.com'],
+      capabilities: ['fetch'],
       identityX25519Pub: 'AAAA',
       identityEd25519Pub: 'BBBB',
     });
     const got = await store.get('hashm');
     expect(got).not.toBeNull();
     expect(got!.domains).toEqual(['honeybook.com', 'hbsplit.com']);
+  });
+
+  it('persists a capability set, including read_cookies', async () => {
+    const store = new TrustStore('0.2.0');
+    await store.put('hashc', {
+      serverName: 'credit-karma-mcp',
+      domains: ['creditkarma.com'],
+      capabilities: ['fetch', 'read_cookies'],
+      identityX25519Pub: 'AAAA',
+      identityEd25519Pub: 'BBBB',
+    });
+    const got = await store.get('hashc');
+    expect(got).not.toBeNull();
+    expect(got!.capabilities).toEqual(['fetch', 'read_cookies']);
+  });
+
+  it('normalises pre-capability records to ["fetch"] on read', async () => {
+    // Simulate a record stored before 0.2.0 added capabilities by writing
+    // directly through the underlying storage layer without the field.
+    const store = new TrustStore('0.2.0');
+    // Hack: stash a synthetic legacy record into chrome.storage.local.
+    const cs = (globalThis as { chrome?: { storage: { local: { set: (kv: Record<string, unknown>) => Promise<void> } } } }).chrome!.storage.local;
+    await cs.set({
+      trustedMcps: {
+        records: {
+          legacy1: {
+            serverName: 'legacy-mcp',
+            domains: ['legacy.example'],
+            identityX25519Pub: 'X',
+            identityEd25519Pub: 'Y',
+            pairedAt: 1,
+            extensionVersionAtPair: '0.2.0',
+            // No capabilities field — older shape.
+          },
+        },
+      },
+    });
+    const got = await store.get('legacy1');
+    expect(got).not.toBeNull();
+    expect(got!.capabilities).toEqual(['fetch']);
   });
 });

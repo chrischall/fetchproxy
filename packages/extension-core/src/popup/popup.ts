@@ -16,6 +16,21 @@ import { TrustStore } from '../trust-store.js';
 
 const HIGH_RISK_KEYWORDS = ['bank', 'gov', 'mil'];
 
+/**
+ * UI labels for the inner-verb capabilities surfaced in the pair popup.
+ * Each entry includes a short human-readable label and a `warn` flag —
+ * when true, the popup decorates the entry with a visible warning so
+ * the user notices the asymmetric privilege.
+ */
+interface CapabilityDisplay {
+  label: string;
+  warn: boolean;
+}
+const CAPABILITY_DISPLAY: Record<string, CapabilityDisplay> = {
+  fetch: { label: 'HTTP fetches', warn: false },
+  read_cookies: { label: 'Read cookies', warn: true },
+};
+
 export interface PendingPair {
   serverName: string;
   version: string;
@@ -25,12 +40,19 @@ export interface PendingPair {
    * sites this MCP would gain access to.
    */
   domains: string[];
+  /**
+   * Non-empty array of capabilities the MCP declared (e.g. `['fetch']`
+   * or `['fetch', 'read_cookies']`). Rendered as a bullet list with
+   * warning markers next to elevated-trust verbs like `read_cookies`.
+   */
+  capabilities: string[];
   pairCode: string;
 }
 
 export interface TrustedSummary {
   serverName: string;
   domains: string[];
+  capabilities?: string[];
 }
 
 export type PopupState =
@@ -101,6 +123,28 @@ export function renderPopup(root: HTMLElement, state: PopupState): void {
   }
   dd.appendChild(ulDomains);
   dl.appendChild(dd);
+  // Capability list. Always render — every MCP declares at least one
+  // capability (or defaults to ['fetch']). The warning marker on
+  // read_cookies makes the elevated trust visible without needing the
+  // user to know what each verb means. Defensive: callers in test code
+  // may omit `capabilities`, in which case we fall back to ['fetch'].
+  const caps = pending.capabilities && pending.capabilities.length > 0
+    ? pending.capabilities
+    : ['fetch'];
+  dl.appendChild(elem('dt', {}, 'Capabilities'));
+  const ddCaps = elem('dd');
+  const ulCaps = elem('ul', { class: 'capabilities' });
+  for (const cap of caps) {
+    const display = CAPABILITY_DISPLAY[cap] ?? { label: cap, warn: true };
+    const li = elem(
+      'li',
+      display.warn ? { class: 'cap-warn' } : {},
+      display.warn ? `${display.label} ⚠️` : display.label,
+    );
+    ulCaps.appendChild(li);
+  }
+  ddCaps.appendChild(ulCaps);
+  dl.appendChild(ddCaps);
   root.appendChild(dl);
 
   if (anyHighRisk(pending.domains)) {
@@ -142,6 +186,7 @@ interface PendingPairRecord {
   serverName: string;
   version: string;
   domains: string[];
+  capabilities: string[];
   pairCode: string;
   identityHash: string;
   identityX25519Pub: string;
@@ -176,6 +221,7 @@ async function bootstrap(): Promise<void> {
         serverName: pending.serverName,
         version: pending.version,
         domains: [...pending.domains],
+        capabilities: [...(pending.capabilities ?? ['fetch'])],
         pairCode: pending.pairCode,
       },
       onApprove: () => {
@@ -196,6 +242,7 @@ async function bootstrap(): Promise<void> {
   const trustedList = Object.values(records).map((r) => ({
     serverName: r.serverName,
     domains: [...r.domains],
+    capabilities: r.capabilities ? [...r.capabilities] : ['fetch'],
   }));
   if (trustedList.length === 0) {
     renderPopup(root, { mode: 'empty' });

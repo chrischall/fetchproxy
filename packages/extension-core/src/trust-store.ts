@@ -30,6 +30,14 @@ export interface TrustRecord {
    * any URL whose host matches (exactly or as a subdomain) any entry.
    */
   domains: string[];
+  /**
+   * Non-empty list of inner-verb capabilities the user approved at pair
+   * time. Compared as a set; if the MCP later declares a different set
+   * (e.g. adds `'read_cookies'`), trust is treated as missing and the
+   * user is prompted again. Older records that lack this field are
+   * normalised to `['fetch']` on read.
+   */
+  capabilities: string[];
   identityX25519Pub: string;
   identityEd25519Pub: string;
   pairedAt: number;
@@ -39,6 +47,7 @@ export interface TrustRecord {
 export interface TrustInput {
   serverName: string;
   domains: string[];
+  capabilities: string[];
   identityX25519Pub: string;
   identityEd25519Pub: string;
 }
@@ -63,6 +72,13 @@ export class TrustStore {
     if (!rec) return null;
     if (majorOf(rec.extensionVersionAtPair) !== majorOf(this.extensionVersion)) {
       return null;
+    }
+    // Pre-capability records (paired before 0.2.0 added the field) carry no
+    // `capabilities` array. Normalise to ['fetch'] so the caller can compare
+    // without checking for undefined; the user only approved fetch back
+    // then, so anything more requires a re-pair.
+    if (!Array.isArray(rec.capabilities)) {
+      return { ...rec, capabilities: ['fetch'] };
     }
     return rec;
   }
