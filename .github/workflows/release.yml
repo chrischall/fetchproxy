@@ -21,8 +21,30 @@ jobs:
           cache: npm
           registry-url: https://registry.npmjs.org
 
-      # Strip always-auth from .npmrc (set by setup-node, deprecated in npm 11)
-      - run: sed -i '/always-auth/d' "$NPM_CONFIG_USERCONFIG"
+      # Clean up the .npmrc setup-node generated.
+      #
+      # setup-node with `registry-url:` writes two lines:
+      #   //registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}
+      #   always-auth=true
+      #
+      # We don't pass `NPM_TOKEN` because we publish via npm Trusted
+      # Publisher OIDC (provenance below). But when `NPM_TOKEN` is
+      # absent, GitHub Actions masks `NODE_AUTH_TOKEN` with the
+      # placeholder `XXXXX-XXXXX-XXXXX-XXXXX`, and npm tries to use
+      # that placeholder as a static auth token before falling through
+      # to OIDC. The registry rejects the bogus token with a
+      # privacy-preserving 404 and never tries OIDC.
+      #
+      # Strip both lines so npm has no static auth at all — OIDC is
+      # then the only path npm publish can take, and Trusted Publisher
+      # works as designed.
+      - name: Strip stale npm auth from .npmrc
+        run: |
+          sed -i '/always-auth/d' "$NPM_CONFIG_USERCONFIG"
+          sed -i '/_authToken/d' "$NPM_CONFIG_USERCONFIG"
+          echo "----- final .npmrc -----"
+          cat "$NPM_CONFIG_USERCONFIG"
+          echo "------------------------"
 
       - run: npm ci
 
