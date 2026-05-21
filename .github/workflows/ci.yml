@@ -31,11 +31,11 @@ jobs:
       - name: Test (full monorepo via vitest)
         run: npm test
 
-      # extension-chrome has no tsconfig.json of its own — it's bundled
-      # straight from extension-core's source via esbuild — so we skip
-      # it in the typecheck and verify it bundles in a separate step.
-      - name: Typecheck
-        run: npx tsc --noEmit --build packages/protocol packages/server packages/extension-core
+      # The TS workspace build step above already typechecks via `tsc -b`
+      # — a separate --noEmit pass would be redundant (and noEmit is
+      # incompatible with --build per TS6369). extension-chrome is
+      # esbuild-bundled below; if it has type errors, esbuild surfaces
+      # them.
 
       # Build the Chrome extension to confirm bundling succeeds and the
       # resulting dist/ has the expected manifest + entry points.
