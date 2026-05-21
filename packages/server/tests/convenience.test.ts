@@ -48,25 +48,20 @@ describe('convenience methods', () => {
     await expect(s.request('GET', 'https://otherdomain.com/path')).rejects.toThrow(/outside declared domain/);
   });
 
-  it('request uses custom origin', async () => {
-    const s = new TestServer({ ...baseOpts, origin: 'https://www.example.com' });
+  it('subdomain overrides the URL prefix and tab host', async () => {
+    const s = new TestServer({ ...baseOpts, subdomain: 'www.example.com' });
     s.canned = { ok: true, status: 200, url: 'x', body: 'x' };
     await s.request('GET', '/api/foo');
     expect(s.lastInit!.url).toBe('https://www.example.com/api/foo');
+    expect(s.lastInit!.tabUrl).toBe('https://www.example.com/');
   });
 
-  it('request uses custom tabUrl', async () => {
-    const s = new TestServer({ ...baseOpts, tabUrl: 'https://app.example.com/' });
-    s.canned = { ok: true, status: 200, url: 'x', body: 'x' };
-    await s.request('GET', '/api/foo');
-    expect(s.lastInit!.tabUrl).toBe('https://app.example.com/');
-  });
-
-  it('default tabUrl is derived from origin', async () => {
+  it('default tabUrl is derived from domain when no subdomain is set', async () => {
     const s = new TestServer(baseOpts);
     s.canned = { ok: true, status: 200, url: 'x', body: 'x' };
     await s.request('GET', '/x');
     expect(s.lastInit!.tabUrl).toBe('https://example.com/');
+    expect(s.lastInit!.url).toBe('https://example.com/x');
   });
 
   it('request throws FetchproxyProtocolError when fetchproxy returns !ok', async () => {
@@ -183,58 +178,56 @@ describe('convenience methods', () => {
   });
 });
 
-describe('domain guard', () => {
+describe('subdomain guard', () => {
   const baseOpts = {
     serverName: 'test-mcp',
     version: '0.0.1',
     domain: 'opentable.com',
   };
 
-  it('accepts an origin equal to the declared domain', () => {
-    expect(() => new TestServer({ ...baseOpts, origin: 'https://opentable.com' })).not.toThrow();
+  it('accepts a subdomain equal to the declared domain', () => {
+    expect(() => new TestServer({ ...baseOpts, subdomain: 'opentable.com' })).not.toThrow();
   });
 
-  it('accepts an origin on a subdomain of the declared domain', () => {
-    expect(() => new TestServer({ ...baseOpts, origin: 'https://www.opentable.com' })).not.toThrow();
-    expect(() => new TestServer({ ...baseOpts, origin: 'https://api.opentable.com' })).not.toThrow();
+  it('accepts a subdomain that is a strict subdomain of the declared domain', () => {
+    expect(() => new TestServer({ ...baseOpts, subdomain: 'www.opentable.com' })).not.toThrow();
+    expect(() => new TestServer({ ...baseOpts, subdomain: 'api.opentable.com' })).not.toThrow();
+    expect(() => new TestServer({ ...baseOpts, subdomain: 'a.b.opentable.com' })).not.toThrow();
   });
 
-  it('rejects an origin on a different domain', () => {
-    expect(() => new TestServer({ ...baseOpts, origin: 'https://opentable.evil.com' })).toThrow(
+  it('rejects a subdomain on a different domain', () => {
+    expect(() => new TestServer({ ...baseOpts, subdomain: 'opentable.evil.com' })).toThrow(
       /outside declared domain/,
     );
   });
 
-  it('rejects an origin that suffix-matches without a dot boundary', () => {
-    expect(() => new TestServer({ ...baseOpts, origin: 'https://badopentable.com' })).toThrow(
+  it('rejects a hostname that suffix-matches without a dot boundary', () => {
+    expect(() => new TestServer({ ...baseOpts, subdomain: 'badopentable.com' })).toThrow(
       /outside declared domain/,
     );
   });
 
-  it('rejects a non-http(s) origin', () => {
-    expect(() => new TestServer({ ...baseOpts, origin: 'javascript:alert(1)' })).toThrow();
-    expect(() => new TestServer({ ...baseOpts, origin: 'file:///etc/passwd' })).toThrow();
-  });
-
-  it('rejects a malformed origin', () => {
-    expect(() => new TestServer({ ...baseOpts, origin: 'not a url' })).toThrow(/not a valid URL/);
-  });
-
-  it('rejects a tabUrl outside the declared domain', () => {
-    expect(() => new TestServer({ ...baseOpts, tabUrl: 'https://evil.com/' })).toThrow(
-      /outside declared domain/,
+  it('rejects a value that includes a URL scheme', () => {
+    expect(() => new TestServer({ ...baseOpts, subdomain: 'https://www.opentable.com' })).toThrow(
+      /must be a hostname/,
     );
   });
 
-  it('accepts a tabUrl on a subdomain of the declared domain', () => {
-    expect(() => new TestServer({ ...baseOpts, tabUrl: 'https://app.opentable.com/' })).not.toThrow();
+  it('rejects a value containing a slash or path', () => {
+    expect(() => new TestServer({ ...baseOpts, subdomain: 'opentable.com/path' })).toThrow(
+      /must be a hostname/,
+    );
   });
 
-  it('default origin/tabUrl (derived from domain) always passes the guard', () => {
+  it('rejects an empty subdomain', () => {
+    expect(() => new TestServer({ ...baseOpts, subdomain: '' })).toThrow(/must be a hostname/);
+  });
+
+  it('default subdomain (= domain) always passes the guard', () => {
     expect(() => new TestServer(baseOpts)).not.toThrow();
   });
 
-  it('host comparison is case-insensitive', () => {
-    expect(() => new TestServer({ ...baseOpts, origin: 'https://WWW.OpenTable.com' })).not.toThrow();
+  it('subdomain comparison is case-insensitive', () => {
+    expect(() => new TestServer({ ...baseOpts, subdomain: 'WWW.OpenTable.com' })).not.toThrow();
   });
 });

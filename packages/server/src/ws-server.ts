@@ -10,12 +10,22 @@ export interface FetchproxyServerOpts {
   host?: string;
   serverName: string;
   version: string;
+  /**
+   * Trust boundary. The extension refuses any fetch outside this domain
+   * (or a subdomain of it). Pair-code trust is keyed off the MCP's
+   * cryptographic identity together with this domain.
+   */
   domain: string;
   identityDir?: string;
-  /** Full URL prefix prepended to relative paths. Defaults to `https://${domain}`. */
-  origin?: string;
-  /** Passed to the extension to pick which tab to fetch through. Defaults to `${origin}/`. */
-  tabUrl?: string;
+  /**
+   * Hostname (not URL) used as the default prefix for relative paths
+   * passed to `request()` / `get()` / `getJson()` etc., and as the
+   * default tab the extension fetches through. Defaults to `domain`.
+   *
+   * Must equal `domain` or be a subdomain of it — `www.opentable.com`
+   * is allowed when `domain` is `opentable.com`; `evil.com` is not.
+   */
+  subdomain?: string;
 }
 
 export interface FetchResult {
@@ -81,12 +91,31 @@ export class FetchproxyHttpError extends Error {
 }
 
 /**
- * Verify that `url`'s hostname is the declared `domain` or one of its
- * subdomains. Used at construction time on `origin` + `tabUrl` and at
- * call time on every resolved request URL. Throws on mismatch with a
- * developer-friendly message.
+ * Verify that `host` is exactly `domain` or a subdomain of it. Used at
+ * construction time on the `subdomain` opt. Hostname-only — rejects
+ * anything containing a slash, colon, or whitespace (i.e. URLs and
+ * protocol prefixes go through `assertUrlInDomain` below).
  */
-function assertHostInDomain(field: string, url: string, domain: string): void {
+function assertSubdomainOfDomain(field: string, host: string, domain: string): void {
+  if (!host || /[\s/:?#]/.test(host)) {
+    throw new Error(
+      `FetchproxyServer: ${field} must be a hostname (not a URL), got ${JSON.stringify(host)}`,
+    );
+  }
+  const h = host.toLowerCase();
+  const d = domain.toLowerCase();
+  if (h !== d && !h.endsWith('.' + d)) {
+    throw new Error(
+      `FetchproxyServer: ${field} "${h}" is outside declared domain "${d}" — must be "${d}" or a subdomain (e.g. www.${d})`,
+    );
+  }
+}
+
+/**
+ * Verify that a request URL's hostname is the declared `domain` or one
+ * of its subdomains. Used at call time on every resolved request URL.
+ */
+function assertUrlInDomain(field: string, url: string, domain: string): void {
   let parsed: URL;
   try {
     parsed = new URL(url);
@@ -102,7 +131,7 @@ function assertHostInDomain(field: string, url: string, domain: string): void {
   const expected = domain.toLowerCase();
   if (host !== expected && !host.endsWith('.' + expected)) {
     throw new Error(
-      `FetchproxyServer: ${field} host "${host}" is outside declared domain "${expected}" — must be "${expected}" or "*.${expected}"`,
+      `FetchproxyServer: ${field} host "${host}" is outside declared domain "${expected}" — must be "${expected}" or a subdomain`,
     );
   }
 }
@@ -132,14 +161,12 @@ export class FetchproxyServer {
   private identity: Identity | null = null;
 
   constructor(opts: FetchproxyServerOpts) {
-    const origin = opts.origin ?? `https://${opts.domain}`;
-    const tabUrl = opts.tabUrl ?? `${origin}/`;
-    // Guard: origin and tabUrl must resolve to a host that the declared
-    // `domain` covers (exact match or subdomain). Catches misconfiguration
-    // at construction time rather than letting every fetch get refused
-    // by the extension's allowlist at runtime.
-    assertHostInDomain('origin', origin, opts.domain);
-    assertHostInDomain('tabUrl', tabUrl, opts.domain);
+    // Default the subdomain to the trust-boundary domain, then verify it
+    // really is the same domain or a subdomain — catches misconfiguration
+    // at construction time rather than letting every fetch get refused by
+    // the extension's allowlist at runtime.
+    const subdomain = opts.subdomain ?? opts.domain;
+    assertSubdomainOfDomain('subdomain', subdomain, opts.domain);
     this.opts = {
       port: opts.port ?? 37149,
       host: opts.host ?? '127.0.0.1',
@@ -147,8 +174,8 @@ export class FetchproxyServer {
       version: opts.version,
       domain: opts.domain,
       identityDir: opts.identityDir,
-      origin,
-      tabUrl,
+      origin: `https://${subdomain}`,
+      tabUrl: `https://${subdomain}/`,
     };
   }
 
@@ -217,7 +244,7 @@ export class FetchproxyServer {
     // declared domain. The extension would refuse it anyway; this gives
     // the MCP author a clear error at the call site instead of a generic
     // "domain not allowed" from the bridge.
-    assertHostInDomain('request url', url, this.opts.domain);
+    assertUrlInDomain('request url', url, this.opts.domain);
     const init: FetchInit = {
       url,
       method,
