@@ -44,4 +44,8 @@ export class SessionKeys {
   remove(mcpId: string): void {
     this.map.delete(mcpId);
   }
+
+  clear(): void {
+    this.map.clear();
+  }
 }

@@ -60,6 +60,15 @@ describe('SessionKeys', () => {
     expect(sk.get('mcp:1.0.0:0000000000000000')).toBeNull();
   });
 
+  it('clear removes all sessions', () => {
+    const sk = new SessionKeys();
+    sk.set('a:1.0.0:0000000000000000', new Uint8Array(32));
+    sk.set('b:1.0.0:0000000000000000', new Uint8Array(32));
+    sk.clear();
+    expect(sk.get('a:1.0.0:0000000000000000')).toBeNull();
+    expect(sk.get('b:1.0.0:0000000000000000')).toBeNull();
+  });
+
   it('set overwrites an existing session with fresh counters', () => {
     const sk = new SessionKeys();
     sk.set('mcp:1.0.0:0000000000000000', new Uint8Array(32).fill(1));
