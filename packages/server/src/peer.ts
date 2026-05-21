@@ -1,18 +1,15 @@
 import { WebSocket } from 'ws';
 import {
-  ed25519Sign,
   ecdhX25519,
+  fromB64,
   hkdfSha256,
-  sealInnerFrame,
   openEncryptedFrame,
+  sealInnerFrame,
   validateFrame,
-  toB64,
-  concatBytes,
-  PROTOCOL_VERSION,
   type Capability,
-  type HelloFrameFromServer,
   type InnerFrame,
 } from '@fetchproxy/protocol';
+import { buildServerHello } from './build-server-hello.js';
 import { SessionState } from './session.js';
 import type { Identity } from './identity.js';
 
@@ -50,27 +47,18 @@ export async function startPeer(opts: PeerOpts): Promise<PeerHandle> {
     ws.once('error', reject);
   });
 
-  // Generate fresh session nonce + signature.
-  const sessionNonce = new Uint8Array(32);
-  (globalThis.crypto as Crypto).getRandomValues(sessionNonce);
-  const sigMsg = concatBytes(enc.encode(opts.mcpId), sessionNonce);
-  const sessionSig = await ed25519Sign(opts.identity.ed25519Priv, sigMsg);
-
-  // Send our hello first thing.
-  const hello: HelloFrameFromServer = {
-    type: 'hello',
-    protocolVersion: PROTOCOL_VERSION,
-    role: 'server',
+  // Send our hello first thing. The session nonce inside is the salt
+  // for the eventual ECDH-derived session key — recover it from the
+  // frame on demand rather than threading a second variable through.
+  const hello = await buildServerHello({
+    identity: opts.identity,
     mcpId: opts.mcpId,
     serverName: opts.serverName,
     version: opts.version,
-    domains: [...opts.domains],
-    capabilities: [...(opts.capabilities ?? ['fetch'])],
-    identityX25519Pub: toB64(opts.identity.x25519Pub),
-    identityEd25519Pub: toB64(opts.identity.ed25519Pub),
-    sessionNonce: toB64(sessionNonce),
-    sessionSig: toB64(sessionSig),
-  };
+    domains: opts.domains,
+    capabilities: opts.capabilities,
+  });
+  const sessionNonce = fromB64(hello.sessionNonce);
   ws.send(JSON.stringify(hello));
 
   const innerListeners: ((inner: InnerFrame) => void)[] = [];
@@ -83,7 +71,7 @@ export async function startPeer(opts: PeerOpts): Promise<PeerHandle> {
         const frame = validateFrame(raw);
         if (frame.type === 'ready' && frame.mcpId === opts.mcpId) {
           // Derive sessionKey.
-          const extPub = new Uint8Array(Buffer.from(frame.extensionSessionPub, 'base64'));
+          const extPub = fromB64(frame.extensionSessionPub);
           const shared = await ecdhX25519(opts.identity.x25519Priv, extPub);
           const sessionKey = await hkdfSha256(
             shared,

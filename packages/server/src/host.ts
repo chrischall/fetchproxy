@@ -1,20 +1,18 @@
 import { Server as HttpServer } from 'node:http';
 import { WebSocketServer, WebSocket } from 'ws';
 import {
-  ed25519Sign,
   ecdhX25519,
+  fromB64,
   hkdfSha256,
-  sealInnerFrame,
   openEncryptedFrame,
+  sealInnerFrame,
   validateFrame,
-  toB64,
-  concatBytes,
-  PROTOCOL_VERSION,
   type Capability,
   type Frame,
   type HelloFrameFromServer,
   type InnerFrame,
 } from '@fetchproxy/protocol';
+import { buildServerHello } from './build-server-hello.js';
 import { SessionState } from './session.js';
 import type { Identity } from './identity.js';
 
@@ -68,27 +66,19 @@ export async function startHost(opts: HostOpts): Promise<HostHandle> {
     },
   });
 
-  // Build own hello once at startup.
-  const ownSessionNonce = new Uint8Array(32);
-  (globalThis.crypto as Crypto).getRandomValues(ownSessionNonce);
-  const ownSig = await ed25519Sign(
-    opts.ownIdentity.ed25519Priv,
-    concatBytes(enc.encode(opts.ownMcpId), ownSessionNonce),
-  );
-  const ownHello: HelloFrameFromServer = {
-    type: 'hello',
-    protocolVersion: PROTOCOL_VERSION,
-    role: 'server',
+  // Build own hello once at startup. The session nonce inside is what
+  // the eventual ECDH session-key derivation will salt with, so we
+  // recover it from the frame rather than threading it as a second
+  // return value from the helper.
+  const ownHello: HelloFrameFromServer = await buildServerHello({
+    identity: opts.ownIdentity,
     mcpId: opts.ownMcpId,
     serverName: opts.ownServerName,
     version: opts.ownVersion,
-    domains: [...opts.ownDomains],
-    capabilities: [...(opts.ownCapabilities ?? ['fetch'])],
-    identityX25519Pub: toB64(opts.ownIdentity.x25519Pub),
-    identityEd25519Pub: toB64(opts.ownIdentity.ed25519Pub),
-    sessionNonce: toB64(ownSessionNonce),
-    sessionSig: toB64(ownSig),
-  };
+    domains: opts.ownDomains,
+    capabilities: opts.ownCapabilities,
+  });
+  const ownSessionNonce = fromB64(ownHello.sessionNonce);
 
   let extensionWs: WebSocket | null = null;
   const peers = new Map<string, PeerSlot>();
@@ -153,7 +143,7 @@ export async function startHost(opts: HostOpts): Promise<HostHandle> {
         if (frame.type === 'ready') {
           if (frame.mcpId === opts.ownMcpId) {
             // Derive our own session key.
-            const extPub = new Uint8Array(Buffer.from(frame.extensionSessionPub, 'base64'));
+            const extPub = fromB64(frame.extensionSessionPub);
             const shared = await ecdhX25519(opts.ownIdentity.x25519Priv, extPub);
             const key = await hkdfSha256(
               shared,
