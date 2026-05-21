@@ -1,6 +1,7 @@
 {
   "name": "@fetchproxy/server",
   "version": "0.0.1",
+  "description": "Localhost WebSocket bridge an MCP server uses to relay fetches through the user's signed-in browser via the fetchproxy extension.",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -14,8 +15,17 @@
   "scripts": {
     "build": "tsc -b"
   },
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/chrischall/fetchproxy.git",
+    "directory": "packages/server"
+  },
+  "license": "MIT",
   "dependencies": {
-    "@fetchproxy/protocol": "*",
+    "@fetchproxy/protocol": "^0.0.1",
     "ws": "^8.20.0"
   },
   "devDependencies": {
