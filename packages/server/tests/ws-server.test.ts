@@ -1,108 +1,79 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { WebSocket } from 'ws';
+import { describe, it, expect, afterEach } from 'vitest';
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { FetchproxyServer } from '../src/index.js';
 
-const TEST_PORT = 47149;
-
-describe('FetchproxyServer', () => {
-  let server: FetchproxyServer;
-
-  beforeEach(async () => {
-    server = new FetchproxyServer({
-      port: TEST_PORT,
-      server: 'test-mcp',
-      version: '0.0.1',
-      domain: 'example.com',
-    });
-    await server.start();
-  });
+describe('FetchproxyServer (orchestrator)', () => {
+  let servers: FetchproxyServer[] = [];
 
   afterEach(async () => {
-    await server.close();
+    await Promise.all(servers.splice(0).map((s) => s.close()));
   });
 
-  it('sends a hello frame to the extension when it connects', async () => {
-    const ws = new WebSocket(`ws://127.0.0.1:${TEST_PORT}`);
-    const helloFromServer = await new Promise<unknown>((resolve) => {
-      ws.on('message', (data) => resolve(JSON.parse(String(data))));
+  it('starts on a free port as host', async () => {
+    const srv = new FetchproxyServer({
+      port: 41050,
+      serverName: 'opentable-mcp',
+      version: '0.9.1',
+      domain: 'opentable.com',
+      identityDir: mkdtempSync(join(tmpdir(), 'fp-srv-')),
     });
-    expect(helloFromServer).toMatchObject({
-      type: 'hello',
-      role: 'server',
-      server: 'test-mcp',
+    servers.push(srv);
+    await srv.listen();
+    expect(srv.role).toBe('host');
+  });
+
+  it('two servers on the same port: first is host, second is peer', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'fp-srv-'));
+    const a = new FetchproxyServer({
+      port: 41051,
+      serverName: 'opentable-mcp',
+      version: '0.9.1',
+      domain: 'opentable.com',
+      identityDir: dir,
+    });
+    servers.push(a);
+    await a.listen();
+    expect(a.role).toBe('host');
+
+    const b = new FetchproxyServer({
+      port: 41051,
+      serverName: 'resy-mcp',
       version: '0.0.1',
-      domain: 'example.com',
+      domain: 'resy.com',
+      identityDir: dir,
     });
-    ws.close();
+    servers.push(b);
+    await b.listen();
+    expect(b.role).toBe('peer');
   });
 
-  it('relays a fetch through the extension', async () => {
-    const ws = new WebSocket(`ws://127.0.0.1:${TEST_PORT}`);
-    ws.on('open', () => {
-      ws.send(JSON.stringify({
-        type: 'hello',
-        role: 'extension',
-        version: '1.0.0',
-        platform: 'chrome',
-        extension_id: 'fetchproxy',
-      }));
-      ws.send(JSON.stringify({ type: 'ready' }));
+  it('throws on fetch before listen', async () => {
+    const srv = new FetchproxyServer({
+      port: 41052,
+      serverName: 'opentable-mcp',
+      version: '0.9.1',
+      domain: 'opentable.com',
+      identityDir: mkdtempSync(join(tmpdir(), 'fp-srv-')),
     });
-    // Echo any request back as a successful response.
-    ws.on('message', (data) => {
-      const frame = JSON.parse(String(data));
-      if (frame.type === 'request') {
-        ws.send(JSON.stringify({
-          type: 'response',
-          id: frame.id,
-          ok: true,
-          status: 200,
-          url: frame.init.url,
-          body: 'echo',
-        }));
-      }
-    });
-
-    const result = await server.fetch({
-      url: 'https://example.com/foo',
-      method: 'GET',
-      tabUrl: 'https://example.com/',
-    });
-    expect(result.status).toBe(200);
-    expect(result.body).toBe('echo');
-    ws.close();
-  });
-
-  it('throws "extension offline" if no extension is connected within the timeout', async () => {
-    server.setConnectTimeoutMs(100);
+    // Don't push to servers — never started, no close needed.
     await expect(
-      server.fetch({
-        url: 'https://example.com/foo',
-        method: 'GET',
-        tabUrl: 'https://example.com/',
-      })
-    ).rejects.toThrow(/extension offline/);
+      srv.fetch({ url: 'https://x.com/y', method: 'GET', tabUrl: 'https://x.com/' }),
+    ).rejects.toThrow(/not listening/);
   });
 
-  it('rejects a second simultaneous extension connection', async () => {
-    const ws1 = new WebSocket(`ws://127.0.0.1:${TEST_PORT}`);
-    await new Promise<void>((resolve) => ws1.on('open', resolve));
-    const ws2 = new WebSocket(`ws://127.0.0.1:${TEST_PORT}`);
-    const closeReason = await new Promise<string>((resolve) => {
-      ws2.on('close', (_code, reason) => resolve(reason.toString()));
+  it('close() returns role to null', async () => {
+    const srv = new FetchproxyServer({
+      port: 41053,
+      serverName: 'opentable-mcp',
+      version: '0.9.1',
+      domain: 'opentable.com',
+      identityDir: mkdtempSync(join(tmpdir(), 'fp-srv-')),
     });
-    expect(closeReason).toMatch(/already connected/i);
-    ws1.close();
-  });
-
-  it('rejects WS upgrades whose Origin is a public web origin', async () => {
-    const ws = new WebSocket(`ws://127.0.0.1:${TEST_PORT}`, {
-      headers: { Origin: 'https://evil.example.com' },
-    });
-    const closed = await new Promise<boolean>((resolve) => {
-      ws.on('close', () => resolve(true));
-      ws.on('error', () => resolve(true));
-    });
-    expect(closed).toBe(true);
+    await srv.listen();
+    expect(srv.role).toBe('host');
+    await srv.close();
+    expect(srv.role).toBe(null);
   });
 });

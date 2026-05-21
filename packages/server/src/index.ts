@@ -1,6 +1,6 @@
 export { FetchproxyServer } from './ws-server.js';
 export type {
-  FetchproxyServerOptions,
+  FetchproxyServerOpts,
   FetchResult,
+  FetchResultError,
 } from './ws-server.js';
-export type { FetchInit } from '@fetchproxy/protocol';
