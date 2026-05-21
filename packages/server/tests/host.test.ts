@@ -99,6 +99,42 @@ describe('host (concentrator)', () => {
     expect(closedWithError).toBe(true);
   });
 
+  it('sendOwnInner rejects if the extension disconnects before sending ready', async () => {
+    const port = 41103;
+    const el = await electRole({ host: '127.0.0.1', port });
+    if (el.role !== 'host') throw new Error('expected host');
+    const idDir = mkdtempSync(join(tmpdir(), 'fp-host-'));
+    const id = await loadOrCreateIdentity('opentable-mcp', idDir);
+
+    host = await startHost({
+      httpServer: el.server,
+      ownIdentity: id,
+      ownMcpId: 'opentable-mcp:0.9.1:abc1234567890def',
+      ownServerName: 'opentable-mcp',
+      ownVersion: '0.9.1',
+      ownDomain: 'opentable.com',
+    });
+
+    // Mock extension: open the WS, send hello, then disconnect without ready.
+    const ws = new WebSocket(`ws://127.0.0.1:${port}`);
+    await new Promise<void>((r) => ws.once('open', () => r()));
+    const extHello: HelloFrameFromExtension = {
+      type: 'hello',
+      protocolVersion: 1,
+      role: 'extension',
+      platform: 'chrome',
+      extensionId: 'fetchproxy',
+      version: '0.1.0',
+    };
+    ws.send(JSON.stringify(extHello));
+    await new Promise((r) => setTimeout(r, 30));  // let host record the connection
+    ws.close();
+
+    await expect(host.sendOwnInner({ type: 'ping' })).rejects.toThrow(
+      /extension disconnected before ready/,
+    );
+  });
+
   it('refuses a second extension connection', async () => {
     const port = 41102;
     const el = await electRole({ host: '127.0.0.1', port });

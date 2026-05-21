@@ -77,4 +77,30 @@ describe('peer client', () => {
     const ok = await ed25519Verify(identity.ed25519Pub, sigMsg, sessionSig);
     expect(ok).toBe(true);
   });
+
+  it('sendInner rejects if the host WS closes before ready arrives', async () => {
+    const idDir = mkdtempSync(join(tmpdir(), 'fp-peer-'));
+    const identity = await loadOrCreateIdentity('opentable-mcp', idDir);
+
+    const port = 41201;
+    wss = new WebSocketServer({ port });
+    // Host that takes the hello and then immediately closes — never sends ready.
+    wss.on('connection', (ws: WebSocket) => {
+      ws.once('message', () => ws.close());
+    });
+
+    peer = await startPeer({
+      host: '127.0.0.1',
+      port,
+      identity,
+      mcpId: 'opentable-mcp:0.9.1:a3f7c91d2e8b4f56',
+      serverName: 'opentable-mcp',
+      version: '0.9.1',
+      domain: 'opentable.com',
+    });
+
+    await expect(peer.sendInner({ type: 'ping' })).rejects.toThrow(
+      /peer WS closed before ready/,
+    );
+  });
 });

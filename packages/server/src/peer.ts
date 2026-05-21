@@ -96,7 +96,19 @@ export async function startPeer(opts: PeerOpts): Promise<PeerHandle> {
       }
     };
     ws.on('message', onMessage);
+    // If the host drops mid-handshake (e.g. host crashed before sending
+    // ready, or our hello was rejected), unblock any pending sendInner so it
+    // surfaces an error rather than hanging forever. Once `resolve` has
+    // fired, subsequent `reject` calls are no-ops, so this is safe to wire
+    // unconditionally.
+    ws.once('close', () => {
+      reject(new Error('peer WS closed before ready'));
+    });
   });
+  // Swallow unhandled-rejection noise when no caller has subscribed to
+  // sessionPromise at the moment we reject. The rejection is still surfaced
+  // to any later `await sessionPromise`.
+  sessionPromise.catch(() => { /* noop */ });
 
   const handle: PeerHandle = {
     ws,
