@@ -34,4 +34,8 @@ describe('mcp-id', () => {
   it('rejects colons in server name', () => {
     expect(() => generateMcpId('bad:name', '1.0.0')).toThrow();
   });
+
+  it('rejects colons in version', () => {
+    expect(() => generateMcpId('opentable-mcp', '1.0:weird')).toThrow();
+  });
 });
