@@ -23,6 +23,10 @@ import {
   sealInnerFrame,
   openEncryptedFrame,
   validateFrame,
+  toB64,
+  fromB64,
+  toHex,
+  concatBytes,
   PROTOCOL_VERSION,
   type Capability,
   type Frame,
@@ -74,33 +78,6 @@ export type HandleHelloResult =
 
 const enc = new TextEncoder();
 
-function concat(a: Uint8Array, b: Uint8Array): Uint8Array {
-  const out = new Uint8Array(a.length + b.length);
-  out.set(a, 0);
-  out.set(b, a.length);
-  return out;
-}
-
-function fromB64(s: string): Uint8Array {
-  // btoa/atob portable in MV3 service workers and Node
-  const bin = atob(s);
-  const out = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
-  return out;
-}
-
-function toB64(bytes: Uint8Array): string {
-  let s = '';
-  for (let i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i] as number);
-  return btoa(s);
-}
-
-function toHex(bytes: Uint8Array): string {
-  let s = '';
-  for (let i = 0; i < bytes.length; i++) s += (bytes[i] as number).toString(16).padStart(2, '0');
-  return s;
-}
-
 /**
  * Order-insensitive equality for two domain lists. The trust record's
  * `domains` and the server hello's `domains` must declare the same set
@@ -150,7 +127,7 @@ export async function handleServerHello(
   try {
     sigOk = await ed25519Verify(
       identityEd25519Pub,
-      concat(enc.encode(hello.mcpId), sessionNonce),
+      concatBytes(enc.encode(hello.mcpId), sessionNonce),
       sessionSig,
     );
   } catch {

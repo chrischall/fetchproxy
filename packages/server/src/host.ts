@@ -7,6 +7,8 @@ import {
   sealInnerFrame,
   openEncryptedFrame,
   validateFrame,
+  toB64,
+  concatBytes,
   PROTOCOL_VERSION,
   type Capability,
   type Frame,
@@ -53,17 +55,6 @@ interface PeerSlot {
 
 const enc = new TextEncoder();
 
-function toB64(b: Uint8Array): string {
-  return Buffer.from(b).toString('base64');
-}
-
-function concat(a: Uint8Array, b: Uint8Array): Uint8Array {
-  const out = new Uint8Array(a.length + b.length);
-  out.set(a, 0);
-  out.set(b, a.length);
-  return out;
-}
-
 export async function startHost(opts: HostOpts): Promise<HostHandle> {
   const wss = new WebSocketServer({
     server: opts.httpServer,
@@ -82,7 +73,7 @@ export async function startHost(opts: HostOpts): Promise<HostHandle> {
   (globalThis.crypto as Crypto).getRandomValues(ownSessionNonce);
   const ownSig = await ed25519Sign(
     opts.ownIdentity.ed25519Priv,
-    concat(enc.encode(opts.ownMcpId), ownSessionNonce),
+    concatBytes(enc.encode(opts.ownMcpId), ownSessionNonce),
   );
   const ownHello: HelloFrameFromServer = {
     type: 'hello',

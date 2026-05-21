@@ -1,4 +1,5 @@
 import { aesGcmSeal, aesGcmOpen } from './crypto.js';
+import { toB64, fromB64 } from './encoding.js';
 import type { InnerFrame, EncryptedFrame } from './frames.js';
 import { validateInnerFrame } from './validate.js';
 
@@ -9,19 +10,6 @@ function randomIv(): Uint8Array {
   const iv = new Uint8Array(12);
   (globalThis.crypto as Crypto).getRandomValues(iv);
   return iv;
-}
-
-function toB64(bytes: Uint8Array): string {
-  let s = '';
-  for (let i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i] as number);
-  return btoa(s);
-}
-
-function fromB64(s: string): Uint8Array {
-  const bin = atob(s);
-  const out = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
-  return out;
 }
 
 /**

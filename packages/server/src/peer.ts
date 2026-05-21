@@ -6,6 +6,8 @@ import {
   sealInnerFrame,
   openEncryptedFrame,
   validateFrame,
+  toB64,
+  concatBytes,
   PROTOCOL_VERSION,
   type Capability,
   type HelloFrameFromServer,
@@ -51,7 +53,7 @@ export async function startPeer(opts: PeerOpts): Promise<PeerHandle> {
   // Generate fresh session nonce + signature.
   const sessionNonce = new Uint8Array(32);
   (globalThis.crypto as Crypto).getRandomValues(sessionNonce);
-  const sigMsg = concat(enc.encode(opts.mcpId), sessionNonce);
+  const sigMsg = concatBytes(enc.encode(opts.mcpId), sessionNonce);
   const sessionSig = await ed25519Sign(opts.identity.ed25519Priv, sigMsg);
 
   // Send our hello first thing.
@@ -132,15 +134,4 @@ export async function startPeer(opts: PeerOpts): Promise<PeerHandle> {
     close: () => ws.close(),
   };
   return handle;
-}
-
-function toB64(b: Uint8Array): string {
-  return Buffer.from(b).toString('base64');
-}
-
-function concat(a: Uint8Array, b: Uint8Array): Uint8Array {
-  const out = new Uint8Array(a.length + b.length);
-  out.set(a, 0);
-  out.set(b, a.length);
-  return out;
 }

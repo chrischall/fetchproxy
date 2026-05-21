@@ -1,7 +1,12 @@
 import { readFile, writeFile, mkdir, chmod } from 'node:fs/promises';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
-import { generateX25519, generateEd25519 } from '@fetchproxy/protocol';
+import {
+  generateX25519,
+  generateEd25519,
+  toB64,
+  fromB64,
+} from '@fetchproxy/protocol';
 
 export interface Identity {
   x25519Priv: Uint8Array;
@@ -73,12 +78,4 @@ export async function loadOrCreateIdentity(
   // may not produce 0600 reliably.
   await chmod(path, 0o600);
   return id;
-}
-
-function toB64(b: Uint8Array): string {
-  return Buffer.from(b).toString('base64');
-}
-
-function fromB64(s: string): Uint8Array {
-  return new Uint8Array(Buffer.from(s, 'base64'));
 }
