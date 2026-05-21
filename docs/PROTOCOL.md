@@ -1,153 +1,215 @@
-# fetchproxy protocol
+# fetchproxy protocol (v1, ships with 0.1.0+)
 
-The wire format between the MCP server (WebSocket server) and the browser extension (WebSocket client). One data verb (`fetch`), four lifecycle frames (`hello`, `ready`, `ping`, `pong`).
+The wire format between MCP servers and the browser extension. JSON-over-WebSocket. Three top-level frame types; all data frames after the handshake are AES-256-GCM encrypted end-to-end between each MCP and the extension.
 
-JSON-over-WS, no binary frames, no fragmentation. Both directions speak the same frame schema.
+`PROTOCOL_VERSION` is `1`. The `hello` frame carries it explicitly; mismatches are rejected.
+
+## Big picture
+
+```
+                     ┌─────────────────────────┐
+                     │ Extension (one WS)      │
+                     └────────────┬────────────┘
+                                  │ ws://127.0.0.1:37149
+                                  │
+                      ┌───────────▼───────────┐
+                      │ MCP A (won the bind)  │
+                      │   ├ WS server         │
+                      │   ├ multiplexer       │
+                      │   └ own MCP traffic   │
+                      └──┬─────────────────▲──┘
+                         │ local WS        │ local WS
+                ┌────────▼──┐         ┌────┴──────┐
+                │ MCP B     │         │ MCP C     │
+                │ (peer)    │         │ (peer)    │
+                └───────────┘         └───────────┘
+```
+
+Every MCP runs the same election: try `bind(127.0.0.1:37149)`. On success it is the **host** (concentrator). On `EADDRINUSE` it dials the existing host as a **peer**. The host forwards frames between peers and the single extension WS.
+
+Frames after the handshake are encrypted with a per-MCP session key the host never sees. The host can route (it sees `mcpId`, `seq`, `iv`, opaque `ciphertext`), but it cannot read or modify peer traffic.
+
+## mcpId
+
+Every MCP identifies itself with a per-process id of the form `<server-name>:<version>:<rand>` where `rand` is 16 lowercase hex chars. Examples:
+
+```
+opentable-mcp:0.10.0:a3f7c91d2e8b4f56
+resy-mcp:0.0.4:b2d8e7c91a4f6e58
+```
+
+Per-process — same MCP restarting gets a fresh `mcpId`, so stale routing state expires naturally.
 
 ## Connection lifecycle
 
 ```
-Extension                                       MCP Server
-   │                                                │
-   │  WS connect ws://127.0.0.1:37149               │
-   │ ──────────────────────────────────────────────▶│
-   │                                                │
-   │  { type: "hello", role: "extension",           │
-   │    version: "1.0.0", platform: "chrome" }      │
-   │ ──────────────────────────────────────────────▶│
-   │                                                │
-   │  { type: "hello", role: "server",              │
-   │    server: "opentable-mcp", version: "0.9.1",  │
-   │    domain: "opentable.com" }                   │
-   │ ◀──────────────────────────────────────────────│
-   │                                                │
-   │  (extension verifies a tab matching `domain`   │
-   │   exists; if not, doesn't send `ready`)        │
-   │                                                │
-   │  { type: "ready" }                             │
-   │ ──────────────────────────────────────────────▶│
-   │                                                │
-   │  { type: "ping" }                              │
-   │ ◀──────────────────────────────────────────────│
-   │  { type: "pong" }                              │
-   │ ──────────────────────────────────────────────▶│
-   │           (...every 20s, both directions)      │
-   │                                                │
-   │  { type: "request", id: 1, op: "fetch",        │
-   │    init: { url, method, headers, body,         │
-   │            tabUrl } }                          │
-   │ ◀──────────────────────────────────────────────│
-   │                                                │
-   │  (extension picks a tab matching tabUrl,       │
-   │   runs window.fetch(url, init) in MAIN world)  │
-   │                                                │
-   │  { type: "response", id: 1, ok: true,          │
-   │    status: 200, url: "https://...",            │
-   │    body: "<html>..." }                         │
-   │ ──────────────────────────────────────────────▶│
-   │                                                │
+Extension                            Host MCP                       Peer MCP
+   │                                    │                              │
+   │ WS open ws://127.0.0.1:37149       │                              │
+   │ ─────────────────────────────────▶ │                              │
+   │                                    │                              │
+   │                                    │ ◀────── WS open (local) ──── │
+   │                                    │ ◀────── hello (peer) ────────│
+   │ ◀──── hello (peer, forwarded) ─────│                              │
+   │ ◀──── hello (host's own MCP) ──────│                              │
+   │                                    │                              │
+   │ (verify sessionSig, look up trust)                                │
+   │ (if unknown identity → popup,                                     │
+   │  user verifies pair code)                                         │
+   │                                    │                              │
+   │ ready { mcpId, extensionSessionPub }                              │
+   │ ─────────────────────────────────▶ │                              │
+   │                                    │ ──── ready (forwarded) ────▶ │
+   │                                    │                              │
+   │ (each side computes shared = ECDH; sessionKey = HKDF(...))        │
+   │                                                                   │
+   │ frame { mcpId, seq, iv, ciphertext } — AES-GCM, opaque to host    │
+   │ ─────────────────────────────────▶ │ ──── forwarded verbatim ───▶ │
+   │                                    │                              │
+   │ ◀──────────── frame ───────────────│ ◀──────── frame ─────────────│
 ```
-
-**Only one extension is active at a time.** If a second extension instance connects, the server closes it with reason `"Another extension already connected"`. (Multi-extension simultaneously gets complicated fast and isn't a use case we need.)
 
 ## Frame types
 
-All frames are JSON objects with a `type` field. Unknown frames are silently dropped.
+All frames are JSON objects with a `type` discriminator. Unknown `type` closes the WS with code `1002`. Defensive validators reject:
 
-### `hello`
+- Non-plain objects, non-default prototypes, `__proto__`/`constructor`/`prototype` keys
+- Non-base64 strings in identity / nonce / signature / iv / ciphertext fields
+- Non-positive integers for `seq`
+- Invalid `mcpId` format
+- Non-`http(s)` URLs in inner request fields
 
-Sent by both sides immediately after connection. Identifies the speaker so the other side can render meaningful status / errors.
+### Top-level frames (in plaintext on the wire)
 
-**Extension → Server:**
+#### `hello` (server → host → extension)
+
+Each MCP sends one of these as the very first frame after connecting.
+
 ```jsonc
 {
   "type": "hello",
-  "role": "extension",
-  "version": "1.0.0",
-  "platform": "chrome" | "safari" | "firefox",
-  "extension_id": "fetchproxy"            // stable identifier; same across browsers
-}
-```
-
-**Server → Extension:**
-```jsonc
-{
-  "type": "hello",
+  "protocolVersion": 1,
   "role": "server",
-  "server": "opentable-mcp",              // package name of the MCP server
-  "version": "0.9.1",                     // MCP server version
-  "domain": "opentable.com"               // primary domain the server targets; extension uses
-                                          // this for popup status display + tab matching defaults
+  "mcpId": "opentable-mcp:0.10.0:a3f7c91d2e8b4f56",
+  "serverName": "opentable-mcp",
+  "version": "0.10.0",
+  "domain": "opentable.com",
+  "identityX25519Pub": "<base64 raw 32B>",
+  "identityEd25519Pub": "<base64 raw 32B>",
+  "sessionNonce": "<base64 random ≥16B, fresh per connection>",
+  "sessionSig": "<base64 Ed25519Sign(identityEd25519Priv, mcpId || sessionNonce)>"
 }
 ```
 
-### `ready`
+The signature lets the extension prove the connecting process holds the Ed25519 private key. Re-pair only happens on first sight of a new identity key; subsequent sessions just verify the signature against the stored `identityEd25519Pub`.
 
-Extension → Server. Sent when the extension has at least one tab matching the server's `domain` (from `hello`). If no matching tab is open, `ready` is NOT sent — the server's `fetch()` calls hang up to a `connectTimeoutMs` deadline (default 15s) before throwing.
+#### `hello` (extension → host)
+
+The extension's hello carries no crypto material — its identity is "the only WS client allowed to connect."
 
 ```jsonc
-{ "type": "ready" }
+{
+  "type": "hello",
+  "protocolVersion": 1,
+  "role": "extension",
+  "platform": "chrome" | "safari" | "firefox",
+  "extensionId": "fetchproxy",
+  "version": "0.1.0"
+}
 ```
 
-### `ping` / `pong`
+**Only one extension is active at a time.** A second extension that connects is closed with `1008 "extension already connected"`.
 
-Either direction, every 20s. MV3 service workers die after ~30s idle on Chrome and faster on Safari; the ping keeps the connection (and thus the SW) warm. Extensions also schedule a `chrome.alarms` tick as a 25s backup for cold-wake recovery.
+#### `ready` (extension → host → server)
+
+After the user approves a new pair (or auto-trust hits for a known identity), the extension generates an ephemeral X25519 keypair, computes the session key, and sends:
+
+```jsonc
+{
+  "type": "ready",
+  "mcpId": "opentable-mcp:0.10.0:a3f7c91d2e8b4f56",
+  "extensionSessionPub": "<base64 raw 32B>"
+}
+```
+
+#### `frame` (encrypted, either direction)
+
+After `ready`, every data frame is encrypted:
+
+```jsonc
+{
+  "type": "frame",
+  "mcpId": "opentable-mcp:0.10.0:a3f7c91d2e8b4f56",
+  "seq": 1,                       // monotonic per direction, starts at 1
+  "iv": "<base64 raw 12B, fresh per frame>",
+  "ciphertext": "<base64 — AES-256-GCM(sessionKey, iv, innerFrameJson)>"
+}
+```
+
+`ciphertext` includes the 16-byte GCM tag. The host routes by `mcpId` and never decrypts.
+
+Replay protection: the receiving side rejects any `seq <= lastInbound` (per direction, per session). WS guarantees ordering, so gaps from out-of-order arrival are not a concern.
+
+### Inner frames (inside ciphertext)
+
+The JSON payload inside `frame.ciphertext` is one of:
+
+#### `ping` / `pong`
+
+Keepalive. Either side sends `ping` every ~20s; the other answers `pong`. Keeps MV3 service workers warm.
 
 ```jsonc
 { "type": "ping" }
 { "type": "pong" }
 ```
 
-### `request`
+#### `request` (server → extension)
 
-Server → Extension. Each request has a server-generated integer `id` for response correlation.
+The only data verb in v1. The extension fetches `url` from a tab matching `tabUrl`.
 
 ```jsonc
 {
   "type": "request",
-  "id": 1,
+  "id": 1,                                 // server-generated, monotonic per session
   "op": "fetch",
   "init": {
     "url": "https://www.opentable.com/user/dining-dashboard",
-    "method": "GET",                       // GET, POST, PUT, DELETE, PATCH
-    "headers": {                           // optional; merged with browser defaults
+    "method": "GET",                       // any HTTP verb the browser fetch supports
+    "headers": {
       "Content-Type": "application/json",
-      "X-CSRF-Token": "..."
+      "x-csrf-token": "..."                // auto-injected from window.__CSRF_TOKEN__
     },
-    "body": "{\"x\":1}",                   // optional; string only (server pre-serialises JSON)
-    "tabUrl": "https://www.opentable.com/" // prefix-match against tab URLs; first match wins
+    "body": "{\"x\":1}",                   // optional; string only
+    "tabUrl": "https://www.opentable.com/" // prefix-matched against open tabs
   }
 }
 ```
 
-**`init` field semantics:**
+Semantics:
 
-- `url`: absolute URL. The extension does not rewrite or canonicalise.
-- `method`: any HTTP verb the browser's `fetch` supports.
-- `headers`: optional object. Merged with browser defaults; `Cookie`, `User-Agent`, `Origin`, `Referer` are controlled by the browser and ignored if set here. `credentials: 'include'` is always implied.
-- `body`: optional string. Servers serialise JSON before sending; extension does not introspect.
-- `tabUrl`: required. Prefix-matched against `chrome.tabs.query({})`. First matching tab is used. If no match, response is `{ ok: false, error: "no tab matching <tabUrl>" }`.
+- `url`: absolute. Must match the MCP's declared `domain` (or a subdomain of it) — the extension enforces a per-MCP allowlist; cross-domain fetches return `ok: false`.
+- `method`: any HTTP verb. `GET`, `POST`, `PUT`, `DELETE`, `PATCH`, etc.
+- `headers`: optional. `Cookie`, `User-Agent`, `Origin`, `Referer` are controlled by the browser and ignored if set here. `credentials: 'include'` is always implied.
+- `body`: optional string. The caller serialises JSON.
+- `tabUrl`: required. Prefix-matched against `chrome.tabs.query({})`. First match wins. If no match, the response is `ok: false`. After a successful pair, the extension proactively opens `https://${domain}/` if no matching tab is open.
+- `op`: only `"fetch"` is accepted in v1. Unknown ops respond with `ok: false`.
 
-`op` is reserved for future expansion. v1 only accepts `"fetch"`. Unknown ops respond with `{ ok: false, error: "unknown op: <op>" }`.
+**Body size caps:** request body ≤ 1 MB, response body ≤ 5 MB. Larger bodies are rejected with `ok: false`.
 
-### `response`
+#### `response` (extension → server)
 
-Extension → Server.
-
-**Success:**
 ```jsonc
+// Success — HTTP outcome of any status, including 4xx/5xx
 {
   "type": "response",
   "id": 1,
   "ok": true,
-  "status": 200,                           // HTTP status code from the in-page fetch
-  "url": "https://www.opentable.com/user/dining-dashboard",  // final URL after redirects
-  "body": "<html>..."                      // response body as a string
+  "status": 200,
+  "url": "https://www.opentable.com/user/dining-dashboard",
+  "body": "<html>..."
 }
-```
 
-**Failure:**
-```jsonc
+// Protocol-level failure (no tab, content-script not injected, fetch threw)
 {
   "type": "response",
   "id": 1,
@@ -156,24 +218,121 @@ Extension → Server.
 }
 ```
 
-`ok: false` is reserved for *protocol-level* failures (no tab, content-script not injected, fetch threw a TypeError). HTTP-level errors (404, 500, 403) come back as `ok: true` with the relevant `status`. Servers are expected to map non-2xx to typed errors themselves.
+`ok: false` is reserved for protocol-level failures. HTTP-level errors (404, 500, 403) come back as `ok: true` with the relevant `status`. Callers handle non-2xx themselves.
+
+## Cryptographic handshake
+
+### Identity keys (persistent)
+
+Each MCP holds a long-term keypair stored at `~/.fetchproxy/identity/<server-name>.json`, mode `0600`:
+
+```json
+{
+  "x25519Priv": "<base64>",
+  "x25519Pub": "<base64>",
+  "ed25519Priv": "<base64>",
+  "ed25519Pub": "<base64>",
+  "createdAt": 1716250000000
+}
+```
+
+- X25519 keypair → ECDH for session-key agreement.
+- Ed25519 keypair → signs `mcpId || sessionNonce` so the extension can prove freshness per connection.
+
+The extension does **not** persist a long-term identity in 0.1.x. It generates an ephemeral X25519 keypair per connection.
+
+### Pair code (SAS)
+
+Derived deterministically from the MCP's X25519 public key:
+
+```
+pairCode = SHA256(identityX25519Pub)[0..3]
+           interpreted as big-endian uint32
+           mod 1_000_000
+           formatted "XXX-XXX"
+```
+
+Same code every time for the same identity. The MCP prints it to stderr at startup. The extension shows the same code in the pair popup. The user compares the two and clicks Approve — that is the SAS verification.
+
+### Session key derivation
+
+After the extension sends its `ready` frame:
+
+```
+shared     = X25519(extEphemeralPriv, identityX25519Pub)
+           = X25519(identityX25519Priv, extEphemeralPub)   (symmetric)
+sessionKey = HKDF-SHA256(
+               IKM  = shared,
+               salt = sessionNonce,
+               info = "fetchproxy/0.1.0/session",
+               L    = 32
+             )
+```
+
+Both sides derive the same key without sending it on the wire. `sessionNonce` is fresh per connection, so reconnecting the same MCP gives a different `sessionKey`.
+
+### Trust store (extension)
+
+`chrome.storage.local["trustedMcps"]`:
+
+```json
+{
+  "<hex(sha256(identityX25519Pub))>": {
+    "serverName": "opentable-mcp",
+    "domain": "opentable.com",
+    "identityX25519Pub": "<base64>",
+    "identityEd25519Pub": "<base64>",
+    "pairedAt": 1716250000000,
+    "extensionVersionAtPair": "0.1.0"
+  }
+}
+```
+
+Keyed by identity hash, not port. Trust survives port changes, restarts, and MCP package renames as long as the identity key on disk doesn't change.
+
+Major-version bumps of the extension invalidate trust (force re-pair); patch and minor bumps carry trust forward.
+
+## Multi-MCP concentrator
+
+The host MCP's `WebSocketServer` accepts:
+
+- **One** extension WS (extras get `1008 "extension already connected"`).
+- **N** peer WSes, one per other MCP on the machine.
+
+Frame routing rule (executed inside the host):
+
+| From | `mcpId` matches host's own? | Action |
+|---|---|---|
+| extension | yes  | decrypt locally, dispatch inner |
+| extension | no   | forward verbatim to `peers.get(mcpId).ws` |
+| peer      | always | forward verbatim to the extension |
+
+Host shutdown: peers see WS close and re-race the port. Whoever wins becomes the new host; others reconnect as peers. There is a brief blip (~100 ms) but no state loss because trust + session derivation are stateless given the identity keys.
 
 ## Timeouts + retries
 
-- **Server-side**: `connectTimeoutMs` (default 15s) — wait for `ready` after a fresh extension connection. `requestTimeoutMs` (default 30s) — wait for a `response` to a given request id.
-- **Extension-side**: no internal timeout on the in-page `fetch`. The page's own timeout governs.
-- **Retries**: not in the protocol. If a `fetch` throws, the server gets an `ok: false` response and decides whether to retry. (For the OpenTable use case, slot tokens expire fast so retries usually aren't useful; better to re-call `find_slots` upstream.)
+- **Handshake** — the host gives the extension `15s` to send its hello. Peers give the host `15s` to forward the extension's `ready`.
+- **Request** — no protocol-level timeout. Callers (`FetchproxyServer.fetch`) hold their own deadlines.
+- **Retries** — not in the protocol. `ok: false` is surfaced to the MCP, which decides whether to retry.
 
-## Multi-MCP coordination
+## What's not in the protocol (closed by design)
 
-Multiple MCP servers on the same machine each run their own WS server on their own port. The extension's popup lets the user add server entries (port + label) which are persisted to `chrome.storage`. The extension connects to each in parallel; each connection is independent.
+- `eval_js`, `inject_script` — no arbitrary JS execution in tabs.
+- `get_cookies`, `read_storage` — no exfiltration primitives.
+- `click`, `navigate` — no UI automation. Use claude-in-chrome for that.
+- Wildcard / multi-domain MCPs — one MCP, one declared domain. (A future `domains: [...]` extension is sketched in `docs/SECURITY.md` but not implemented.)
+- Streaming responses — bodies are buffered and returned whole.
 
-Example: a user has `opentable-mcp` on `:37149`, `resy-mcp` on `:37148`, `tock-mcp` on `:37147`. The extension popup shows three status rows, one per server.
-
-There is no central registry, no mDNS, no port-scan. Configuration is explicit — the user adds servers, the extension trusts only those entries.
+These omissions are the security model. See `docs/SECURITY.md`.
 
 ## Versioning
 
-This document describes protocol version `1`. The `hello` frame doesn't carry a protocol version yet; we'll add one when the first breaking change ships, with a graceful-downgrade rule (older clients/servers ignore unknown fields and fall back to v1 behavior).
+The `hello.protocolVersion` field is the wire-format version. v1 is the current and only released version. Mismatched protocol versions get the handshake rejected — no graceful downgrade.
 
-The MCP servers + extension are released together as part of the `fetchproxy` repo. Mixed-version scenarios (old extension, new server library) should keep working as long as the protocol fields the older side knows about are unchanged.
+Code packages:
+
+- `@fetchproxy/protocol` — frame types, validators, crypto wrappers, mcpId, pair-code, seal/open.
+- `@fetchproxy/server` — `FetchproxyServer` (election + host/peer roles + convenience methods).
+- `fetchproxy-extension` (Chrome MV3) — the WS client + content script + popup.
+
+Major version bumps of these packages indicate wire-incompatible changes. Patch/minor bumps add features additively or fix bugs.
