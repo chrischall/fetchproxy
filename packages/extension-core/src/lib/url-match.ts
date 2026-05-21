@@ -49,3 +49,32 @@ export function isUrlAllowedForAnyDomain(
 export function isTabUrlMatch(tabUrl: string, prefix: string): boolean {
   return tabUrl.startsWith(prefix);
 }
+
+/**
+ * 0.4.1+: find an open tab on a target origin, treating the origin's
+ * host as a domain allowlist (exact match OR any subdomain).
+ *
+ * The strict-prefix `isTabUrlMatch` works for single-domain MCPs
+ * whose tabUrl matches the user's actual tab URL byte-for-byte
+ * (OpenTable: `https://www.opentable.com/`). It does NOT work for
+ * multi-vendor MCPs whose declared `storageDomain` is an apex
+ * (HoneyBook: `hbportal.co`) but whose actual tab lives on a vendor
+ * subdomain (`thesilkveileventsbyivy.hbportal.co`).
+ *
+ * Semantics: parse `targetOrigin` to extract its host; return true
+ * iff `tabUrl`'s host equals the target host or is a subdomain of it.
+ * This mirrors the per-MCP domain-allowlist check
+ * (`isUrlAllowedForDomain`) used elsewhere — a tab on any subdomain
+ * of a declared domain is reachable by that MCP, so it's also a
+ * valid storage-read target.
+ */
+export function isTabUrlOnOrigin(tabUrl: string, targetOrigin: string): boolean {
+  let targetHost: string;
+  try {
+    targetHost = new URL(targetOrigin).hostname.toLowerCase();
+  } catch {
+    return false;
+  }
+  if (!targetHost) return false;
+  return isUrlAllowedForDomain(tabUrl, targetHost);
+}

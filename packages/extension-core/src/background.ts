@@ -52,7 +52,7 @@ import {
 import { TrustStore } from './trust-store.js';
 import { SessionKeys } from './session-keys.js';
 import { ensureDomainTab } from './ensure-domain-tab.js';
-import { isUrlAllowedForAnyDomain, isTabUrlMatch } from './lib/url-match.js';
+import { isUrlAllowedForAnyDomain, isTabUrlMatch, isTabUrlOnOrigin } from './lib/url-match.js';
 import { loadOrCreateExtensionIdentity, type ExtensionIdentity } from './extension-identity.js';
 import { startKeepalive } from './keepalive.js';
 
@@ -1016,16 +1016,18 @@ async function handleReadStorageRequest(
       }
     }
   }
-  const tabUrl = `${req.init.origin}/`;
+  // 0.4.1+: match by host-or-subdomain rather than strict prefix.
+  // Apex origins (e.g. `https://hbportal.co`) routinely come from
+  // multi-vendor MCPs whose real tabs live on a vendor subdomain.
   const tabs = await chrome.tabs.query({});
-  const match = tabs.find((t) => t.url && isTabUrlMatch(t.url, tabUrl));
+  const match = tabs.find((t) => t.url && isTabUrlOnOrigin(t.url, req.init.origin));
   if (!match || typeof match.id !== 'number') {
     await sendInner(mcpId, {
       type: 'response',
       id: req.id,
       ok: false,
       op,
-      error: `no tab matching ${tabUrl}`,
+      error: `no tab matching origin ${req.init.origin}`,
     });
     return;
   }
