@@ -1,0 +1,16 @@
+{
+  "name": "@fetchproxy/extension-core",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "scripts": {
+    "build": "tsc -b"
+  },
+  "dependencies": {
+    "@fetchproxy/protocol": "*"
+  },
+  "devDependencies": {
+    "@types/chrome": "^0.0.270"
+  }
+}
