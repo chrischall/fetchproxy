@@ -46,10 +46,11 @@ jobs:
             exit 1
           fi
 
-      # Typecheck + build every package (server + protocol depend on tsc;
-      # extension-chrome's bundle is produced separately below).
+      # Build the TS packages in dependency order: protocol → server →
+      # extension-core. extension-chrome's esbuild bundle is produced
+      # separately further down (it needs protocol/dist on disk first).
       - name: Build packages
-        run: npm run build
+        run: npm run build --workspace=@fetchproxy/protocol --workspace=@fetchproxy/server --workspace=@fetchproxy/extension-core
 
       # ─── npm publish: @fetchproxy/protocol ───
       # Publish protocol first so the server's `^${VERSION}` peer is
