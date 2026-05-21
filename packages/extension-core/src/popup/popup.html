@@ -1,0 +1,48 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <title>fetchproxy</title>
+    <style>
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+        min-width: 380px;
+        margin: 0;
+        padding: 12px;
+        font-size: 14px;
+      }
+      h1 { font-size: 16px; margin: 0 0 12px; }
+      .prompt {
+        background: #fff7e6;
+        border: 1px solid #f5c45e;
+        border-radius: 6px;
+        padding: 12px;
+        margin-bottom: 12px;
+      }
+      .prompt .domain {
+        font-size: 18px;
+        font-weight: 600;
+        color: #b45309;
+        margin: 8px 0;
+      }
+      .prompt .buttons { display: flex; gap: 8px; margin-top: 12px; }
+      .prompt button { flex: 1; padding: 8px; border-radius: 4px; border: 1px solid #ccc; cursor: pointer; }
+      .prompt button.always { background: #2563eb; color: white; border-color: #2563eb; }
+      .prompt button.block { background: #fef2f2; color: #b91c1c; border-color: #fca5a5; }
+      .mcp-row { display: flex; justify-content: space-between; align-items: center; padding: 6px 0; border-bottom: 1px solid #eee; }
+      .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; }
+      .dot.green { background: #22c55e; }
+      .dot.red { background: #ef4444; }
+      .dot.yellow { background: #eab308; }
+      .add-row { margin-top: 12px; display: flex; gap: 6px; }
+      .add-row input { flex: 1; padding: 6px; }
+      .add-row button { padding: 6px 12px; }
+      .empty { color: #6b7280; text-align: center; padding: 16px 0; }
+    </style>
+  </head>
+  <body>
+    <h1>fetchproxy</h1>
+    <div id="root">Loading…</div>
+    <script type="module" src="popup.js"></script>
+  </body>
+</html>
