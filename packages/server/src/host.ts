@@ -12,6 +12,7 @@ import {
   derivePairCodeFromIds,
   type Capability,
   type CaptureHeaderDecl,
+  type IndexedDbScopeDecl,
   type Frame,
   type HelloFrameFromServer,
   type HelloFrameFromExtension,
@@ -47,6 +48,7 @@ export interface HostOpts {
   ownLocalStorageKeys?: string[];
   ownSessionStorageKeys?: string[];
   ownCaptureHeaders?: CaptureHeaderDecl[];
+  ownIndexedDbScopes?: IndexedDbScopeDecl[];
   /**
    * 0.4.0+: invoked once on receipt of the extension hello with the
    * joint pair code `SHA256(mcpPub || extPub)`. The MCP can print this
@@ -97,6 +99,7 @@ export async function startHost(opts: HostOpts): Promise<HostHandle> {
     localStorageKeys: opts.ownLocalStorageKeys,
     sessionStorageKeys: opts.ownSessionStorageKeys,
     captureHeaders: opts.ownCaptureHeaders,
+    indexedDbScopes: opts.ownIndexedDbScopes,
   });
   const ownSessionNonce = fromB64(ownHello.sessionNonce);
 

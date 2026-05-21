@@ -285,6 +285,28 @@ describe('renderPopup', () => {
       expect(container.textContent).toContain('anon-id');
     });
 
+    it('renders IndexedDB scopes when read_indexed_db declared', () => {
+      renderPopup(container, {
+        mode: 'pending-pair',
+        pending: {
+          serverName: 'resy-mcp',
+          version: '0.0.1',
+          domains: ['resy.com'],
+          capabilities: ['fetch', 'read_indexed_db'],
+          indexedDbScopes: [
+            { origin: 'https://resy.com', database: 'resy', store: 'auth', keys: ['userToken', 'userId'] },
+          ],
+          pairCode: '111-222',
+        },
+        onApprove: () => undefined,
+        onCancel: () => undefined,
+      });
+      expect(container.textContent).toContain('Read IndexedDB');
+      expect(container.textContent).toContain('resy/auth');
+      expect(container.textContent).toContain('userToken');
+      expect(container.textContent).toContain('userId');
+    });
+
     it('renders capture-header entries each on their own line', () => {
       renderPopup(container, {
         mode: 'pending-pair',

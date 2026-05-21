@@ -56,7 +56,8 @@ export type Capability =
   | 'read_cookies'
   | 'read_local_storage'
   | 'read_session_storage'
-  | 'capture_request_header';
+  | 'capture_request_header'
+  | 'read_indexed_db';
 
 /**
  * Set of capability strings that are valid on the wire. Runtime sibling
@@ -70,7 +71,27 @@ export const KNOWN_CAPABILITIES: ReadonlySet<Capability> = new Set<Capability>([
   'read_local_storage',
   'read_session_storage',
   'capture_request_header',
+  'read_indexed_db',
 ]);
+
+/**
+ * 0.4.0+: declaration entry for `read_indexed_db`. The extension
+ * gates per-call requests on subset-match against the declared
+ * scopes: same `origin`/`database`/`store`, requested `keys` ⊆
+ * declared `keys`. Pinned in the server hello and surfaced in the
+ * pair popup so the user sees the exact DB / store names that this
+ * MCP would read.
+ */
+export interface IndexedDbScopeDecl {
+  /** Bare HTTPS origin (no path). E.g. `https://resy.com`. */
+  origin: string;
+  /** IndexedDB database name. 1-256 chars from `[A-Za-z0-9_.\-]`. */
+  database: string;
+  /** Object-store name in the database. Same char rules as database. */
+  store: string;
+  /** Non-empty array of key names to read. Same char rules. */
+  keys: string[];
+}
 
 /**
  * Declaration entry for the `capture_request_header` capability — a
@@ -124,6 +145,13 @@ export interface HelloFrameFromServer {
   sessionStorageKeys?: string[];
   /** 0.3.0+: declared (urlPattern, headerName) pairs for `capture_request_header`. */
   captureHeaders?: CaptureHeaderDecl[];
+  /**
+   * 0.4.0+: declared IndexedDB scopes the MCP is allowed to read via
+   * `read_indexed_db`. Each entry declares a specific
+   * `(origin, database, store, keys)` tuple — per-call requests must
+   * subset-match an entry.
+   */
+  indexedDbScopes?: IndexedDbScopeDecl[];
   identityX25519Pub: string;      // base64 raw 32B
   identityEd25519Pub: string;     // base64 raw 32B
   sessionNonce: string;           // base64 raw ≥16B
@@ -234,6 +262,18 @@ export interface ReadStorageInit {
   keys: string[];
 }
 
+/** 0.4.0 `init` payload for `read_indexed_db`. */
+export interface ReadIndexedDbInit {
+  /** Bare HTTPS origin (same shape as storage origin). */
+  origin: string;
+  /** IDB database name. Must match an entry in declared `indexedDbScopes`. */
+  database: string;
+  /** Object-store name. Must match the matching declared entry. */
+  store: string;
+  /** Subset of declared `keys` for the matching scope. */
+  keys: string[];
+}
+
 /** 0.3.0 `init` payload for `capture_request_header`. */
 export interface CaptureRequestHeaderInit {
   /**
@@ -286,6 +326,13 @@ export interface InnerRequestCaptureRequestHeader {
   init: CaptureRequestHeaderInit;
 }
 
+export interface InnerRequestReadIndexedDb {
+  type: 'request';
+  id: number;
+  op: 'read_indexed_db';
+  init: ReadIndexedDbInit;
+}
+
 /**
  * Inner request frame. Discriminated by `op` so MCPs can extend the
  * verb set without breaking existing fetch traffic.
@@ -295,7 +342,8 @@ export type InnerRequest =
   | InnerRequestReadCookies
   | InnerRequestReadLocalStorage
   | InnerRequestReadSessionStorage
-  | InnerRequestCaptureRequestHeader;
+  | InnerRequestCaptureRequestHeader
+  | InnerRequestReadIndexedDb;
 
 export interface InnerResponseFetchOk {
   type: 'response';
@@ -352,6 +400,22 @@ export interface InnerResponseCaptureRequestHeaderOk {
   value: string;
 }
 
+export interface InnerResponseReadIndexedDbOk {
+  type: 'response';
+  id: number;
+  ok: true;
+  op: 'read_indexed_db';
+  /**
+   * Key → value map for keys present in the named (database, store).
+   * Values are JSON-serializable (strings, numbers, booleans, null,
+   * plain objects, arrays). Non-serializable values (Blob, typed
+   * arrays, etc.) cause the entire call to fail rather than be
+   * silently dropped — the user expected a specific value, not a
+   * skipped one. Missing keys are omitted.
+   */
+  values: Record<string, unknown>;
+}
+
 /**
  * Successful inner response, discriminated by `op`. Existing 0.1.x
  * fetch responses (with no `op`) are accepted by the validator for
@@ -362,7 +426,8 @@ export type InnerResponseOk =
   | InnerResponseReadCookiesOk
   | InnerResponseReadLocalStorageOk
   | InnerResponseReadSessionStorageOk
-  | InnerResponseCaptureRequestHeaderOk;
+  | InnerResponseCaptureRequestHeaderOk
+  | InnerResponseReadIndexedDbOk;
 
 export interface InnerResponseError {
   type: 'response';

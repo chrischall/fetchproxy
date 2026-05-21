@@ -2,6 +2,7 @@ import { generateMcpId, KNOWN_CAPABILITIES } from '@fetchproxy/protocol';
 import type {
   Capability,
   CaptureHeaderDecl,
+  IndexedDbScopeDecl,
   InnerFrame,
   FetchInit,
   ReadCookiesInitV3,
@@ -54,6 +55,12 @@ export interface FetchproxyServerOpts {
   sessionStorageKeys?: string[];
   /** 0.3.0+: declared (urlPattern, headerName) pairs for `captureRequestHeader`. */
   captureHeaders?: CaptureHeaderDecl[];
+  /**
+   * 0.4.0+: declared IndexedDB scopes for `readIndexedDb()`. Each
+   * entry is `{ origin, database, store, keys }`. Per-call requests
+   * must subset-match a declared scope.
+   */
+  indexedDbScopes?: IndexedDbScopeDecl[];
   identityDir?: string;
   /**
    * 0.4.0+: invoked once on receipt of the extension hello, with the
@@ -208,6 +215,7 @@ interface ResolvedOpts {
   localStorageKeys: string[];
   sessionStorageKeys: string[];
   captureHeaders: CaptureHeaderDecl[];
+  indexedDbScopes: IndexedDbScopeDecl[];
   identityDir?: string;
   onPairCode?: (code: string) => void;
 }
@@ -271,6 +279,11 @@ export class FetchproxyServer {
     number,
     { resolve: (v: string) => void; reject: (e: Error) => void }
   >();
+  // 0.4.0+: read_indexed_db awaiters resolve a JSON-typed values map.
+  private pendingIdb = new Map<
+    number,
+    { resolve: (v: Record<string, unknown>) => void; reject: (e: Error) => void }
+  >();
   private mcpId: string | null = null;
   private identity: Identity | null = null;
 
@@ -317,6 +330,12 @@ export class FetchproxyServer {
         urlPattern: d.urlPattern,
         headerName: d.headerName,
       })),
+      indexedDbScopes: (opts.indexedDbScopes ?? []).map((d) => ({
+        origin: d.origin,
+        database: d.database,
+        store: d.store,
+        keys: [...d.keys],
+      })),
       identityDir: opts.identityDir,
       onPairCode: opts.onPairCode,
     };
@@ -348,6 +367,7 @@ export class FetchproxyServer {
         ownLocalStorageKeys: this.opts.localStorageKeys,
         ownSessionStorageKeys: this.opts.sessionStorageKeys,
         ownCaptureHeaders: this.opts.captureHeaders,
+        ownIndexedDbScopes: this.opts.indexedDbScopes,
         onPairCode: this.opts.onPairCode,
       });
       this.hostHandle.onOwnInner((inner) => this.onInner(inner));
@@ -366,6 +386,7 @@ export class FetchproxyServer {
         localStorageKeys: this.opts.localStorageKeys,
         sessionStorageKeys: this.opts.sessionStorageKeys,
         captureHeaders: this.opts.captureHeaders,
+        indexedDbScopes: this.opts.indexedDbScopes,
       });
       this.peerHandle.onInner((inner) => this.onInner(inner));
     }
@@ -741,6 +762,73 @@ export class FetchproxyServer {
     return pending;
   }
 
+  /**
+   * 0.4.0+: read declared IndexedDB keys from the user's signed-in
+   * tab. Requires `'read_indexed_db'` in capabilities AND the
+   * `(database, store, keys)` triple to subset-match a declared
+   * `indexedDbScopes` entry on the same origin.
+   *
+   * Returns a `Record<string, unknown>` of the JSON-typed values, with
+   * missing keys omitted. Throws `FetchproxyProtocolError` on bridge
+   * failures (no tab, extension offline, etc.) and a plain `Error`
+   * on developer mistakes (undeclared capability, undeclared scope).
+   */
+  async readIndexedDb(opts: {
+    domain?: string;
+    subdomain?: string;
+    database: string;
+    store: string;
+    keys: string[];
+  }): Promise<Record<string, unknown>> {
+    if (!this.opts.capabilities.includes('read_indexed_db')) {
+      throw new Error(
+        'FetchproxyServer.readIndexedDb(): MCP did not declare "read_indexed_db" in capabilities',
+      );
+    }
+    if (!this.hostHandle && !this.peerHandle) {
+      throw new Error('FetchproxyServer.readIndexedDb called before listen() — not listening');
+    }
+    if (!Array.isArray(opts.keys) || opts.keys.length === 0) {
+      throw new Error('FetchproxyServer.readIndexedDb: opts.keys must be a non-empty array');
+    }
+    if (opts.subdomain !== undefined) assertSubdomainLabel(opts.subdomain);
+    const baseDomain = this.resolveBaseDomain(opts.domain);
+    const host = opts.subdomain ? `${opts.subdomain}.${baseDomain}` : baseDomain;
+    const origin = `https://${host}`;
+    // Find the matching declared scope. Must be exact on (origin,
+    // database, store); keys must be a subset.
+    const decl = this.opts.indexedDbScopes.find(
+      (d) => d.origin === origin && d.database === opts.database && d.store === opts.store,
+    );
+    if (!decl) {
+      throw new Error(
+        `FetchproxyServer.readIndexedDb: (origin=${origin}, database=${JSON.stringify(opts.database)}, store=${JSON.stringify(opts.store)}) not declared in indexedDbScopes`,
+      );
+    }
+    this.assertScopeSubset(opts.keys, decl.keys, 'indexedDbScopes.keys');
+    const id = this.nextRequestId++;
+    const inner: InnerFrame = {
+      type: 'request',
+      id,
+      op: 'read_indexed_db',
+      init: {
+        origin,
+        database: opts.database,
+        store: opts.store,
+        keys: [...opts.keys],
+      },
+    };
+    const pending = new Promise<Record<string, unknown>>((resolve, reject) => {
+      this.pendingIdb.set(id, { resolve, reject });
+    });
+    if (this.hostHandle) {
+      await this.hostHandle.sendOwnInner(inner);
+    } else if (this.peerHandle) {
+      await this.peerHandle.sendInner(inner);
+    }
+    return pending;
+  }
+
   private assertScopeSubset(
     requested: readonly string[],
     declared: readonly string[],
@@ -853,6 +941,24 @@ export class FetchproxyServer {
         }
       } else {
         captureCb.reject(new FetchproxyProtocolError(inner.error));
+      }
+      return;
+    }
+    const idbCb = this.pendingIdb.get(inner.id);
+    if (idbCb) {
+      this.pendingIdb.delete(inner.id);
+      if (inner.ok) {
+        if (inner.op === 'read_indexed_db' && inner.values) {
+          idbCb.resolve({ ...inner.values });
+        } else {
+          idbCb.reject(
+            new FetchproxyProtocolError(
+              `unexpected ${String(inner.op)} response on read_indexed_db awaiter`,
+            ),
+          );
+        }
+      } else {
+        idbCb.reject(new FetchproxyProtocolError(inner.error));
       }
       return;
     }

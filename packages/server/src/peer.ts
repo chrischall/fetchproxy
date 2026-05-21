@@ -8,6 +8,7 @@ import {
   validateFrame,
   type Capability,
   type CaptureHeaderDecl,
+  type IndexedDbScopeDecl,
   type InnerFrame,
 } from '@fetchproxy/protocol';
 import { buildServerHello } from './build-server-hello.js';
@@ -32,6 +33,7 @@ export interface PeerOpts {
   localStorageKeys?: string[];
   sessionStorageKeys?: string[];
   captureHeaders?: CaptureHeaderDecl[];
+  indexedDbScopes?: IndexedDbScopeDecl[];
 }
 
 /**
@@ -83,6 +85,7 @@ export async function startPeer(opts: PeerOpts): Promise<InternalPeerHandle> {
     localStorageKeys: opts.localStorageKeys,
     sessionStorageKeys: opts.sessionStorageKeys,
     captureHeaders: opts.captureHeaders,
+    indexedDbScopes: opts.indexedDbScopes,
   });
   const sessionNonce = fromB64(hello.sessionNonce);
   ws.send(JSON.stringify(hello));

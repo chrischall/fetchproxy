@@ -5,6 +5,7 @@ import {
   toB64,
   type Capability,
   type CaptureHeaderDecl,
+  type IndexedDbScopeDecl,
   type HelloFrameFromServer,
 } from '@fetchproxy/protocol';
 import type { Identity } from './identity.js';
@@ -28,6 +29,8 @@ export interface BuildServerHelloOpts {
   localStorageKeys?: string[];
   sessionStorageKeys?: string[];
   captureHeaders?: CaptureHeaderDecl[];
+  /** 0.4.0+: declared IndexedDB scopes for `read_indexed_db`. */
+  indexedDbScopes?: IndexedDbScopeDecl[];
 }
 
 /**
@@ -79,6 +82,14 @@ export async function buildServerHello(
     hello.captureHeaders = opts.captureHeaders.map((d) => ({
       urlPattern: d.urlPattern,
       headerName: d.headerName,
+    }));
+  }
+  if (opts.indexedDbScopes && opts.indexedDbScopes.length > 0) {
+    hello.indexedDbScopes = opts.indexedDbScopes.map((d) => ({
+      origin: d.origin,
+      database: d.database,
+      store: d.store,
+      keys: [...d.keys],
     }));
   }
   return hello;

@@ -76,4 +76,59 @@ describe('FetchproxyServer (orchestrator)', () => {
     await srv.close();
     expect(srv.role).toBe(null);
   });
+
+  describe('readIndexedDb()', () => {
+    it("throws if the MCP didn't declare 'read_indexed_db' capability", async () => {
+      const srv = new FetchproxyServer({
+        port: 41054,
+        serverName: 'resy-mcp',
+        version: '0.0.1',
+        domains: ['resy.com'],
+        identityDir: mkdtempSync(join(tmpdir(), 'fp-srv-')),
+      });
+      servers.push(srv);
+      await srv.listen();
+      await expect(
+        srv.readIndexedDb({ database: 'resy', store: 'auth', keys: ['userToken'] }),
+      ).rejects.toThrow(/read_indexed_db/);
+    });
+
+    it('throws if the requested (database, store) is not declared', async () => {
+      const srv = new FetchproxyServer({
+        port: 41055,
+        serverName: 'resy-mcp',
+        version: '0.0.1',
+        domains: ['resy.com'],
+        capabilities: ['fetch', 'read_indexed_db'],
+        indexedDbScopes: [
+          { origin: 'https://resy.com', database: 'resy', store: 'auth', keys: ['userToken'] },
+        ],
+        identityDir: mkdtempSync(join(tmpdir(), 'fp-srv-')),
+      });
+      servers.push(srv);
+      await srv.listen();
+      await expect(
+        srv.readIndexedDb({ database: 'wrong', store: 'auth', keys: ['userToken'] }),
+      ).rejects.toThrow(/not declared/);
+    });
+
+    it('throws if a requested key is outside the declared keys', async () => {
+      const srv = new FetchproxyServer({
+        port: 41056,
+        serverName: 'resy-mcp',
+        version: '0.0.1',
+        domains: ['resy.com'],
+        capabilities: ['fetch', 'read_indexed_db'],
+        indexedDbScopes: [
+          { origin: 'https://resy.com', database: 'resy', store: 'auth', keys: ['userToken'] },
+        ],
+        identityDir: mkdtempSync(join(tmpdir(), 'fp-srv-')),
+      });
+      servers.push(srv);
+      await srv.listen();
+      await expect(
+        srv.readIndexedDb({ database: 'resy', store: 'auth', keys: ['notDeclared'] }),
+      ).rejects.toThrow(/not in declared/);
+    });
+  });
 });

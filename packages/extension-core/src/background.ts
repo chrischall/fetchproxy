@@ -31,6 +31,7 @@ import {
   PROTOCOL_VERSION,
   type Capability,
   type CaptureHeaderDecl,
+  type IndexedDbScopeDecl,
   type Frame,
   type HelloFrameFromServer,
   type HelloFrameFromExtension,
@@ -42,6 +43,7 @@ import {
   type InnerRequestReadLocalStorage,
   type InnerRequestReadSessionStorage,
   type InnerRequestCaptureRequestHeader,
+  type InnerRequestReadIndexedDb,
   type EncryptedFrame,
 } from '@fetchproxy/protocol';
 import { TrustStore } from './trust-store.js';
@@ -78,6 +80,7 @@ export type HandleHelloResult =
       localStorageKeys: string[];
       sessionStorageKeys: string[];
       captureHeaders: { urlPattern: string; headerName: string }[];
+      indexedDbScopes: IndexedDbScopeDecl[];
       version: string;
       identityX25519Pub: string;
       identityEd25519Pub: string;
@@ -92,6 +95,7 @@ export type HandleHelloResult =
       localStorageKeys: string[];
       sessionStorageKeys: string[];
       captureHeaders: { urlPattern: string; headerName: string }[];
+      indexedDbScopes: IndexedDbScopeDecl[];
       sessionKey: Uint8Array;
       extensionSessionPub: Uint8Array;
       /**
@@ -144,6 +148,7 @@ interface DeclaredScope {
   localStorageKeys: string[];
   sessionStorageKeys: string[];
   captureHeaders: { urlPattern: string; headerName: string }[];
+  indexedDbScopes: IndexedDbScopeDecl[];
 }
 
 function declaredScope(hello: HelloFrameFromServer): DeclaredScope {
@@ -154,6 +159,12 @@ function declaredScope(hello: HelloFrameFromServer): DeclaredScope {
     captureHeaders: (hello.captureHeaders ?? []).map((d) => ({
       urlPattern: d.urlPattern,
       headerName: d.headerName,
+    })),
+    indexedDbScopes: (hello.indexedDbScopes ?? []).map((d) => ({
+      origin: d.origin,
+      database: d.database,
+      store: d.store,
+      keys: [...d.keys],
     })),
   };
 }
@@ -174,6 +185,24 @@ function sameCaptureHeaders(
   const norm = (
     arr: readonly { urlPattern: string; headerName: string }[],
   ): string[] => arr.map((d) => `${d.urlPattern}\x00${d.headerName}`).sort();
+  const sa = norm(a);
+  const sb = norm(b);
+  for (let i = 0; i < sa.length; i++) if (sa[i] !== sb[i]) return false;
+  return true;
+}
+
+function sameIndexedDbScopes(
+  a: readonly IndexedDbScopeDecl[],
+  b: readonly IndexedDbScopeDecl[],
+): boolean {
+  if (a.length !== b.length) return false;
+  const norm = (arr: readonly IndexedDbScopeDecl[]): string[] =>
+    arr
+      .map(
+        (d) =>
+          `${d.origin}\x00${d.database}\x00${d.store}\x00${[...d.keys].sort().join(',')}`,
+      )
+      .sort();
   const sa = norm(a);
   const sb = norm(b);
   for (let i = 0; i < sa.length; i++) if (sa[i] !== sb[i]) return false;
@@ -232,7 +261,8 @@ export async function handleServerHello(
         !sameScopeArrays(record.cookieKeys, scope.cookieKeys) ||
         !sameScopeArrays(record.localStorageKeys, scope.localStorageKeys) ||
         !sameScopeArrays(record.sessionStorageKeys, scope.sessionStorageKeys) ||
-        !sameCaptureHeaders(record.captureHeaders, scope.captureHeaders);
+        !sameCaptureHeaders(record.captureHeaders, scope.captureHeaders) ||
+        !sameIndexedDbScopes(record.indexedDbScopes ?? [], scope.indexedDbScopes);
       if (scopeChanged) {
         const pairCode = await derivePairCodeFromIds(
           identityX25519Pub,
@@ -358,6 +388,8 @@ interface PendingPairRecord {
   localStorageKeys: string[];
   sessionStorageKeys: string[];
   captureHeaders: { urlPattern: string; headerName: string }[];
+  /** 0.4.0+: declared IndexedDB scopes the user is being asked to approve. */
+  indexedDbScopes: IndexedDbScopeDecl[];
   pairCode: string;
   identityHash: string;
   identityX25519Pub: string;
@@ -395,6 +427,9 @@ const mcpCookieKeys = new Map<string, string[]>();
 const mcpLocalStorageKeys = new Map<string, string[]>();
 const mcpSessionStorageKeys = new Map<string, string[]>();
 const mcpCaptureHeaders = new Map<string, { urlPattern: string; headerName: string }[]>();
+// 0.4.0+: per-mcpId declared IndexedDB scopes. The request handler
+// gates `read_indexed_db` on subset-match against this table.
+const mcpIndexedDbScopes = new Map<string, IndexedDbScopeDecl[]>();
 
 function connect(): void {
   if (!trust || !sessions || !extIdentity) return;
@@ -434,6 +469,7 @@ function connect(): void {
     mcpLocalStorageKeys.clear();
     mcpSessionStorageKeys.clear();
     mcpCaptureHeaders.clear();
+    mcpIndexedDbScopes.clear();
     scheduleReconnect();
   });
   ws.addEventListener('error', () => {
@@ -482,6 +518,7 @@ async function onServerHello(hello: HelloFrameFromServer): Promise<void> {
     mcpLocalStorageKeys.set(result.mcpId, [...result.localStorageKeys]);
     mcpSessionStorageKeys.set(result.mcpId, [...result.sessionStorageKeys]);
     mcpCaptureHeaders.set(result.mcpId, [...result.captureHeaders]);
+    mcpIndexedDbScopes.set(result.mcpId, [...result.indexedDbScopes]);
     // TODO: open tabs for ALL declared domains. For 0.2.0 we open one
     // (the first declared) — multi-domain MCPs (HoneyBook spans two
     // hosts) ought to surface a tab for each, but a single open tab is
@@ -518,6 +555,7 @@ async function onServerHello(hello: HelloFrameFromServer): Promise<void> {
     localStorageKeys: [...result.localStorageKeys],
     sessionStorageKeys: [...result.sessionStorageKeys],
     captureHeaders: [...result.captureHeaders],
+    indexedDbScopes: [...result.indexedDbScopes],
     pairCode: result.pairCode,
     identityHash: result.identityHash,
     identityX25519Pub: result.identityX25519Pub,
@@ -598,6 +636,10 @@ async function handleRequest(mcpId: string, req: InnerRequest): Promise<void> {
   }
   if (req.op === 'capture_request_header') {
     await handleCaptureRequestHeaderRequest(mcpId, req, domains);
+    return;
+  }
+  if (req.op === 'read_indexed_db') {
+    await handleReadIndexedDbRequest(mcpId, req, domains);
     return;
   }
 }
@@ -1001,6 +1043,100 @@ async function handleCaptureRequestHeaderRequest(
   }, timeoutMs);
 }
 
+async function handleReadIndexedDbRequest(
+  mcpId: string,
+  req: InnerRequestReadIndexedDb,
+  domains: string[],
+): Promise<void> {
+  const declared = mcpIndexedDbScopes.get(mcpId) ?? [];
+  if (!isUrlAllowedForAnyDomain(req.init.origin, domains)) {
+    await sendInner(mcpId, {
+      type: 'response',
+      id: req.id,
+      ok: false,
+      op: 'read_indexed_db',
+      error: `origin ${req.init.origin} not in domains [${domains.join(', ')}]`,
+    });
+    return;
+  }
+  // Find a matching scope: same origin, database, store. Then check
+  // requested keys ⊆ declared keys.
+  const scope = declared.find(
+    (d) =>
+      d.origin === req.init.origin &&
+      d.database === req.init.database &&
+      d.store === req.init.store,
+  );
+  if (!scope) {
+    await sendInner(mcpId, {
+      type: 'response',
+      id: req.id,
+      ok: false,
+      op: 'read_indexed_db',
+      error: `(origin, database, store) not in declared indexedDbScopes`,
+    });
+    return;
+  }
+  const declaredSet = new Set(scope.keys);
+  const undeclared = req.init.keys.filter((k) => !declaredSet.has(k));
+  if (undeclared.length > 0) {
+    await sendInner(mcpId, {
+      type: 'response',
+      id: req.id,
+      ok: false,
+      op: 'read_indexed_db',
+      error: `IndexedDB keys not in declared set: ${undeclared.join(', ')}`,
+    });
+    return;
+  }
+  const tabUrl = `${req.init.origin}/`;
+  const tabs = await chrome.tabs.query({});
+  const match = tabs.find((t) => t.url && isTabUrlMatch(t.url, tabUrl));
+  if (!match || typeof match.id !== 'number') {
+    await sendInner(mcpId, {
+      type: 'response',
+      id: req.id,
+      ok: false,
+      op: 'read_indexed_db',
+      error: `no tab matching ${tabUrl}`,
+    });
+    return;
+  }
+  try {
+    const resp = (await chrome.tabs.sendMessage(match.id, {
+      kind: 'fetchproxy-read-indexed-db',
+      database: req.init.database,
+      store: req.init.store,
+      keys: [...req.init.keys],
+    })) as { ok: true; values: Record<string, unknown> } | { ok: false; error: string };
+    if (resp.ok) {
+      await sendInner(mcpId, {
+        type: 'response',
+        id: req.id,
+        ok: true,
+        op: 'read_indexed_db',
+        values: resp.values,
+      });
+    } else {
+      await sendInner(mcpId, {
+        type: 'response',
+        id: req.id,
+        ok: false,
+        op: 'read_indexed_db',
+        error: resp.error,
+      });
+    }
+  } catch (e) {
+    await sendInner(mcpId, {
+      type: 'response',
+      id: req.id,
+      ok: false,
+      op: 'read_indexed_db',
+      error: `tab read_indexed_db failed: ${String(e)}`,
+    });
+  }
+}
+
 async function onApproval(approved: PendingPairRecord): Promise<void> {
   if (!trust || !sessions || !extIdentity || !currentExtSessionNonce) return;
   // Persist trust. Default to ['fetch'] when older popup state somehow
@@ -1019,6 +1155,12 @@ async function onApproval(approved: PendingPairRecord): Promise<void> {
     captureHeaders: (approved.captureHeaders ?? []).map((d) => ({
       urlPattern: d.urlPattern,
       headerName: d.headerName,
+    })),
+    indexedDbScopes: (approved.indexedDbScopes ?? []).map((d) => ({
+      origin: d.origin,
+      database: d.database,
+      store: d.store,
+      keys: [...d.keys],
     })),
     identityX25519Pub: approved.identityX25519Pub,
     identityEd25519Pub: approved.identityEd25519Pub,
@@ -1046,6 +1188,15 @@ async function onApproval(approved: PendingPairRecord): Promise<void> {
   mcpLocalStorageKeys.set(approved.mcpId, [...(approved.localStorageKeys ?? [])]);
   mcpSessionStorageKeys.set(approved.mcpId, [...(approved.sessionStorageKeys ?? [])]);
   mcpCaptureHeaders.set(approved.mcpId, (approved.captureHeaders ?? []).map((d) => ({ ...d })));
+  mcpIndexedDbScopes.set(
+    approved.mcpId,
+    (approved.indexedDbScopes ?? []).map((d) => ({
+      origin: d.origin,
+      database: d.database,
+      store: d.store,
+      keys: [...d.keys],
+    })),
+  );
   // TODO: open tabs for ALL declared domains. See auto-trust path above.
   const firstDomain = approved.domains[0];
   if (firstDomain !== undefined) {

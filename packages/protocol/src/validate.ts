@@ -168,6 +168,69 @@ function assertCaptureHeadersArray(value: unknown, label: string): void {
   }
 }
 
+function assertIndexedDbScopesArray(value: unknown, label: string): void {
+  if (!Array.isArray(value)) {
+    throw new ProtocolError(`${label}: expected array, got ${typeof value}`);
+  }
+  const seen = new Set<string>();
+  for (let i = 0; i < value.length; i++) {
+    const entry = value[i] as unknown;
+    assertObject(entry, `${label}[${i}]`);
+    if (entry.origin === undefined) {
+      throw new ProtocolError(`${label}[${i}].origin: missing`);
+    }
+    if (entry.database === undefined) {
+      throw new ProtocolError(`${label}[${i}].database: missing`);
+    }
+    if (entry.store === undefined) {
+      throw new ProtocolError(`${label}[${i}].store: missing`);
+    }
+    if (entry.keys === undefined) {
+      throw new ProtocolError(`${label}[${i}].keys: missing`);
+    }
+    assertHttpsOriginOnly(entry.origin, `${label}[${i}].origin`);
+    if (typeof entry.database !== 'string' || !SCOPE_KEY_RE.test(entry.database)) {
+      throw new ProtocolError(
+        `${label}[${i}].database: invalid name ${JSON.stringify(entry.database)}`,
+      );
+    }
+    if (typeof entry.store !== 'string' || !SCOPE_KEY_RE.test(entry.store)) {
+      throw new ProtocolError(
+        `${label}[${i}].store: invalid name ${JSON.stringify(entry.store)}`,
+      );
+    }
+    if (!Array.isArray(entry.keys) || entry.keys.length === 0) {
+      throw new ProtocolError(`${label}[${i}].keys: must be non-empty array`);
+    }
+    const keysSeen = new Set<string>();
+    for (const k of entry.keys) {
+      if (typeof k !== 'string' || !SCOPE_KEY_RE.test(k)) {
+        throw new ProtocolError(
+          `${label}[${i}].keys: invalid key ${JSON.stringify(k)}`,
+        );
+      }
+      if (keysSeen.has(k)) {
+        throw new ProtocolError(`${label}[${i}].keys: duplicate ${JSON.stringify(k)}`);
+      }
+      keysSeen.add(k);
+    }
+    const dedupe = `${entry.origin}\x00${entry.database}\x00${entry.store}\x00${[...entry.keys]
+      .sort()
+      .join(',')}`;
+    if (seen.has(dedupe)) {
+      throw new ProtocolError(
+        `${label}: duplicate scope (${entry.origin} ${entry.database}/${entry.store})`,
+      );
+    }
+    seen.add(dedupe);
+    for (const k of Object.keys(entry)) {
+      if (k !== 'origin' && k !== 'database' && k !== 'store' && k !== 'keys') {
+        throw new ProtocolError(`${label}[${i}]: unexpected field ${JSON.stringify(k)}`);
+      }
+    }
+  }
+}
+
 function assertCaptureUrlPattern(pattern: string, label: string): void {
   // `https://host/path/*` — host fully-qualified, no wildcards in host,
   // wildcards only in path/query/fragment. We deliberately reject `http:`
@@ -265,6 +328,9 @@ function validateHello(raw: Record<string, unknown>): HelloFrame {
     }
     if (raw.captureHeaders !== undefined) {
       assertCaptureHeadersArray(raw.captureHeaders, 'hello.captureHeaders');
+    }
+    if (raw.indexedDbScopes !== undefined) {
+      assertIndexedDbScopesArray(raw.indexedDbScopes, 'hello.indexedDbScopes');
     }
     assertBase64(raw.identityX25519Pub, 'hello.identityX25519Pub');
     assertBase64(raw.identityEd25519Pub, 'hello.identityEd25519Pub');
@@ -432,8 +498,35 @@ function validateInnerRequest(raw: Record<string, unknown>): InnerFrame {
     }
     return raw as unknown as InnerFrame;
   }
+  if (raw.op === 'read_indexed_db') {
+    assertObject(raw.init, 'inner.init');
+    if (raw.init.origin === undefined) throw new ProtocolError('inner.init.origin: missing');
+    if (raw.init.database === undefined) throw new ProtocolError('inner.init.database: missing');
+    if (raw.init.store === undefined) throw new ProtocolError('inner.init.store: missing');
+    if (raw.init.keys === undefined) throw new ProtocolError('inner.init.keys: missing');
+    assertHttpsOriginOnly(raw.init.origin, 'inner.init.origin');
+    if (typeof raw.init.database !== 'string' || !SCOPE_KEY_RE.test(raw.init.database)) {
+      throw new ProtocolError(
+        `inner.init.database: invalid name ${JSON.stringify(raw.init.database)}`,
+      );
+    }
+    if (typeof raw.init.store !== 'string' || !SCOPE_KEY_RE.test(raw.init.store)) {
+      throw new ProtocolError(
+        `inner.init.store: invalid name ${JSON.stringify(raw.init.store)}`,
+      );
+    }
+    assertNonEmptyKeyArray(raw.init.keys, 'inner.init.keys');
+    for (const k of Object.keys(raw.init)) {
+      if (k !== 'origin' && k !== 'database' && k !== 'store' && k !== 'keys') {
+        throw new ProtocolError(
+          `inner.init: unexpected field ${JSON.stringify(k)} on read_indexed_db`,
+        );
+      }
+    }
+    return raw as unknown as InnerFrame;
+  }
   throw new ProtocolError(
-    `inner.op: must be one of "fetch", "read_cookies", "read_local_storage", "read_session_storage", "capture_request_header"; got ${JSON.stringify(raw.op)}`,
+    `inner.op: must be one of "fetch", "read_cookies", "read_local_storage", "read_session_storage", "capture_request_header", "read_indexed_db"; got ${JSON.stringify(raw.op)}`,
   );
 }
 
@@ -515,6 +608,19 @@ function validateInnerResponse(raw: Record<string, unknown>): InnerFrame {
         throw new ProtocolError('inner.value: missing on capture_request_header response');
       }
       assertString(raw.value, 'inner.value');
+      return raw as unknown as InnerFrame;
+    }
+    if (op === 'read_indexed_db') {
+      if (raw.values === undefined) {
+        throw new ProtocolError('inner.values: missing on read_indexed_db response');
+      }
+      // IDB values can be any JSON-serializable type (objects, arrays,
+      // strings, numbers, booleans, null). We don't deep-walk the
+      // values here — at this point they're already a parsed JSON
+      // object on the receiving side. Reject only non-plain-object
+      // outer container + prototype-pollution keys (assertObject does
+      // both).
+      assertObject(raw.values, 'inner.values');
       return raw as unknown as InnerFrame;
     }
     throw new ProtocolError(

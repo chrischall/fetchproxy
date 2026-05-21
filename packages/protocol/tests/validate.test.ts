@@ -1069,3 +1069,200 @@ describe('validateInnerFrame', () => {
     });
   });
 });
+
+// 0.4.0: read_indexed_db wire format.
+describe('validateFrame (0.4.0 IndexedDb scope decls)', () => {
+  const validHello = {
+    type: 'hello',
+    protocolVersion: 2,
+    role: 'server',
+    mcpId: 'resy-mcp:0.0.1:a3f7c91d2e8b4f56',
+    serverName: 'resy-mcp',
+    version: '0.0.1',
+    domains: ['resy.com'],
+    identityX25519Pub: 'AAAA',
+    identityEd25519Pub: 'AAAA',
+    sessionNonce: 'AAAA',
+    sessionSig: 'AAAA',
+  };
+
+  it('accepts hello with indexedDbScopes', () => {
+    expect(() =>
+      validateFrame({
+        ...validHello,
+        capabilities: ['read_indexed_db'],
+        indexedDbScopes: [
+          { origin: 'https://resy.com', database: 'resy', store: 'auth', keys: ['userToken'] },
+        ],
+      }),
+    ).not.toThrow();
+  });
+
+  it('accepts hello with empty indexedDbScopes', () => {
+    expect(() =>
+      validateFrame({ ...validHello, indexedDbScopes: [] }),
+    ).not.toThrow();
+  });
+
+  it('rejects indexedDbScopes entry missing origin', () => {
+    expect(() =>
+      validateFrame({
+        ...validHello,
+        indexedDbScopes: [{ database: 'resy', store: 'auth', keys: ['x'] }],
+      }),
+    ).toThrow(/indexedDbScopes.*origin/);
+  });
+
+  it('rejects indexedDbScopes entry missing database', () => {
+    expect(() =>
+      validateFrame({
+        ...validHello,
+        indexedDbScopes: [{ origin: 'https://resy.com', store: 'auth', keys: ['x'] }],
+      }),
+    ).toThrow(/indexedDbScopes.*database/);
+  });
+
+  it('rejects indexedDbScopes entry missing store', () => {
+    expect(() =>
+      validateFrame({
+        ...validHello,
+        indexedDbScopes: [{ origin: 'https://resy.com', database: 'resy', keys: ['x'] }],
+      }),
+    ).toThrow(/indexedDbScopes.*store/);
+  });
+
+  it('rejects indexedDbScopes entry with empty keys array', () => {
+    expect(() =>
+      validateFrame({
+        ...validHello,
+        indexedDbScopes: [{ origin: 'https://resy.com', database: 'resy', store: 'auth', keys: [] }],
+      }),
+    ).toThrow(/indexedDbScopes.*keys/);
+  });
+
+  it('rejects indexedDbScopes entry with non-https origin', () => {
+    expect(() =>
+      validateFrame({
+        ...validHello,
+        indexedDbScopes: [{ origin: 'http://resy.com', database: 'resy', store: 'auth', keys: ['x'] }],
+      }),
+    ).toThrow(/indexedDbScopes.*origin/);
+  });
+
+  it('rejects indexedDbScopes entry with bad chars in database', () => {
+    expect(() =>
+      validateFrame({
+        ...validHello,
+        indexedDbScopes: [{ origin: 'https://resy.com', database: 'has space', store: 'auth', keys: ['x'] }],
+      }),
+    ).toThrow(/indexedDbScopes.*database/);
+  });
+
+  it('rejects duplicate IndexedDB scope', () => {
+    expect(() =>
+      validateFrame({
+        ...validHello,
+        indexedDbScopes: [
+          { origin: 'https://resy.com', database: 'resy', store: 'auth', keys: ['userToken'] },
+          { origin: 'https://resy.com', database: 'resy', store: 'auth', keys: ['userToken'] },
+        ],
+      }),
+    ).toThrow(/indexedDbScopes.*duplicate/);
+  });
+});
+
+describe('validateInnerFrame (0.4.0 read_indexed_db)', () => {
+  it('accepts a valid read_indexed_db request', () => {
+    expect(() =>
+      validateInnerFrame({
+        type: 'request',
+        id: 1,
+        op: 'read_indexed_db',
+        init: {
+          origin: 'https://resy.com',
+          database: 'resy',
+          store: 'auth',
+          keys: ['userToken', 'userId'],
+        },
+      }),
+    ).not.toThrow();
+  });
+
+  it('rejects read_indexed_db request missing database', () => {
+    expect(() =>
+      validateInnerFrame({
+        type: 'request',
+        id: 1,
+        op: 'read_indexed_db',
+        init: { origin: 'https://resy.com', store: 'auth', keys: ['x'] },
+      }),
+    ).toThrow(/database/);
+  });
+
+  it('rejects read_indexed_db request with extra field', () => {
+    expect(() =>
+      validateInnerFrame({
+        type: 'request',
+        id: 1,
+        op: 'read_indexed_db',
+        init: {
+          origin: 'https://resy.com',
+          database: 'resy',
+          store: 'auth',
+          keys: ['x'],
+          extra: 'no',
+        },
+      }),
+    ).toThrow(/unexpected field/);
+  });
+
+  it('rejects read_indexed_db request with non-https origin', () => {
+    expect(() =>
+      validateInnerFrame({
+        type: 'request',
+        id: 1,
+        op: 'read_indexed_db',
+        init: { origin: 'http://resy.com', database: 'resy', store: 'auth', keys: ['x'] },
+      }),
+    ).toThrow(/origin/);
+  });
+
+  it('accepts a read_indexed_db response with string + numeric + object values', () => {
+    expect(() =>
+      validateInnerFrame({
+        type: 'response',
+        id: 1,
+        ok: true,
+        op: 'read_indexed_db',
+        values: {
+          token: 'ey...',
+          expiry: 1730000000000,
+          user: { id: 'u-1', name: 'r' },
+        },
+      }),
+    ).not.toThrow();
+  });
+
+  it('rejects read_indexed_db response missing values', () => {
+    expect(() =>
+      validateInnerFrame({
+        type: 'response',
+        id: 1,
+        ok: true,
+        op: 'read_indexed_db',
+      }),
+    ).toThrow(/values/);
+  });
+
+  it('rejects read_indexed_db response with non-object values', () => {
+    expect(() =>
+      validateInnerFrame({
+        type: 'response',
+        id: 1,
+        ok: true,
+        op: 'read_indexed_db',
+        values: 'oops',
+      }),
+    ).toThrow(/values/);
+  });
+});

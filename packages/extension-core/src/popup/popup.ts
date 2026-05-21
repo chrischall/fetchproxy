@@ -29,6 +29,10 @@ interface CapabilityDisplay {
 const CAPABILITY_DISPLAY: Record<string, CapabilityDisplay> = {
   fetch: { label: 'HTTP fetches', warn: false },
   read_cookies: { label: 'Read cookies', warn: true },
+  read_local_storage: { label: 'Read localStorage', warn: true },
+  read_session_storage: { label: 'Read sessionStorage', warn: true },
+  capture_request_header: { label: 'Capture request header', warn: true },
+  read_indexed_db: { label: 'Read IndexedDB', warn: true },
 };
 
 export interface PendingPair {
@@ -55,6 +59,17 @@ export interface PendingPair {
   localStorageKeys?: string[];
   sessionStorageKeys?: string[];
   captureHeaders?: { urlPattern: string; headerName: string }[];
+  /**
+   * 0.4.0+: declared IndexedDB scopes (origin + database + store +
+   * keys). Each scope is rendered on its own line so the user sees
+   * exactly which DB / store names this MCP would read.
+   */
+  indexedDbScopes?: {
+    origin: string;
+    database: string;
+    store: string;
+    keys: string[];
+  }[];
   pairCode: string;
 }
 
@@ -107,6 +122,29 @@ function appendCaptureHeadersSubList(
   const ul = elem('ul', { class: 'capture-headers' });
   for (const e of entries) {
     ul.appendChild(elem('li', {}, `"${e.headerName}" from ${e.urlPattern}`));
+  }
+  dd.appendChild(ul);
+  dl.appendChild(dd);
+}
+
+function appendIndexedDbScopesSubList(
+  dl: HTMLElement,
+  entries:
+    | readonly { origin: string; database: string; store: string; keys: string[] }[]
+    | undefined,
+): void {
+  if (!entries || entries.length === 0) return;
+  dl.appendChild(elem('dt', { class: 'cap-warn' }, 'Read IndexedDB'));
+  const dd = elem('dd', { class: 'cap-warn' });
+  const ul = elem('ul', { class: 'indexed-db-scopes' });
+  for (const e of entries) {
+    ul.appendChild(
+      elem(
+        'li',
+        {},
+        `${e.database}/${e.store}: ${e.keys.join(', ')}`,
+      ),
+    );
   }
   dd.appendChild(ul);
   dl.appendChild(dd);
@@ -191,6 +229,7 @@ export function renderPopup(root: HTMLElement, state: PopupState): void {
   appendScopeSubList(dl, 'Read localStorage', pending.localStorageKeys);
   appendScopeSubList(dl, 'Read sessionStorage', pending.sessionStorageKeys);
   appendCaptureHeadersSubList(dl, pending.captureHeaders);
+  appendIndexedDbScopesSubList(dl, pending.indexedDbScopes);
 
   root.appendChild(dl);
 
@@ -238,6 +277,7 @@ interface PendingPairRecord {
   localStorageKeys?: string[];
   sessionStorageKeys?: string[];
   captureHeaders?: { urlPattern: string; headerName: string }[];
+  indexedDbScopes?: { origin: string; database: string; store: string; keys: string[] }[];
   pairCode: string;
   identityHash: string;
   identityX25519Pub: string;
@@ -277,6 +317,12 @@ async function bootstrap(): Promise<void> {
         localStorageKeys: [...(pending.localStorageKeys ?? [])],
         sessionStorageKeys: [...(pending.sessionStorageKeys ?? [])],
         captureHeaders: (pending.captureHeaders ?? []).map((d) => ({ ...d })),
+        indexedDbScopes: (pending.indexedDbScopes ?? []).map((d) => ({
+          origin: d.origin,
+          database: d.database,
+          store: d.store,
+          keys: [...d.keys],
+        })),
         pairCode: pending.pairCode,
       },
       onApprove: () => {

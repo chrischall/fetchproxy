@@ -52,6 +52,13 @@ export interface TrustRecord {
   sessionStorageKeys: string[];
   /** 0.3.0+: declared (urlPattern, headerName) pairs for capture_request_header. */
   captureHeaders: { urlPattern: string; headerName: string }[];
+  /** 0.4.0+: declared IndexedDB scopes for read_indexed_db. */
+  indexedDbScopes: {
+    origin: string;
+    database: string;
+    store: string;
+    keys: string[];
+  }[];
   identityX25519Pub: string;
   identityEd25519Pub: string;
   /**
@@ -83,6 +90,13 @@ export interface TrustInput {
   localStorageKeys?: string[];
   sessionStorageKeys?: string[];
   captureHeaders?: { urlPattern: string; headerName: string }[];
+  /** 0.4.0+: declared IndexedDB scopes. */
+  indexedDbScopes?: {
+    origin: string;
+    database: string;
+    store: string;
+    keys: string[];
+  }[];
   identityX25519Pub: string;
   identityEd25519Pub: string;
   /**
@@ -132,6 +146,7 @@ export class TrustStore {
       localStorageKeys: Array.isArray(rec.localStorageKeys) ? rec.localStorageKeys : [],
       sessionStorageKeys: Array.isArray(rec.sessionStorageKeys) ? rec.sessionStorageKeys : [],
       captureHeaders: Array.isArray(rec.captureHeaders) ? rec.captureHeaders : [],
+      indexedDbScopes: Array.isArray(rec.indexedDbScopes) ? rec.indexedDbScopes : [],
       // 0.4.0: pre-0.4.0 records have no extension identity. Normalise
       // to '' so `background.ts:handleServerHello` sees a mismatch
       // against the current extension's pub and triggers re-pair.
@@ -155,6 +170,7 @@ export class TrustStore {
     const localStorageKeys = input.localStorageKeys ?? [];
     const sessionStorageKeys = input.sessionStorageKeys ?? [];
     const captureHeaders = input.captureHeaders ?? [];
+    const indexedDbScopes = input.indexedDbScopes ?? [];
     stored.records[identityHash] = {
       serverName: input.serverName,
       domains: input.domains,
@@ -163,6 +179,7 @@ export class TrustStore {
       localStorageKeys,
       sessionStorageKeys,
       captureHeaders,
+      indexedDbScopes,
       identityX25519Pub: input.identityX25519Pub,
       identityEd25519Pub: input.identityEd25519Pub,
       extensionIdentityX25519Pub: input.extensionIdentityX25519Pub ?? '',

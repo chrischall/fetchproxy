@@ -1,5 +1,10 @@
-import { describe, it, expect } from 'vitest';
-import { bootstrap, type Session, type BootstrapServerFactory } from '../src/index.js';
+import { describe, it, expect, afterEach } from 'vitest';
+import {
+  bootstrap,
+  BootstrapDisabledError,
+  type Session,
+  type BootstrapServerFactory,
+} from '../src/index.js';
 
 /**
  * Minimal stub of `FetchproxyServer` that satisfies the surface `bootstrap`
@@ -15,6 +20,7 @@ interface StubCalls {
   readLocalStorage: { keys: string[] }[];
   readSessionStorage: { keys: string[] }[];
   captureRequestHeader: { urlPattern: string; headerName: string }[];
+  readIndexedDb: { database: string; store: string; keys: string[] }[];
   constructorOpts: unknown[];
 }
 
@@ -23,7 +29,14 @@ function makeStubFactory(opts?: {
   localStorage?: Record<string, string>;
   sessionStorage?: Record<string, string>;
   capturedHeaders?: Record<string, string>;
-  throwOn?: 'listen' | 'readCookies' | 'readLocalStorage' | 'readSessionStorage' | 'captureRequestHeader';
+  indexedDb?: Record<string, Record<string, unknown>>;
+  throwOn?:
+    | 'listen'
+    | 'readCookies'
+    | 'readLocalStorage'
+    | 'readSessionStorage'
+    | 'captureRequestHeader'
+    | 'readIndexedDb';
 }): { factory: BootstrapServerFactory; calls: StubCalls } {
   const calls: StubCalls = {
     listen: 0,
@@ -32,6 +45,7 @@ function makeStubFactory(opts?: {
     readLocalStorage: [],
     readSessionStorage: [],
     captureRequestHeader: [],
+    readIndexedDb: [],
     constructorOpts: [],
   };
   const factory: BootstrapServerFactory = (ctorOpts) => {
@@ -71,6 +85,16 @@ function makeStubFactory(opts?: {
         if (opts?.throwOn === 'captureRequestHeader') throw new Error('captureRequestHeader failed');
         return opts?.capturedHeaders?.[callOpts.headerName] ?? '';
       },
+      readIndexedDb: async (callOpts: { database: string; store: string; keys: string[] }) => {
+        calls.readIndexedDb.push({
+          database: callOpts.database,
+          store: callOpts.store,
+          keys: [...callOpts.keys],
+        });
+        if (opts?.throwOn === 'readIndexedDb') throw new Error('readIndexedDb failed');
+        const key = `${callOpts.database}/${callOpts.store}`;
+        return { ...(opts?.indexedDb?.[key] ?? {}) };
+      },
     };
   };
   return { factory, calls };
@@ -91,6 +115,7 @@ describe('bootstrap()', () => {
       localStorage: {},
       sessionStorage: {},
       capturedHeaders: {},
+      indexedDb: {},
     });
     // Should still listen + close, and should not have called any read.
     expect(calls.listen).toBe(1);
@@ -272,5 +297,158 @@ describe('bootstrap()', () => {
     expect(ctorOpts.capabilities).toEqual(
       expect.arrayContaining(['fetch', 'read_cookies', 'read_local_storage', 'capture_request_header']),
     );
+  });
+
+  describe('0.4.0 ergonomics', () => {
+    afterEach(() => {
+      // Tests below mutate process.env — clean up so siblings see a clean slate.
+      delete process.env['OPENTABLE_MCP_DISABLE_FETCHPROXY'];
+      delete process.env['SCOPE_HONEYBOOK_MCP_DISABLE_FETCHPROXY'];
+    });
+
+    it('throws BootstrapDisabledError when the env-var is set', async () => {
+      process.env['OPENTABLE_MCP_DISABLE_FETCHPROXY'] = '1';
+      const { factory } = makeStubFactory();
+      await expect(
+        bootstrap({
+          serverName: 'opentable-mcp',
+          version: '0.9.1',
+          domains: ['opentable.com'],
+          declare: { cookies: [], localStorage: [], sessionStorage: [], captureHeaders: [] },
+          _serverFactory: factory,
+        }),
+      ).rejects.toBeInstanceOf(BootstrapDisabledError);
+    });
+
+    it('resolves env-var name from a scoped serverName', async () => {
+      process.env['SCOPE_HONEYBOOK_MCP_DISABLE_FETCHPROXY'] = '1';
+      const { factory } = makeStubFactory();
+      await expect(
+        bootstrap({
+          serverName: '@scope/honeybook-mcp',
+          version: '0.1.0',
+          domains: ['honeybook.com'],
+          declare: { cookies: [], localStorage: [], sessionStorage: [], captureHeaders: [] },
+          _serverFactory: factory,
+        }),
+      ).rejects.toBeInstanceOf(BootstrapDisabledError);
+    });
+
+    it('does not throw when env-var is unset or empty', async () => {
+      const { factory } = makeStubFactory();
+      // unset
+      await expect(
+        bootstrap({
+          serverName: 'opentable-mcp',
+          version: '0.9.1',
+          domains: ['opentable.com'],
+          declare: { cookies: [], localStorage: [], sessionStorage: [], captureHeaders: [] },
+          _serverFactory: factory,
+        }),
+      ).resolves.toBeDefined();
+      // explicitly '0' or 'false' is treated as unset
+      process.env['OPENTABLE_MCP_DISABLE_FETCHPROXY'] = '0';
+      await expect(
+        bootstrap({
+          serverName: 'opentable-mcp',
+          version: '0.9.1',
+          domains: ['opentable.com'],
+          declare: { cookies: [], localStorage: [], sessionStorage: [], captureHeaders: [] },
+          _serverFactory: factory,
+        }),
+      ).resolves.toBeDefined();
+    });
+
+    it('threads onPairCode through to the FetchproxyServer constructor', async () => {
+      const { factory, calls } = makeStubFactory();
+      const onPairCode = (): void => undefined;
+      await bootstrap({
+        serverName: 'opentable-mcp',
+        version: '0.9.1',
+        domains: ['opentable.com'],
+        declare: { cookies: [], localStorage: [], sessionStorage: [], captureHeaders: [] },
+        onPairCode,
+        _serverFactory: factory,
+      });
+      const ctorOpts = calls.constructorOpts[0] as Record<string, unknown>;
+      expect(ctorOpts.onPairCode).toBe(onPairCode);
+    });
+
+    it('fires onWaiting once per declared captureHeader', async () => {
+      const hints: string[] = [];
+      const { factory } = makeStubFactory({
+        capturedHeaders: { 'hb-api-fingerprint': 'fp', 'x-csrf': 'csrf' },
+      });
+      await bootstrap({
+        serverName: 'honeybook-mcp',
+        version: '0.1.0',
+        domains: ['honeybook.com'],
+        declare: {
+          cookies: [],
+          localStorage: [],
+          sessionStorage: [],
+          captureHeaders: [
+            { urlPattern: 'https://api.honeybook.com/api/v2/*', headerName: 'hb-api-fingerprint' },
+            { urlPattern: 'https://api.honeybook.com/api/v3/*', headerName: 'x-csrf' },
+          ],
+        },
+        onWaiting: (h) => hints.push(h),
+        _serverFactory: factory,
+      });
+      expect(hints).toHaveLength(2);
+      expect(hints[0]).toContain('api.honeybook.com');
+      expect(hints[0]).toContain('hb-api-fingerprint');
+      expect(hints[1]).toContain('x-csrf');
+    });
+
+    it('snapshots declared IndexedDB scopes into session.indexedDb', async () => {
+      const { factory, calls } = makeStubFactory({
+        indexedDb: {
+          'resy/auth': { userToken: 'ey...', userId: 'u-1' },
+        },
+      });
+      const session = await bootstrap({
+        serverName: 'resy-mcp',
+        version: '0.0.1',
+        domains: ['resy.com'],
+        declare: {
+          cookies: [],
+          localStorage: [],
+          sessionStorage: [],
+          captureHeaders: [],
+          indexedDb: [
+            {
+              origin: 'https://resy.com',
+              database: 'resy',
+              store: 'auth',
+              keys: ['userToken', 'userId'],
+            },
+          ],
+        },
+        _serverFactory: factory,
+      });
+      expect(session.indexedDb['resy/auth']).toEqual({ userToken: 'ey...', userId: 'u-1' });
+      expect(calls.readIndexedDb).toEqual([
+        { database: 'resy', store: 'auth', keys: ['userToken', 'userId'] },
+      ]);
+      // Capability + scope decl threaded through to the server ctor.
+      const ctorOpts = calls.constructorOpts[0] as Record<string, unknown>;
+      expect((ctorOpts.capabilities as string[]).sort()).toContain('read_indexed_db');
+      expect(ctorOpts.indexedDbScopes).toEqual([
+        { origin: 'https://resy.com', database: 'resy', store: 'auth', keys: ['userToken', 'userId'] },
+      ]);
+    });
+
+    it('returns empty indexedDb when no IDB scopes are declared', async () => {
+      const { factory } = makeStubFactory();
+      const session = await bootstrap({
+        serverName: 'opentable-mcp',
+        version: '0.9.1',
+        domains: ['opentable.com'],
+        declare: { cookies: [], localStorage: [], sessionStorage: [], captureHeaders: [] },
+        _serverFactory: factory,
+      });
+      expect(session.indexedDb).toEqual({});
+    });
   });
 });
