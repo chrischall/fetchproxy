@@ -40,17 +40,27 @@ jobs:
         run: |
           PROTOCOL=$(node -p "require('./packages/protocol/package.json').version")
           SERVER=$(node -p "require('./packages/server/package.json').version")
-          if [ "$PROTOCOL" != "$VERSION" ] || [ "$SERVER" != "$VERSION" ]; then
-            echo "Tag is v${VERSION} but packages are protocol=${PROTOCOL}, server=${SERVER}" >&2
+          BOOTSTRAP=$(node -p "require('./packages/bootstrap/package.json').version")
+          EXT_CORE=$(node -p "require('./packages/extension-core/package.json').version")
+          EXT_CHROME=$(node -p "require('./packages/extension-chrome/package.json').version")
+          DRIFT=""
+          [ "$PROTOCOL" != "$VERSION" ]   && DRIFT="$DRIFT protocol=$PROTOCOL"
+          [ "$SERVER" != "$VERSION" ]     && DRIFT="$DRIFT server=$SERVER"
+          [ "$BOOTSTRAP" != "$VERSION" ]  && DRIFT="$DRIFT bootstrap=$BOOTSTRAP"
+          [ "$EXT_CORE" != "$VERSION" ]   && DRIFT="$DRIFT extension-core=$EXT_CORE"
+          [ "$EXT_CHROME" != "$VERSION" ] && DRIFT="$DRIFT extension-chrome=$EXT_CHROME"
+          if [ -n "$DRIFT" ]; then
+            echo "Tag is v${VERSION} but packages drifted:$DRIFT" >&2
             echo "Bump versions to match the tag, or re-tag." >&2
             exit 1
           fi
 
       # Build the TS packages in dependency order: protocol → server →
-      # extension-core. extension-chrome's esbuild bundle is produced
-      # separately further down (it needs protocol/dist on disk first).
+      # bootstrap → extension-core. extension-chrome's esbuild bundle is
+      # produced separately further down (it needs protocol/dist on disk
+      # first).
       - name: Build packages
-        run: npm run build --workspace=@fetchproxy/protocol --workspace=@fetchproxy/server --workspace=@fetchproxy/extension-core
+        run: npm run build --workspace=@fetchproxy/protocol --workspace=@fetchproxy/server --workspace=@fetchproxy/bootstrap --workspace=@fetchproxy/extension-core
 
       # ─── npm publish: @fetchproxy/protocol ───
       # Publish protocol first so the server's `^${VERSION}` peer is
@@ -74,6 +84,17 @@ jobs:
             exit 0
           fi
           npm publish --workspace=@fetchproxy/server --access=public --provenance
+
+      # ─── npm publish: @fetchproxy/bootstrap ───
+      # Publishes after server so the helper's peer ranges resolve.
+      - name: Publish @fetchproxy/bootstrap to npm
+        run: |
+          PUBLISHED=$(npm view "@fetchproxy/bootstrap@${VERSION}" version 2>/dev/null || true)
+          if [ "$PUBLISHED" = "$VERSION" ]; then
+            echo "npm already has @fetchproxy/bootstrap@${VERSION} — skipping."
+            exit 0
+          fi
+          npm publish --workspace=@fetchproxy/bootstrap --access=public --provenance
 
       # ─── Chrome extension bundle ───
       # Build the unpacked extension and zip it for distribution. The
