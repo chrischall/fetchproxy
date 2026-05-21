@@ -419,4 +419,63 @@ describe('validateInnerFrame', () => {
       ).toThrow(/op/);
     });
   });
+
+  // Edge cases at the protocol boundary. These guard the security
+  // invariants the rest of the system trusts — i.e. once validateFrame
+  // returns, the consumer doesn't re-check shape or scheme.
+  describe('edge cases', () => {
+    it('assertHttpUrl rejects un-parseable URL strings', () => {
+      // `new URL(...)` throws on completely malformed input — covers the
+      // catch branch in assertHttpUrl that produces a friendlier error
+      // than the raw TypeError.
+      expect(() =>
+        validateInnerFrame({
+          type: 'request',
+          id: 1,
+          op: 'fetch',
+          init: { url: 'http://[::1', method: 'GET', tabUrl: 'https://x.com/' },
+        }),
+      ).toThrow(/url.*valid URL/);
+    });
+
+    it("rejects hello with role other than 'server' or 'extension'", () => {
+      // Hits the trailing throw in validateHello when role is neither.
+      // Without this, a future role addition could silently no-op.
+      expect(() =>
+        validateFrame({
+          type: 'hello',
+          protocolVersion: 1,
+          role: 'mystery',
+        }),
+      ).toThrow(/role/);
+    });
+
+    it('rejects ready frame with invalid mcpId format', () => {
+      // Ready frames are routed by mcpId — a malformed id would let an
+      // attacker target a slot they shouldn't be able to. validateReady
+      // catches the bad format before any handler sees it.
+      expect(() =>
+        validateFrame({
+          type: 'ready',
+          mcpId: 'not:a:valid-id', // rand fragment isn't 16-hex
+          extensionSessionPub: 'AAAA',
+        }),
+      ).toThrow(/mcpId.*invalid format/);
+    });
+
+    it('rejects encrypted frame with invalid mcpId format', () => {
+      // Same security argument as ready: the mcpId routes between
+      // sessions on the host. validateEncrypted MUST reject before
+      // the host's onMessage dispatch sees it.
+      expect(() =>
+        validateFrame({
+          type: 'frame',
+          mcpId: 'bad:id',
+          seq: 1,
+          iv: 'AAAA',
+          ciphertext: 'AAAA',
+        }),
+      ).toThrow(/mcpId.*invalid format/);
+    });
+  });
 });
