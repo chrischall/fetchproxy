@@ -1,8 +1,9 @@
-import { generateMcpId, KNOWN_CAPABILITIES } from '@fetchproxy/protocol';
+import { generateMcpId, KNOWN_CAPABILITIES, undeclaredKeys } from '@fetchproxy/protocol';
 import type {
   Capability,
   CaptureHeaderDecl,
   IndexedDbScopeDecl,
+  StoragePointerDecl,
   InnerFrame,
   FetchInit,
   ReadCookiesInitV3,
@@ -61,6 +62,15 @@ export interface FetchproxyServerOpts {
    * must subset-match a declared scope.
    */
   indexedDbScopes?: IndexedDbScopeDecl[];
+  /**
+   * 0.4.0+: declared JSON-pointer extractions over localStorage
+   * values. Each entry `{ key, jsonPointer }` binds an existing
+   * `localStorageKeys` entry to a pointer. Per-call `readLocalStorage`
+   * requests must use a declared pair.
+   */
+  localStoragePointers?: StoragePointerDecl[];
+  /** 0.4.0+: same shape against sessionStorage. */
+  sessionStoragePointers?: StoragePointerDecl[];
   identityDir?: string;
   /**
    * 0.4.0+: invoked once on receipt of the extension hello, with the
@@ -216,6 +226,8 @@ interface ResolvedOpts {
   sessionStorageKeys: string[];
   captureHeaders: CaptureHeaderDecl[];
   indexedDbScopes: IndexedDbScopeDecl[];
+  localStoragePointers: StoragePointerDecl[];
+  sessionStoragePointers: StoragePointerDecl[];
   identityDir?: string;
   onPairCode?: (code: string) => void;
 }
@@ -336,6 +348,14 @@ export class FetchproxyServer {
         store: d.store,
         keys: [...d.keys],
       })),
+      localStoragePointers: (opts.localStoragePointers ?? []).map((d) => ({
+        key: d.key,
+        jsonPointer: d.jsonPointer,
+      })),
+      sessionStoragePointers: (opts.sessionStoragePointers ?? []).map((d) => ({
+        key: d.key,
+        jsonPointer: d.jsonPointer,
+      })),
       identityDir: opts.identityDir,
       onPairCode: opts.onPairCode,
     };
@@ -368,6 +388,8 @@ export class FetchproxyServer {
         ownSessionStorageKeys: this.opts.sessionStorageKeys,
         ownCaptureHeaders: this.opts.captureHeaders,
         ownIndexedDbScopes: this.opts.indexedDbScopes,
+        ownLocalStoragePointers: this.opts.localStoragePointers,
+        ownSessionStoragePointers: this.opts.sessionStoragePointers,
         onPairCode: this.opts.onPairCode,
       });
       this.hostHandle.onOwnInner((inner) => this.onInner(inner));
@@ -387,6 +409,8 @@ export class FetchproxyServer {
         sessionStorageKeys: this.opts.sessionStorageKeys,
         captureHeaders: this.opts.captureHeaders,
         indexedDbScopes: this.opts.indexedDbScopes,
+        localStoragePointers: this.opts.localStoragePointers,
+        sessionStoragePointers: this.opts.sessionStoragePointers,
       });
       this.peerHandle.onInner((inner) => this.onInner(inner));
     }
@@ -644,13 +668,26 @@ export class FetchproxyServer {
    * tab. Requires `'read_local_storage'` in capabilities AND each key
    * to be in declared `localStorageKeys`. Returns a `Record<string, string>`
    * including only keys that exist in storage.
+   *
+   * 0.4.0+: optional `pointers` map. Each entry `{ outputKey: { storageKey, jsonPointer } }`
+   * extracts a node from the JSON-parsed value at `storageKey`. The
+   * `(storageKey, jsonPointer)` pair must match a declared
+   * `localStoragePointers` entry on the server hello.
    */
   async readLocalStorage(opts: {
     domain?: string;
     subdomain?: string;
     keys: string[];
+    pointers?: Record<string, { storageKey: string; jsonPointer: string }>;
   }): Promise<Record<string, string>> {
-    return this.readStorageImpl('read_local_storage', this.opts.localStorageKeys, opts, 'localStorageKeys');
+    return this.readStorageImpl(
+      'read_local_storage',
+      this.opts.localStorageKeys,
+      this.opts.localStoragePointers,
+      opts,
+      'localStorageKeys',
+      'localStoragePointers',
+    );
   }
 
   /**
@@ -661,20 +698,30 @@ export class FetchproxyServer {
     domain?: string;
     subdomain?: string;
     keys: string[];
+    pointers?: Record<string, { storageKey: string; jsonPointer: string }>;
   }): Promise<Record<string, string>> {
     return this.readStorageImpl(
       'read_session_storage',
       this.opts.sessionStorageKeys,
+      this.opts.sessionStoragePointers,
       opts,
       'sessionStorageKeys',
+      'sessionStoragePointers',
     );
   }
 
   private async readStorageImpl(
     op: 'read_local_storage' | 'read_session_storage',
     declaredKeys: string[],
-    opts: { domain?: string; subdomain?: string; keys: string[] },
+    declaredPointers: StoragePointerDecl[],
+    opts: {
+      domain?: string;
+      subdomain?: string;
+      keys: string[];
+      pointers?: Record<string, { storageKey: string; jsonPointer: string }>;
+    },
     declLabel: string,
+    pointersDeclLabel: string,
   ): Promise<Record<string, string>> {
     if (!this.opts.capabilities.includes(op)) {
       throw new Error(
@@ -688,6 +735,23 @@ export class FetchproxyServer {
       throw new Error(`FetchproxyServer.${op}: opts.keys must be a non-empty array`);
     }
     this.assertScopeSubset(opts.keys, declaredKeys, declLabel);
+    if (opts.pointers) {
+      for (const [outputKey, p] of Object.entries(opts.pointers)) {
+        const match = declaredPointers.find(
+          (d) => d.key === p.storageKey && d.jsonPointer === p.jsonPointer,
+        );
+        if (!match) {
+          throw new Error(
+            `FetchproxyServer.${op}: pointer (${JSON.stringify(p.storageKey)}, ${JSON.stringify(p.jsonPointer)}) for outputKey=${JSON.stringify(outputKey)} not in declared ${pointersDeclLabel}`,
+          );
+        }
+        if (!opts.keys.includes(p.storageKey)) {
+          throw new Error(
+            `FetchproxyServer.${op}: pointer storageKey ${JSON.stringify(p.storageKey)} not in opts.keys`,
+          );
+        }
+      }
+    }
     if (opts.subdomain !== undefined) assertSubdomainLabel(opts.subdomain);
     const baseDomain = this.resolveBaseDomain(opts.domain);
     const host = opts.subdomain ? `${opts.subdomain}.${baseDomain}` : baseDomain;
@@ -696,7 +760,11 @@ export class FetchproxyServer {
       type: 'request',
       id,
       op,
-      init: { origin: `https://${host}`, keys: [...opts.keys] },
+      init: {
+        origin: `https://${host}`,
+        keys: [...opts.keys],
+        ...(opts.pointers ? { pointers: { ...opts.pointers } } : {}),
+      },
     };
     const pending = new Promise<Record<string, string>>((resolve, reject) => {
       this.pendingStorage.set(id, { resolve, reject });
@@ -834,8 +902,10 @@ export class FetchproxyServer {
     declared: readonly string[],
     label: string,
   ): void {
-    const declaredSet = new Set(declared);
-    const undeclared = requested.filter((k) => !declaredSet.has(k));
+    // 0.4.0: declared array may contain trailing-* glob patterns
+    // (e.g. `feh--*`). `undeclaredKeys` handles literal + glob match
+    // uniformly so the call-site error message is the same shape.
+    const undeclared = undeclaredKeys(requested, declared);
     if (undeclared.length > 0) {
       throw new Error(
         `FetchproxyServer: requested key(s) [${undeclared

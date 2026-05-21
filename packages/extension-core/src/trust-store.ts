@@ -59,6 +59,9 @@ export interface TrustRecord {
     store: string;
     keys: string[];
   }[];
+  /** 0.4.0+: declared JSON-pointer extractions over local/sessionStorage. */
+  localStoragePointers: { key: string; jsonPointer: string }[];
+  sessionStoragePointers: { key: string; jsonPointer: string }[];
   identityX25519Pub: string;
   identityEd25519Pub: string;
   /**
@@ -97,6 +100,9 @@ export interface TrustInput {
     store: string;
     keys: string[];
   }[];
+  /** 0.4.0+: declared storage-pointer extractions. */
+  localStoragePointers?: { key: string; jsonPointer: string }[];
+  sessionStoragePointers?: { key: string; jsonPointer: string }[];
   identityX25519Pub: string;
   identityEd25519Pub: string;
   /**
@@ -147,6 +153,12 @@ export class TrustStore {
       sessionStorageKeys: Array.isArray(rec.sessionStorageKeys) ? rec.sessionStorageKeys : [],
       captureHeaders: Array.isArray(rec.captureHeaders) ? rec.captureHeaders : [],
       indexedDbScopes: Array.isArray(rec.indexedDbScopes) ? rec.indexedDbScopes : [],
+      localStoragePointers: Array.isArray(rec.localStoragePointers)
+        ? rec.localStoragePointers
+        : [],
+      sessionStoragePointers: Array.isArray(rec.sessionStoragePointers)
+        ? rec.sessionStoragePointers
+        : [],
       // 0.4.0: pre-0.4.0 records have no extension identity. Normalise
       // to '' so `background.ts:handleServerHello` sees a mismatch
       // against the current extension's pub and triggers re-pair.
@@ -171,6 +183,8 @@ export class TrustStore {
     const sessionStorageKeys = input.sessionStorageKeys ?? [];
     const captureHeaders = input.captureHeaders ?? [];
     const indexedDbScopes = input.indexedDbScopes ?? [];
+    const localStoragePointers = input.localStoragePointers ?? [];
+    const sessionStoragePointers = input.sessionStoragePointers ?? [];
     stored.records[identityHash] = {
       serverName: input.serverName,
       domains: input.domains,
@@ -180,6 +194,8 @@ export class TrustStore {
       sessionStorageKeys,
       captureHeaders,
       indexedDbScopes,
+      localStoragePointers,
+      sessionStoragePointers,
       identityX25519Pub: input.identityX25519Pub,
       identityEd25519Pub: input.identityEd25519Pub,
       extensionIdentityX25519Pub: input.extensionIdentityX25519Pub ?? '',

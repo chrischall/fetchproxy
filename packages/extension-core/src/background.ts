@@ -28,10 +28,13 @@ import {
   fromB64,
   toHex,
   concatBytes,
+  matchesDeclaredKey,
+  undeclaredKeys,
   PROTOCOL_VERSION,
   type Capability,
   type CaptureHeaderDecl,
   type IndexedDbScopeDecl,
+  type StoragePointerDecl,
   type Frame,
   type HelloFrameFromServer,
   type HelloFrameFromExtension,
@@ -81,6 +84,8 @@ export type HandleHelloResult =
       sessionStorageKeys: string[];
       captureHeaders: { urlPattern: string; headerName: string }[];
       indexedDbScopes: IndexedDbScopeDecl[];
+      localStoragePointers: StoragePointerDecl[];
+      sessionStoragePointers: StoragePointerDecl[];
       version: string;
       identityX25519Pub: string;
       identityEd25519Pub: string;
@@ -96,6 +101,8 @@ export type HandleHelloResult =
       sessionStorageKeys: string[];
       captureHeaders: { urlPattern: string; headerName: string }[];
       indexedDbScopes: IndexedDbScopeDecl[];
+      localStoragePointers: StoragePointerDecl[];
+      sessionStoragePointers: StoragePointerDecl[];
       sessionKey: Uint8Array;
       extensionSessionPub: Uint8Array;
       /**
@@ -149,6 +156,8 @@ interface DeclaredScope {
   sessionStorageKeys: string[];
   captureHeaders: { urlPattern: string; headerName: string }[];
   indexedDbScopes: IndexedDbScopeDecl[];
+  localStoragePointers: StoragePointerDecl[];
+  sessionStoragePointers: StoragePointerDecl[];
 }
 
 function declaredScope(hello: HelloFrameFromServer): DeclaredScope {
@@ -165,6 +174,14 @@ function declaredScope(hello: HelloFrameFromServer): DeclaredScope {
       database: d.database,
       store: d.store,
       keys: [...d.keys],
+    })),
+    localStoragePointers: (hello.localStoragePointers ?? []).map((d) => ({
+      key: d.key,
+      jsonPointer: d.jsonPointer,
+    })),
+    sessionStoragePointers: (hello.sessionStoragePointers ?? []).map((d) => ({
+      key: d.key,
+      jsonPointer: d.jsonPointer,
     })),
   };
 }
@@ -203,6 +220,19 @@ function sameIndexedDbScopes(
           `${d.origin}\x00${d.database}\x00${d.store}\x00${[...d.keys].sort().join(',')}`,
       )
       .sort();
+  const sa = norm(a);
+  const sb = norm(b);
+  for (let i = 0; i < sa.length; i++) if (sa[i] !== sb[i]) return false;
+  return true;
+}
+
+function sameStoragePointers(
+  a: readonly StoragePointerDecl[],
+  b: readonly StoragePointerDecl[],
+): boolean {
+  if (a.length !== b.length) return false;
+  const norm = (arr: readonly StoragePointerDecl[]): string[] =>
+    arr.map((d) => `${d.key}\x00${d.jsonPointer}`).sort();
   const sa = norm(a);
   const sb = norm(b);
   for (let i = 0; i < sa.length; i++) if (sa[i] !== sb[i]) return false;
@@ -262,7 +292,9 @@ export async function handleServerHello(
         !sameScopeArrays(record.localStorageKeys, scope.localStorageKeys) ||
         !sameScopeArrays(record.sessionStorageKeys, scope.sessionStorageKeys) ||
         !sameCaptureHeaders(record.captureHeaders, scope.captureHeaders) ||
-        !sameIndexedDbScopes(record.indexedDbScopes ?? [], scope.indexedDbScopes);
+        !sameIndexedDbScopes(record.indexedDbScopes ?? [], scope.indexedDbScopes) ||
+        !sameStoragePointers(record.localStoragePointers ?? [], scope.localStoragePointers) ||
+        !sameStoragePointers(record.sessionStoragePointers ?? [], scope.sessionStoragePointers);
       if (scopeChanged) {
         const pairCode = await derivePairCodeFromIds(
           identityX25519Pub,
@@ -390,6 +422,9 @@ interface PendingPairRecord {
   captureHeaders: { urlPattern: string; headerName: string }[];
   /** 0.4.0+: declared IndexedDB scopes the user is being asked to approve. */
   indexedDbScopes: IndexedDbScopeDecl[];
+  /** 0.4.0+: declared storage-pointer extractions. */
+  localStoragePointers: StoragePointerDecl[];
+  sessionStoragePointers: StoragePointerDecl[];
   pairCode: string;
   identityHash: string;
   identityX25519Pub: string;
@@ -430,6 +465,10 @@ const mcpCaptureHeaders = new Map<string, { urlPattern: string; headerName: stri
 // 0.4.0+: per-mcpId declared IndexedDB scopes. The request handler
 // gates `read_indexed_db` on subset-match against this table.
 const mcpIndexedDbScopes = new Map<string, IndexedDbScopeDecl[]>();
+// 0.4.0+: per-mcpId declared storage pointer decls. Storage-read
+// handlers gate per-request pointer fields on these.
+const mcpLocalStoragePointers = new Map<string, { key: string; jsonPointer: string }[]>();
+const mcpSessionStoragePointers = new Map<string, { key: string; jsonPointer: string }[]>();
 
 function connect(): void {
   if (!trust || !sessions || !extIdentity) return;
@@ -470,6 +509,8 @@ function connect(): void {
     mcpSessionStorageKeys.clear();
     mcpCaptureHeaders.clear();
     mcpIndexedDbScopes.clear();
+    mcpLocalStoragePointers.clear();
+    mcpSessionStoragePointers.clear();
     scheduleReconnect();
   });
   ws.addEventListener('error', () => {
@@ -519,6 +560,8 @@ async function onServerHello(hello: HelloFrameFromServer): Promise<void> {
     mcpSessionStorageKeys.set(result.mcpId, [...result.sessionStorageKeys]);
     mcpCaptureHeaders.set(result.mcpId, [...result.captureHeaders]);
     mcpIndexedDbScopes.set(result.mcpId, [...result.indexedDbScopes]);
+    mcpLocalStoragePointers.set(result.mcpId, [...result.localStoragePointers]);
+    mcpSessionStoragePointers.set(result.mcpId, [...result.sessionStoragePointers]);
     // TODO: open tabs for ALL declared domains. For 0.2.0 we open one
     // (the first declared) — multi-domain MCPs (HoneyBook spans two
     // hosts) ought to surface a tab for each, but a single open tab is
@@ -556,6 +599,8 @@ async function onServerHello(hello: HelloFrameFromServer): Promise<void> {
     sessionStorageKeys: [...result.sessionStorageKeys],
     captureHeaders: [...result.captureHeaders],
     indexedDbScopes: [...result.indexedDbScopes],
+    localStoragePointers: [...result.localStoragePointers],
+    sessionStoragePointers: [...result.sessionStoragePointers],
     pairCode: result.pairCode,
     identityHash: result.identityHash,
     identityX25519Pub: result.identityX25519Pub,
@@ -813,8 +858,10 @@ async function handleReadCookiesV3(
   }
   // Every requested key must be in the declared cookieKeys set. This is
   // gate #2 (the server-side has its own gate #1) — defense in depth.
-  const declaredSet = new Set(declaredCookieKeys);
-  const undeclared = keys.filter((k) => !declaredSet.has(k));
+  // 0.4.0: declared keys may include trailing-* glob patterns; route
+  // through the shared `matchesDeclaredKey` helper so the extension
+  // and server agree on what counts as "in the declared set".
+  const undeclared = undeclaredKeys(keys, declaredCookieKeys);
   if (undeclared.length > 0) {
     await sendInner(mcpId, {
       type: 'response',
@@ -870,6 +917,10 @@ async function handleReadStorageRequest(
     bucket === 'local'
       ? (mcpLocalStorageKeys.get(mcpId) ?? [])
       : (mcpSessionStorageKeys.get(mcpId) ?? []);
+  const declaredPointers =
+    bucket === 'local'
+      ? (mcpLocalStoragePointers.get(mcpId) ?? [])
+      : (mcpSessionStoragePointers.get(mcpId) ?? []);
   if (!isUrlAllowedForAnyDomain(req.init.origin, domains)) {
     await sendInner(mcpId, {
       type: 'response',
@@ -880,8 +931,8 @@ async function handleReadStorageRequest(
     });
     return;
   }
-  const declaredSet = new Set(declaredKeys);
-  const undeclared = req.init.keys.filter((k) => !declaredSet.has(k));
+  // 0.4.0: declared keys may include trailing-* glob patterns.
+  const undeclared = undeclaredKeys(req.init.keys, declaredKeys);
   if (undeclared.length > 0) {
     await sendInner(mcpId, {
       type: 'response',
@@ -891,6 +942,24 @@ async function handleReadStorageRequest(
       error: `${bucket}Storage keys not in declared set: ${undeclared.join(', ')}`,
     });
     return;
+  }
+  // 0.4.0: per-request pointers must each match a declared pair.
+  if (req.init.pointers) {
+    for (const [outputKey, p] of Object.entries(req.init.pointers)) {
+      const match = declaredPointers.find(
+        (d) => d.key === p.storageKey && d.jsonPointer === p.jsonPointer,
+      );
+      if (!match) {
+        await sendInner(mcpId, {
+          type: 'response',
+          id: req.id,
+          ok: false,
+          op,
+          error: `${bucket}Storage pointer (${p.storageKey}, ${p.jsonPointer}) not in declared set [outputKey=${outputKey}]`,
+        });
+        return;
+      }
+    }
   }
   const tabUrl = `${req.init.origin}/`;
   const tabs = await chrome.tabs.query({});
@@ -909,6 +978,7 @@ async function handleReadStorageRequest(
     const resp = (await chrome.tabs.sendMessage(match.id, {
       kind: bucket === 'local' ? 'fetchproxy-read-local-storage' : 'fetchproxy-read-session-storage',
       keys: [...req.init.keys],
+      pointers: req.init.pointers,
     })) as { ok: true; values: Record<string, string> } | { ok: false; error: string };
     if (resp.ok) {
       await sendInner(mcpId, {
@@ -1162,6 +1232,14 @@ async function onApproval(approved: PendingPairRecord): Promise<void> {
       store: d.store,
       keys: [...d.keys],
     })),
+    localStoragePointers: (approved.localStoragePointers ?? []).map((d) => ({
+      key: d.key,
+      jsonPointer: d.jsonPointer,
+    })),
+    sessionStoragePointers: (approved.sessionStoragePointers ?? []).map((d) => ({
+      key: d.key,
+      jsonPointer: d.jsonPointer,
+    })),
     identityX25519Pub: approved.identityX25519Pub,
     identityEd25519Pub: approved.identityEd25519Pub,
     // 0.4.0: remember the extension identity active when the user
@@ -1196,6 +1274,14 @@ async function onApproval(approved: PendingPairRecord): Promise<void> {
       store: d.store,
       keys: [...d.keys],
     })),
+  );
+  mcpLocalStoragePointers.set(
+    approved.mcpId,
+    (approved.localStoragePointers ?? []).map((d) => ({ ...d })),
+  );
+  mcpSessionStoragePointers.set(
+    approved.mcpId,
+    (approved.sessionStoragePointers ?? []).map((d) => ({ ...d })),
   );
   // TODO: open tabs for ALL declared domains. See auto-trust path above.
   const firstDomain = approved.domains[0];

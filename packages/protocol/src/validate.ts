@@ -1,6 +1,7 @@
 import type { Capability, Frame, HelloFrame, ReadyFrame, EncryptedFrame, InnerFrame } from './frames.js';
 import { KNOWN_CAPABILITIES, PROTOCOL_VERSION } from './frames.js';
 import { isValidMcpId } from './mcp-id.js';
+import { isValidJsonPointer } from './json-pointer.js';
 
 /**
  * Thrown by `validateFrame` / `validateInnerFrame` when a structurally
@@ -23,6 +24,20 @@ const BASE64_RE = /^[A-Za-z0-9+/]*={0,2}$/;
  * `localStorage.getItem`, and the popup UI without escaping shenanigans.
  */
 const SCOPE_KEY_RE = /^[A-Za-z0-9_.\-]{1,256}$/;
+/**
+ * 0.4.0+: glob-aware variant. Matches a literal scope key OR a glob
+ * pattern with a non-empty literal prefix followed by `*`. Bare `*`
+ * and `*foo` (no leading literal) are rejected; the `*` must come
+ * AFTER at least one literal char so the popup can render something
+ * meaningful and the user can recognise the prefix.
+ *
+ *   `feh--*`    → match (prefix=`feh--`)
+ *   `auth_*`    → match
+ *   `*`         → reject
+ *   `*foo`      → reject
+ *   `foo*bar`   → reject (only trailing `*` allowed)
+ */
+const SCOPE_KEY_GLOB_RE = /^[A-Za-z0-9_.\-]{1,255}\*?$/;
 /**
  * Permitted character set + length for HTTP header names declared in
  * `captureHeaders`. RFC 7230 tchar is wider, but for declared scope
@@ -113,7 +128,7 @@ function assertScopeKeyArray(value: unknown, label: string): void {
     if (typeof k !== 'string') {
       throw new ProtocolError(`${label}: entry must be string, got ${typeof k}`);
     }
-    if (!SCOPE_KEY_RE.test(k)) {
+    if (!SCOPE_KEY_GLOB_RE.test(k)) {
       throw new ProtocolError(`${label}: invalid key ${JSON.stringify(k)}`);
     }
     if (seen.has(k)) {
@@ -162,6 +177,52 @@ function assertCaptureHeadersArray(value: unknown, label: string): void {
     seen.add(key);
     for (const k of Object.keys(entry)) {
       if (k !== 'urlPattern' && k !== 'headerName') {
+        throw new ProtocolError(`${label}[${i}]: unexpected field ${JSON.stringify(k)}`);
+      }
+    }
+  }
+}
+
+function assertStoragePointersArray(
+  value: unknown,
+  label: string,
+  declaredKeys: readonly string[] | undefined,
+): void {
+  if (!Array.isArray(value)) {
+    throw new ProtocolError(`${label}: expected array, got ${typeof value}`);
+  }
+  const seen = new Set<string>();
+  for (let i = 0; i < value.length; i++) {
+    const entry = value[i] as unknown;
+    assertObject(entry, `${label}[${i}]`);
+    if (entry.key === undefined) {
+      throw new ProtocolError(`${label}[${i}].key: missing`);
+    }
+    if (entry.jsonPointer === undefined) {
+      throw new ProtocolError(`${label}[${i}].jsonPointer: missing`);
+    }
+    if (typeof entry.key !== 'string' || !SCOPE_KEY_GLOB_RE.test(entry.key)) {
+      throw new ProtocolError(`${label}[${i}].key: invalid key ${JSON.stringify(entry.key)}`);
+    }
+    if (typeof entry.jsonPointer !== 'string' || !isValidJsonPointer(entry.jsonPointer)) {
+      throw new ProtocolError(
+        `${label}[${i}].jsonPointer: invalid pointer ${JSON.stringify(entry.jsonPointer)}`,
+      );
+    }
+    if (declaredKeys && !declaredKeys.includes(entry.key)) {
+      throw new ProtocolError(
+        `${label}[${i}].key: ${JSON.stringify(entry.key)} not in declared storage key set`,
+      );
+    }
+    const dedupe = `${entry.key}\x00${entry.jsonPointer}`;
+    if (seen.has(dedupe)) {
+      throw new ProtocolError(
+        `${label}: duplicate (${entry.key}, ${entry.jsonPointer})`,
+      );
+    }
+    seen.add(dedupe);
+    for (const k of Object.keys(entry)) {
+      if (k !== 'key' && k !== 'jsonPointer') {
         throw new ProtocolError(`${label}[${i}]: unexpected field ${JSON.stringify(k)}`);
       }
     }
@@ -332,6 +393,20 @@ function validateHello(raw: Record<string, unknown>): HelloFrame {
     if (raw.indexedDbScopes !== undefined) {
       assertIndexedDbScopesArray(raw.indexedDbScopes, 'hello.indexedDbScopes');
     }
+    if (raw.localStoragePointers !== undefined) {
+      assertStoragePointersArray(
+        raw.localStoragePointers,
+        'hello.localStoragePointers',
+        raw.localStorageKeys as string[] | undefined,
+      );
+    }
+    if (raw.sessionStoragePointers !== undefined) {
+      assertStoragePointersArray(
+        raw.sessionStoragePointers,
+        'hello.sessionStoragePointers',
+        raw.sessionStorageKeys as string[] | undefined,
+      );
+    }
     assertBase64(raw.identityX25519Pub, 'hello.identityX25519Pub');
     assertBase64(raw.identityEd25519Pub, 'hello.identityEd25519Pub');
     assertBase64(raw.sessionNonce, 'hello.sessionNonce');
@@ -467,8 +542,51 @@ function validateInnerRequest(raw: Record<string, unknown>): InnerFrame {
     }
     assertHttpsOriginOnly(raw.init.origin, 'inner.init.origin');
     assertNonEmptyKeyArray(raw.init.keys, 'inner.init.keys');
+    if (raw.init.pointers !== undefined) {
+      assertObject(raw.init.pointers, 'inner.init.pointers');
+      for (const [outKey, ptr] of Object.entries(raw.init.pointers)) {
+        if (FORBIDDEN_KEYS.has(outKey)) {
+          throw new ProtocolError(
+            `inner.init.pointers: forbidden output key ${outKey}`,
+          );
+        }
+        assertObject(ptr, `inner.init.pointers[${outKey}]`);
+        if (typeof (ptr as Record<string, unknown>).storageKey !== 'string') {
+          throw new ProtocolError(
+            `inner.init.pointers[${outKey}].storageKey: must be string`,
+          );
+        }
+        const storageKey = (ptr as Record<string, unknown>).storageKey as string;
+        if (!SCOPE_KEY_RE.test(storageKey)) {
+          throw new ProtocolError(
+            `inner.init.pointers[${outKey}].storageKey: invalid key ${JSON.stringify(storageKey)}`,
+          );
+        }
+        const jsonPointer = (ptr as Record<string, unknown>).jsonPointer;
+        if (typeof jsonPointer !== 'string' || !isValidJsonPointer(jsonPointer)) {
+          throw new ProtocolError(
+            `inner.init.pointers[${outKey}].jsonPointer: invalid pointer ${JSON.stringify(jsonPointer)}`,
+          );
+        }
+        // The pointer's storageKey must reference a key the caller
+        // ALSO asked to read (`init.keys`) — the extension reads the
+        // value once and applies all pointers against it.
+        if (!(raw.init.keys as string[]).includes(storageKey)) {
+          throw new ProtocolError(
+            `inner.init.pointers[${outKey}].storageKey: ${JSON.stringify(storageKey)} not in init.keys`,
+          );
+        }
+        for (const k of Object.keys(ptr as Record<string, unknown>)) {
+          if (k !== 'storageKey' && k !== 'jsonPointer') {
+            throw new ProtocolError(
+              `inner.init.pointers[${outKey}]: unexpected field ${JSON.stringify(k)}`,
+            );
+          }
+        }
+      }
+    }
     for (const k of Object.keys(raw.init)) {
-      if (k !== 'origin' && k !== 'keys') {
+      if (k !== 'origin' && k !== 'keys' && k !== 'pointers') {
         throw new ProtocolError(
           `inner.init: unexpected field ${JSON.stringify(k)} on ${raw.op}`,
         );

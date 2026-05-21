@@ -6,6 +6,7 @@ import {
   type Capability,
   type CaptureHeaderDecl,
   type IndexedDbScopeDecl,
+  type StoragePointerDecl,
   type HelloFrameFromServer,
 } from '@fetchproxy/protocol';
 import type { Identity } from './identity.js';
@@ -31,6 +32,9 @@ export interface BuildServerHelloOpts {
   captureHeaders?: CaptureHeaderDecl[];
   /** 0.4.0+: declared IndexedDB scopes for `read_indexed_db`. */
   indexedDbScopes?: IndexedDbScopeDecl[];
+  /** 0.4.0+: declared JSON-pointer extractions over storage. */
+  localStoragePointers?: StoragePointerDecl[];
+  sessionStoragePointers?: StoragePointerDecl[];
 }
 
 /**
@@ -90,6 +94,18 @@ export async function buildServerHello(
       database: d.database,
       store: d.store,
       keys: [...d.keys],
+    }));
+  }
+  if (opts.localStoragePointers && opts.localStoragePointers.length > 0) {
+    hello.localStoragePointers = opts.localStoragePointers.map((d) => ({
+      key: d.key,
+      jsonPointer: d.jsonPointer,
+    }));
+  }
+  if (opts.sessionStoragePointers && opts.sessionStoragePointers.length > 0) {
+    hello.sessionStoragePointers = opts.sessionStoragePointers.map((d) => ({
+      key: d.key,
+      jsonPointer: d.jsonPointer,
     }));
   }
   return hello;

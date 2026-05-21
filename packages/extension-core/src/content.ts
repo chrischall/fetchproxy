@@ -1,3 +1,5 @@
+import { evalJsonPointer } from '@fetchproxy/protocol';
+
 /**
  * Content script (isolated world). Listens for fetch RPC messages
  * from the background service worker, runs window.fetch in the
@@ -43,6 +45,7 @@ chrome.runtime.onMessage.addListener(
       keys?: string[];
       database?: string;
       store?: string;
+      pointers?: Record<string, { storageKey: string; jsonPointer: string }>;
     },
     _sender,
     sendResponse,
@@ -68,11 +71,7 @@ chrome.runtime.onMessage.addListener(
     }
     if (msg.kind === 'fetchproxy-read-local-storage' && Array.isArray(msg.keys)) {
       try {
-        const values: Record<string, string> = {};
-        for (const k of msg.keys) {
-          const v = window.localStorage.getItem(k);
-          if (typeof v === 'string') values[k] = v;
-        }
+        const values = readStorageWithPointers(window.localStorage, msg.keys, msg.pointers);
         sendResponse({ ok: true, values });
       } catch (e) {
         sendResponse({ ok: false, error: `localStorage read threw: ${(e as Error).message}` });
@@ -81,11 +80,7 @@ chrome.runtime.onMessage.addListener(
     }
     if (msg.kind === 'fetchproxy-read-session-storage' && Array.isArray(msg.keys)) {
       try {
-        const values: Record<string, string> = {};
-        for (const k of msg.keys) {
-          const v = window.sessionStorage.getItem(k);
-          if (typeof v === 'string') values[k] = v;
-        }
+        const values = readStorageWithPointers(window.sessionStorage, msg.keys, msg.pointers);
         sendResponse({ ok: true, values });
       } catch (e) {
         sendResponse({ ok: false, error: `sessionStorage read threw: ${(e as Error).message}` });
@@ -117,6 +112,67 @@ interface IdbResponse {
 interface IdbError {
   ok: false;
   error: string;
+}
+
+/**
+ * Read storage keys plus optional JSON-pointer extractions. Returns a
+ * flat string-valued map.
+ *
+ * - `keys`: full values for these keys are included under their own
+ *   names. Missing keys are omitted.
+ * - `pointers`: for each (outputKey, { storageKey, jsonPointer }),
+ *   the storage value at `storageKey` is JSON-parsed, the pointer
+ *   evaluated, and the extracted node JSON-stringified into the
+ *   result under `outputKey`. Missing storage key, non-JSON value,
+ *   or unresolved path → output key is omitted (NOT an error).
+ */
+function readStorageWithPointers(
+  storage: Storage,
+  keys: string[],
+  pointers: Record<string, { storageKey: string; jsonPointer: string }> | undefined,
+): Record<string, string> {
+  const values: Record<string, string> = {};
+  // Cache parsed JSON per storage key so we don't re-parse for each
+  // pointer that references the same blob (HoneyBook's `jStorage`
+  // pattern: one 50KB blob, many pointers).
+  const parsed = new Map<string, unknown>();
+  const tried = new Set<string>(); // keys we've attempted to parse
+
+  function ensureParsed(storageKey: string): unknown {
+    if (tried.has(storageKey)) return parsed.get(storageKey);
+    tried.add(storageKey);
+    const raw = storage.getItem(storageKey);
+    if (typeof raw !== 'string') return undefined;
+    try {
+      const p = JSON.parse(raw);
+      parsed.set(storageKey, p);
+      return p;
+    } catch {
+      return undefined;
+    }
+  }
+
+  for (const k of keys) {
+    const v = storage.getItem(k);
+    if (typeof v === 'string') values[k] = v;
+  }
+  if (pointers) {
+    for (const [outputKey, { storageKey, jsonPointer }] of Object.entries(pointers)) {
+      const root = ensureParsed(storageKey);
+      if (root === undefined) continue;
+      const node = evalJsonPointer(root, jsonPointer);
+      if (node === undefined) continue;
+      // Serialize back to a string so the wire stays homogeneous.
+      // Primitives serialize cleanly; objects/arrays become JSON text.
+      try {
+        const text = typeof node === 'string' ? node : JSON.stringify(node);
+        if (typeof text === 'string') values[outputKey] = text;
+      } catch {
+        // Non-serializable (e.g. circular) — skip.
+      }
+    }
+  }
+  return values;
 }
 
 async function runReadIndexedDb(

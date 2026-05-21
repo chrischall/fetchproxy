@@ -75,6 +75,24 @@ export const KNOWN_CAPABILITIES: ReadonlySet<Capability> = new Set<Capability>([
 ]);
 
 /**
+ * 0.4.0+: declaration of a JSON-pointer extraction over a stored
+ * blob. `key` must match a declared `localStorageKeys` (resp.
+ * `sessionStorageKeys`) entry; `jsonPointer` is the RFC 6901 path
+ * within the JSON-parsed value at that key.
+ *
+ * MCPs use this when an auth token lives nested inside a large JSON
+ * blob in localStorage (HoneyBook's `jStorage` style). Without
+ * pointer support the MCP either reads the whole 50KB and parses in
+ * Node, OR declares each top-level key separately.
+ */
+export interface StoragePointerDecl {
+  /** Storage key the pointer is evaluated against. */
+  key: string;
+  /** RFC 6901 JSON Pointer, beginning with `/`. */
+  jsonPointer: string;
+}
+
+/**
  * 0.4.0+: declaration entry for `read_indexed_db`. The extension
  * gates per-call requests on subset-match against the declared
  * scopes: same `origin`/`database`/`store`, requested `keys` ⊆
@@ -152,6 +170,14 @@ export interface HelloFrameFromServer {
    * subset-match an entry.
    */
   indexedDbScopes?: IndexedDbScopeDecl[];
+  /**
+   * 0.4.0+: declared JSON-pointer extractions over localStorage
+   * values. Each entry binds `(localStorageKeys[i], jsonPointer)`.
+   * Per-call requests must use a declared pair.
+   */
+  localStoragePointers?: StoragePointerDecl[];
+  /** 0.4.0+: same shape for sessionStorage. */
+  sessionStoragePointers?: StoragePointerDecl[];
   identityX25519Pub: string;      // base64 raw 32B
   identityEd25519Pub: string;     // base64 raw 32B
   sessionNonce: string;           // base64 raw ≥16B
@@ -260,6 +286,18 @@ export interface ReadStorageInit {
   origin: string;
   /** Subset of declared `localStorageKeys` / `sessionStorageKeys`. */
   keys: string[];
+  /**
+   * 0.4.0+: optional pointer extractions. Each output key (record
+   * key) names a value the response should include; the value
+   * `{ storageKey, jsonPointer }` identifies the source. The
+   * extension reads `storageKey` from storage, JSON-parses, evaluates
+   * `jsonPointer`, and returns the extracted node as a JSON-stringified
+   * string under the output key.
+   *
+   * Per-request pointers must each match a declared
+   * `localStoragePointers` / `sessionStoragePointers` entry exactly.
+   */
+  pointers?: Record<string, { storageKey: string; jsonPointer: string }>;
 }
 
 /** 0.4.0 `init` payload for `read_indexed_db`. */

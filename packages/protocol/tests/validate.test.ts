@@ -231,6 +231,37 @@ describe('validateFrame', () => {
       ).toThrow(/cookieKeys.*invalid key/);
     });
 
+    // 0.4.0: glob patterns in declared keys.
+    it('accepts trailing-* glob with literal prefix', () => {
+      expect(() =>
+        validateFrame({ ...validHello, cookieKeys: ['feh--*'] }),
+      ).not.toThrow();
+    });
+
+    it('accepts trailing-* glob in localStorageKeys', () => {
+      expect(() =>
+        validateFrame({ ...validHello, localStorageKeys: ['auth_*'] }),
+      ).not.toThrow();
+    });
+
+    it('rejects bare * glob (no literal prefix)', () => {
+      expect(() =>
+        validateFrame({ ...validHello, cookieKeys: ['*'] }),
+      ).toThrow(/cookieKeys.*invalid key/);
+    });
+
+    it('rejects leading-* glob', () => {
+      expect(() =>
+        validateFrame({ ...validHello, cookieKeys: ['*foo'] }),
+      ).toThrow(/cookieKeys.*invalid key/);
+    });
+
+    it('rejects middle-* glob', () => {
+      expect(() =>
+        validateFrame({ ...validHello, cookieKeys: ['foo*bar'] }),
+      ).toThrow(/cookieKeys.*invalid key/);
+    });
+
     it('rejects illegal chars in localStorage keys', () => {
       expect(() =>
         validateFrame({ ...validHello, localStorageKeys: ['has/slash'] }),
@@ -1168,6 +1199,134 @@ describe('validateFrame (0.4.0 IndexedDb scope decls)', () => {
         ],
       }),
     ).toThrow(/indexedDbScopes.*duplicate/);
+  });
+});
+
+describe('validateFrame (0.4.0 storage pointers)', () => {
+  const validHello = {
+    type: 'hello',
+    protocolVersion: 2,
+    role: 'server',
+    mcpId: 'honeybook-mcp:0.1.0:a3f7c91d2e8b4f56',
+    serverName: 'honeybook-mcp',
+    version: '0.1.0',
+    domains: ['honeybook.com'],
+    identityX25519Pub: 'AAAA',
+    identityEd25519Pub: 'AAAA',
+    sessionNonce: 'AAAA',
+    sessionSig: 'AAAA',
+  };
+
+  it('accepts localStoragePointers when key matches a localStorageKeys entry', () => {
+    expect(() =>
+      validateFrame({
+        ...validHello,
+        capabilities: ['read_local_storage'],
+        localStorageKeys: ['jStorage'],
+        localStoragePointers: [
+          { key: 'jStorage', jsonPointer: '/HB_AUTH_TOKEN' },
+          { key: 'jStorage', jsonPointer: '/HB_AUTH_USER_ID' },
+        ],
+      }),
+    ).not.toThrow();
+  });
+
+  it('rejects localStoragePointers entry whose key is not in localStorageKeys', () => {
+    expect(() =>
+      validateFrame({
+        ...validHello,
+        capabilities: ['read_local_storage'],
+        localStorageKeys: ['jStorage'],
+        localStoragePointers: [{ key: 'no_such_key', jsonPointer: '/x' }],
+      }),
+    ).toThrow(/localStoragePointers.*not in declared/);
+  });
+
+  it('rejects localStoragePointers entry with invalid pointer (missing leading /)', () => {
+    expect(() =>
+      validateFrame({
+        ...validHello,
+        capabilities: ['read_local_storage'],
+        localStorageKeys: ['jStorage'],
+        localStoragePointers: [{ key: 'jStorage', jsonPointer: 'no-slash' }],
+      }),
+    ).toThrow(/jsonPointer/);
+  });
+
+  it('rejects duplicate (key, jsonPointer)', () => {
+    expect(() =>
+      validateFrame({
+        ...validHello,
+        capabilities: ['read_local_storage'],
+        localStorageKeys: ['jStorage'],
+        localStoragePointers: [
+          { key: 'jStorage', jsonPointer: '/a' },
+          { key: 'jStorage', jsonPointer: '/a' },
+        ],
+      }),
+    ).toThrow(/localStoragePointers.*duplicate/);
+  });
+
+  it('sessionStoragePointers obeys the same rules', () => {
+    expect(() =>
+      validateFrame({
+        ...validHello,
+        capabilities: ['read_session_storage'],
+        sessionStorageKeys: ['blob'],
+        sessionStoragePointers: [{ key: 'blob', jsonPointer: '/inner' }],
+      }),
+    ).not.toThrow();
+  });
+});
+
+describe('validateInnerFrame (0.4.0 storage pointers)', () => {
+  it('accepts read_local_storage request with pointers', () => {
+    expect(() =>
+      validateInnerFrame({
+        type: 'request',
+        id: 1,
+        op: 'read_local_storage',
+        init: {
+          origin: 'https://honeybook.com',
+          keys: ['jStorage'],
+          pointers: {
+            HB_AUTH_TOKEN: { storageKey: 'jStorage', jsonPointer: '/HB_AUTH_TOKEN' },
+          },
+        },
+      }),
+    ).not.toThrow();
+  });
+
+  it('rejects pointer whose storageKey is not in init.keys', () => {
+    expect(() =>
+      validateInnerFrame({
+        type: 'request',
+        id: 1,
+        op: 'read_local_storage',
+        init: {
+          origin: 'https://honeybook.com',
+          keys: ['jStorage'],
+          pointers: {
+            HB_AUTH_TOKEN: { storageKey: 'other', jsonPointer: '/a' },
+          },
+        },
+      }),
+    ).toThrow(/storageKey/);
+  });
+
+  it('rejects pointer with invalid jsonPointer', () => {
+    expect(() =>
+      validateInnerFrame({
+        type: 'request',
+        id: 1,
+        op: 'read_local_storage',
+        init: {
+          origin: 'https://honeybook.com',
+          keys: ['jStorage'],
+          pointers: { x: { storageKey: 'jStorage', jsonPointer: 'no-slash' } },
+        },
+      }),
+    ).toThrow(/jsonPointer/);
   });
 });
 

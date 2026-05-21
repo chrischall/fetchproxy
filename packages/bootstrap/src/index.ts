@@ -16,7 +16,12 @@
  * `FetchproxyServer`.
  */
 import { FetchproxyServer, type FetchproxyServerOpts } from '@fetchproxy/server';
-import type { Capability, CaptureHeaderDecl, IndexedDbScopeDecl } from '@fetchproxy/protocol';
+import type {
+  Capability,
+  CaptureHeaderDecl,
+  IndexedDbScopeDecl,
+  StoragePointerDecl,
+} from '@fetchproxy/protocol';
 
 // Bootstrap doesn't depend on @types/node; declare just enough of
 // `process.env` to read the disable-fetchproxy env var. At runtime
@@ -39,6 +44,15 @@ export interface Declarations {
    * that don't use IDB.
    */
   indexedDb?: IndexedDbScopeDecl[];
+  /**
+   * 0.4.0+: JSON-pointer extractions over localStorage values. Each
+   * entry binds `(outputKey → (storageKey, jsonPointer))`. The
+   * storageKey must appear in `localStorage`; bootstrap reads it
+   * once and applies all pointers against the parsed JSON.
+   */
+  localStoragePointers?: { outputKey: string; storageKey: string; jsonPointer: string }[];
+  /** 0.4.0+: same shape for sessionStorage. */
+  sessionStoragePointers?: { outputKey: string; storageKey: string; jsonPointer: string }[];
 }
 
 export interface BootstrapOpts {
@@ -87,6 +101,23 @@ export interface BootstrapServer {
     store: string;
     keys: string[];
   }): Promise<Record<string, unknown>>;
+}
+
+/**
+ * Internal shape: the same `readLocalStorage`/`readSessionStorage`
+ * surface but with the optional `pointers` field. We reach for this
+ * only when the caller declared pointers (the 0.3.0 stub interface
+ * lives in `BootstrapServer` and stays unchanged).
+ */
+interface PointerCapableServer extends BootstrapServer {
+  readLocalStorage(opts: {
+    keys: string[];
+    pointers?: Record<string, { storageKey: string; jsonPointer: string }>;
+  }): Promise<Record<string, string>>;
+  readSessionStorage(opts: {
+    keys: string[];
+    pointers?: Record<string, { storageKey: string; jsonPointer: string }>;
+  }): Promise<Record<string, string>>;
 }
 
 export type BootstrapServerFactory = (opts: FetchproxyServerOpts) => BootstrapServer;
@@ -145,26 +176,52 @@ export async function bootstrap(opts: BootstrapOpts): Promise<Session> {
 
   const factory = opts._serverFactory ?? defaultFactory;
   const indexedDb = opts.declare.indexedDb ?? [];
+  const localStoragePointers = opts.declare.localStoragePointers ?? [];
+  const sessionStoragePointers = opts.declare.sessionStoragePointers ?? [];
   const capabilities: Capability[] = ['fetch'];
+  // localStorage / sessionStorage capabilities are needed whenever
+  // EITHER raw key reads OR pointer extractions are declared (the
+  // extension uses the same verb for both).
   if (opts.declare.cookies.length > 0) capabilities.push('read_cookies');
-  if (opts.declare.localStorage.length > 0) capabilities.push('read_local_storage');
-  if (opts.declare.sessionStorage.length > 0) capabilities.push('read_session_storage');
+  if (opts.declare.localStorage.length > 0 || localStoragePointers.length > 0) {
+    capabilities.push('read_local_storage');
+  }
+  if (opts.declare.sessionStorage.length > 0 || sessionStoragePointers.length > 0) {
+    capabilities.push('read_session_storage');
+  }
   if (opts.declare.captureHeaders.length > 0) capabilities.push('capture_request_header');
   if (indexedDb.length > 0) capabilities.push('read_indexed_db');
+
+  // Pointer declarations need their storageKey listed in declared
+  // localStorageKeys / sessionStorageKeys too. We auto-add it here
+  // so MCP authors don't have to duplicate the key in two places.
+  const localStorageKeys = new Set(opts.declare.localStorage);
+  for (const p of localStoragePointers) localStorageKeys.add(p.storageKey);
+  const sessionStorageKeys = new Set(opts.declare.sessionStorage);
+  for (const p of sessionStoragePointers) sessionStorageKeys.add(p.storageKey);
+
   const server = factory({
     serverName: opts.serverName,
     version: opts.version,
     domains: [...opts.domains],
     capabilities,
     cookieKeys: [...opts.declare.cookies],
-    localStorageKeys: [...opts.declare.localStorage],
-    sessionStorageKeys: [...opts.declare.sessionStorage],
+    localStorageKeys: [...localStorageKeys],
+    sessionStorageKeys: [...sessionStorageKeys],
     captureHeaders: opts.declare.captureHeaders.map((d) => ({ ...d })),
     indexedDbScopes: indexedDb.map((d) => ({
       origin: d.origin,
       database: d.database,
       store: d.store,
       keys: [...d.keys],
+    })),
+    localStoragePointers: localStoragePointers.map((p) => ({
+      key: p.storageKey,
+      jsonPointer: p.jsonPointer,
+    })),
+    sessionStoragePointers: sessionStoragePointers.map((p) => ({
+      key: p.storageKey,
+      jsonPointer: p.jsonPointer,
     })),
     onPairCode: opts.onPairCode,
   });
@@ -180,14 +237,35 @@ export async function bootstrap(opts: BootstrapOpts): Promise<Session> {
         cookies[piece.slice(0, eq)] = piece.slice(eq + 1);
       }
     }
-    const localStorage =
-      opts.declare.localStorage.length > 0
-        ? await server.readLocalStorage({ keys: opts.declare.localStorage })
-        : {};
-    const sessionStorage =
-      opts.declare.sessionStorage.length > 0
-        ? await server.readSessionStorage({ keys: opts.declare.sessionStorage })
-        : {};
+    // 0.4.0: when pointers are declared, request them in the same
+    // call as the raw key reads — the extension reads each storage
+    // key once and applies all pointers to it.
+    let localStorage: Record<string, string> = {};
+    if (opts.declare.localStorage.length > 0 || localStoragePointers.length > 0) {
+      const allKeys = [...localStorageKeys];
+      const pointers: Record<string, { storageKey: string; jsonPointer: string }> = {};
+      for (const p of localStoragePointers) {
+        pointers[p.outputKey] = { storageKey: p.storageKey, jsonPointer: p.jsonPointer };
+      }
+      const stub = server as PointerCapableServer;
+      localStorage = await stub.readLocalStorage({
+        keys: allKeys,
+        ...(localStoragePointers.length > 0 ? { pointers } : {}),
+      });
+    }
+    let sessionStorage: Record<string, string> = {};
+    if (opts.declare.sessionStorage.length > 0 || sessionStoragePointers.length > 0) {
+      const allKeys = [...sessionStorageKeys];
+      const pointers: Record<string, { storageKey: string; jsonPointer: string }> = {};
+      for (const p of sessionStoragePointers) {
+        pointers[p.outputKey] = { storageKey: p.storageKey, jsonPointer: p.jsonPointer };
+      }
+      const stub = server as PointerCapableServer;
+      sessionStorage = await stub.readSessionStorage({
+        keys: allKeys,
+        ...(sessionStoragePointers.length > 0 ? { pointers } : {}),
+      });
+    }
     const capturedHeaders: Record<string, string> = {};
     for (const h of opts.declare.captureHeaders) {
       // capture_request_header is the only step that genuinely blocks

@@ -13,6 +13,7 @@ import {
   type Capability,
   type CaptureHeaderDecl,
   type IndexedDbScopeDecl,
+  type StoragePointerDecl,
   type Frame,
   type HelloFrameFromServer,
   type HelloFrameFromExtension,
@@ -49,6 +50,8 @@ export interface HostOpts {
   ownSessionStorageKeys?: string[];
   ownCaptureHeaders?: CaptureHeaderDecl[];
   ownIndexedDbScopes?: IndexedDbScopeDecl[];
+  ownLocalStoragePointers?: StoragePointerDecl[];
+  ownSessionStoragePointers?: StoragePointerDecl[];
   /**
    * 0.4.0+: invoked once on receipt of the extension hello with the
    * joint pair code `SHA256(mcpPub || extPub)`. The MCP can print this
@@ -100,6 +103,8 @@ export async function startHost(opts: HostOpts): Promise<HostHandle> {
     sessionStorageKeys: opts.ownSessionStorageKeys,
     captureHeaders: opts.ownCaptureHeaders,
     indexedDbScopes: opts.ownIndexedDbScopes,
+    localStoragePointers: opts.ownLocalStoragePointers,
+    sessionStoragePointers: opts.ownSessionStoragePointers,
   });
   const ownSessionNonce = fromB64(ownHello.sessionNonce);
 
