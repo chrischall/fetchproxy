@@ -10,6 +10,11 @@
 
 const subtle: SubtleCrypto = (globalThis.crypto as Crypto).subtle;
 
+/**
+ * A bare 32-byte X25519 or Ed25519 keypair. Both halves are extractable
+ * raw bytes — `crypto.subtle` accepts them back via `importKey`, so the
+ * wire/disk format is the canonical "raw" form rather than PKCS#8/SPKI.
+ */
 export interface RawKeyPair {
   privateKey: Uint8Array; // raw, 32 bytes
   publicKey: Uint8Array; // raw, 32 bytes
@@ -20,6 +25,7 @@ async function exportRaw(key: CryptoKey, format: 'raw' | 'pkcs8' | 'spki'): Prom
   return new Uint8Array(buf);
 }
 
+/** Generate a fresh X25519 keypair for ECDH key agreement. */
 export async function generateX25519(): Promise<RawKeyPair> {
   const kp = (await subtle.generateKey({ name: 'X25519' }, true, [
     'deriveBits',
@@ -30,6 +36,7 @@ export async function generateX25519(): Promise<RawKeyPair> {
   return { privateKey: priv.slice(-32), publicKey: pub };
 }
 
+/** Generate a fresh Ed25519 keypair for sign/verify. */
 export async function generateEd25519(): Promise<RawKeyPair> {
   const kp = (await subtle.generateKey({ name: 'Ed25519' }, true, [
     'sign',
@@ -73,6 +80,11 @@ async function importEd25519Pub(raw: Uint8Array): Promise<CryptoKey> {
   return subtle.importKey('raw', raw as BufferSource, { name: 'Ed25519' }, false, ['verify']);
 }
 
+/**
+ * Compute the X25519 ECDH shared secret. Both sides of the handshake
+ * end up with the same 32-byte output, which is then fed into HKDF to
+ * derive the per-session AES key.
+ */
 export async function ecdhX25519(privRaw: Uint8Array, pubRaw: Uint8Array): Promise<Uint8Array> {
   const priv = await importX25519Priv(privRaw);
   const pub = await importX25519Pub(pubRaw);
@@ -80,12 +92,17 @@ export async function ecdhX25519(privRaw: Uint8Array, pubRaw: Uint8Array): Promi
   return new Uint8Array(bits);
 }
 
+/** Sign `msg` with an Ed25519 private key. Returns a 64-byte signature. */
 export async function ed25519Sign(privRaw: Uint8Array, msg: Uint8Array): Promise<Uint8Array> {
   const priv = await importEd25519Priv(privRaw);
   const sig = await subtle.sign({ name: 'Ed25519' }, priv, msg as BufferSource);
   return new Uint8Array(sig);
 }
 
+/**
+ * Verify a 64-byte Ed25519 signature. Returns `false` on signature
+ * mismatch; only throws if the public key bytes are unimportable.
+ */
 export async function ed25519Verify(
   pubRaw: Uint8Array,
   msg: Uint8Array,
@@ -95,6 +112,11 @@ export async function ed25519Verify(
   return subtle.verify({ name: 'Ed25519' }, pub, sig as BufferSource, msg as BufferSource);
 }
 
+/**
+ * HKDF-SHA256 extract+expand. Used to derive the AES-GCM session key
+ * from the ECDH shared secret, salted with the server's hello nonce
+ * and personalised with the `fetchproxy/0.1.0/session` info string.
+ */
 export async function hkdfSha256(
   ikm: Uint8Array,
   salt: Uint8Array,
@@ -117,6 +139,11 @@ export async function hkdfSha256(
   return new Uint8Array(bits);
 }
 
+/**
+ * AES-256-GCM encrypt. `key` must be 32 bytes; `iv` must be 12. The
+ * returned ciphertext bundles the GCM authentication tag in the last
+ * 16 bytes — pass it straight into `aesGcmOpen` to recover the plaintext.
+ */
 export async function aesGcmSeal(
   key: Uint8Array,
   iv: Uint8Array,
@@ -133,6 +160,7 @@ export async function aesGcmSeal(
   return new Uint8Array(ct);
 }
 
+/** AES-256-GCM decrypt. Throws on tag mismatch — never returns junk. */
 export async function aesGcmOpen(
   key: Uint8Array,
   iv: Uint8Array,
@@ -149,6 +177,7 @@ export async function aesGcmOpen(
   return new Uint8Array(pt);
 }
 
+/** SHA-256 digest. Returns the raw 32-byte hash. */
 export async function sha256(data: Uint8Array): Promise<Uint8Array> {
   const h = await subtle.digest('SHA-256', data as BufferSource);
   return new Uint8Array(h);

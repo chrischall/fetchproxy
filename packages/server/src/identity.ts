@@ -8,6 +8,11 @@ import {
   fromB64,
 } from '@fetchproxy/protocol';
 
+/**
+ * Long-term identity keys for one fetchproxy MCP server. Persisted on
+ * disk (chmod 0600) so the extension's trust record — keyed off the
+ * SHA-256 of `x25519Pub` — survives process restarts.
+ */
 export interface Identity {
   x25519Priv: Uint8Array;
   x25519Pub: Uint8Array;
@@ -22,10 +27,18 @@ export interface Identity {
 const SAFE_PLAIN = /^[A-Za-z0-9._-]+$/;
 const SAFE_SCOPED = /^@[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/;
 
+/** `$HOME/.fetchproxy/identity`. Override via the `dir` arg or `identityDir`. */
 export function defaultIdentityDir(): string {
   return join(homedir(), '.fetchproxy', 'identity');
 }
 
+/**
+ * Read the identity for `serverName` from `dir`, generating + persisting
+ * a fresh X25519/Ed25519 keypair if no file exists. The file is written
+ * with mode 0o600 (single-user only). Callers must use a safe
+ * `serverName` — scoped packages like `@fetchproxy/example-mcp` are OK
+ * and get their `/` translated to `_` for the filename.
+ */
 export async function loadOrCreateIdentity(
   serverName: string,
   dir: string = defaultIdentityDir(),

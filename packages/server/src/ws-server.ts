@@ -192,7 +192,24 @@ export interface ReadCookiesResultError {
   error: string;
 }
 
+/**
+ * The MCP-facing handle for the fetchproxy bridge.
+ *
+ * On `listen()`, the server races the configured port: if it binds,
+ * the instance becomes the concentrator (role `'host'`) the extension
+ * dials. If the port is already taken by another fetchproxy host, the
+ * instance becomes a peer (role `'peer'`) and tunnels through that
+ * host's existing WebSocket. Either way, callers issue `fetch()` (or
+ * one of the verb shortcuts) and get the response from the user's
+ * signed-in browser tab as if they'd run `window.fetch` there
+ * themselves.
+ *
+ * Behavior is identical between host and peer roles — `role` is
+ * surfaced mostly for testability and metrics. Callers should not
+ * branch on it.
+ */
 export class FetchproxyServer {
+  /** Set after `listen()` succeeds. Null while not listening. */
   public role: 'host' | 'peer' | null = null;
 
   private opts: ResolvedOpts;
@@ -251,6 +268,14 @@ export class FetchproxyServer {
     };
   }
 
+  /**
+   * Start the WebSocket bridge. Loads the long-term identity keypair
+   * from disk (creating it on first call), elects the host-vs-peer
+   * role by attempting to bind the configured port, and stands up the
+   * matching handshake machinery. Idempotent only insofar as it leaves
+   * `role` non-null on success; calling `listen()` twice without an
+   * intervening `close()` is a programming error.
+   */
   async listen(): Promise<void> {
     this.identity = await loadOrCreateIdentity(this.opts.serverName, this.opts.identityDir);
     this.mcpId = generateMcpId(this.opts.serverName, this.opts.version);
@@ -283,6 +308,20 @@ export class FetchproxyServer {
     }
   }
 
+  /**
+   * Raw single-shot fetch through the bridge. Most callers should prefer
+   * the verb shortcuts (`get` / `post` / `getJson` / `postJson` / `getHtml`)
+   * — they build the URL from a path, default sensible status checks, and
+   * map non-2xx into typed errors. This entry point is here for the cases
+   * where you already have a `FetchInit` ready (or need to fully control
+   * `tabUrl` independently of the request URL).
+   *
+   * Returns a discriminated union: `{ ok: true, status, url, body }` on a
+   * successful upstream HTTP response (any 2xx/3xx/4xx/5xx — the upstream
+   * STATUS does not turn this into `ok: false`); `{ ok: false, error }`
+   * only when the bridge itself failed (no signed-in tab, extension
+   * offline, etc.).
+   */
   async fetch(init: FetchInit): Promise<FetchResult | FetchResultError> {
     if (!this.hostHandle && !this.peerHandle) {
       throw new Error('FetchproxyServer.fetch called before listen() — not listening');
@@ -364,10 +403,12 @@ export class FetchproxyServer {
     return response;
   }
 
+  /** Issue a GET against `path` (resolved via `request()` rules). */
   get(path: string, opts: BodylessRequestOpts = {}): Promise<HttpResponse> {
     return this.request('GET', path, opts);
   }
 
+  /** Issue a POST with optional string body. */
   post(
     path: string,
     body?: string,
@@ -376,6 +417,7 @@ export class FetchproxyServer {
     return this.request('POST', path, { ...opts, body });
   }
 
+  /** Issue a PUT with optional string body. */
   put(
     path: string,
     body?: string,
@@ -384,6 +426,7 @@ export class FetchproxyServer {
     return this.request('PUT', path, { ...opts, body });
   }
 
+  /** Issue a PATCH with optional string body. */
   patch(
     path: string,
     body?: string,
@@ -392,6 +435,7 @@ export class FetchproxyServer {
     return this.request('PATCH', path, { ...opts, body });
   }
 
+  /** Issue a DELETE. No body — bridge does not support DELETE-with-body. */
   delete(path: string, opts: BodylessRequestOpts = {}): Promise<HttpResponse> {
     return this.request('DELETE', path, opts);
   }
@@ -573,6 +617,12 @@ export class FetchproxyServer {
     }
   }
 
+  /**
+   * Shut down the bridge. Host: terminates the WebSocket server and any
+   * still-attached extension/peer clients. Peer: closes the upstream
+   * connection to the host. Safe to call before `listen()` (no-op) or
+   * twice in a row.
+   */
   async close(): Promise<void> {
     if (this.hostHandle) await this.hostHandle.close();
     if (this.peerHandle) this.peerHandle.close();

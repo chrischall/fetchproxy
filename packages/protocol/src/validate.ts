@@ -2,6 +2,12 @@ import type { Capability, Frame, HelloFrame, ReadyFrame, EncryptedFrame, InnerFr
 import { KNOWN_CAPABILITIES, PROTOCOL_VERSION } from './frames.js';
 import { isValidMcpId } from './mcp-id.js';
 
+/**
+ * Thrown by `validateFrame` / `validateInnerFrame` when a structurally
+ * invalid frame is received on the wire. Carries a one-line message
+ * identifying the field that failed (`hello.domains`, `frame.seq`, etc.)
+ * so the receiver can log / surface it without rebuilding the context.
+ */
 export class ProtocolError extends Error {
   constructor(message: string) {
     super(message);
@@ -63,6 +69,13 @@ function assertHttpUrl(x: unknown, label: string): asserts x is string {
   }
 }
 
+/**
+ * Validate a raw JSON-parsed value as a top-level fetchproxy frame.
+ * Throws `ProtocolError` on any structural issue (wrong type, missing
+ * field, bad encoding, forbidden prototype-pollution key). Used by both
+ * sides of the WebSocket — anything that comes in over the wire passes
+ * through this before the handler touches it.
+ */
 export function validateFrame(raw: unknown): Frame {
   assertObject(raw, 'frame');
   const t = raw.type;
@@ -148,6 +161,12 @@ function validateEncrypted(raw: Record<string, unknown>): EncryptedFrame {
   return raw as unknown as EncryptedFrame;
 }
 
+/**
+ * Validate a raw JSON-parsed value as an inner (post-decryption) frame.
+ * Sibling of `validateFrame`; each side runs this on the JSON payload
+ * recovered from a successful AES-GCM open before dispatching to a
+ * verb handler.
+ */
 export function validateInnerFrame(raw: unknown): InnerFrame {
   assertObject(raw, 'inner');
   const t = raw.type;
