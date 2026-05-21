@@ -10,7 +10,7 @@ describe('validateFrame', () => {
       mcpId: 'opentable-mcp:0.9.1:a3f7c91d2e8b4f56',
       serverName: 'opentable-mcp',
       version: '0.9.1',
-      domain: 'opentable.com',
+      domains: ['opentable.com'],
       identityX25519Pub: 'AAAA',
       identityEd25519Pub: 'AAAA',
       sessionNonce: 'AAAA',
@@ -19,6 +19,10 @@ describe('validateFrame', () => {
 
     it('accepts valid', () => {
       expect(() => validateFrame(validHello)).not.toThrow();
+    });
+
+    it('accepts multiple domains', () => {
+      expect(() => validateFrame({ ...validHello, domains: ['a.com', 'b.com'] })).not.toThrow();
     });
 
     it('rejects when mcpId is missing', () => {
@@ -36,6 +40,30 @@ describe('validateFrame', () => {
 
     it('rejects non-base64 identityX25519Pub', () => {
       expect(() => validateFrame({ ...validHello, identityX25519Pub: '!!!' })).toThrow(/identityX25519Pub/);
+    });
+
+    it('rejects empty domains array', () => {
+      expect(() => validateFrame({ ...validHello, domains: [] })).toThrow(/domains/);
+    });
+
+    it('rejects non-array domains', () => {
+      expect(() => validateFrame({ ...validHello, domains: 'opentable.com' })).toThrow(/domains/);
+    });
+
+    it('rejects missing domains field', () => {
+      const { domains, ...bad } = validHello;
+      expect(() => validateFrame(bad)).toThrow(/domains/);
+    });
+
+    it('rejects non-string domain entry', () => {
+      expect(() => validateFrame({ ...validHello, domains: ['ok.com', 42] })).toThrow(/domains/);
+    });
+
+    it('rejects bad hostname in domains', () => {
+      expect(() => validateFrame({ ...validHello, domains: ['not a host'] })).toThrow(/domains/);
+      expect(() => validateFrame({ ...validHello, domains: [''] })).toThrow(/domains/);
+      expect(() => validateFrame({ ...validHello, domains: ['has/slash.com'] })).toThrow(/domains/);
+      expect(() => validateFrame({ ...validHello, domains: ['ok.com', '!!!'] })).toThrow(/domains/);
     });
   });
 

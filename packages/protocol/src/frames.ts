@@ -1,8 +1,11 @@
 /**
- * Frame types for fetchproxy protocol v1 (0.1.0).
+ * Frame types for fetchproxy protocol v1 (0.2.0+).
  *
  * Top-level frames on the wire: hello, ready, frame (encrypted).
  * Inner frames (inside ciphertext): ping, pong, request, response.
+ *
+ * 0.2.0 wire change: the server hello carries `domains: string[]`
+ * instead of `domain: string`. 0.1.x and 0.2.x cannot interoperate.
  */
 
 export const PROTOCOL_VERSION = 1 as const;
@@ -15,7 +18,12 @@ export interface HelloFrameFromServer {
   mcpId: string;                  // server:version:rand
   serverName: string;
   version: string;
-  domain: string;
+  /**
+   * Non-empty array of hostnames this MCP is allowed to reach. The
+   * extension treats each entry as "exact hostname or any subdomain
+   * of it." (0.2.0+: replaces the singular `domain: string` field.)
+   */
+  domains: string[];
   identityX25519Pub: string;      // base64 raw 32B
   identityEd25519Pub: string;     // base64 raw 32B
   sessionNonce: string;           // base64 raw ≥16B

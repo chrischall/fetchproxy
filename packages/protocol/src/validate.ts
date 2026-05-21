@@ -11,6 +11,10 @@ export class ProtocolError extends Error {
 
 const FORBIDDEN_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
 const BASE64_RE = /^[A-Za-z0-9+/]*={0,2}$/;
+// Strict DNS hostname: ≥2 labels, alphanumeric + hyphen, no leading/trailing
+// hyphen per label. Mirrors the pattern used in ensure-domain-tab.ts so the
+// server, protocol, and extension agree on what is a "valid hostname".
+const HOSTNAME_RE = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$/i;
 
 function assertObject(x: unknown, label: string): asserts x is Record<string, unknown> {
   if (typeof x !== 'object' || x === null || Array.isArray(x)) {
@@ -74,7 +78,20 @@ function validateHello(raw: Record<string, unknown>): HelloFrame {
     if (!isValidMcpId(raw.mcpId)) throw new ProtocolError('hello.mcpId: invalid format');
     assertString(raw.serverName, 'hello.serverName');
     assertString(raw.version, 'hello.version');
-    assertString(raw.domain, 'hello.domain');
+    if (!Array.isArray(raw.domains)) {
+      throw new ProtocolError('hello.domains: expected array');
+    }
+    if (raw.domains.length === 0) {
+      throw new ProtocolError('hello.domains: must be non-empty');
+    }
+    for (const d of raw.domains) {
+      if (typeof d !== 'string') {
+        throw new ProtocolError(`hello.domains: entry must be string, got ${typeof d}`);
+      }
+      if (!HOSTNAME_RE.test(d)) {
+        throw new ProtocolError(`hello.domains: invalid hostname ${JSON.stringify(d)}`);
+      }
+    }
     assertBase64(raw.identityX25519Pub, 'hello.identityX25519Pub');
     assertBase64(raw.identityEd25519Pub, 'hello.identityEd25519Pub');
     assertBase64(raw.sessionNonce, 'hello.sessionNonce');
