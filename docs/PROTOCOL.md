@@ -293,7 +293,7 @@ Each MCP holds a long-term keypair stored at `~/.fetchproxy/identity/<server-nam
 - X25519 keypair → ECDH for session-key agreement.
 - Ed25519 keypair → signs `mcpId || sessionNonce` so the extension can prove freshness per connection.
 
-The extension does **not** persist a long-term identity in 0.1.x. It generates an ephemeral X25519 keypair per connection.
+The extension does **not** persist a long-term identity in 0.2.x. It generates an ephemeral X25519 keypair per connection, so the session key is fresh every time even when the same MCP identity reconnects.
 
 ### Pair code (SAS)
 
