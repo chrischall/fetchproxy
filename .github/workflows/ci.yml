@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_call:
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6.0.2
+
+      - uses: actions/setup-node@v6.4.0
+        with:
+          node-version: 22
+          cache: npm
+
+      # `npm ci` from the root installs every workspace at once (protocol,
+      # server, extension-core, extension-chrome) thanks to the workspaces
+      # field in the root package.json.
+      - run: npm ci
+
+      - name: Test (full monorepo via vitest)
+        run: npm test
+
+      # extension-chrome has no tsconfig.json of its own — it's bundled
+      # straight from extension-core's source via esbuild — so we skip
+      # it in the typecheck and verify it bundles in a separate step.
+      - name: Typecheck
+        run: npx tsc --noEmit --build packages/protocol packages/server packages/extension-core
+
+      # Build the Chrome extension to confirm bundling succeeds and the
+      # resulting dist/ has the expected manifest + entry points.
+      - name: Build Chrome extension
+        working-directory: packages/extension-chrome
+        run: |
+          npx tsx build.ts
+          test -f dist/manifest.json
+          test -f dist/background.js
+          test -f dist/content.js
+          test -f dist/popup.js
