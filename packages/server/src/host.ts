@@ -1,0 +1,201 @@
+import { Server as HttpServer } from 'node:http';
+import { WebSocketServer, WebSocket } from 'ws';
+import {
+  ed25519Sign,
+  ecdhX25519,
+  hkdfSha256,
+  sealInnerFrame,
+  openEncryptedFrame,
+  validateFrame,
+  PROTOCOL_VERSION,
+  type Frame,
+  type HelloFrameFromServer,
+  type InnerFrame,
+} from '@fetchproxy/protocol';
+import { SessionState } from './session.js';
+import type { Identity } from './identity.js';
+
+// Reject WS upgrades from public origins (drive-by webpage defense).
+// Browsers send Origin: <scheme>://<host>[:<port>] on WS upgrades from
+// pages. Extensions send chrome-extension:// or null/missing. We allow:
+// - Missing or null origin (extension)
+// - chrome-extension://, safari-extension://, moz-extension://
+// - http(s)://127.0.0.1 or localhost (dev tools / curl from same host)
+// Everything else (including https://evil.com) is rejected.
+const PUBLIC_ORIGIN_RE = /^https?:\/\/(?!(127\.0\.0\.1|localhost)(:|$))/i;
+
+export interface HostOpts {
+  httpServer: HttpServer;
+  ownIdentity: Identity;
+  ownMcpId: string;
+  ownServerName: string;
+  ownVersion: string;
+  ownDomain: string;
+}
+
+export interface HostHandle {
+  close: () => Promise<void>;
+  sendOwnInner: (inner: InnerFrame) => Promise<void>;
+  onOwnInner: (cb: (inner: InnerFrame) => void) => void;
+}
+
+interface PeerSlot {
+  ws: WebSocket;
+  helloFrame: HelloFrameFromServer;
+}
+
+const enc = new TextEncoder();
+
+function toB64(b: Uint8Array): string {
+  return Buffer.from(b).toString('base64');
+}
+
+function concat(a: Uint8Array, b: Uint8Array): Uint8Array {
+  const out = new Uint8Array(a.length + b.length);
+  out.set(a, 0);
+  out.set(b, a.length);
+  return out;
+}
+
+export async function startHost(opts: HostOpts): Promise<HostHandle> {
+  const wss = new WebSocketServer({
+    server: opts.httpServer,
+    verifyClient: (info, cb) => {
+      const origin = info.req.headers.origin;
+      if (origin && PUBLIC_ORIGIN_RE.test(origin)) {
+        cb(false, 403, 'origin not allowed');
+        return;
+      }
+      cb(true);
+    },
+  });
+
+  // Build own hello once at startup.
+  const ownSessionNonce = new Uint8Array(32);
+  (globalThis.crypto as Crypto).getRandomValues(ownSessionNonce);
+  const ownSig = await ed25519Sign(
+    opts.ownIdentity.ed25519Priv,
+    concat(enc.encode(opts.ownMcpId), ownSessionNonce),
+  );
+  const ownHello: HelloFrameFromServer = {
+    type: 'hello',
+    protocolVersion: PROTOCOL_VERSION,
+    role: 'server',
+    mcpId: opts.ownMcpId,
+    serverName: opts.ownServerName,
+    version: opts.ownVersion,
+    domain: opts.ownDomain,
+    identityX25519Pub: toB64(opts.ownIdentity.x25519Pub),
+    identityEd25519Pub: toB64(opts.ownIdentity.ed25519Pub),
+    sessionNonce: toB64(ownSessionNonce),
+    sessionSig: toB64(ownSig),
+  };
+
+  let extensionWs: WebSocket | null = null;
+  const peers = new Map<string, PeerSlot>();
+  const ownInnerListeners: ((inner: InnerFrame) => void)[] = [];
+  let ownSession: SessionState | null = null;
+
+  wss.on('connection', (ws) => {
+    let identified: 'extension' | 'peer' | null = null;
+    let peerMcpId: string | null = null;
+
+    ws.on('message', async (data) => {
+      let frame: Frame;
+      try {
+        const raw = JSON.parse(data.toString());
+        frame = validateFrame(raw);
+      } catch {
+        ws.close(1002, 'protocol error');
+        return;
+      }
+
+      // Hello dispatch.
+      if (frame.type === 'hello' && frame.role === 'extension') {
+        if (extensionWs) {
+          ws.close(1008, 'extension already connected');
+          return;
+        }
+        identified = 'extension';
+        extensionWs = ws;
+        // Send own hello first.
+        ws.send(JSON.stringify(ownHello));
+        // Then forward any peer hellos that arrived earlier.
+        for (const slot of peers.values()) {
+          ws.send(JSON.stringify(slot.helloFrame));
+        }
+        return;
+      }
+      if (frame.type === 'hello' && frame.role === 'server') {
+        identified = 'peer';
+        peerMcpId = frame.mcpId;
+        peers.set(frame.mcpId, { ws, helloFrame: frame });
+        if (extensionWs) extensionWs.send(JSON.stringify(frame));
+        return;
+      }
+
+      // Ready dispatch (extension → server).
+      if (frame.type === 'ready') {
+        if (frame.mcpId === opts.ownMcpId) {
+          // Derive our own session key.
+          const extPub = new Uint8Array(Buffer.from(frame.extensionSessionPub, 'base64'));
+          const shared = await ecdhX25519(opts.ownIdentity.x25519Priv, extPub);
+          const key = await hkdfSha256(
+            shared,
+            ownSessionNonce,
+            enc.encode('fetchproxy/0.1.0/session'),
+            32,
+          );
+          ownSession = new SessionState(key);
+        } else {
+          const slot = peers.get(frame.mcpId);
+          if (slot) slot.ws.send(JSON.stringify(frame));
+        }
+        return;
+      }
+
+      // Encrypted-frame dispatch.
+      if (frame.type === 'frame') {
+        if (identified === 'extension') {
+          // Extension → server. Route by mcpId.
+          if (frame.mcpId === opts.ownMcpId) {
+            if (!ownSession) return;
+            if (!ownSession.acceptInboundSeq(frame.seq)) return;
+            const inner = await openEncryptedFrame(ownSession.sessionKey, frame);
+            ownInnerListeners.forEach((cb) => cb(inner));
+          } else {
+            const slot = peers.get(frame.mcpId);
+            if (slot) slot.ws.send(JSON.stringify(frame));
+          }
+        } else if (identified === 'peer') {
+          // Peer → extension. Forward verbatim.
+          if (extensionWs) extensionWs.send(JSON.stringify(frame));
+        }
+      }
+    });
+
+    ws.on('close', () => {
+      if (identified === 'extension' && extensionWs === ws) extensionWs = null;
+      if (identified === 'peer' && peerMcpId) peers.delete(peerMcpId);
+    });
+  });
+
+  return {
+    close: () =>
+      new Promise<void>((resolve) => {
+        wss.close(() => resolve());
+      }),
+    sendOwnInner: async (inner) => {
+      if (!ownSession) throw new Error('host: no session yet');
+      if (!extensionWs) throw new Error('host: no extension connected');
+      const sealed = await sealInnerFrame(
+        ownSession.sessionKey,
+        opts.ownMcpId,
+        ownSession.nextOutboundSeq(),
+        inner,
+      );
+      extensionWs.send(JSON.stringify(sealed));
+    },
+    onOwnInner: (cb) => { ownInnerListeners.push(cb); },
+  };
+}
