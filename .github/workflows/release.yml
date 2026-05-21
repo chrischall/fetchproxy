@@ -1,0 +1,95 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+
+    steps:
+      - uses: actions/checkout@v6.0.2
+
+      - uses: actions/setup-node@v6.4.0
+        with:
+          node-version: 22
+          cache: npm
+          registry-url: https://registry.npmjs.org
+
+      # Strip always-auth from .npmrc (set by setup-node, deprecated in npm 11)
+      - run: sed -i '/always-auth/d' "$NPM_CONFIG_USERCONFIG"
+
+      - run: npm ci
+
+      - name: Extract version (from tag)
+        run: |
+          # ${GITHUB_REF_NAME} is e.g. "v0.2.1" — strip the leading "v".
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          echo "VERSION=${TAG_VERSION}" >> "$GITHUB_ENV"
+
+      # Sanity check: the published package versions should match the
+      # tag. The Tag & Bump workflow keeps them in sync, but a manually
+      # pushed tag could drift, so we fail fast here rather than ship
+      # a mismatched version pair.
+      - name: Verify package versions match tag
+        run: |
+          PROTOCOL=$(node -p "require('./packages/protocol/package.json').version")
+          SERVER=$(node -p "require('./packages/server/package.json').version")
+          if [ "$PROTOCOL" != "$VERSION" ] || [ "$SERVER" != "$VERSION" ]; then
+            echo "Tag is v${VERSION} but packages are protocol=${PROTOCOL}, server=${SERVER}" >&2
+            echo "Bump versions to match the tag, or re-tag." >&2
+            exit 1
+          fi
+
+      # Typecheck + build every package (server + protocol depend on tsc;
+      # extension-chrome's bundle is produced separately below).
+      - name: Build packages
+        run: npm run build
+
+      # ─── npm publish: @fetchproxy/protocol ───
+      # Publish protocol first so the server's `^${VERSION}` peer is
+      # resolvable when consumers install both. Idempotent: skip if
+      # this version is already on the registry so re-runs are safe.
+      - name: Publish @fetchproxy/protocol to npm
+        run: |
+          PUBLISHED=$(npm view "@fetchproxy/protocol@${VERSION}" version 2>/dev/null || true)
+          if [ "$PUBLISHED" = "$VERSION" ]; then
+            echo "npm already has @fetchproxy/protocol@${VERSION} — skipping."
+            exit 0
+          fi
+          npm publish --workspace=@fetchproxy/protocol --access=public --provenance
+
+      # ─── npm publish: @fetchproxy/server ───
+      - name: Publish @fetchproxy/server to npm
+        run: |
+          PUBLISHED=$(npm view "@fetchproxy/server@${VERSION}" version 2>/dev/null || true)
+          if [ "$PUBLISHED" = "$VERSION" ]; then
+            echo "npm already has @fetchproxy/server@${VERSION} — skipping."
+            exit 0
+          fi
+          npm publish --workspace=@fetchproxy/server --access=public --provenance
+
+      # ─── Chrome extension bundle ───
+      # Build the unpacked extension and zip it for distribution. The
+      # zip is what users sideload during testing / before the Chrome
+      # Web Store reviews each release.
+      - name: Build & package Chrome extension
+        working-directory: packages/extension-chrome
+        run: |
+          npx tsx build.ts
+          cd dist
+          zip -r "../../../fetchproxy-extension-${VERSION}.zip" .
+          ls -la "../../../fetchproxy-extension-${VERSION}.zip"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v3.0.0
+        with:
+          files: |
+            fetchproxy-extension-${{ env.VERSION }}.zip
+          generate_release_notes: true
+          fail_on_unmatched_files: false
