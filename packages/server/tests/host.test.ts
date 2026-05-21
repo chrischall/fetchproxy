@@ -10,6 +10,7 @@ import {
 import { startHost, type HostHandle } from '../src/host.js';
 import { electRole } from '../src/election.js';
 import { loadOrCreateIdentity } from '../src/identity.js';
+import { buildServerHello } from '../src/build-server-hello.js';
 
 describe('host (concentrator)', () => {
   let host: HostHandle | null = null;
@@ -133,6 +134,172 @@ describe('host (concentrator)', () => {
     await expect(host.sendOwnInner({ type: 'ping' })).rejects.toThrow(
       /extension disconnected before ready/,
     );
+  });
+
+  it('closes WS with 1011 (internal error) when crypto unwinds during ready', async () => {
+    // host.ts:189-190 — the outer catch around the message handler.
+    // If the extension's ready frame survives validateFrame (i.e. it's
+    // valid base64 of any length) but ecdhX25519 / hkdfSha256 throw on
+    // the resulting bytes, the host must terminate the WS with 1011 so
+    // an external observer can distinguish a protocol-shape failure
+    // (1002) from a crypto / handler crash (1011). Without this branch
+    // the rejection escapes into an unhandled promise.
+    const port = 41106;
+    const el = await electRole({ host: '127.0.0.1', port });
+    if (el.role !== 'host') throw new Error('expected host');
+    const idDir = mkdtempSync(join(tmpdir(), 'fp-host-'));
+    const id = await loadOrCreateIdentity('opentable-mcp', idDir);
+
+    host = await startHost({
+      httpServer: el.server,
+      ownIdentity: id,
+      ownMcpId: 'opentable-mcp:0.9.1:abc1234567890def',
+      ownServerName: 'opentable-mcp',
+      ownVersion: '0.9.1',
+      ownDomains: ['opentable.com'],
+    });
+
+    // Pretend to be the extension. Send a valid extension hello, then
+    // immediately send a ready frame whose extensionSessionPub is
+    // syntactically valid base64 but the wrong length — ecdhX25519
+    // expects a 32-byte X25519 public key and throws otherwise.
+    const ws = new WebSocket(`ws://127.0.0.1:${port}`);
+    await new Promise<void>((r) => ws.once('open', () => r()));
+    const extHello: HelloFrameFromExtension = {
+      type: 'hello',
+      protocolVersion: 1,
+      role: 'extension',
+      platform: 'chrome',
+      extensionId: 'fetchproxy',
+      version: '0.1.0',
+    };
+    ws.send(JSON.stringify(extHello));
+    // Wait for host's hello to come back so we know the connection is established.
+    await new Promise((r) => setTimeout(r, 50));
+    // Silence unhandled-error noise from the host-side ws.close before the
+    // test-side ws sees a clean close: the host writes a 1011 close frame
+    // then terminates, and ws.on('error') would otherwise fire on EPIPE.
+    ws.on('error', () => {
+      /* expected */
+    });
+    const closed = new Promise<{ code: number; reason: string }>((resolve) => {
+      ws.once('close', (code: number, reason: Buffer) =>
+        resolve({ code, reason: reason.toString() }),
+      );
+    });
+    const badReady = {
+      type: 'ready',
+      mcpId: 'opentable-mcp:0.9.1:abc1234567890def',
+      // 8 bytes instead of 32 — passes BASE64_RE, fails ECDH.
+      extensionSessionPub: Buffer.from(new Uint8Array(8)).toString('base64'),
+    };
+    ws.send(JSON.stringify(badReady));
+    const { code } = await closed;
+    expect(code).toBe(1011);
+  });
+
+  it('closes WS with 1002 (protocol error) on malformed JSON or invalid frame', async () => {
+    // host.ts:114-115 — JSON.parse fails or validateFrame throws. The
+    // host MUST tear the connection down (1002 = protocol error in the
+    // RFC 6455 codes) rather than ignoring the message: a misbehaving
+    // peer should not be able to occupy the slot indefinitely.
+    const port = 41104;
+    const el = await electRole({ host: '127.0.0.1', port });
+    if (el.role !== 'host') throw new Error('expected host');
+    const idDir = mkdtempSync(join(tmpdir(), 'fp-host-'));
+    const id = await loadOrCreateIdentity('opentable-mcp', idDir);
+
+    host = await startHost({
+      httpServer: el.server,
+      ownIdentity: id,
+      ownMcpId: 'opentable-mcp:0.9.1:abc1234567890def',
+      ownServerName: 'opentable-mcp',
+      ownVersion: '0.9.1',
+      ownDomains: ['opentable.com'],
+    });
+
+    const ws = new WebSocket(`ws://127.0.0.1:${port}`);
+    await new Promise<void>((r) => ws.once('open', () => r()));
+    const closed = new Promise<{ code: number; reason: string }>((resolve) => {
+      ws.once('close', (code: number, reason: Buffer) =>
+        resolve({ code, reason: reason.toString() }),
+      );
+    });
+    ws.send('not-json-at-all');
+    const { code, reason } = await closed;
+    expect(code).toBe(1002);
+    expect(reason).toBe('protocol error');
+  });
+
+  it('forwards a peer hello to the already-connected extension', async () => {
+    // host.ts:138 — when a peer's `hello` arrives after the extension
+    // is already attached, host forwards the peer hello to the
+    // extension verbatim. This is the path that makes multi-MCP
+    // setups work (peer arrives second; the host announces it to the
+    // extension so it can pair the new identity).
+    const port = 41105;
+    const el = await electRole({ host: '127.0.0.1', port });
+    if (el.role !== 'host') throw new Error('expected host');
+    const idDir = mkdtempSync(join(tmpdir(), 'fp-host-'));
+    const ownId = await loadOrCreateIdentity('opentable-mcp', idDir);
+    const peerId = await loadOrCreateIdentity('resy-mcp', idDir);
+
+    host = await startHost({
+      httpServer: el.server,
+      ownIdentity: ownId,
+      ownMcpId: 'opentable-mcp:0.9.1:abc1234567890de1',
+      ownServerName: 'opentable-mcp',
+      ownVersion: '0.9.1',
+      ownDomains: ['opentable.com'],
+    });
+
+    // Attach extension first.
+    const ext = new WebSocket(`ws://127.0.0.1:${port}`);
+    await new Promise<void>((r) => ext.once('open', () => r()));
+    const extHello: HelloFrameFromExtension = {
+      type: 'hello',
+      protocolVersion: 1,
+      role: 'extension',
+      platform: 'chrome',
+      extensionId: 'fetchproxy',
+      version: '0.1.0',
+    };
+    ext.send(JSON.stringify(extHello));
+
+    // Capture every server-hello the extension sees, so we can prove
+    // BOTH the host's own hello AND the peer's hello reach it.
+    const seenHellos: string[] = [];
+    const peerHelloSeen = new Promise<void>((resolve) => {
+      ext.on('message', (data: Buffer) => {
+        const parsed = JSON.parse(data.toString());
+        if (parsed.type === 'hello' && parsed.role === 'server') {
+          seenHellos.push(parsed.mcpId);
+          if (parsed.mcpId === 'resy-mcp:0.0.1:abc1234567890de2') resolve();
+        }
+      });
+    });
+
+    // Wait briefly for extension's hello to be processed.
+    await new Promise((r) => setTimeout(r, 50));
+
+    // Now connect a "peer" — synthesise its hello with the resy identity.
+    const peerHello = await buildServerHello({
+      identity: peerId,
+      mcpId: 'resy-mcp:0.0.1:abc1234567890de2',
+      serverName: 'resy-mcp',
+      version: '0.0.1',
+      domains: ['resy.com'],
+    });
+    const peer = new WebSocket(`ws://127.0.0.1:${port}`);
+    await new Promise<void>((r) => peer.once('open', () => r()));
+    peer.send(JSON.stringify(peerHello));
+
+    await peerHelloSeen;
+    expect(seenHellos).toContain('opentable-mcp:0.9.1:abc1234567890de1');
+    expect(seenHellos).toContain('resy-mcp:0.0.1:abc1234567890de2');
+
+    ext.close();
+    peer.close();
   });
 
   it('refuses a second extension connection', async () => {

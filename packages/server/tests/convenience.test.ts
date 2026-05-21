@@ -577,3 +577,95 @@ describe('readCookies()', () => {
     await expect(promise).rejects.toThrow(/no tab matching/);
   });
 });
+
+describe('URL guard (assertUrlInDomains)', () => {
+  it('rejects path arg that cannot be parsed as a URL', async () => {
+    // ws-server.ts:153 — `new URL(...)` throw caught and re-wrapped.
+    // The shape that hits this is a path that starts with `http://`
+    // or `https://` (so we DON'T pre-prepend) but is otherwise
+    // malformed enough that the URL constructor rejects it.
+    const s = new TestServer({
+      serverName: 'test-mcp',
+      version: '0.0.1',
+      domains: ['example.com'],
+    });
+    await expect(
+      s.get('https://[::1'), // unclosed IPv6 literal
+    ).rejects.toThrow(/not a valid URL/);
+  });
+});
+
+describe('onInner cross-map defensive paths', () => {
+  // The `pending` and `pendingReadCookies` maps are keyed by the same
+  // unique request id stream, so under normal operation the response's
+  // op matches the awaiter's verb. These tests drive the defensive
+  // branches in onInner where the wrong-op response reaches the wrong
+  // awaiter — the awaiter must wake with a protocol error rather than
+  // silently hanging or surfacing the wrong response shape.
+
+  it("a read_cookies response landing on a fetch awaiter wakes with an error", async () => {
+    const s = new FetchproxyServer({
+      serverName: 'test-mcp',
+      version: '0.0.1',
+      domains: ['example.com'],
+      capabilities: ['fetch', 'read_cookies'],
+    });
+    const fake = installFakeHost(s);
+    const promise = s.get('/x'); // fetch awaiter
+    await new Promise((r) => setTimeout(r, 0));
+    const inner = fake.lastInner();
+    expect(inner).not.toBeNull();
+    // Reply with the WRONG op on purpose.
+    fake.reply({
+      type: 'response',
+      id: inner!.id,
+      ok: true,
+      op: 'read_cookies',
+      cookies: 'should never be returned',
+    });
+    await expect(promise).rejects.toThrow(/unexpected read_cookies response/);
+  });
+
+  it("a fetch response landing on a read_cookies awaiter wakes with an error", async () => {
+    const s = new FetchproxyServer({
+      serverName: 'test-mcp',
+      version: '0.0.1',
+      domains: ['example.com'],
+      capabilities: ['fetch', 'read_cookies'],
+    });
+    const fake = installFakeHost(s);
+    const promise = s.readCookies();
+    await new Promise((r) => setTimeout(r, 0));
+    const inner = fake.lastInner();
+    expect(inner).not.toBeNull();
+    fake.reply({
+      type: 'response',
+      id: inner!.id,
+      ok: true,
+      op: 'fetch',
+      status: 200,
+      url: 'https://example.com/',
+      body: 'oops',
+    });
+    await expect(promise).rejects.toThrow(/unexpected fetch response/);
+  });
+});
+
+describe('applyJsonDefaults honors caller-supplied expectStatus', () => {
+  it('does not override an explicit expectStatus passed to getJson', async () => {
+    // ws-server.ts:569 — short-circuit when the caller already set the
+    // field. The default 2xx-set must NOT clobber a caller's strict
+    // single-status check.
+    const s = new TestServer({
+      serverName: 'test-mcp',
+      version: '0.0.1',
+      domains: ['example.com'],
+    });
+    // Canned 201 — would pass the default 2xx set, but the caller's
+    // strict `expectStatus: 200` should reject it.
+    s.canned = { ok: true, status: 201, url: 'https://example.com/x', body: '{}' };
+    await expect(s.getJson('/x', { expectStatus: 200 })).rejects.toThrow(
+      FetchproxyHttpError,
+    );
+  });
+});

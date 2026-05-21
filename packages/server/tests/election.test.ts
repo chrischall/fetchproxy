@@ -59,4 +59,16 @@ describe('election', () => {
       cleanup.push(result.server);
     }
   });
+
+  it('propagates non-EADDRINUSE bind errors (e.g. invalid host)', async () => {
+    // Hits the `else { reject(e); }` branch in election.ts — anything
+    // other than EADDRINUSE (cannot-resolve, permission denied, etc.)
+    // must surface to the caller rather than being silently treated as
+    // "act as peer". Binding to a syntactically-invalid host produces
+    // ENOTFOUND / EINVAL on macOS + Linux and is the simplest cross-
+    // platform way to drive the non-EADDRINUSE path.
+    await expect(
+      electRole({ host: '0.0.0.0.0', port: 41995 }),
+    ).rejects.toThrow();
+  });
 });

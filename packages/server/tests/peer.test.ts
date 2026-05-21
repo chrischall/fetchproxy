@@ -78,6 +78,38 @@ describe('peer client', () => {
     expect(ok).toBe(true);
   });
 
+  it('sendInner rejects if the host sends a malformed frame', async () => {
+    // peer.ts:110 — catch-on-onMessage. When the host pushes something
+    // unparseable (not JSON, or a frame validateFrame rejects), the
+    // peer's session-derivation promise must reject so any waiting
+    // sendInner doesn't hang forever. This is the cousin of the
+    // "host closes" rejection — both unblock the awaiter.
+    const idDir = mkdtempSync(join(tmpdir(), 'fp-peer-'));
+    const identity = await loadOrCreateIdentity('opentable-mcp', idDir);
+
+    const port = 41202;
+    wss = new WebSocketServer({ port });
+    wss.on('connection', (ws: WebSocket) => {
+      ws.once('message', () => {
+        // Receive the peer's hello, then push garbage that JSON.parse
+        // would barely choke on (validateFrame definitely will).
+        ws.send('this-is-not-json');
+      });
+    });
+
+    peer = await startPeer({
+      host: '127.0.0.1',
+      port,
+      identity,
+      mcpId: 'opentable-mcp:0.9.1:a3f7c91d2e8b4f56',
+      serverName: 'opentable-mcp',
+      version: '0.9.1',
+      domains: ['opentable.com'],
+    });
+
+    await expect(peer.sendInner({ type: 'ping' })).rejects.toThrow();
+  });
+
   it('sendInner rejects if the host WS closes before ready arrives', async () => {
     const idDir = mkdtempSync(join(tmpdir(), 'fp-peer-'));
     const identity = await loadOrCreateIdentity('opentable-mcp', idDir);
