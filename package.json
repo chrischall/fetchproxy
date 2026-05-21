@@ -1,0 +1,21 @@
+{
+  "name": "fetchproxy",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "npm run build --workspaces --if-present",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit --build packages/*"
+  },
+  "devDependencies": {
+    "@types/node": "^25.5.2",
+    "prettier": "^3.3.0",
+    "typescript": "^6.0.0",
+    "vitest": "^4.1.0"
+  }
+}
