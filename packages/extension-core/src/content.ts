@@ -5,10 +5,11 @@
  *
  * The isolated-world fetch inherits cookies + the user's TLS
  * fingerprint — which is exactly what Akamai/Cloudflare want to see.
- * The page's own auth state (CSRF tokens that live on window.*) is
- * NOT directly accessible; for the v1 booking flow we don't need
- * them in this codebase — the MCP server can include them via
- * init.headers if needed.
+ *
+ * Page-level globals (like window.__CSRF_TOKEN__) are NOT accessible
+ * from the isolated world. The companion MAIN-world `capture-logger.ts`
+ * script copies them to `document.documentElement.dataset.fetchproxyCsrf`
+ * so we can pick them up here and forward as headers.
  */
 
 const MAX_REQUEST_BODY_BYTES = 1 * 1024 * 1024; // 1 MB
@@ -47,11 +48,20 @@ async function runFetch(init: FetchInit): Promise<FetchResponse | FetchError> {
   if (init.body && init.body.length > MAX_REQUEST_BODY_BYTES) {
     return { ok: false, error: `request body too large: ${init.body.length} bytes` };
   }
+  // Auto-inject x-csrf-token from the MAIN-world capture-logger's dataset
+  // sync. Caller can override by setting `x-csrf-token` in init.headers
+  // explicitly. Sites that don't expose a CSRF on window.__CSRF_TOKEN__
+  // just won't have anything to forward — dataset is empty, header omitted.
+  const csrf = document.documentElement.dataset.fetchproxyCsrf;
+  const headers: Record<string, string> = { ...(init.headers ?? {}) };
+  if (csrf && !('x-csrf-token' in headers) && !('X-CSRF-Token' in headers)) {
+    headers['x-csrf-token'] = csrf;
+  }
   let response: Response;
   try {
     response = await window.fetch(init.url, {
       method: init.method,
-      headers: init.headers,
+      headers,
       body: init.body,
       credentials: 'include',
     });

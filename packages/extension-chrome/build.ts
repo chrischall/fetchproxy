@@ -13,6 +13,7 @@ async function main(): Promise<void> {
     entryPoints: {
       background: '../extension-core/src/background.ts',
       content: '../extension-core/src/content.ts',
+      'capture-logger': '../extension-core/src/capture-logger.ts',
       popup: '../extension-core/src/popup/popup.ts',
     },
     bundle: true,

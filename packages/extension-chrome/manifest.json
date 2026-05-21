@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "fetchproxy",
-  "version": "0.0.1",
+  "version": "0.0.3",
   "description": "Relay authenticated fetch() from MCP servers through your signed-in browser tab.",
   "icons": {
     "16": "icons/16.png",
@@ -26,6 +26,12 @@
       "js": ["content.js"],
       "run_at": "document_idle",
       "world": "ISOLATED"
+    },
+    {
+      "matches": ["<all_urls>"],
+      "js": ["capture-logger.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
     }
   ],
   "permissions": [
