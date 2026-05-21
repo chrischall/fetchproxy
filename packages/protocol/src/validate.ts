@@ -1,6 +1,17 @@
-import type { Frame, HelloFrame, ReadyFrame, EncryptedFrame, InnerFrame } from './frames.js';
+import type { Capability, Frame, HelloFrame, ReadyFrame, EncryptedFrame, InnerFrame } from './frames.js';
 import { PROTOCOL_VERSION } from './frames.js';
 import { isValidMcpId } from './mcp-id.js';
+
+/**
+ * Set of capability strings the validator recognises on the wire. Keep
+ * in sync with the `Capability` union in `frames.ts`. Any other string
+ * is rejected so an unrecognised verb can't sneak through to the
+ * extension's per-mcp gating.
+ */
+const KNOWN_CAPABILITIES: ReadonlySet<Capability> = new Set<Capability>([
+  'fetch',
+  'read_cookies',
+]);
 
 export class ProtocolError extends Error {
   constructor(message: string) {
@@ -92,6 +103,24 @@ function validateHello(raw: Record<string, unknown>): HelloFrame {
         throw new ProtocolError(`hello.domains: invalid hostname ${JSON.stringify(d)}`);
       }
     }
+    if (raw.capabilities !== undefined) {
+      if (!Array.isArray(raw.capabilities)) {
+        throw new ProtocolError('hello.capabilities: expected array');
+      }
+      if (raw.capabilities.length === 0) {
+        throw new ProtocolError('hello.capabilities: must be non-empty');
+      }
+      for (const c of raw.capabilities) {
+        if (typeof c !== 'string') {
+          throw new ProtocolError(`hello.capabilities: entry must be string, got ${typeof c}`);
+        }
+        if (!KNOWN_CAPABILITIES.has(c as Capability)) {
+          throw new ProtocolError(
+            `hello.capabilities: unknown capability ${JSON.stringify(c)}`,
+          );
+        }
+      }
+    }
     assertBase64(raw.identityX25519Pub, 'hello.identityX25519Pub');
     assertBase64(raw.identityEd25519Pub, 'hello.identityEd25519Pub');
     assertBase64(raw.sessionNonce, 'hello.sessionNonce');
@@ -131,9 +160,18 @@ export function validateInnerFrame(raw: unknown): InnerFrame {
   const t = raw.type;
   if (t === 'ping') return { type: 'ping' };
   if (t === 'pong') return { type: 'pong' };
-  if (t === 'request') {
-    assertPositiveInt(raw.id, 'inner.id');
-    if (raw.op !== 'fetch') throw new ProtocolError(`inner.op: must be "fetch", got ${String(raw.op)}`);
+  if (t === 'request') return validateInnerRequest(raw);
+  if (t === 'response') return validateInnerResponse(raw);
+  throw new ProtocolError(`unknown inner frame type: ${String(t)}`);
+}
+
+function validateInnerRequest(raw: Record<string, unknown>): InnerFrame {
+  assertPositiveInt(raw.id, 'inner.id');
+  // 0.2.0 made `op` a discriminated union. The validator switches on it
+  // so the rest of the request shape (which differs per op) can be
+  // checked precisely. Unknown ops are rejected here rather than at the
+  // extension — keeps the trust boundary clean.
+  if (raw.op === 'fetch') {
     assertObject(raw.init, 'inner.init');
     assertHttpUrl(raw.init.url, 'inner.init.url');
     assertString(raw.init.method, 'inner.init.method');
@@ -152,19 +190,55 @@ export function validateInnerFrame(raw: unknown): InnerFrame {
     }
     return raw as unknown as InnerFrame;
   }
-  if (t === 'response') {
-    assertPositiveInt(raw.id, 'inner.id');
-    if (raw.ok === true) {
+  if (raw.op === 'read_cookies') {
+    assertObject(raw.init, 'inner.init');
+    assertHttpUrl(raw.init.tabUrl, 'inner.init.tabUrl');
+    // No other init fields are valid for read_cookies. Trim the
+    // attack surface by rejecting anything else explicitly so a
+    // malformed-but-accepted frame can't smuggle data through.
+    for (const k of Object.keys(raw.init)) {
+      if (k !== 'tabUrl') {
+        throw new ProtocolError(`inner.init: unexpected field ${JSON.stringify(k)} on read_cookies`);
+      }
+    }
+    return raw as unknown as InnerFrame;
+  }
+  throw new ProtocolError(
+    `inner.op: must be "fetch" or "read_cookies", got ${JSON.stringify(raw.op)}`,
+  );
+}
+
+function validateInnerResponse(raw: Record<string, unknown>): InnerFrame {
+  assertPositiveInt(raw.id, 'inner.id');
+  if (raw.ok === true) {
+    // Discriminate by `op` so we can validate the shape that goes with it.
+    // For back-compat with 0.1.x responses that don't carry `op` we treat
+    // a missing op as `fetch`. New senders should always set it.
+    const op = raw.op === undefined ? 'fetch' : raw.op;
+    if (op === 'fetch') {
       assertPositiveInt(raw.status, 'inner.status');
       assertString(raw.url, 'inner.url');
       assertString(raw.body, 'inner.body');
       return raw as unknown as InnerFrame;
     }
-    if (raw.ok === false) {
-      assertString(raw.error, 'inner.error');
+    if (op === 'read_cookies') {
+      assertString(raw.cookies, 'inner.cookies');
       return raw as unknown as InnerFrame;
     }
-    throw new ProtocolError(`inner.ok: must be boolean, got ${typeof raw.ok}`);
+    throw new ProtocolError(
+      `inner.op: must be "fetch" or "read_cookies", got ${JSON.stringify(raw.op)}`,
+    );
   }
-  throw new ProtocolError(`unknown inner frame type: ${String(t)}`);
+  if (raw.ok === false) {
+    assertString(raw.error, 'inner.error');
+    if (raw.op !== undefined) {
+      if (typeof raw.op !== 'string' || !KNOWN_CAPABILITIES.has(raw.op as Capability)) {
+        throw new ProtocolError(
+          `inner.op: unknown response op ${JSON.stringify(raw.op)}`,
+        );
+      }
+    }
+    return raw as unknown as InnerFrame;
+  }
+  throw new ProtocolError(`inner.ok: must be boolean, got ${typeof raw.ok}`);
 }

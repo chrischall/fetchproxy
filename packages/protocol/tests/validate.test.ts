@@ -65,6 +65,52 @@ describe('validateFrame', () => {
       expect(() => validateFrame({ ...validHello, domains: ['has/slash.com'] })).toThrow(/domains/);
       expect(() => validateFrame({ ...validHello, domains: ['ok.com', '!!!'] })).toThrow(/domains/);
     });
+
+    it('accepts hello without capabilities (defaults to fetch downstream)', () => {
+      expect(() => validateFrame(validHello)).not.toThrow();
+    });
+
+    it("accepts capabilities: ['fetch']", () => {
+      expect(() =>
+        validateFrame({ ...validHello, capabilities: ['fetch'] }),
+      ).not.toThrow();
+    });
+
+    it("accepts capabilities: ['read_cookies']", () => {
+      expect(() =>
+        validateFrame({ ...validHello, capabilities: ['read_cookies'] }),
+      ).not.toThrow();
+    });
+
+    it("accepts capabilities: ['fetch', 'read_cookies']", () => {
+      expect(() =>
+        validateFrame({ ...validHello, capabilities: ['fetch', 'read_cookies'] }),
+      ).not.toThrow();
+    });
+
+    it('rejects empty capabilities array', () => {
+      expect(() =>
+        validateFrame({ ...validHello, capabilities: [] }),
+      ).toThrow(/capabilities/);
+    });
+
+    it('rejects unknown capability', () => {
+      expect(() =>
+        validateFrame({ ...validHello, capabilities: ['frobnicate'] }),
+      ).toThrow(/capabilities/);
+    });
+
+    it('rejects non-array capabilities', () => {
+      expect(() =>
+        validateFrame({ ...validHello, capabilities: 'fetch' }),
+      ).toThrow(/capabilities/);
+    });
+
+    it('rejects non-string capability entry', () => {
+      expect(() =>
+        validateFrame({ ...validHello, capabilities: ['fetch', 42] }),
+      ).toThrow(/capabilities/);
+    });
   });
 
   describe('hello (extension, v2)', () => {
@@ -249,5 +295,128 @@ describe('validateInnerFrame', () => {
 
   it('rejects unknown inner type', () => {
     expect(() => validateInnerFrame({ type: 'mystery' })).toThrow(/unknown inner frame type/);
+  });
+
+  describe('read_cookies', () => {
+    it('accepts a valid read_cookies request', () => {
+      expect(() =>
+        validateInnerFrame({
+          type: 'request',
+          id: 1,
+          op: 'read_cookies',
+          init: { tabUrl: 'https://opentable.com/' },
+        }),
+      ).not.toThrow();
+    });
+
+    it('rejects read_cookies with non-http tabUrl', () => {
+      expect(() =>
+        validateInnerFrame({
+          type: 'request',
+          id: 1,
+          op: 'read_cookies',
+          init: { tabUrl: 'javascript:alert(1)' },
+        }),
+      ).toThrow(/tabUrl/);
+    });
+
+    it('rejects read_cookies with extra init fields', () => {
+      expect(() =>
+        validateInnerFrame({
+          type: 'request',
+          id: 1,
+          op: 'read_cookies',
+          init: { tabUrl: 'https://x.com/', url: 'https://x.com/api' },
+        }),
+      ).toThrow(/unexpected field/);
+    });
+
+    it('accepts a successful read_cookies response', () => {
+      expect(() =>
+        validateInnerFrame({
+          type: 'response',
+          id: 1,
+          ok: true,
+          op: 'read_cookies',
+          cookies: 'sid=abc; pref=light',
+        }),
+      ).not.toThrow();
+    });
+
+    it('rejects read_cookies response missing cookies', () => {
+      expect(() =>
+        validateInnerFrame({
+          type: 'response',
+          id: 1,
+          ok: true,
+          op: 'read_cookies',
+        }),
+      ).toThrow(/cookies/);
+    });
+
+    it('rejects unknown response op', () => {
+      expect(() =>
+        validateInnerFrame({
+          type: 'response',
+          id: 1,
+          ok: true,
+          op: 'frobnicate',
+        }),
+      ).toThrow(/op/);
+    });
+
+    it('still accepts the legacy fetch response shape (no op field)', () => {
+      // 0.1.x senders never carried `op` on responses; validator must keep
+      // accepting that shape so old extensions can talk to new servers
+      // and vice versa for the fetch verb specifically.
+      expect(() =>
+        validateInnerFrame({
+          type: 'response',
+          id: 1,
+          ok: true,
+          status: 200,
+          url: 'https://x.com/',
+          body: '',
+        }),
+      ).not.toThrow();
+    });
+
+    it("accepts a fetch response with op: 'fetch' set explicitly", () => {
+      expect(() =>
+        validateInnerFrame({
+          type: 'response',
+          id: 1,
+          ok: true,
+          op: 'fetch',
+          status: 200,
+          url: 'https://x.com/',
+          body: '',
+        }),
+      ).not.toThrow();
+    });
+
+    it('accepts an error response with op echo', () => {
+      expect(() =>
+        validateInnerFrame({
+          type: 'response',
+          id: 1,
+          ok: false,
+          op: 'read_cookies',
+          error: 'capability not granted',
+        }),
+      ).not.toThrow();
+    });
+
+    it('rejects an error response with unknown op echo', () => {
+      expect(() =>
+        validateInnerFrame({
+          type: 'response',
+          id: 1,
+          ok: false,
+          op: 'frobnicate',
+          error: 'huh',
+        }),
+      ).toThrow(/op/);
+    });
   });
 });
