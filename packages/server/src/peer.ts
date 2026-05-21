@@ -7,6 +7,7 @@ import {
   openEncryptedFrame,
   validateFrame,
   PROTOCOL_VERSION,
+  type Capability,
   type HelloFrameFromServer,
   type InnerFrame,
 } from '@fetchproxy/protocol';
@@ -21,6 +22,12 @@ export interface PeerOpts {
   serverName: string;
   version: string;
   domains: string[];
+  /**
+   * Inner-verb capabilities to declare on the peer's hello. Defaults
+   * to `['fetch']` when omitted — keeps pre-capability callers compiling
+   * and behaving identically on the wire.
+   */
+  capabilities?: Capability[];
 }
 
 export interface PeerHandle {
@@ -56,6 +63,7 @@ export async function startPeer(opts: PeerOpts): Promise<PeerHandle> {
     serverName: opts.serverName,
     version: opts.version,
     domains: [...opts.domains],
+    capabilities: [...(opts.capabilities ?? ['fetch'])],
     identityX25519Pub: toB64(opts.identity.x25519Pub),
     identityEd25519Pub: toB64(opts.identity.ed25519Pub),
     sessionNonce: toB64(sessionNonce),

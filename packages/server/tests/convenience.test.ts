@@ -5,6 +5,7 @@ import {
   FetchproxyHttpError,
 } from '../src/index.js';
 import type { FetchInit, FetchResult, FetchResultError } from '../src/index.js';
+import type { InnerFrame, InnerRequest } from '@fetchproxy/protocol';
 
 class TestServer extends FetchproxyServer {
   public lastInit: FetchInit | null = null;
@@ -19,6 +20,39 @@ class TestServer extends FetchproxyServer {
     this.lastInit = init;
     return this.canned;
   }
+}
+
+/**
+ * Test harness that pretends `listen()` was called by installing a
+ * minimal fake host handle on the FetchproxyServer instance, then
+ * captures every inner request the server emits and lets the test
+ * resolve the corresponding response by replying through `onInner`.
+ *
+ * Avoids dealing with the real WS handshake just to exercise the
+ * `readCookies()` plumbing.
+ */
+function installFakeHost(server: FetchproxyServer): {
+  lastInner: () => InnerRequest | null;
+  reply: (resp: InnerFrame) => void;
+} {
+  let lastInner: InnerRequest | null = null;
+  const fakeHostHandle = {
+    close: async () => undefined,
+    sendOwnInner: async (inner: InnerFrame): Promise<void> => {
+      if (inner.type === 'request') lastInner = inner;
+    },
+    onOwnInner: (_cb: (inner: InnerFrame) => void) => undefined,
+  };
+  // Reach into the private hostHandle slot so `readCookies()` sees a
+  // "listening" server. Wiring this once at the start of a test is much
+  // less invasive than spinning up the real listen() machinery.
+  (server as unknown as { hostHandle: typeof fakeHostHandle }).hostHandle = fakeHostHandle;
+  return {
+    lastInner: () => lastInner,
+    reply: (resp) => {
+      (server as unknown as { onInner(i: InnerFrame): void }).onInner(resp);
+    },
+  };
 }
 
 describe('convenience methods', () => {
@@ -358,5 +392,188 @@ describe('multi-domain MCPs', () => {
     await s.postJson('/y', { a: 1 }, { domain: 'hbsplit.com' });
     expect(s.lastInit!.url).toBe('https://hbsplit.com/y');
     expect(s.lastInit!.method).toBe('POST');
+  });
+});
+
+describe('capabilities option', () => {
+  it("defaults to ['fetch'] when capabilities omitted", () => {
+    // Same as before — no caller-visible effect on convenience methods.
+    const s = new TestServer({
+      serverName: 'test-mcp',
+      version: '0.0.1',
+      domains: ['example.com'],
+    });
+    expect(s.role).toBeNull();
+  });
+
+  it('rejects an empty capabilities array', () => {
+    expect(
+      () =>
+        new TestServer({
+          serverName: 'test-mcp',
+          version: '0.0.1',
+          domains: ['example.com'],
+          capabilities: [],
+        }),
+    ).toThrow(/non-empty/);
+  });
+
+  it('rejects an unknown capability', () => {
+    expect(
+      () =>
+        new TestServer({
+          serverName: 'test-mcp',
+          version: '0.0.1',
+          domains: ['example.com'],
+          // @ts-expect-error - intentional bad input
+          capabilities: ['fetch', 'frobnicate'],
+        }),
+    ).toThrow(/unknown capability/);
+  });
+
+  it("accepts ['fetch', 'read_cookies']", () => {
+    expect(
+      () =>
+        new FetchproxyServer({
+          serverName: 'test-mcp',
+          version: '0.0.1',
+          domains: ['example.com'],
+          capabilities: ['fetch', 'read_cookies'],
+        }),
+    ).not.toThrow();
+  });
+});
+
+describe('readCookies()', () => {
+  it('throws if "read_cookies" was not declared in capabilities', async () => {
+    const s = new FetchproxyServer({
+      serverName: 'test-mcp',
+      version: '0.0.1',
+      domains: ['example.com'],
+      // Default capabilities = ['fetch']
+    });
+    await expect(s.readCookies()).rejects.toThrow(/read_cookies/);
+  });
+
+  it('throws if called before listen()', async () => {
+    const s = new FetchproxyServer({
+      serverName: 'test-mcp',
+      version: '0.0.1',
+      domains: ['example.com'],
+      capabilities: ['fetch', 'read_cookies'],
+    });
+    await expect(s.readCookies()).rejects.toThrow(/before listen/);
+  });
+
+  it("sends a read_cookies inner request pinned to the declared domain's tabUrl", async () => {
+    const s = new FetchproxyServer({
+      serverName: 'test-mcp',
+      version: '0.0.1',
+      domains: ['example.com'],
+      capabilities: ['fetch', 'read_cookies'],
+    });
+    const fake = installFakeHost(s);
+    fake.reply; // satisfy ts unused-vars
+    // Kick off and immediately reply with canned cookies.
+    const promise = s.readCookies();
+    // Allow the microtask that calls sendOwnInner to flush.
+    await new Promise((r) => setTimeout(r, 0));
+    const inner = fake.lastInner();
+    expect(inner).not.toBeNull();
+    expect(inner!.type).toBe('request');
+    expect(inner!.op).toBe('read_cookies');
+    if (inner!.op === 'read_cookies') {
+      expect(inner!.init.tabUrl).toBe('https://example.com/');
+    }
+    fake.reply({
+      type: 'response',
+      id: inner!.id,
+      ok: true,
+      op: 'read_cookies',
+      cookies: 'sid=abc; pref=light',
+    });
+    await expect(promise).resolves.toBe('sid=abc; pref=light');
+  });
+
+  it('routes subdomain into the tabUrl', async () => {
+    const s = new FetchproxyServer({
+      serverName: 'test-mcp',
+      version: '0.0.1',
+      domains: ['example.com'],
+      capabilities: ['fetch', 'read_cookies'],
+    });
+    const fake = installFakeHost(s);
+    const promise = s.readCookies({ subdomain: 'auth' });
+    await new Promise((r) => setTimeout(r, 0));
+    const inner = fake.lastInner();
+    expect(inner).not.toBeNull();
+    if (inner!.op === 'read_cookies') {
+      expect(inner!.init.tabUrl).toBe('https://auth.example.com/');
+    }
+    fake.reply({
+      type: 'response',
+      id: inner!.id,
+      ok: true,
+      op: 'read_cookies',
+      cookies: '',
+    });
+    await promise;
+  });
+
+  it('multi-domain MCP requires { domain } on readCookies', async () => {
+    const s = new FetchproxyServer({
+      serverName: 'test-mcp',
+      version: '0.0.1',
+      domains: ['honeybook.com', 'hbsplit.com'],
+      capabilities: ['fetch', 'read_cookies'],
+    });
+    installFakeHost(s);
+    await expect(s.readCookies()).rejects.toThrow(/multiple domains/);
+  });
+
+  it('multi-domain MCP resolves with explicit { domain }', async () => {
+    const s = new FetchproxyServer({
+      serverName: 'test-mcp',
+      version: '0.0.1',
+      domains: ['honeybook.com', 'hbsplit.com'],
+      capabilities: ['fetch', 'read_cookies'],
+    });
+    const fake = installFakeHost(s);
+    const promise = s.readCookies({ domain: 'hbsplit.com' });
+    await new Promise((r) => setTimeout(r, 0));
+    const inner = fake.lastInner();
+    if (inner!.op === 'read_cookies') {
+      expect(inner!.init.tabUrl).toBe('https://hbsplit.com/');
+    }
+    fake.reply({
+      type: 'response',
+      id: inner!.id,
+      ok: true,
+      op: 'read_cookies',
+      cookies: 'k=v',
+    });
+    await expect(promise).resolves.toBe('k=v');
+  });
+
+  it('surfaces an error response as FetchproxyProtocolError', async () => {
+    const s = new FetchproxyServer({
+      serverName: 'test-mcp',
+      version: '0.0.1',
+      domains: ['example.com'],
+      capabilities: ['fetch', 'read_cookies'],
+    });
+    const fake = installFakeHost(s);
+    const promise = s.readCookies();
+    await new Promise((r) => setTimeout(r, 0));
+    const inner = fake.lastInner();
+    fake.reply({
+      type: 'response',
+      id: inner!.id,
+      ok: false,
+      op: 'read_cookies',
+      error: 'no tab matching https://example.com/',
+    });
+    await expect(promise).rejects.toThrow(FetchproxyProtocolError);
+    await expect(promise).rejects.toThrow(/no tab matching/);
   });
 });

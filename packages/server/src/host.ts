@@ -8,6 +8,7 @@ import {
   openEncryptedFrame,
   validateFrame,
   PROTOCOL_VERSION,
+  type Capability,
   type Frame,
   type HelloFrameFromServer,
   type InnerFrame,
@@ -31,6 +32,12 @@ export interface HostOpts {
   ownServerName: string;
   ownVersion: string;
   ownDomains: string[];
+  /**
+   * Inner-verb capabilities to declare on the server hello. Defaults
+   * to `['fetch']` when omitted — keeps existing tests + callers that
+   * pre-date the capability field compiling and behaving identically.
+   */
+  ownCapabilities?: Capability[];
 }
 
 export interface HostHandle {
@@ -85,6 +92,7 @@ export async function startHost(opts: HostOpts): Promise<HostHandle> {
     serverName: opts.ownServerName,
     version: opts.ownVersion,
     domains: [...opts.ownDomains],
+    capabilities: [...(opts.ownCapabilities ?? ['fetch'])],
     identityX25519Pub: toB64(opts.ownIdentity.x25519Pub),
     identityEd25519Pub: toB64(opts.ownIdentity.ed25519Pub),
     sessionNonce: toB64(ownSessionNonce),

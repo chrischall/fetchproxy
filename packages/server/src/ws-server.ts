@@ -1,9 +1,14 @@
 import { generateMcpId } from '@fetchproxy/protocol';
-import type { InnerFrame, FetchInit } from '@fetchproxy/protocol';
+import type { Capability, InnerFrame, FetchInit } from '@fetchproxy/protocol';
 import { electRole } from './election.js';
 import { startHost, type HostHandle } from './host.js';
 import { startPeer, type PeerHandle } from './peer.js';
 import { loadOrCreateIdentity, type Identity } from './identity.js';
+
+const KNOWN_CAPABILITIES: ReadonlySet<Capability> = new Set<Capability>([
+  'fetch',
+  'read_cookies',
+]);
 
 export interface FetchproxyServerOpts {
   port?: number;
@@ -25,6 +30,14 @@ export interface FetchproxyServerOpts {
    * so the resolver knows which base to use.
    */
   domains: string[];
+  /**
+   * Optional non-empty list of inner-verb capabilities this MCP wants
+   * to use. Defaults to `['fetch']`. Including `'read_cookies'` unlocks
+   * `FetchproxyServer.readCookies()` but surfaces a warning in the pair
+   * popup — only declare it if the MCP genuinely needs a cookie snapshot.
+   * Changing the set after a pair forces the user to re-approve.
+   */
+  capabilities?: Capability[];
   identityDir?: string;
 }
 
@@ -166,10 +179,23 @@ interface ResolvedOpts {
   serverName: string;
   version: string;
   domains: string[];
+  capabilities: Capability[];
   identityDir?: string;
 }
 
 const DEFAULT_JSON_OK_STATUSES: readonly number[] = [200, 201, 202, 204];
+
+/** Result of a successful `read_cookies` call. */
+export interface ReadCookiesResult {
+  ok: true;
+  cookies: string;
+}
+
+/** Result of a failed `read_cookies` call (transport / capability / no-tab). */
+export interface ReadCookiesResultError {
+  ok: false;
+  error: string;
+}
 
 export class FetchproxyServer {
   public role: 'host' | 'peer' | null = null;
@@ -179,6 +205,14 @@ export class FetchproxyServer {
   private peerHandle: PeerHandle | null = null;
   private nextRequestId = 1;
   private pending = new Map<number, (r: FetchResult | FetchResultError) => void>();
+  // Separate pending map for read_cookies so the response shape (cookies
+  // string vs status/body) doesn't have to share a union type with fetch.
+  // Ids are still unique across both maps because `nextRequestId` advances
+  // for every outbound inner request.
+  private pendingReadCookies = new Map<
+    number,
+    (r: ReadCookiesResult | ReadCookiesResultError) => void
+  >();
   private mcpId: string | null = null;
   private identity: Identity | null = null;
 
@@ -188,12 +222,36 @@ export class FetchproxyServer {
         'FetchproxyServer: opts.domains must be a non-empty array of hostnames',
       );
     }
+    // Default to ['fetch'] so existing callers that pre-date capabilities
+    // keep working without code changes. When provided, the array must be
+    // non-empty and contain only known capability strings — guard at the
+    // call site so the error is clear rather than mysteriously bouncing
+    // off the extension's validator later.
+    let capabilities: Capability[];
+    if (opts.capabilities === undefined) {
+      capabilities = ['fetch'];
+    } else {
+      if (!Array.isArray(opts.capabilities) || opts.capabilities.length === 0) {
+        throw new Error(
+          'FetchproxyServer: opts.capabilities must be a non-empty array (or omit it for the default ["fetch"])',
+        );
+      }
+      for (const c of opts.capabilities) {
+        if (!KNOWN_CAPABILITIES.has(c)) {
+          throw new Error(
+            `FetchproxyServer: unknown capability ${JSON.stringify(c)} — known values: ["fetch", "read_cookies"]`,
+          );
+        }
+      }
+      capabilities = [...opts.capabilities];
+    }
     this.opts = {
       port: opts.port ?? 37149,
       host: opts.host ?? '127.0.0.1',
       serverName: opts.serverName,
       version: opts.version,
       domains: [...opts.domains],
+      capabilities,
       identityDir: opts.identityDir,
     };
   }
@@ -211,6 +269,7 @@ export class FetchproxyServer {
         ownServerName: this.opts.serverName,
         ownVersion: this.opts.version,
         ownDomains: this.opts.domains,
+        ownCapabilities: this.opts.capabilities,
       });
       this.hostHandle.onOwnInner((inner) => this.onInner(inner));
     } else {
@@ -223,6 +282,7 @@ export class FetchproxyServer {
         serverName: this.opts.serverName,
         version: this.opts.version,
         domains: this.opts.domains,
+        capabilities: this.opts.capabilities,
       });
       this.peerHandle.onInner((inner) => this.onInner(inner));
     }
@@ -391,6 +451,60 @@ export class FetchproxyServer {
     return response.body;
   }
 
+  /**
+   * Snapshot the user's non-HttpOnly cookies for the chosen domain.
+   *
+   * Requires `'read_cookies'` in `FetchproxyServerOpts.capabilities`.
+   * Throws a developer-facing `Error` at the call site if the MCP did
+   * not declare the capability — this is a programming mistake, not a
+   * runtime condition.
+   *
+   * The returned string is the raw `document.cookie` value (semicolon-
+   * separated `k=v` pairs). HttpOnly cookies are NOT visible to page JS
+   * and are therefore not included; the underlying threat model assumes
+   * the cookies that matter for the auth bootstrap (session tokens, csrf
+   * cookies that the page itself reads) are non-HttpOnly.
+   *
+   * Throws `FetchproxyProtocolError` if the bridge could not deliver
+   * the request (no signed-in tab, extension offline, etc.).
+   */
+  async readCookies(
+    opts: { domain?: string; subdomain?: string } = {},
+  ): Promise<string> {
+    if (!this.opts.capabilities.includes('read_cookies')) {
+      throw new Error(
+        'FetchproxyServer.readCookies(): MCP did not declare "read_cookies" in capabilities — add it to FetchproxyServerOpts.capabilities to enable this verb',
+      );
+    }
+    if (!this.hostHandle && !this.peerHandle) {
+      throw new Error('FetchproxyServer.readCookies called before listen() — not listening');
+    }
+    if (opts.subdomain !== undefined) assertSubdomainLabel(opts.subdomain);
+    const baseDomain = this.resolveBaseDomain(opts.domain);
+    const host = opts.subdomain ? `${opts.subdomain}.${baseDomain}` : baseDomain;
+    const tabUrl = `https://${host}/`;
+    const id = this.nextRequestId++;
+    const inner: InnerFrame = {
+      type: 'request',
+      id,
+      op: 'read_cookies',
+      init: { tabUrl },
+    };
+    const pending = new Promise<ReadCookiesResult | ReadCookiesResultError>((resolve) => {
+      this.pendingReadCookies.set(id, resolve);
+    });
+    if (this.hostHandle) {
+      await this.hostHandle.sendOwnInner(inner);
+    } else if (this.peerHandle) {
+      await this.peerHandle.sendInner(inner);
+    }
+    const result = await pending;
+    if (!result.ok) {
+      throw new FetchproxyProtocolError(result.error);
+    }
+    return result.cookies;
+  }
+
   private resolveBaseDomain(domain: string | undefined): string {
     if (domain !== undefined) {
       if (!this.opts.domains.includes(domain)) {
@@ -426,13 +540,41 @@ export class FetchproxyServer {
 
   private onInner(inner: InnerFrame): void {
     if (inner.type !== 'response') return;
-    const cb = this.pending.get(inner.id);
-    if (!cb) return;
-    this.pending.delete(inner.id);
-    if (inner.ok) {
-      cb({ ok: true, status: inner.status, url: inner.url, body: inner.body });
-    } else {
-      cb({ ok: false, error: inner.error });
+    // Inner request ids are unique across both pending maps. Look up the
+    // right one by the id rather than by op: an error response (`ok: false`)
+    // for a read_cookies request may carry no op echo, and we still need
+    // to wake the right awaiter.
+    const fetchCb = this.pending.get(inner.id);
+    if (fetchCb) {
+      this.pending.delete(inner.id);
+      if (inner.ok) {
+        // Either a fetch response (with status/url/body) or, in theory, a
+        // read_cookies one — but read_cookies ids are in the other map, so
+        // anything that lands here is a fetch.
+        if (inner.op === 'read_cookies') {
+          // Defensive: should not happen, but if it does, surface as a
+          // protocol error rather than silently dropping the body.
+          fetchCb({ ok: false, error: 'unexpected read_cookies response on fetch awaiter' });
+        } else {
+          fetchCb({ ok: true, status: inner.status, url: inner.url, body: inner.body });
+        }
+      } else {
+        fetchCb({ ok: false, error: inner.error });
+      }
+      return;
+    }
+    const cookiesCb = this.pendingReadCookies.get(inner.id);
+    if (cookiesCb) {
+      this.pendingReadCookies.delete(inner.id);
+      if (inner.ok) {
+        if (inner.op === 'read_cookies') {
+          cookiesCb({ ok: true, cookies: inner.cookies });
+        } else {
+          cookiesCb({ ok: false, error: 'unexpected fetch response on read_cookies awaiter' });
+        }
+      } else {
+        cookiesCb({ ok: false, error: inner.error });
+      }
     }
   }
 

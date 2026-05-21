@@ -6,6 +6,8 @@ export type {
   HttpResponse,
   RequestOpts,
   BodylessRequestOpts,
+  ReadCookiesResult,
+  ReadCookiesResultError,
 } from './ws-server.js';
 export { FetchproxyProtocolError, FetchproxyHttpError } from './ws-server.js';
-export type { FetchInit } from '@fetchproxy/protocol';
+export type { Capability, FetchInit } from '@fetchproxy/protocol';
