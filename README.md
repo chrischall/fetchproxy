@@ -1,10 +1,12 @@
 # fetchproxy
 
-**Authenticated `fetch()` from an MCP server, proxied through the user's signed-in browser tab.**
+> Authenticated `fetch()` from an MCP server, proxied through the user's signed-in browser tab.
 
-A browser extension + a Node library. MCP servers (`opentable-mcp`, `resy-mcp`, anything similar) embed the library; the user installs the extension once. Together they route HTTP requests from the MCP server through a real, signed-in browser tab — so Akamai, Cloudflare Bot Management, and similar bot walls see a real browser, not a Node process.
+[![CI](https://github.com/chrischall/fetchproxy/actions/workflows/ci.yml/badge.svg)](https://github.com/chrischall/fetchproxy/actions/workflows/ci.yml)
 
-Tiny on purpose. The protocol exposes one verb (`fetch`) and a handful of lifecycle frames. No DOM automation, no `eval_js`, no cookie exfiltration — that's outside scope and outside the security budget.
+A Node library and a browser extension. MCP servers (`opentable-mcp`, `resy-mcp`, anything similar) embed the library; the user installs the extension once. Together they route HTTP requests from the MCP server through a real, signed-in browser tab — so Akamai, Cloudflare Bot Management, and similar bot walls see a real browser, not a Node process.
+
+Tiny on purpose. The protocol exposes two verbs (`fetch`, opt-in `read_cookies`) and a handful of lifecycle frames. No DOM automation, no `eval_js`, no general storage exfiltration — that's outside scope and outside the security budget.
 
 ## Why
 
@@ -15,89 +17,180 @@ So instead of a bot-evasion arms race, an MCP server can use fetchproxy to ask t
 ## Architecture
 
 ```
-┌──────────────────┐  stdio  ┌──────────────────┐    WS    ┌────────────────┐  fetch()  ┌─────────────────────┐
-│ MCP client       │◀───────▶│ Your MCP server  │◀────────▶│ fetchproxy ext │◀─────────▶│ target site (signed │
-│ (Claude, etc.)   │         │ (e.g. OpenTable) │ :37149   │ (Chrome/Safari)│           │ in, Akamai-cleared) │
-└──────────────────┘         └──────────────────┘          └────────────────┘           └─────────────────────┘
-                              └ uses @fetchproxy/server (Node lib)
+                       ┌──────────────────────────┐
+                       │ Browser extension        │
+                       │ (one process, all MCPs)  │
+                       └───────────────┬──────────┘
+                                       │ ws://127.0.0.1:37149
+                                       │  (shared port; concentrator)
+                                       │
+                          ┌────────────▼────────────┐
+                          │ MCP A — host            │
+                          │  • bound the WS port    │
+                          │  • routes peer frames   │
+                          │  • runs own MCP traffic │
+                          └─────┬──────────────┬────┘
+                                │ local WS     │ local WS
+                       ┌────────▼──┐     ┌─────▼──────┐
+                       │ MCP B     │     │ MCP C      │
+                       │ (peer)    │     │ (peer)     │
+                       └───────────┘     └────────────┘
 ```
+
+Every MCP races `bind(127.0.0.1:37149)` on startup. The first one wins (`role: 'host'`); the rest dial in as peers (`role: 'peer'`). One extension, one port, N MCPs. Frames between each MCP and the extension are AES-256-GCM encrypted end-to-end using a per-session key derived via X25519+HKDF from a long-term Ed25519/X25519 identity that lives on disk in `~/.fetchproxy/identity/<server-name>.json`. The host routes; it cannot read or modify peer traffic.
+
+When the extension first sees a new identity it triggers a pair flow: the MCP prints a 6-digit SAS code to stderr and the extension popup shows the same code. The user clicks Approve. Subsequent connections from the same identity skip the prompt.
 
 Three pieces, one repo:
 
 | Package | What | Lives in |
 |---|---|---|
-| `@fetchproxy/server` | Node library MCP servers depend on. Starts a localhost WS, accepts `fetch()` calls, relays them to the extension, returns the response. | `packages/server/` |
-| `fetchproxy-extension` | Browser extension. Connects to the WS, runs `fetch(url, { credentials: 'include' })` in the page MAIN world of a matching tab, returns the response. | `packages/extension-core/` + `packages/extension-chrome/` + `packages/extension-safari/` |
-| `fetchproxy` protocol | WS frame schema between the two. | `docs/PROTOCOL.md` |
+| [`@fetchproxy/server`](packages/server) | Node library MCP authors depend on. Elects host/peer, runs the handshake, exposes `fetch()` + convenience verbs (`get`, `postJson`, `readCookies`, …). | `packages/server/` |
+| [`@fetchproxy/protocol`](packages/protocol) | Wire types, validators, crypto wrappers. Shared between server and extension. | `packages/protocol/` |
+| `fetchproxy-extension` | Browser extension. Connects to the WS, runs `fetch(url, { credentials: 'include' })` in the page MAIN world of a matching tab, returns the response. | `packages/extension-core/` + `packages/extension-chrome/` |
 
-Cross-browser: one TypeScript codebase in `extension-core/`, built into per-browser packages. Chrome ships as a regular MV3 extension; Safari ships as a `.dmg`-wrapped Safari Web Extension. See [Cross-browser strategy](#cross-browser-strategy).
+`extension-core/` holds the shared TypeScript; `extension-chrome/` is the per-browser MV3 manifest + esbuild bundle. Safari/Firefox targets can slot in alongside without forking the core.
 
-## Scope
+## Install
 
-### In scope (v1)
+### Extension
 
-- `fetch(url, init)` from MCP server, executed in the page MAIN world of a tab matching a caller-supplied `tabUrl` prefix.
-- Tab-pinned routing — the extension picks the right tab; the MCP server never sees an "active tab" assumption.
-- Status indicators in the extension popup (WS connection, tab present, optional auth-cookie present).
-- Multi-MCP support — one extension serves many MCPs on different ports (opentable-mcp on 37149, resy-mcp on 37148, etc.).
-- Chrome (MV3) + Safari Web Extensions.
+The Chrome MV3 extension is not (yet) on the Chrome Web Store. Build and load unpacked:
 
-### Explicitly out of scope
+```sh
+git clone https://github.com/chrischall/fetchproxy
+cd fetchproxy
+npm ci
+npm --workspace=@fetchproxy/extension-chrome run build
+```
 
-- **DOM automation** (clicks, screenshots, form-fill) — use `claude-in-chrome` or `playwright-mcp` for that.
-- **`eval_js` / arbitrary JS execution** — security footgun. Locally-malicious software on `127.0.0.1` could exec in your signed-in tabs.
-- **Cookie or credential exfiltration** — the protocol can't request "give me the cookies for opentable.com." Fetches happen in the browser; bytes return.
-- **Headless / cloud browsers** — fetchproxy targets the user's real, signed-in browser. If you need a fresh browser session, use Playwright or Browserbase.
-- **Cross-origin proxy for arbitrary URLs** — the tab must be on the right domain. Targeting `tabUrl: "https://www.opentable.com/"` and fetching `https://api.example.com/` won't work; the fetch runs from the opentable.com origin.
+Then in Chrome: `chrome://extensions` → toggle "Developer mode" → "Load unpacked" → pick `packages/extension-chrome/dist/`.
 
-## Cross-browser strategy
+### Node library
 
-Shared TypeScript core, per-browser packaging.
+In your MCP server:
 
-| Browser | Distribution | Notes |
-|---|---|---|
-| Chrome / Chromium-based (Edge, Brave) | Unpacked dev-load + Chrome Web Store | MV3 service worker. 20s WS ping to keep it warm. |
-| Safari | Signed `.dmg` (containing app) | Safari Web Extensions API is ~95% compatible with Chrome MV3 since Safari 16.4. Service worker is killed more aggressively; we use a 5s ping and `chrome.alarms` backup. Requires Apple Developer account ($99/yr) to ship signed builds via GitHub Releases. |
-| Firefox | (Phase 3) | WebExtensions API differs slightly from MV3; cheap to add once the shared core stabilizes. |
+```sh
+npm install @fetchproxy/server
+```
 
-The split between `extension-core/` (the shared TS) and `extension-chrome/` / `extension-safari/` (the per-browser manifests + build outputs) keeps platform divergence contained to manifest files + the build step.
+`@fetchproxy/protocol` is pulled in transitively. You only need to depend on it directly if you're building your own bridge.
 
-## Phases
+## Quickstart
 
-### Phase 1 — Chrome MVP + Node library
+A minimal MCP shape using `FetchproxyServer`:
 
-- Extract `opentable-mcp/extension/` into `packages/extension-core/` + `packages/extension-chrome/`. Make it domain-agnostic — no hardcoded `opentable.com` paths.
-- Publish `@fetchproxy/server` to npm.
-- Migrate `opentable-mcp` to depend on `@fetchproxy/server` instead of carrying its own extension. (One PR against opentable-mcp.)
-- One end-to-end test covers Chrome → MCP server → opentable.com.
+```ts
+import { FetchproxyServer } from '@fetchproxy/server';
 
-### Phase 2 — Safari port
+const fp = new FetchproxyServer({
+  serverName: 'opentable-mcp',
+  version: '0.10.0',
+  domains: ['opentable.com'],
+});
 
-- Set up Xcode containing-app wrapper in `packages/extension-safari/`.
-- Same `extension-core/` source, different build target.
-- CI release pipeline produces signed `.dmg` from a tagged GitHub Release.
-- Verify against a Safari user.
+await fp.listen();
+// First run prints the pair code to stderr:
+//   fetchproxy pair code: 123-456
+// Open the extension popup and click Approve.
 
-### Phase 3 — Polish + Firefox
+// Single-domain MCP: `domains[0]` is the implicit base.
+const dashboard = await fp.getHtml('/user/dining-dashboard', {
+  subdomain: 'www',
+});
 
-- Firefox WebExtension target.
-- Better popup UX (per-MCP status, "open my opentable.com tab" shortcut).
-- Possibly: add a "capture-logger" opt-in mode for developer-time endpoint discovery (the pattern we use today to grab persisted-query hashes from Apollo).
+// JSON shortcuts: postJson stringifies + sets Content-Type, getJson parses.
+const result = await fp.postJson('/dapi/fe/gql', {
+  operationName: 'Autocomplete',
+  variables: { term: 'state of confusion' },
+}, { subdomain: 'www' });
 
-## Protocol
+await fp.close();
+```
 
-See [`docs/PROTOCOL.md`](docs/PROTOCOL.md) for full WS frame schemas. One verb today: `fetch`.
+The `listen()` call elects host or peer automatically — call it from every MCP that wants to share the bridge.
 
-## Security model
+## Capabilities
 
-Full threat model and defenses live in [`docs/SECURITY.md`](docs/SECURITY.md). Headline posture:
+Each MCP declares an opt-in capability set in its hello frame. The extension stores the approved set in its trust record and forces a re-pair if it ever changes.
 
-- **Local trust boundary.** fetchproxy is a single-user, same-machine product. WS binds `127.0.0.1` only. Multi-user shared machines are out of scope.
-- **Explicit trust prompt.** First connection from a new `(port, server-name, domain)` tuple does NOT auto-trust. The extension popup shows the user a permission prompt with the domain in large type. "Always allow" persists; anything else re-prompts on next connection.
-- **Per-MCP domain allowlist.** Each MCP declares its domains (`["opentable.com"]`, or `["honeybook.com", "hbsplit.com"]` for an MCP that legitimately spans two hosts) in the `hello` frame. The extension rejects any fetch outside that set — so a compromised `opentable-mcp` can leak OpenTable data, but cannot ALSO be used against your bank, email, or Slack.
-- **No automation primitives.** No `eval_js`, no `get_cookies`, no DOM access, no navigation. The minimum-permission shape is intentional — a hostile MCP that gets past the trust prompt can read pages on its declared domain and that's it.
-- **Webpage drive-by defenses.** WS upgrades from public-origin pages get rejected (Origin allowlist + Chrome Private Network Access support).
-- **Honest about the expansion.** fetchproxy DOES expand the local attack surface — Chrome cookies aren't freely readable by every local process, but a trusted fetchproxy MCP can act AS the browser without prompting Keychain. If you don't trust everything else on your user account, fetchproxy isn't for you.
+| Capability | What it lets the MCP do |
+|---|---|
+| `fetch` (default) | Issue HTTP requests against the user's signed-in tab. Granted to every MCP that pairs. |
+| `read_cookies` | Snapshot non-HttpOnly `document.cookie` from a tab on a declared domain. The popup shows a visible warning at pair time. |
+
+`fetch` is implied if `capabilities` is omitted. Including anything else is opt-in:
+
+```ts
+const fp = new FetchproxyServer({
+  serverName: 'creditkarma-mcp',
+  version: '0.1.0',
+  domains: ['creditkarma.com'],
+  capabilities: ['fetch', 'read_cookies'],
+});
+
+await fp.listen();
+const cookies = await fp.readCookies({ subdomain: 'www' });
+// "sid=...; csrf=...; ..."
+```
+
+See [`docs/PROTOCOL.md`](docs/PROTOCOL.md) for the wire-level definition and [`docs/SECURITY.md`](docs/SECURITY.md) for the threat model.
+
+## Multi-domain MCPs
+
+Most MCPs target a single domain and can rely on the implicit default. If an MCP legitimately needs more than one (e.g. HoneyBook spans `honeybook.com` and `hbsplit.com`), declare them all and pass `{ domain }` explicitly on every call:
+
+```ts
+const fp = new FetchproxyServer({
+  serverName: 'honeybook-mcp',
+  version: '0.1.0',
+  domains: ['honeybook.com', 'hbsplit.com'],
+});
+
+await fp.listen();
+await fp.getJson('/api/v2/me', { domain: 'honeybook.com', subdomain: 'www' });
+await fp.postJson('/share', { … },  { domain: 'hbsplit.com',   subdomain: 'www' });
+```
+
+Single-domain MCPs may also pass `{ domain }`; it's required only when more than one is declared.
+
+The extension validates each fetch URL against the set: exact-host match, or subdomain of one of the declared entries. Cross-domain fetches fail with `ok: false`.
+
+## Concentrator + end-to-end encryption
+
+One port, N MCPs. The first MCP to call `listen()` binds `127.0.0.1:37149` and becomes the host; later MCPs dial that host as peers. The host routes frames between peers and the extension but cannot read peer traffic — every data frame after the handshake is AES-256-GCM encrypted under a per-session key the host never sees. Identity keys are per-MCP and stable across restarts; the pair record on the extension side is keyed off the identity hash, not the port or the server name.
+
+Override the bind address if you need to:
+
+```ts
+new FetchproxyServer({ port: 37150, host: '127.0.0.1', /* … */ });
+```
+
+## Security
+
+`docs/SECURITY.md` is the full threat model. The headlines:
+
+- **Localhost only.** The WS server binds `127.0.0.1`. Multi-user shared machines are out of scope.
+- **Identity-keyed pair prompt.** First connection from a new identity does NOT auto-trust. The popup shows the server name, declared domains, and capability set; the user clicks Approve.
+- **End-to-end encryption.** The concentrator host routes by `mcpId` but never decrypts peer traffic.
+- **Per-MCP domain allowlist.** Each MCP declares its domains; the extension rejects any fetch outside them.
+- **No automation primitives.** No `eval_js`, no `read_storage` (other than the opt-in `read_cookies`), no navigation. The minimum-permission shape is intentional.
+- **Honest about the expansion.** fetchproxy DOES expand the local attack surface — Chrome cookies aren't freely readable by every local process, but a trusted fetchproxy MCP can act AS the browser on its declared domains without prompting Keychain. If you don't trust everything else running on your user account, fetchproxy isn't for you.
+
+## Project structure
+
+```
+packages/
+  protocol/          @fetchproxy/protocol         (npm, public)
+  server/            @fetchproxy/server           (npm, public)
+  extension-core/    shared TS for the extension  (workspace internal)
+  extension-chrome/  Chrome MV3 build target      (workspace internal)
+docs/
+  PROTOCOL.md        wire-format reference
+  SECURITY.md        threat model
+```
+
+`npm test` runs the full vitest suite across all workspaces. `npm run typecheck` runs tsc-build on the three TS packages (extension-chrome is bundled, not typechecked separately).
 
 ## License
 
