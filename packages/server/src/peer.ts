@@ -29,18 +29,35 @@ export interface PeerOpts {
   capabilities?: Capability[];
 }
 
+/**
+ * Public peer handle used by `FetchproxyServer` to send + receive
+ * inner frames and to close the WebSocket. The bare WebSocket and the
+ * session-key promise are NOT part of this surface — they live on
+ * `InternalPeerHandle` below, which the peer's test suite reaches into
+ * for handshake-level assertions but normal callers must not touch.
+ */
 export interface PeerHandle {
-  ws: WebSocket;
-  /** Resolves once the ready handshake has completed and sessionKey is derived. */
-  session: Promise<SessionState>;
   sendInner: (inner: InnerFrame) => Promise<void>;
   onInner: (cb: (inner: InnerFrame) => void) => void;
   close: () => void;
 }
 
+/**
+ * Internal-only extension of `PeerHandle`. Used by `peer.test.ts` to
+ * verify the underlying WS handshake and (some day) by host-side code
+ * that wants to assert on the derived session key. Not exported from
+ * `@fetchproxy/server`'s public surface — anything that imports this
+ * type is opting in to the internal contract.
+ */
+export interface InternalPeerHandle extends PeerHandle {
+  ws: WebSocket;
+  /** Resolves once the ready handshake has completed and sessionKey is derived. */
+  session: Promise<SessionState>;
+}
+
 const enc = new TextEncoder();
 
-export async function startPeer(opts: PeerOpts): Promise<PeerHandle> {
+export async function startPeer(opts: PeerOpts): Promise<InternalPeerHandle> {
   const ws = new WebSocket(`ws://${opts.host}:${opts.port}`);
   await new Promise<void>((resolve, reject) => {
     ws.once('open', () => resolve());
@@ -108,7 +125,7 @@ export async function startPeer(opts: PeerOpts): Promise<PeerHandle> {
   // to any later `await sessionPromise`.
   sessionPromise.catch(() => { /* noop */ });
 
-  const handle: PeerHandle = {
+  const handle: InternalPeerHandle = {
     ws,
     session: sessionPromise,
     sendInner: async (inner: InnerFrame) => {

@@ -8,12 +8,12 @@ import {
   ed25519Verify,
   type HelloFrameFromServer,
 } from '@fetchproxy/protocol';
-import { startPeer, type PeerHandle } from '../src/peer.js';
+import { startPeer, type InternalPeerHandle } from '../src/peer.js';
 import { loadOrCreateIdentity } from '../src/identity.js';
 
 describe('peer client', () => {
   let wss: WebSocketServer | null = null;
-  let peer: PeerHandle | null = null;
+  let peer: InternalPeerHandle | null = null;
 
   afterEach(async () => {
     if (peer) peer.close();
