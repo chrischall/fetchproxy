@@ -1,0 +1,129 @@
+name: release-please
+
+# Single-workflow monorepo release pipeline (canonical release-please
+# shape, matching ofw-mcp).
+#
+# Job 1 (release-please): runs googleapis/release-please-action with
+# linked-versions across all 5 sub-packages. Opens ONE combined release
+# PR (separate-pull-requests: false). When that PR merges, the action
+# creates a single `v<NEXT>` tag (include-component-in-tag: false).
+#
+# Job 2 (publish): gates on `tag_name` being set (meaning the release
+# PR just merged). Checks out the tag, builds each non-private
+# sub-package, publishes them to npm via Trusted Publisher OIDC,
+# builds the Chrome extension zip, and attaches the zip to the
+# GitHub Release release-please already authored.
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: release-please-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    outputs:
+      tag_name: ${{ steps.release.outputs.tag_name }}
+    steps:
+      - uses: googleapis/release-please-action@v4
+        id: release
+        with:
+          token: ${{ secrets.RELEASE_PAT }}
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+  publish:
+    needs: release-please
+    if: needs.release-please.outputs.tag_name != ''
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v6.0.2
+        with:
+          ref: ${{ needs.release-please.outputs.tag_name }}
+
+      - uses: actions/setup-node@v6.4.0
+        with:
+          node-version: 22
+          cache: npm
+          registry-url: https://registry.npmjs.org
+
+      # Strip stale npm auth — Trusted Publisher OIDC is the only auth
+      # path. Without this, setup-node's placeholder _authToken makes
+      # npm 404 before falling through to OIDC.
+      - name: Strip stale npm auth from .npmrc
+        run: |
+          sed -i '/always-auth/d' "$NPM_CONFIG_USERCONFIG"
+          sed -i '/_authToken/d' "$NPM_CONFIG_USERCONFIG"
+
+      - run: npm ci
+
+      - name: Set VERSION env
+        run: |
+          VERSION=$(node -p "require('./packages/protocol/package.json').version")
+          echo "VERSION=${VERSION}" >> "$GITHUB_ENV"
+
+      # Build TS packages in dependency order: protocol → server →
+      # bootstrap → extension-core. extension-chrome's bundle is built
+      # separately below (needs protocol/dist on disk first).
+      - name: Build packages
+        run: npm run build --workspace=@fetchproxy/protocol --workspace=@fetchproxy/server --workspace=@fetchproxy/bootstrap --workspace=@fetchproxy/extension-core
+
+      # Publish each non-private package. Idempotent — skip if already
+      # on npm so re-runs are safe.
+      - name: Publish @fetchproxy/protocol to npm
+        run: |
+          PUBLISHED=$(npm view "@fetchproxy/protocol@${VERSION}" version 2>/dev/null || true)
+          if [ "$PUBLISHED" = "$VERSION" ]; then
+            echo "npm already has @fetchproxy/protocol@${VERSION} — skipping."
+            exit 0
+          fi
+          npm publish --workspace=@fetchproxy/protocol --access=public --provenance
+
+      - name: Publish @fetchproxy/server to npm
+        run: |
+          PUBLISHED=$(npm view "@fetchproxy/server@${VERSION}" version 2>/dev/null || true)
+          if [ "$PUBLISHED" = "$VERSION" ]; then
+            echo "npm already has @fetchproxy/server@${VERSION} — skipping."
+            exit 0
+          fi
+          npm publish --workspace=@fetchproxy/server --access=public --provenance
+
+      - name: Publish @fetchproxy/bootstrap to npm
+        run: |
+          PUBLISHED=$(npm view "@fetchproxy/bootstrap@${VERSION}" version 2>/dev/null || true)
+          if [ "$PUBLISHED" = "$VERSION" ]; then
+            echo "npm already has @fetchproxy/bootstrap@${VERSION} — skipping."
+            exit 0
+          fi
+          npm publish --workspace=@fetchproxy/bootstrap --access=public --provenance
+
+      # Build & zip the Chrome extension for sideload distribution
+      # before the Chrome Web Store review of each release.
+      - name: Build & package Chrome extension
+        working-directory: packages/extension-chrome
+        run: |
+          npx tsx build.ts
+          cd dist
+          zip -r "../../../fetchproxy-extension-${VERSION}.zip" .
+          ls -la "../../../fetchproxy-extension-${VERSION}.zip"
+
+      # release-please-action already created the GitHub Release with
+      # the CHANGELOG body. Attach the extension zip via gh release
+      # upload --clobber so re-runs overwrite.
+      - name: Attach artifacts to release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload "${{ needs.release-please.outputs.tag_name }}" \
+            "fetchproxy-extension-${VERSION}.zip" \
+            --clobber
