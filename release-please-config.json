@@ -1,0 +1,61 @@
+{
+  "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
+  "packages": {
+    "packages/bootstrap": {
+      "package-name": "@fetchproxy/bootstrap",
+      "release-type": "node",
+      "component": "bootstrap"
+    },
+    "packages/extension-chrome": {
+      "package-name": "@fetchproxy/extension-chrome",
+      "release-type": "node",
+      "component": "extension-chrome",
+      "extra-files": [
+        { "type": "json", "path": "manifest.json", "jsonpath": "$.version" }
+      ]
+    },
+    "packages/extension-core": {
+      "package-name": "@fetchproxy/extension-core",
+      "release-type": "node",
+      "component": "extension-core"
+    },
+    "packages/protocol": {
+      "package-name": "@fetchproxy/protocol",
+      "release-type": "node",
+      "component": "protocol"
+    },
+    "packages/server": {
+      "package-name": "@fetchproxy/server",
+      "release-type": "node",
+      "component": "server"
+    }
+  },
+  "plugins": [
+    {
+      "type": "linked-versions",
+      "groupName": "fetchproxy",
+      "components": [
+        "bootstrap",
+        "extension-chrome",
+        "extension-core",
+        "protocol",
+        "server"
+      ]
+    }
+  ],
+  "separate-pull-requests": false,
+  "include-component-in-tag": false,
+  "include-v-in-tag": true,
+  "changelog-sections": [
+    { "type": "feat", "section": "Features" },
+    { "type": "fix", "section": "Bug Fixes" },
+    { "type": "perf", "section": "Performance" },
+    { "type": "revert", "section": "Reverts" },
+    { "type": "refactor", "section": "Refactor" },
+    { "type": "docs", "section": "Documentation" },
+    { "type": "test", "section": "Tests", "hidden": true },
+    { "type": "build", "section": "Build", "hidden": true },
+    { "type": "ci", "section": "CI", "hidden": true },
+    { "type": "chore", "section": "Chores", "hidden": true }
+  ]
+}
