@@ -29,15 +29,18 @@ concurrency:
 jobs:
   enable-auto-merge:
     runs-on: ubuntu-latest
-    # Two filters:
+    # Three filters:
     #   1. Drafts are skipped. Authors mark a PR "ready for review" when
     #      they want it to land; until then this workflow stays out of the
     #      way.
-    #   2. Only the repo owner and dependabot get auto-merge. External
+    #   2. release-please's own release PRs are excluded so a release ships
+    #      only after a human reads the proposed CHANGELOG and version bump.
+    #   3. Only the repo owner and dependabot get auto-merge. External
     #      contributors (rare on a personal repo but possible) still go
     #      through manual review.
     if: |
       github.event.pull_request.draft == false &&
+      github.event.pull_request.head.ref != 'release-please--branches--main' &&
       (github.event.pull_request.user.login == github.repository_owner ||
        github.event.pull_request.user.login == 'dependabot[bot]')
     steps:
