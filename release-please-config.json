@@ -46,6 +46,7 @@
   "separate-pull-requests": false,
   "include-component-in-tag": false,
   "include-v-in-tag": true,
+  "group-pull-request-title-pattern": "chore${scope}: release ${version}",
   "changelog-sections": [
     { "type": "feat", "section": "Features" },
     { "type": "fix", "section": "Bug Fixes" },

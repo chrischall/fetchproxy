@@ -45,6 +45,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_URL: ${{ github.event.pull_request.html_url }}
-        # Merge commit (not squash/rebase) — matches the repo's policy.
+        # Squash merge — matches the repo's policy (only squash is
+        # enabled in settings; merge commits and rebase are off).
         run: |
-          gh pr merge --auto --merge "$PR_URL"
+          gh pr merge --auto --squash "$PR_URL"

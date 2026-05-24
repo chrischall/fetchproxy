@@ -111,8 +111,8 @@ which npm rejects with a privacy-preserving 404. PR #6 fixed this.
 
 ### PRs + auto-merge
 
-Default workflow: branch + PR + `gh pr merge --auto --merge` (the
-repo allows merge commits only — no squash, no rebase). Direct
+Default workflow: branch + PR + `gh pr merge --auto --squash` (the
+repo allows squash merges only — no merge commit, no rebase). Direct
 pushes to `main` skip auto-generated release notes (the auto-merge
 workflow tags PRs into release sections); use direct push only when
 the user explicitly asks.
