@@ -1,7 +1,8 @@
 {
-  "packages/bootstrap": "0.4.3",
-  "packages/extension-chrome": "0.4.3",
-  "packages/extension-core": "0.4.3",
-  "packages/protocol": "0.4.3",
-  "packages/server": "0.4.3"
+  ".": "0.4.2",
+  "packages/bootstrap": "0.4.2",
+  "packages/extension-chrome": "0.4.2",
+  "packages/extension-core": "0.4.2",
+  "packages/protocol": "0.4.2",
+  "packages/server": "0.4.2"
 }

@@ -1,6 +1,6 @@
 {
   "name": "@fetchproxy/protocol",
-  "version": "0.4.3",
+  "version": "0.4.2",
   "description": "WebSocket frame types + runtime validators for fetchproxy.",
   "type": "module",
   "main": "./dist/index.js",
