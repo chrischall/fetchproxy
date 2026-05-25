@@ -73,9 +73,19 @@ jobs:
         if: steps.release.outputs.pr
         env:
           GH_TOKEN: ${{ secrets.RELEASE_PAT }}
-          PR_NUMBER: ${{ fromJSON(steps.release.outputs.pr).number }}
+          # Pass the raw JSON through and parse with `jq` inside `run:`.
+          # Resolving `fromJSON(...).number` in the `env:` template above
+          # would error at template-evaluation time on runs where the
+          # action produced no PR output (most notably the post-release
+          # PR merge run, where outputs.pr is empty). The `if:` filter
+          # short-circuits the `run:` block but does NOT prevent `env:`
+          # from being evaluated, so an empty-string fromJSON fails the
+          # whole job. Observed:
+          #   https://github.com/chrischall/fetchproxy/actions/runs/26384384708/job/77659773051
+          PR_OUTPUT: ${{ steps.release.outputs.pr }}
         run: |
           set -euo pipefail
+          PR_NUMBER=$(printf '%s' "$PR_OUTPUT" | jq -r .number)
           PR_HEAD=$(gh pr view "$PR_NUMBER" --json headRefName --jq .headRefName)
           git fetch origin "$PR_HEAD"
           git checkout "$PR_HEAD"
