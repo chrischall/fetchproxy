@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.1](https://github.com/chrischall/fetchproxy/compare/v0.5.0...v0.5.1) (2026-05-25)
+
+
+### Bug Fixes
+
+* session-key renegotiation on extension reconnect + cleanup ([#44](https://github.com/chrischall/fetchproxy/issues/44)) ([cd612da](https://github.com/chrischall/fetchproxy/commit/cd612daabc061910d83acae940d2686598bea9aa))
+
 ## [0.5.0](https://github.com/chrischall/fetchproxy/compare/v0.4.4...v0.5.0) (2026-05-25)
 
 
