@@ -17,7 +17,18 @@ name: release-please
 on:
   push:
     branches: [main]
+  # workflow_dispatch with an optional `republish_tag` input lets us
+  # manually re-fire the publish job for an existing tag — useful when
+  # an earlier publish failed (e.g. wrong Node version) and the tag is
+  # already cut. Leave `republish_tag` blank for the regular path of
+  # just running release-please-action to check for a new release PR.
   workflow_dispatch:
+    inputs:
+      republish_tag:
+        description: 'Existing tag to re-publish (e.g. v0.5.0). Blank = skip publish.'
+        required: false
+        type: string
+        default: ''
 
 permissions:
   contents: write
@@ -123,7 +134,14 @@ jobs:
 
   publish:
     needs: release-please
-    if: needs.release-please.outputs.release_created == 'true'
+    # Fire on either:
+    #   - a fresh release (release-please-action just cut a tag), OR
+    #   - a manual workflow_dispatch with `republish_tag` set to an
+    #     existing tag (escape hatch for re-running publish on a tag
+    #     whose original publish failed).
+    if: |
+      needs.release-please.outputs.release_created == 'true' ||
+      (github.event_name == 'workflow_dispatch' && inputs.republish_tag != '')
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -131,7 +149,10 @@ jobs:
     steps:
       - uses: actions/checkout@v6.0.2
         with:
-          ref: ${{ needs.release-please.outputs.tag_name }}
+          # Prefer the release-please-emitted tag on the auto path; fall
+          # back to the manually-supplied republish_tag on the dispatch
+          # path.
+          ref: ${{ needs.release-please.outputs.tag_name || inputs.republish_tag }}
 
       - uses: actions/setup-node@v6.4.0
         with:
@@ -161,7 +182,7 @@ jobs:
       # version 1:1.
       - name: Set umbrella VERSION env
         run: |
-          TAG="${{ needs.release-please.outputs.tag_name }}"
+          TAG="${{ needs.release-please.outputs.tag_name || inputs.republish_tag }}"
           echo "VERSION=${TAG#v}" >> "$GITHUB_ENV"
 
       # Build TS packages in dependency order: protocol → server →
@@ -223,6 +244,6 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release upload "${{ needs.release-please.outputs.tag_name }}" \
+          gh release upload "${{ needs.release-please.outputs.tag_name || inputs.republish_tag }}" \
             "fetchproxy-extension-${VERSION}.zip" \
             --clobber
