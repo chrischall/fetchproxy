@@ -50,8 +50,26 @@ permissions:
   issues: write
   id-token: write       # Required for the Claude App OIDC token exchange
 
+# Concurrency group must NOT cancel `labeled` events that don't match the
+# `review-with-opus` filter. Otherwise opening a PR with `--label` fires
+# two webhook events back-to-back (`opened`, then `labeled:<whatever>`),
+# and the labeled event cancels the in-flight `opened` review at the
+# workflow level before the job-level `if:` filter can skip it — leaving
+# the PR with no verdict and no `ready-to-merge` label.
+#
+# Strategy: keep `opened/reopened/ready_for_review/synchronize` in one
+# group (so a new push DOES cancel an in-flight review — that's
+# intentional), but give every `labeled` event its own group keyed by
+# the label name. The `review-with-opus` re-review still runs in its
+# own dedicated group; every other label change is a no-op that
+# doesn't disturb the running review.
 concurrency:
-  group: pr-auto-review-${{ github.event.pull_request.number }}
+  group: |
+    pr-auto-review-${{ github.event.pull_request.number }}${{
+      github.event.action == 'labeled'
+        && format('-labeled-{0}', github.event.label.name)
+        || ''
+    }}
   cancel-in-progress: true
 
 jobs:
