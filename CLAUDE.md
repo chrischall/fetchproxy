@@ -101,13 +101,19 @@ consumers end up with mixed-version lockfiles. Lesson tagged in PR #7.
 
 ### npm publish via Trusted Publisher / OIDC
 
-`Release` uses `--provenance` with GitHub OIDC. **No `NPM_TOKEN`
-secret is configured** — the workflow strips both `always-auth` and
-`_authToken` from the `.npmrc` `setup-node` writes so npm publish
-takes the OIDC path. Without that strip, `setup-node` leaves
-`_authToken=${NODE_AUTH_TOKEN}` in `.npmrc` and the masked empty
-placeholder (`XXXXX-XXXXX-XXXXX-XXXXX`) gets tried as a static token,
-which npm rejects with a privacy-preserving 404. PR #6 fixed this.
+`Release` uses `--provenance` with GitHub OIDC against each
+`@fetchproxy/*` package's Trusted Publisher trust on npm. **No
+`NPM_TOKEN` secret is configured.** The workflow strips only
+`always-auth` from `.npmrc` (deprecated in npm 11); the
+`_authToken=${NODE_AUTH_TOKEN}` line setup-node writes is kept
+intact. `NODE_AUTH_TOKEN` is unset, so the placeholder is empty;
+`npm publish --provenance` then takes the OIDC path. Mirrors the
+working pattern across compass-mcp, honeybook-mcp, opentable-mcp.
+
+Do NOT strip `_authToken` — that removes the registry-entry npm
+needs to even attempt Trusted Publisher, and `npm publish` errors
+with `ENEEDAUTH`. (An earlier version of this doc described
+stripping it as the fix; that was the bug.)
 
 ### PRs + auto-merge
 
@@ -157,9 +163,13 @@ MCP tool call is the integration test.
   it from background in some contexts; older Chromes throw sync or
   async. `background.ts` wraps it in try/catch; the **badge** is the
   reliable surface.
-- **Trusted-publisher OIDC + `setup-node`.** See "npm publish" above.
-  If a future release fails with 404 PUT, check `.npmrc` for any
-  `_authToken` line that survived the strip.
+- **Trusted-publisher OIDC + `setup-node`.** See "npm publish"
+  above. If a publish fails with `ENEEDAUTH`, do NOT add an
+  `_authToken` strip — that breaks OIDC. The likely culprits are
+  (a) a workflow filename mismatch with the Trusted Publisher
+  config on npmjs.com, (b) a missing `id-token: write` permission
+  on the publish job, or (c) the package's TP trust never having
+  been configured.
 - **Multi-domain MCPs need `storageDomain`.** A MCP that declares
   `domains: ['x.com', 'y.com']` and calls `readLocalStorage(...)`
   must specify which declared domain to read from, or
