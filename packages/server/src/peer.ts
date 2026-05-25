@@ -3,6 +3,7 @@ import {
   ecdhX25519,
   fromB64,
   hkdfSha256,
+  HKDF_SESSION_INFO,
   openEncryptedFrame,
   sealInnerFrame,
   validateFrame,
@@ -110,7 +111,7 @@ export async function startPeer(opts: PeerOpts): Promise<InternalPeerHandle> {
           const sessionKey = await hkdfSha256(
             shared,
             sessionNonce,
-            enc.encode('fetchproxy/0.1.0/session'),
+            enc.encode(HKDF_SESSION_INFO),
             32,
           );
           session = new SessionState(sessionKey);

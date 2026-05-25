@@ -1,36 +1,6 @@
-// Wiring test: when the extension surfaces an ok:false on a fetch
-// response, FetchproxyServer.fetch() must resolve with the same
-// `error` string AND a derived `kind`. The classifier itself is
-// unit-tested in classify-fetch-error.test.ts; this file just proves
-// the server actually wires the classifier into the inner-response
-// dispatch path.
-//
-// Mirrors the `installFakeHost` pattern from convenience.test.ts so
-// we don't have to spin up the real WS handshake.
 import { describe, it, expect } from 'vitest';
 import { FetchproxyServer } from '../src/index.js';
-import type { InnerFrame, InnerRequest } from '@fetchproxy/protocol';
-
-function installFakeHost(server: FetchproxyServer): {
-  lastInner: () => InnerRequest | null;
-  reply: (resp: InnerFrame) => void;
-} {
-  let lastInner: InnerRequest | null = null;
-  const fakeHostHandle = {
-    close: async () => undefined,
-    sendOwnInner: async (inner: InnerFrame): Promise<void> => {
-      if (inner.type === 'request') lastInner = inner;
-    },
-    onOwnInner: (_cb: (inner: InnerFrame) => void) => undefined,
-  };
-  (server as unknown as { hostHandle: typeof fakeHostHandle }).hostHandle = fakeHostHandle;
-  return {
-    lastInner: () => lastInner,
-    reply: (resp) => {
-      (server as unknown as { onInner(i: InnerFrame): void }).onInner(resp);
-    },
-  };
-}
+import { installFakeHost } from './helpers/fake-host.js';
 
 const baseOpts = {
   serverName: 'test-mcp',

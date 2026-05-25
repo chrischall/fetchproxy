@@ -99,7 +99,7 @@ export interface FetchResultError {
    * populated by the server in 0.4.3+. The raw `error` string remains
    * the source of truth — `kind` is additive guidance.
    */
-  kind?: FetchErrorKind;
+  kind: FetchErrorKind;
 }
 
 /** Public response shape returned by the convenience helpers. */
@@ -401,6 +401,7 @@ export class FetchproxyServer {
         onPairCode: this.opts.onPairCode,
       });
       this.hostHandle.onOwnInner((inner) => this.onInner(inner));
+      this.hostHandle.onExtensionDisconnect(() => this.rejectAllPending());
     } else {
       this.role = 'peer';
       this.peerHandle = await startPeer({
@@ -1069,6 +1070,24 @@ export class FetchproxyServer {
     }
   }
 
+  private rejectAllPending(): void {
+    const err = new FetchproxyProtocolError('extension disconnected');
+    for (const cb of this.pending.values()) {
+      cb({ ok: false, error: err.message, kind: classifyFetchError(err.message) });
+    }
+    this.pending.clear();
+    for (const cb of this.pendingReadCookies.values()) {
+      cb({ ok: false, error: err.message });
+    }
+    this.pendingReadCookies.clear();
+    for (const { reject } of this.pendingStorage.values()) reject(err);
+    this.pendingStorage.clear();
+    for (const { reject } of this.pendingCapture.values()) reject(err);
+    this.pendingCapture.clear();
+    for (const { reject } of this.pendingIdb.values()) reject(err);
+    this.pendingIdb.clear();
+  }
+
   /**
    * Shut down the bridge. Host: terminates the WebSocket server and any
    * still-attached extension/peer clients. Peer: closes the upstream
@@ -1076,6 +1095,7 @@ export class FetchproxyServer {
    * twice in a row.
    */
   async close(): Promise<void> {
+    this.rejectAllPending();
     if (this.hostHandle) await this.hostHandle.close();
     if (this.peerHandle) this.peerHandle.close();
     this.hostHandle = null;

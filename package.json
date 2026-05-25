@@ -10,10 +10,10 @@
     "build": "npm run build --workspaces --if-present",
     "test": "vitest run",
     "test:watch": "vitest",
-    "typecheck": "tsc --noEmit --build packages/*"
+    "typecheck": "tsc -b packages/protocol packages/server packages/bootstrap packages/extension-core"
   },
   "devDependencies": {
-    "@types/node": "^25.5.2",
+    "@types/node": "^24.0.0",
     "@vitest/coverage-v8": "^4.1.7",
     "prettier": "^3.3.0",
     "typescript": "^6.0.0",

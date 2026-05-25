@@ -34,10 +34,7 @@ export function toHex(bytes: Uint8Array): string {
   return s;
 }
 
-/**
- * Concatenate two Uint8Arrays into a fresh one. Used to build the
- * `mcpId || sessionNonce` message that we Ed25519-sign on every hello.
- */
+/** Concatenate two Uint8Arrays into a fresh one. */
 export function concatBytes(a: Uint8Array, b: Uint8Array): Uint8Array {
   const out = new Uint8Array(a.length + b.length);
   out.set(a, 0);

@@ -13,6 +13,7 @@ import {
   hkdfSha256,
   sealInnerFrame,
   openEncryptedFrame,
+  HKDF_SESSION_INFO,
   type HelloFrameFromExtension,
   type ReadyFrame,
 } from '@fetchproxy/protocol';
@@ -116,7 +117,7 @@ describe('integration: two MCPs through one host', () => {
             const sessionKey = await hkdfSha256(
               shared,
               mcpSessionNonce,
-              enc.encode('fetchproxy/0.1.0/session'),
+              enc.encode(HKDF_SESSION_INFO),
               32,
             );
 

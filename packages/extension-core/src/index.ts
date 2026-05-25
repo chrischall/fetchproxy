@@ -7,6 +7,7 @@ export {
   isUrlAllowedForDomain,
   isUrlAllowedForAnyDomain,
   isTabUrlMatch,
+  isTabUrlOnOrigin,
 } from './lib/url-match.js';
 export { TrustStore, type TrustRecord, type TrustInput } from './trust-store.js';
 export { SessionKeys, SessionEntry } from './session-keys.js';

@@ -19,13 +19,14 @@ npm install @fetchproxy/protocol
 
 | Module | Exports | Purpose |
 |---|---|---|
-| `frames` | `PROTOCOL_VERSION`, `Capability`, `KNOWN_CAPABILITIES`, all `…Frame` types, `FetchInit`, `ReadCookiesInit`, `InnerFrame` union | Static + runtime descriptions of every frame on the wire. |
+| `frames` | `PROTOCOL_VERSION`, `Capability`, `KNOWN_CAPABILITIES`, all `…Frame` types, `FetchInit`, `ReadCookiesInit`, `InnerFrame` union, `StoragePointerDecl`, `IndexedDbScopeDecl`, `CaptureHeaderDecl` | Static + runtime descriptions of every frame on the wire. |
 | `validate` | `validateFrame`, `validateInnerFrame`, `ProtocolError`, `HOSTNAME_RE` | Defensive JSON validators with no third-party dependencies. Reject prototype-pollution attempts, malformed base64, unknown ops/capabilities, bad hostnames. |
-| `crypto` | `generateX25519Keypair`, `generateEd25519Keypair`, `deriveSharedSecret`, `hkdfSession`, `signEd25519`, `verifyEd25519` | Thin async wrappers around Node `subtle` / `@noble/curves`. Used by both server and extension. |
-| `mcp-id` | `generateMcpId`, `parseMcpId`, `MCP_ID_RE` | Per-process `<serverName>:<version>:<rand>` ids. |
-| `pair-code` | `pairCodeFromIdentity` | Deterministic 6-digit SAS code from an X25519 pubkey (`SHA256[0..3] mod 1_000_000`, formatted `XXX-XXX`). |
-| `seal` | `sealFrame`, `openFrame` | AES-256-GCM encrypt/decrypt of inner JSON payloads keyed by `sessionKey`. |
+| `crypto` | `RawKeyPair`, `generateX25519`, `generateEd25519`, `ecdhX25519`, `hkdfSha256`, `ed25519Sign`, `ed25519Verify`, `aesGcmSeal`, `aesGcmOpen`, `sha256` | Thin async wrappers around WebCrypto `subtle`. Used by both server and extension. |
+| `mcp-id` | `generateMcpId`, `parseMcpId`, `isValidMcpId`, `McpIdParts` | Per-process `<serverName>:<version>:<rand>` ids. |
+| `pair-code` | `derivePairCode`, `derivePairCodeFromIds` | Deterministic 6-digit SAS code from X25519 pubkey(s) (`SHA256[0..3] mod 1_000_000`, formatted `XXX-XXX`). |
+| `seal` | `sealInnerFrame`, `openEncryptedFrame` | AES-256-GCM encrypt/decrypt of inner JSON payloads keyed by `sessionKey`. |
 | `encoding` | `toB64`, `fromB64`, `toHex`, `concatBytes` | Shared base64/hex helpers. |
+| `json-pointer` | `evalJsonPointer`, `isValidJsonPointer`, `matchesDeclaredKey`, `undeclaredKeys` | JSON-pointer evaluation + glob matching for storage-pointer extraction. |
 
 ## Stability
 

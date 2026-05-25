@@ -27,6 +27,14 @@
  */
 
 export const PROTOCOL_VERSION = 2 as const;
+
+/**
+ * HKDF info label for session-key derivation. Both sides (MCP server
+ * and browser extension) must use the same value or the derived keys
+ * diverge and AES-GCM decryption fails silently.
+ */
+export const HKDF_SESSION_INFO = 'fetchproxy/1.0.0/session' as const;
+
 export type Platform = 'chrome' | 'safari' | 'firefox';
 
 /**
