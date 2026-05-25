@@ -3,59 +3,18 @@
   "packages": {
     ".": {
       "release-type": "node",
-      "component": "fetchproxy-root"
-    },
-    "packages/bootstrap": {
-      "package-name": "@fetchproxy/bootstrap",
-      "release-type": "node",
-      "component": "bootstrap"
-    },
-    "packages/extension-chrome": {
-      "package-name": "@fetchproxy/extension-chrome",
-      "release-type": "node",
-      "component": "extension-chrome",
+      "package-name": "fetchproxy",
       "extra-files": [
-        { "type": "json", "path": "manifest.json", "jsonpath": "$.version" }
+        { "type": "json", "path": "packages/bootstrap/package.json", "jsonpath": "$.version" },
+        { "type": "json", "path": "packages/extension-chrome/package.json", "jsonpath": "$.version" },
+        { "type": "json", "path": "packages/extension-chrome/manifest.json", "jsonpath": "$.version" },
+        { "type": "json", "path": "packages/extension-core/package.json", "jsonpath": "$.version" },
+        { "type": "json", "path": "packages/protocol/package.json", "jsonpath": "$.version" },
+        { "type": "json", "path": "packages/server/package.json", "jsonpath": "$.version" }
       ]
-    },
-    "packages/extension-core": {
-      "package-name": "@fetchproxy/extension-core",
-      "release-type": "node",
-      "component": "extension-core"
-    },
-    "packages/protocol": {
-      "package-name": "@fetchproxy/protocol",
-      "release-type": "node",
-      "component": "protocol"
-    },
-    "packages/server": {
-      "package-name": "@fetchproxy/server",
-      "release-type": "node",
-      "component": "server"
     }
   },
-  "plugins": [
-    {
-      "type": "node-workspace",
-      "merge": false
-    },
-    {
-      "type": "linked-versions",
-      "groupName": "fetchproxy",
-      "components": [
-        "fetchproxy-root",
-        "bootstrap",
-        "extension-chrome",
-        "extension-core",
-        "protocol",
-        "server"
-      ]
-    }
-  ],
-  "separate-pull-requests": false,
-  "include-component-in-tag": false,
   "include-v-in-tag": true,
-  "group-pull-request-title-pattern": "chore${scope}: release ${version}",
   "changelog-sections": [
     { "type": "feat", "section": "Features" },
     { "type": "fix", "section": "Bug Fixes" },

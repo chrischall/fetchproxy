@@ -32,6 +32,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       tag_name: ${{ steps.release.outputs.tag_name }}
+      pr: ${{ steps.release.outputs.pr }}
     steps:
       - uses: googleapis/release-please-action@v4
         id: release
@@ -39,6 +40,75 @@ jobs:
           token: ${{ secrets.RELEASE_PAT }}
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
+
+      # Lockstep cross-package deps: when release-please bumps the
+      # umbrella version (and the `extra-files` entries propagate it to
+      # every sub-package's `version` field), it does NOT touch
+      # inter-package caret-range deps (e.g. bootstrap's
+      # `"@fetchproxy/server": "^X.Y.Z"`). This step walks every
+      # sub-package and rewrites those caret ranges to the new umbrella
+      # version, then amends the release PR with the change. Without
+      # this, the published tarballs would carry a stale `^X.Y.Z` and
+      # downstream consumers would resolve to old versions of
+      # cross-package deps.
+      #
+      # Uses RELEASE_PAT (not GITHUB_TOKEN) so the amend-commit fires
+      # downstream CI / re-arming — keeping the release PR's CI status
+      # current.
+      - name: Checkout for cross-dep sync
+        if: steps.release.outputs.pr
+        uses: actions/checkout@v6.0.2
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.RELEASE_PAT }}
+
+      - name: Setup Node for cross-dep sync
+        if: steps.release.outputs.pr
+        uses: actions/setup-node@v6.4.0
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Sync cross-package caret deps in the release PR
+        if: steps.release.outputs.pr
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_PAT }}
+          PR_NUMBER: ${{ fromJSON(steps.release.outputs.pr).number }}
+        run: |
+          set -euo pipefail
+          PR_HEAD=$(gh pr view "$PR_NUMBER" --json headRefName --jq .headRefName)
+          git fetch origin "$PR_HEAD"
+          git checkout "$PR_HEAD"
+          NEW_VERSION=$(node -p "require('./package.json').version")
+          echo "Syncing cross-package @fetchproxy/* deps to ^${NEW_VERSION}"
+          for pkg in packages/bootstrap packages/extension-chrome packages/extension-core packages/protocol packages/server; do
+            node -e "
+              const fs = require('fs');
+              const file = '${pkg}/package.json';
+              const j = JSON.parse(fs.readFileSync(file, 'utf8'));
+              let changed = false;
+              for (const key of ['dependencies', 'devDependencies', 'peerDependencies']) {
+                if (!j[key]) continue;
+                for (const dep of Object.keys(j[key])) {
+                  if (dep.startsWith('@fetchproxy/') && j[key][dep] !== '^${NEW_VERSION}') {
+                    j[key][dep] = '^${NEW_VERSION}';
+                    changed = true;
+                  }
+                }
+              }
+              if (changed) fs.writeFileSync(file, JSON.stringify(j, null, 2) + '\n');
+            "
+          done
+          if git diff --quiet; then
+            echo "No cross-package dep updates needed."
+            exit 0
+          fi
+          npm install --package-lock-only --ignore-scripts
+          git add -A
+          git -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
+              -c user.name='github-actions[bot]' \
+              commit -m "chore: sync cross-package @fetchproxy/* deps to ^${NEW_VERSION}"
+          git push origin HEAD:"$PR_HEAD"
 
   publish:
     needs: release-please
