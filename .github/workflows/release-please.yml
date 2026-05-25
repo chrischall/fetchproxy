@@ -147,7 +147,8 @@ jobs:
       # `_authToken` line breaks that — confirmed by mirroring the
       # working pattern across compass-mcp, honeybook-mcp,
       # opentable-mcp.
-      - run: sed -i '/always-auth/d' "$NPM_CONFIG_USERCONFIG"
+      - name: Strip always-auth from .npmrc
+        run: sed -i '/always-auth/d' "$NPM_CONFIG_USERCONFIG"
 
       - run: npm ci
 
