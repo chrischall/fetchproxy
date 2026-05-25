@@ -12,6 +12,7 @@ import { electRole } from './election.js';
 import { startHost, type HostHandle } from './host.js';
 import { startPeer, type PeerHandle } from './peer.js';
 import { loadOrCreateIdentity, type Identity } from './identity.js';
+import { classifyFetchError, type FetchErrorKind } from './error-kind.js';
 
 export interface FetchproxyServerOpts {
   port?: number;
@@ -92,6 +93,13 @@ export interface FetchResult {
 export interface FetchResultError {
   ok: false;
   error: string;
+  /**
+   * Derived categorization of `error` so downstream MCPs can branch
+   * on a small discriminated set rather than grep'ing strings. Always
+   * populated by the server in 0.4.3+. The raw `error` string remains
+   * the source of truth — `kind` is additive guidance.
+   */
+  kind?: FetchErrorKind;
 }
 
 /** Public response shape returned by the convenience helpers. */
@@ -968,10 +976,11 @@ export class FetchproxyServer {
         if (inner.op === undefined || inner.op === 'fetch') {
           fetchCb({ ok: true, status: inner.status, url: inner.url, body: inner.body });
         } else {
-          fetchCb({ ok: false, error: `unexpected ${inner.op} response on fetch awaiter` });
+          const error = `unexpected ${inner.op} response on fetch awaiter`;
+          fetchCb({ ok: false, error, kind: classifyFetchError(error) });
         }
       } else {
-        fetchCb({ ok: false, error: inner.error });
+        fetchCb({ ok: false, error: inner.error, kind: classifyFetchError(inner.error) });
       }
       return;
     }

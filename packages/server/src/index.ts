@@ -10,4 +10,6 @@ export type {
   ReadCookiesResultError,
 } from './ws-server.js';
 export { FetchproxyProtocolError, FetchproxyHttpError } from './ws-server.js';
+export { classifyFetchError } from './error-kind.js';
+export type { FetchErrorKind } from './error-kind.js';
 export type { Capability, FetchInit } from '@fetchproxy/protocol';
