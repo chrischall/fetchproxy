@@ -115,7 +115,7 @@ export async function ed25519Verify(
 /**
  * HKDF-SHA256 extract+expand. Used to derive the AES-GCM session key
  * from the ECDH shared secret, salted with the server's hello nonce
- * and personalised with the `fetchproxy/0.1.0/session` info string.
+ * and personalised with the `HKDF_SESSION_INFO` constant.
  */
 export async function hkdfSha256(
   ikm: Uint8Array,

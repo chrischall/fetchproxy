@@ -10,6 +10,7 @@ import {
   sealInnerFrame,
   validateFrame,
   derivePairCodeFromIds,
+  HKDF_SESSION_INFO,
   type Capability,
   type CaptureHeaderDecl,
   type IndexedDbScopeDecl,
@@ -65,6 +66,7 @@ export interface HostHandle {
   close: () => Promise<void>;
   sendOwnInner: (inner: InnerFrame) => Promise<void>;
   onOwnInner: (cb: (inner: InnerFrame) => void) => void;
+  onExtensionDisconnect: (cb: () => void) => void;
 }
 
 interface PeerSlot {
@@ -111,22 +113,21 @@ export async function startHost(opts: HostOpts): Promise<HostHandle> {
   let extensionWs: WebSocket | null = null;
   const peers = new Map<string, PeerSlot>();
   const ownInnerListeners: ((inner: InnerFrame) => void)[] = [];
+  const disconnectListeners: (() => void)[] = [];
   let ownSession: SessionState | null = null;
-  // Deferred promise that resolves the first time the extension's ready frame
-  // arrives and we derive the session key. `sendOwnInner` awaits this so a
-  // caller can issue fetch() without racing the handshake — the host's session
-  // is set asynchronously from a WS message handler.
+
   let resolveOwnSession!: (s: SessionState) => void;
   let rejectOwnSession!: (e: Error) => void;
-  const ownSessionReady: Promise<SessionState> = new Promise<SessionState>((resolve, reject) => {
-    resolveOwnSession = resolve;
-    rejectOwnSession = reject;
-  });
-  // Swallow unhandled-rejection noise when nobody is awaiting ownSessionReady
-  // at the moment we reject (e.g. extension disconnects before any
-  // sendOwnInner caller has subscribed). The rejection is still surfaced to
-  // any later await.
-  ownSessionReady.catch(() => { /* noop */ });
+  let ownSessionReady!: Promise<SessionState>;
+
+  function resetSessionPromise(): void {
+    ownSessionReady = new Promise<SessionState>((resolve, reject) => {
+      resolveOwnSession = resolve;
+      rejectOwnSession = reject;
+    });
+    ownSessionReady.catch(() => { /* noop */ });
+  }
+  resetSessionPromise();
 
   // 0.4.0: track the extension's hello so we can verify its ReadyFrame
   // signature against the claimed Ed25519 identity. One extension per
@@ -220,19 +221,21 @@ export async function startHost(opts: HostOpts): Promise<HostHandle> {
               ws.close(1008, 'extension session signature invalid');
               return;
             }
-            // Derive our own session key.
+            // Derive our own session key. The ECDH + HKDF calls are async
+            // and yield to the event loop — the extension WS may close
+            // during derivation. Guard afterward to avoid resolving the
+            // session promise with a stale key.
             const extPub = fromB64(frame.extensionSessionPub);
             const shared = await ecdhX25519(opts.ownIdentity.x25519Priv, extPub);
             const key = await hkdfSha256(
               shared,
               ownSessionNonce,
-              enc.encode('fetchproxy/0.1.0/session'),
+              enc.encode(HKDF_SESSION_INFO),
               32,
             );
-            if (!ownSession) {
-              ownSession = new SessionState(key);
-              resolveOwnSession(ownSession);
-            }
+            if (extensionWs !== ws) return;
+            ownSession = new SessionState(key);
+            resolveOwnSession(ownSession);
           } else {
             const slot = peers.get(frame.mcpId);
             if (slot) slot.ws.send(JSON.stringify(frame));
@@ -273,12 +276,12 @@ export async function startHost(opts: HostOpts): Promise<HostHandle> {
       if (identified === 'extension' && extensionWs === ws) {
         extensionWs = null;
         extensionHello = null;
-        // If the extension dropped before we ever derived our own session key,
-        // unblock any pending sendOwnInner awaiter with an actionable error
-        // rather than letting them hang forever.
         if (!ownSession) {
           rejectOwnSession(new Error('extension disconnected before ready'));
         }
+        ownSession = null;
+        resetSessionPromise();
+        disconnectListeners.forEach((cb) => cb());
       }
       if (identified === 'peer' && peerMcpId) peers.delete(peerMcpId);
     });
@@ -314,5 +317,6 @@ export async function startHost(opts: HostOpts): Promise<HostHandle> {
       extensionWs.send(JSON.stringify(sealed));
     },
     onOwnInner: (cb) => { ownInnerListeners.push(cb); },
+    onExtensionDisconnect: (cb) => { disconnectListeners.push(cb); },
   };
 }

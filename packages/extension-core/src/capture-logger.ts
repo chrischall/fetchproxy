@@ -36,6 +36,8 @@ function syncCsrf(): void {
   const token = window.__CSRF_TOKEN__;
   if (typeof token === 'string' && token.length > 0) {
     document.documentElement.dataset[DATASET_KEY] = token;
+  } else {
+    delete document.documentElement.dataset[DATASET_KEY];
   }
 }
 

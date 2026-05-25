@@ -6,7 +6,6 @@ import {
   generateEd25519,
   ed25519Sign,
   sha256,
-  derivePairCode,
   derivePairCodeFromIds,
   toB64,
   type HelloFrameFromServer,
@@ -512,6 +511,57 @@ describe('handleServerHello', () => {
       });
       const result = await handleServerHello(hello, { trust, extensionIdentityX25519Pub: FAKE_EXT_X25519_PUB });
       expect(result.kind).toBe('auto-trust');
+    });
+
+    it('forces needs-pair when extension identity changed since last pair (reinstall guard)', async () => {
+      const hello = await buildServerHello(
+        'opentable-mcp:0.9.1:a3f7c91d2e8b4f56',
+        'opentable-mcp',
+        ['opentable.com'],
+      );
+      const trust = new TrustStore('0.4.0');
+      const idHash = Buffer.from(
+        await sha256(new Uint8Array(Buffer.from(hello.identityX25519Pub, 'base64'))),
+      ).toString('hex');
+      const differentExtPub = new Uint8Array(32).fill(0xcc);
+      await trust.put(idHash, {
+        serverName: 'opentable-mcp',
+        domains: ['opentable.com'],
+        capabilities: ['fetch'],
+        identityX25519Pub: hello.identityX25519Pub,
+        identityEd25519Pub: hello.identityEd25519Pub,
+        extensionIdentityX25519Pub: toB64(differentExtPub),
+        extensionIdentityEd25519Pub: toB64(differentExtPub),
+      });
+      const result = await handleServerHello(hello, {
+        trust,
+        extensionIdentityX25519Pub: FAKE_EXT_X25519_PUB,
+      });
+      expect(result.kind).toBe('needs-pair');
+    });
+
+    it('forces needs-pair for legacy trust records without extensionIdentityX25519Pub', async () => {
+      const hello = await buildServerHello(
+        'opentable-mcp:0.9.1:a3f7c91d2e8b4f56',
+        'opentable-mcp',
+        ['opentable.com'],
+      );
+      const trust = new TrustStore('0.3.0');
+      const idHash = Buffer.from(
+        await sha256(new Uint8Array(Buffer.from(hello.identityX25519Pub, 'base64'))),
+      ).toString('hex');
+      await trust.put(idHash, {
+        serverName: 'opentable-mcp',
+        domains: ['opentable.com'],
+        capabilities: ['fetch'],
+        identityX25519Pub: hello.identityX25519Pub,
+        identityEd25519Pub: hello.identityEd25519Pub,
+      });
+      const result = await handleServerHello(hello, {
+        trust,
+        extensionIdentityX25519Pub: FAKE_EXT_X25519_PUB,
+      });
+      expect(result.kind).toBe('needs-pair');
     });
 
     it('auto-trusts when capability set is a set-equal permutation', async () => {

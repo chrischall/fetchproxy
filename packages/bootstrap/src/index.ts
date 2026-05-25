@@ -119,44 +119,25 @@ export interface BootstrapServer {
     keys: string[];
     domain?: string;
     subdomain?: string;
+    pointers?: Record<string, { storageKey: string; jsonPointer: string }>;
   }): Promise<Record<string, string>>;
   readSessionStorage(opts: {
     keys: string[];
     domain?: string;
     subdomain?: string;
+    pointers?: Record<string, { storageKey: string; jsonPointer: string }>;
   }): Promise<Record<string, string>>;
   captureRequestHeader(opts: {
     urlPattern: string;
     headerName: string;
   }): Promise<string>;
-  readIndexedDb?(opts: {
+  readIndexedDb(opts: {
     database: string;
     store: string;
     keys: string[];
     domain?: string;
     subdomain?: string;
   }): Promise<Record<string, unknown>>;
-}
-
-/**
- * Internal shape: the same `readLocalStorage`/`readSessionStorage`
- * surface but with the optional `pointers` field. We reach for this
- * only when the caller declared pointers (the 0.3.0 stub interface
- * lives in `BootstrapServer` and stays unchanged).
- */
-interface PointerCapableServer extends BootstrapServer {
-  readLocalStorage(opts: {
-    keys: string[];
-    domain?: string;
-    subdomain?: string;
-    pointers?: Record<string, { storageKey: string; jsonPointer: string }>;
-  }): Promise<Record<string, string>>;
-  readSessionStorage(opts: {
-    keys: string[];
-    domain?: string;
-    subdomain?: string;
-    pointers?: Record<string, { storageKey: string; jsonPointer: string }>;
-  }): Promise<Record<string, string>>;
 }
 
 export type BootstrapServerFactory = (opts: FetchproxyServerOpts) => BootstrapServer;
@@ -297,8 +278,7 @@ export async function bootstrap(opts: BootstrapOpts): Promise<Session> {
       for (const p of localStoragePointers) {
         pointers[p.outputKey] = { storageKey: p.storageKey, jsonPointer: p.jsonPointer };
       }
-      const stub = server as PointerCapableServer;
-      localStorage = await stub.readLocalStorage({
+      localStorage = await server.readLocalStorage({
         keys: allKeys,
         ...storageDomainOpts,
         ...(localStoragePointers.length > 0 ? { pointers } : {}),
@@ -311,8 +291,7 @@ export async function bootstrap(opts: BootstrapOpts): Promise<Session> {
       for (const p of sessionStoragePointers) {
         pointers[p.outputKey] = { storageKey: p.storageKey, jsonPointer: p.jsonPointer };
       }
-      const stub = server as PointerCapableServer;
-      sessionStorage = await stub.readSessionStorage({
+      sessionStorage = await server.readSessionStorage({
         keys: allKeys,
         ...storageDomainOpts,
         ...(sessionStoragePointers.length > 0 ? { pointers } : {}),
@@ -340,11 +319,6 @@ export async function bootstrap(opts: BootstrapOpts): Promise<Session> {
     }
     const indexedDbBucket: Record<string, Record<string, unknown>> = {};
     for (const d of indexedDb) {
-      if (!server.readIndexedDb) {
-        throw new Error(
-          'bootstrap: server factory does not implement readIndexedDb (declared indexedDb but server stub omits it)',
-        );
-      }
       const values = await server.readIndexedDb({
         database: d.database,
         store: d.store,

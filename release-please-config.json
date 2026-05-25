@@ -3,7 +3,6 @@
   "packages": {
     ".": {
       "release-type": "node",
-      "release-as": "0.5.0",
       "extra-files": [
         { "type": "json", "path": "packages/bootstrap/package.json", "jsonpath": "$.version" },
         { "type": "json", "path": "packages/extension-chrome/package.json", "jsonpath": "$.version" },

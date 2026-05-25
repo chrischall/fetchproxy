@@ -31,6 +31,7 @@ import {
   matchesDeclaredKey,
   undeclaredKeys,
   PROTOCOL_VERSION,
+  HKDF_SESSION_INFO,
   type Capability,
   type CaptureHeaderDecl,
   type IndexedDbScopeDecl,
@@ -360,7 +361,7 @@ export async function handleServerHello(
       const sessionKey = await hkdfSha256(
         shared,
         sessionNonce,
-        enc.encode('fetchproxy/0.1.0/session'),
+        enc.encode(HKDF_SESSION_INFO),
         32,
       );
       return {
@@ -473,25 +474,81 @@ declare const chrome: {
 
 const BADGE_PAIR_PENDING_TEXT = '!';
 const BADGE_PAIR_PENDING_COLOR = '#dc2626';
+const BADGE_CONNECTED_COLOR = '#22c55e';
+const BADGE_ACTIVE_COLOR = '#15803d';
+const BADGE_DISCONNECTED_COLOR = '#f59e0b';
 
-function setPairPendingBadge(): void {
+type ConnectionStatus = 'connected' | 'disconnected' | 'error';
+let currentConnectionStatus: ConnectionStatus = 'disconnected';
+let pairPendingActive = false;
+let activityTimer: ReturnType<typeof setTimeout> | null = null;
+
+function getAction(): {
+  setBadgeText: (d: { text: string }) => Promise<void> | void;
+  setBadgeBackgroundColor?: (d: { color: string }) => Promise<void> | void;
+  openPopup?: () => Promise<void>;
+} | null {
   const c = (globalThis as { chrome?: { action?: unknown } }).chrome;
-  const action = c?.action as
-    | {
-        setBadgeText: (d: { text: string }) => Promise<void> | void;
-        setBadgeBackgroundColor?: (d: { color: string }) => Promise<void> | void;
-        openPopup?: () => Promise<void>;
-      }
-    | undefined;
-  if (!action || typeof action.setBadgeText !== 'function') return;
+  const action = c?.action as {
+    setBadgeText: (d: { text: string }) => Promise<void> | void;
+    setBadgeBackgroundColor?: (d: { color: string }) => Promise<void> | void;
+    openPopup?: () => Promise<void>;
+  } | undefined;
+  if (!action || typeof action.setBadgeText !== 'function') return null;
+  return action;
+}
+
+function setBadge(text: string, color: string): void {
+  const action = getAction();
+  if (!action) return;
   try {
-    void action.setBadgeText({ text: BADGE_PAIR_PENDING_TEXT });
+    void action.setBadgeText({ text });
     if (typeof action.setBadgeBackgroundColor === 'function') {
-      void action.setBadgeBackgroundColor({ color: BADGE_PAIR_PENDING_COLOR });
+      void action.setBadgeBackgroundColor({ color });
     }
   } catch (e) {
     console.warn('[fetchproxy] setBadge:', e);
   }
+}
+
+function syncBadge(): void {
+  if (pairPendingActive) {
+    setBadge(BADGE_PAIR_PENDING_TEXT, BADGE_PAIR_PENDING_COLOR);
+    return;
+  }
+  switch (currentConnectionStatus) {
+    case 'connected':
+      setBadge(' ', BADGE_CONNECTED_COLOR);
+      break;
+    case 'disconnected':
+      setBadge(' ', BADGE_DISCONNECTED_COLOR);
+      break;
+    case 'error':
+      setBadge(' ', BADGE_PAIR_PENDING_COLOR);
+      break;
+  }
+}
+
+function setConnectionStatus(status: ConnectionStatus): void {
+  currentConnectionStatus = status;
+  syncBadge();
+}
+
+function flashActivity(): void {
+  if (pairPendingActive) return;
+  if (activityTimer) clearTimeout(activityTimer);
+  setBadge(' ', BADGE_ACTIVE_COLOR);
+  activityTimer = setTimeout(() => {
+    activityTimer = null;
+    syncBadge();
+  }, 300);
+}
+
+function setPairPendingBadge(): void {
+  pairPendingActive = true;
+  setBadge(BADGE_PAIR_PENDING_TEXT, BADGE_PAIR_PENDING_COLOR);
+  const action = getAction();
+  if (!action) return;
   // Best-effort auto-open. Chrome 127+ MV3 allows openPopup() from
   // background in some contexts; otherwise it throws either sync
   // or async — both swallowed so the badge alone still wins.
@@ -507,16 +564,8 @@ function setPairPendingBadge(): void {
 }
 
 function clearPairPendingBadge(): void {
-  const c = (globalThis as { chrome?: { action?: unknown } }).chrome;
-  const action = c?.action as
-    | { setBadgeText: (d: { text: string }) => Promise<void> | void }
-    | undefined;
-  if (!action || typeof action.setBadgeText !== 'function') return;
-  try {
-    void action.setBadgeText({ text: '' });
-  } catch (e) {
-    console.warn('[fetchproxy] clearBadge:', e);
-  }
+  pairPendingActive = false;
+  syncBadge();
 }
 
 // Track which mcpId's hello is queued for the popup.
@@ -601,6 +650,7 @@ function connect(): void {
   ws.addEventListener('open', () => {
     if (!extIdentity) return;
     reconnectAttempt = 0;
+    setConnectionStatus('connected');
     // Fresh per-WS nonce. The corresponding ready-frame signature
     // commits to (mcpHelloNonce || this nonce), so each WS connect
     // gets a fresh handshake — replaying a captured ready frame
@@ -625,6 +675,7 @@ function connect(): void {
     void onMessage(ev.data as string).catch((e) => console.error('[fetchproxy] onMessage:', e));
   });
   ws.addEventListener('close', () => {
+    setConnectionStatus('disconnected');
     sessions?.clear();
     mcpDomains.clear();
     mcpCapabilities.clear();
@@ -745,6 +796,7 @@ async function onEncryptedFrame(frame: EncryptedFrame): Promise<void> {
   const entry = sessions.get(frame.mcpId);
   if (!entry) return;
   if (!entry.acceptInboundSeq(frame.seq)) return;
+  flashActivity();
   let inner: InnerFrame;
   try {
     inner = await openEncryptedFrame(entry.sessionKey, frame);
@@ -1388,7 +1440,7 @@ async function onApproval(approved: PendingPairRecord): Promise<void> {
   const sessionKey = await hkdfSha256(
     shared,
     sessionNonce,
-    enc.encode('fetchproxy/0.1.0/session'),
+    enc.encode(HKDF_SESSION_INFO),
     32,
   );
   sessions.set(approved.mcpId, sessionKey);

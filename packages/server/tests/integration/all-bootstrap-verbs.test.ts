@@ -13,6 +13,7 @@ import {
   hkdfSha256,
   sealInnerFrame,
   openEncryptedFrame,
+  HKDF_SESSION_INFO,
   type HelloFrameFromExtension,
   type HelloFrameFromServer,
   type ReadyFrame,
@@ -103,7 +104,7 @@ describe('integration: all 0.3.0 bootstrap verbs', () => {
             sessionKey = await hkdfSha256(
               shared,
               mcpSessionNonce,
-              new TextEncoder().encode('fetchproxy/0.1.0/session'),
+              new TextEncoder().encode(HKDF_SESSION_INFO),
               32,
             );
             mcpId = frame.mcpId;

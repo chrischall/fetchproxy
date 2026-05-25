@@ -37,7 +37,7 @@ const SCOPE_KEY_RE = /^[A-Za-z0-9_.\-]{1,256}$/;
  *   `*foo`      → reject
  *   `foo*bar`   → reject (only trailing `*` allowed)
  */
-const SCOPE_KEY_GLOB_RE = /^[A-Za-z0-9_.\-]{1,255}\*?$/;
+const SCOPE_KEY_GLOB_RE = /^[A-Za-z0-9_.\-]{1,256}\*?$/;
 /**
  * Permitted character set + length for HTTP header names declared in
  * `captureHeaders`. RFC 7230 tchar is wider, but for declared scope
@@ -201,7 +201,7 @@ function assertStoragePointersArray(
     if (entry.jsonPointer === undefined) {
       throw new ProtocolError(`${label}[${i}].jsonPointer: missing`);
     }
-    if (typeof entry.key !== 'string' || !SCOPE_KEY_GLOB_RE.test(entry.key)) {
+    if (typeof entry.key !== 'string' || !SCOPE_KEY_RE.test(entry.key)) {
       throw new ProtocolError(`${label}[${i}].key: invalid key ${JSON.stringify(entry.key)}`);
     }
     if (typeof entry.jsonPointer !== 'string' || !isValidJsonPointer(entry.jsonPointer)) {

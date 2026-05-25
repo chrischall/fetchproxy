@@ -5,7 +5,7 @@ import {
   FetchproxyHttpError,
 } from '../src/index.js';
 import type { FetchInit, FetchResult, FetchResultError } from '../src/index.js';
-import type { InnerFrame, InnerRequest } from '@fetchproxy/protocol';
+import { installFakeHost } from './helpers/fake-host.js';
 
 class TestServer extends FetchproxyServer {
   public lastInit: FetchInit | null = null;
@@ -20,39 +20,6 @@ class TestServer extends FetchproxyServer {
     this.lastInit = init;
     return this.canned;
   }
-}
-
-/**
- * Test harness that pretends `listen()` was called by installing a
- * minimal fake host handle on the FetchproxyServer instance, then
- * captures every inner request the server emits and lets the test
- * resolve the corresponding response by replying through `onInner`.
- *
- * Avoids dealing with the real WS handshake just to exercise the
- * `readCookies()` plumbing.
- */
-function installFakeHost(server: FetchproxyServer): {
-  lastInner: () => InnerRequest | null;
-  reply: (resp: InnerFrame) => void;
-} {
-  let lastInner: InnerRequest | null = null;
-  const fakeHostHandle = {
-    close: async () => undefined,
-    sendOwnInner: async (inner: InnerFrame): Promise<void> => {
-      if (inner.type === 'request') lastInner = inner;
-    },
-    onOwnInner: (_cb: (inner: InnerFrame) => void) => undefined,
-  };
-  // Reach into the private hostHandle slot so `readCookies()` sees a
-  // "listening" server. Wiring this once at the start of a test is much
-  // less invasive than spinning up the real listen() machinery.
-  (server as unknown as { hostHandle: typeof fakeHostHandle }).hostHandle = fakeHostHandle;
-  return {
-    lastInner: () => lastInner,
-    reply: (resp) => {
-      (server as unknown as { onInner(i: InnerFrame): void }).onInner(resp);
-    },
-  };
 }
 
 describe('convenience methods', () => {
