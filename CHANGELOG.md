@@ -1,11 +1,24 @@
 # Changelog
 
-## [0.5.0](https://github.com/chrischall/fetchproxy/compare/v0.4.3...v0.5.0) (2026-05-25)
+## [0.5.0](https://github.com/chrischall/fetchproxy/compare/v0.4.4...v0.5.0) (2026-05-25)
 
 
 ### Features
 
-* **server:** classify FetchResultError into a discriminated kind field ([#24](https://github.com/chrischall/fetchproxy/issues/24)) ([baf1e0a](https://github.com/chrischall/fetchproxy/commit/baf1e0a4117bf8f407d978459c8cddcf462d546f))
+* **server:** classify `FetchResultError` into a discriminated `kind` field — `'content_script_unreachable' | 'no_tab' | 'tab_fetch_failed' | 'domain_denied' | 'capability_denied' | 'body_too_large' | 'other'`. Downstream MCPs can now branch on `result.kind` instead of pattern-matching the `error` string; `classifyFetchError` is also exported for use outside `FetchproxyServer`. ([#24](https://github.com/chrischall/fetchproxy/pull/24))
+
+
+### CI / Release
+
+* Lockstep versioning across all five sub-packages — release-please now treats fetchproxy as a single-package release with `extra-files` syncing every sub-package's `version` field, plus a workflow step that bumps inter-package `^X.Y.Z` deps in the release PR ([#30](https://github.com/chrischall/fetchproxy/pull/30), [#32](https://github.com/chrischall/fetchproxy/pull/32))
+* Fixed OIDC publish pipeline — `.npmrc` strip now matches the sibling-MCP pattern (only `always-auth`, keep `_authToken`), and the publish job gates on the canonical `release_created == 'true'` output ([#40](https://github.com/chrischall/fetchproxy/pull/40))
+* Per-workspace VERSION reads in the publish job ([#29](https://github.com/chrischall/fetchproxy/pull/29))
+* Deferred `fromJSON` resolution to run-time so post-merge no-PR runs don't crash ([#34](https://github.com/chrischall/fetchproxy/pull/34))
+
+
+### Note
+
+Two earlier v1.0.0 release attempts (#36, #38) were rolled back (#35, #37, #40) and v1.0.0 tag/release deleted — the major-bump signal from release-please was driven by `BREAKING CHANGE:` footers from the 0.0.x → 0.4.x development era that had already shipped in prior 0.x releases. 0.5.0 is the actual delta from 0.4.4.
 
 ## [0.4.3](https://github.com/chrischall/fetchproxy/compare/v0.4.2...v0.4.3) (2026-05-24)
 
