@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.4.5](https://github.com/chrischall/fetchproxy/compare/v0.4.4...v0.4.5) (2026-05-25)
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @fetchproxy/protocol bumped from ^0.4.2 to ^1.0.0
+    * @fetchproxy/server bumped from ^0.5.0 to ^1.0.0
+
 ## [0.4.4](https://github.com/chrischall/fetchproxy/compare/v0.4.3...v0.4.4) (2026-05-25)
 
 
