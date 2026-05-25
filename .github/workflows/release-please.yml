@@ -31,6 +31,7 @@ jobs:
   release-please:
     runs-on: ubuntu-latest
     outputs:
+      release_created: ${{ steps.release.outputs.release_created }}
       tag_name: ${{ steps.release.outputs.tag_name }}
       pr: ${{ steps.release.outputs.pr }}
     steps:
@@ -122,7 +123,7 @@ jobs:
 
   publish:
     needs: release-please
-    if: needs.release-please.outputs.tag_name != ''
+    if: needs.release-please.outputs.release_created == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -138,13 +139,15 @@ jobs:
           cache: npm
           registry-url: https://registry.npmjs.org
 
-      # Strip stale npm auth — Trusted Publisher OIDC is the only auth
-      # path. Without this, setup-node's placeholder _authToken makes
-      # npm 404 before falling through to OIDC.
-      - name: Strip stale npm auth from .npmrc
-        run: |
-          sed -i '/always-auth/d' "$NPM_CONFIG_USERCONFIG"
-          sed -i '/_authToken/d' "$NPM_CONFIG_USERCONFIG"
+      # Strip `always-auth` from .npmrc (set by setup-node, deprecated
+      # in npm 11). Keep the `_authToken=${NODE_AUTH_TOKEN}` line —
+      # NODE_AUTH_TOKEN is unset, so the placeholder is empty; npm's
+      # `--provenance` path then handles auth via GitHub OIDC against
+      # the package's Trusted Publisher trust on npm. (Stripping the
+      # `_authToken` line breaks that — confirmed by mirroring the
+      # working pattern across compass-mcp, honeybook-mcp,
+      # opentable-mcp, …)
+      - run: sed -i '/always-auth/d' "$NPM_CONFIG_USERCONFIG"
 
       - run: npm ci
 

@@ -102,12 +102,16 @@ consumers end up with mixed-version lockfiles. Lesson tagged in PR #7.
 ### npm publish via Trusted Publisher / OIDC
 
 `Release` uses `--provenance` with GitHub OIDC. **No `NPM_TOKEN`
-secret is configured** — the workflow strips both `always-auth` and
-`_authToken` from the `.npmrc` `setup-node` writes so npm publish
-takes the OIDC path. Without that strip, `setup-node` leaves
-`_authToken=${NODE_AUTH_TOKEN}` in `.npmrc` and the masked empty
-placeholder (`XXXXX-XXXXX-XXXXX-XXXXX`) gets tried as a static token,
-which npm rejects with a privacy-preserving 404. PR #6 fixed this.
+secret is configured** — auth flows through the `@fetchproxy/*`
+packages' Trusted Publisher trust on npm + the OIDC token issued by
+the runner's `id-token: write` permission.
+
+The workflow strips only `always-auth` from `.npmrc` (deprecated in
+npm 11). The `_authToken=${NODE_AUTH_TOKEN}` line that `setup-node`
+writes is left alone: `NODE_AUTH_TOKEN` is unset, the placeholder
+stays empty, and `npm publish --provenance` then takes the OIDC
+path. Mirrors the working pattern across compass-mcp,
+honeybook-mcp, opentable-mcp.
 
 ### PRs + auto-merge
 
@@ -158,8 +162,12 @@ MCP tool call is the integration test.
   async. `background.ts` wraps it in try/catch; the **badge** is the
   reliable surface.
 - **Trusted-publisher OIDC + `setup-node`.** See "npm publish" above.
-  If a future release fails with 404 PUT, check `.npmrc` for any
-  `_authToken` line that survived the strip.
+  If a publish fails with `ENEEDAUTH`, do NOT add an `_authToken`
+  strip — that breaks OIDC. The `_authToken=${NODE_AUTH_TOKEN}` line
+  setup-node writes is correct; `NODE_AUTH_TOKEN` being unset is
+  what lets `--provenance` take the OIDC path. The likely culprit
+  is a workflow filename mismatch with the Trusted Publisher config
+  on npm, or a missing `id-token: write` permission on the job.
 - **Multi-domain MCPs need `storageDomain`.** A MCP that declares
   `domains: ['x.com', 'y.com']` and calls `readLocalStorage(...)`
   must specify which declared domain to read from, or
