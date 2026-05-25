@@ -68,10 +68,17 @@ jobs:
 
       - run: npm ci
 
-      - name: Set VERSION env
+      # The umbrella VERSION = the release tag (release-please picks it
+      # off the root package). Used for the extension-zip filename and
+      # the GitHub Release asset upload. Sub-package npm publishes read
+      # their OWN package.json instead — release-please bumps packages
+      # independently (only the ones whose conventional commits warrant
+      # it), so the umbrella tag does NOT track every sub-package's
+      # version 1:1.
+      - name: Set umbrella VERSION env
         run: |
-          VERSION=$(node -p "require('./packages/protocol/package.json').version")
-          echo "VERSION=${VERSION}" >> "$GITHUB_ENV"
+          TAG="${{ needs.release-please.outputs.tag_name }}"
+          echo "VERSION=${TAG#v}" >> "$GITHUB_ENV"
 
       # Build TS packages in dependency order: protocol → server →
       # bootstrap → extension-core. extension-chrome's bundle is built
@@ -79,31 +86,38 @@ jobs:
       - name: Build packages
         run: npm run build --workspace=@fetchproxy/protocol --workspace=@fetchproxy/server --workspace=@fetchproxy/bootstrap --workspace=@fetchproxy/extension-core
 
-      # Publish each non-private package. Idempotent — skip if already
-      # on npm so re-runs are safe.
+      # Publish each non-private package at the version pinned in its
+      # OWN package.json. release-please bumps packages independently,
+      # so reading a single shared VERSION (from protocol's manifest)
+      # caused server/bootstrap publishes to silently skip whenever
+      # protocol didn't move. Idempotent — already-published versions
+      # are skipped so re-runs are safe.
       - name: Publish @fetchproxy/protocol to npm
         run: |
-          PUBLISHED=$(npm view "@fetchproxy/protocol@${VERSION}" version 2>/dev/null || true)
-          if [ "$PUBLISHED" = "$VERSION" ]; then
-            echo "npm already has @fetchproxy/protocol@${VERSION} — skipping."
+          PKG_VERSION=$(node -p "require('./packages/protocol/package.json').version")
+          PUBLISHED=$(npm view "@fetchproxy/protocol@${PKG_VERSION}" version 2>/dev/null || true)
+          if [ "$PUBLISHED" = "$PKG_VERSION" ]; then
+            echo "npm already has @fetchproxy/protocol@${PKG_VERSION} — skipping."
             exit 0
           fi
           npm publish --workspace=@fetchproxy/protocol --access=public --provenance
 
       - name: Publish @fetchproxy/server to npm
         run: |
-          PUBLISHED=$(npm view "@fetchproxy/server@${VERSION}" version 2>/dev/null || true)
-          if [ "$PUBLISHED" = "$VERSION" ]; then
-            echo "npm already has @fetchproxy/server@${VERSION} — skipping."
+          PKG_VERSION=$(node -p "require('./packages/server/package.json').version")
+          PUBLISHED=$(npm view "@fetchproxy/server@${PKG_VERSION}" version 2>/dev/null || true)
+          if [ "$PUBLISHED" = "$PKG_VERSION" ]; then
+            echo "npm already has @fetchproxy/server@${PKG_VERSION} — skipping."
             exit 0
           fi
           npm publish --workspace=@fetchproxy/server --access=public --provenance
 
       - name: Publish @fetchproxy/bootstrap to npm
         run: |
-          PUBLISHED=$(npm view "@fetchproxy/bootstrap@${VERSION}" version 2>/dev/null || true)
-          if [ "$PUBLISHED" = "$VERSION" ]; then
-            echo "npm already has @fetchproxy/bootstrap@${VERSION} — skipping."
+          PKG_VERSION=$(node -p "require('./packages/bootstrap/package.json').version")
+          PUBLISHED=$(npm view "@fetchproxy/bootstrap@${PKG_VERSION}" version 2>/dev/null || true)
+          if [ "$PUBLISHED" = "$PKG_VERSION" ]; then
+            echo "npm already has @fetchproxy/bootstrap@${PKG_VERSION} — skipping."
             exit 0
           fi
           npm publish --workspace=@fetchproxy/bootstrap --access=public --provenance
