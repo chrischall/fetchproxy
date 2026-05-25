@@ -70,7 +70,7 @@ concurrency:
         && format('-labeled-{0}', github.event.label.name)
         || ''
     }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   review:
