@@ -799,6 +799,26 @@ async function onServerHello(hello: HelloFrameFromServer): Promise<void> {
   // open the popup. Both no-op in environments that don't expose
   // chrome.action (unit tests, older Chrome).
   setPairPendingBadge();
+  // 0.5.2+: notify the MCP-side server (host or peer) that the user has
+  // been asked to approve. The MCP can then include `pending.pairCode`
+  // in tool errors so the chat shows the same XXX-XXX the popup is
+  // displaying — the whole point of the joint pair code is the user
+  // comparing it across two channels, which doesn't work if only the
+  // popup has it. Best-effort: if the WS dropped between the hello and
+  // here, the next reconnect's hello triggers a fresh pair-pending.
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    try {
+      ws.send(
+        JSON.stringify({
+          type: 'pair-pending',
+          mcpId: pending.mcpId,
+          pairCode: pending.pairCode,
+        }),
+      );
+    } catch (e) {
+      console.warn('[fetchproxy] pair-pending send failed:', e);
+    }
+  }
 }
 
 /**

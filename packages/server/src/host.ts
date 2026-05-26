@@ -67,6 +67,14 @@ export interface HostHandle {
   sendOwnInner: (inner: InnerFrame) => Promise<void>;
   onOwnInner: (cb: (inner: InnerFrame) => void) => void;
   onExtensionDisconnect: (cb: () => void) => void;
+  /**
+   * 0.5.2+: fires when the extension reports a pair-pending state for
+   * the host's own mcpId (user must approve in popup before tools work).
+   * Multiple subscribers supported; called once per pair-pending frame.
+   */
+  onPendingPair: (cb: (pairCode: string) => void) => void;
+  /** The most recent pair code received via pair-pending, or null if none. */
+  pendingPairCode: () => string | null;
 }
 
 interface PeerSlot {
@@ -114,7 +122,13 @@ export async function startHost(opts: HostOpts): Promise<HostHandle> {
   const peers = new Map<string, PeerSlot>();
   const ownInnerListeners: ((inner: InnerFrame) => void)[] = [];
   const disconnectListeners: (() => void)[] = [];
+  const pendingPairListeners: ((code: string) => void)[] = [];
   let ownSession: SessionState | null = null;
+  // 0.5.2+: latest pair code the extension reported for our own mcpId via
+  // a `pair-pending` frame. Cleared when our session derives (the user
+  // approved) and on host close. Surface to MCP-level callers so they can
+  // include it in tool errors instead of hanging on a missing session.
+  let ownPendingPairCode: string | null = null;
 
   let resolveOwnSession!: (s: SessionState) => void;
   let rejectOwnSession!: (e: Error) => void;
@@ -235,6 +249,10 @@ export async function startHost(opts: HostOpts): Promise<HostHandle> {
             );
             if (extensionWs !== ws) return;
             ownSession = new SessionState(key);
+            // 0.5.2+: receiving a ready means the user has approved (auto-
+            // trust path) or just approved (popup path) — the pair-pending
+            // hint is no longer actionable, so clear it.
+            ownPendingPairCode = null;
             resolveOwnSession(ownSession);
           } else {
             const slot = peers.get(frame.mcpId);
@@ -259,6 +277,19 @@ export async function startHost(opts: HostOpts): Promise<HostHandle> {
           } else if (identified === 'peer') {
             // Peer → extension. Forward verbatim.
             if (extensionWs) extensionWs.send(JSON.stringify(frame));
+          }
+        }
+
+        // 0.5.2+: pair-pending dispatch. Only the extension sends these
+        // (one per MCP whose hello triggered a needs-pair queue). Route
+        // by mcpId: own → record + fire onPairCode; peer → forward.
+        if (frame.type === 'pair-pending' && identified === 'extension') {
+          if (frame.mcpId === opts.ownMcpId) {
+            ownPendingPairCode = frame.pairCode;
+            pendingPairListeners.forEach((cb) => cb(frame.pairCode));
+          } else {
+            const slot = peers.get(frame.mcpId);
+            if (slot) slot.ws.send(JSON.stringify(frame));
           }
         }
       } catch (e) {
@@ -318,5 +349,7 @@ export async function startHost(opts: HostOpts): Promise<HostHandle> {
     },
     onOwnInner: (cb) => { ownInnerListeners.push(cb); },
     onExtensionDisconnect: (cb) => { disconnectListeners.push(cb); },
+    onPendingPair: (cb) => { pendingPairListeners.push(cb); },
+    pendingPairCode: () => ownPendingPairCode,
   };
 }

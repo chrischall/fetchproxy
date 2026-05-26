@@ -330,6 +330,7 @@ export function validateFrame(raw: unknown): Frame {
   if (t === 'hello') return validateHello(raw);
   if (t === 'ready') return validateReady(raw);
   if (t === 'frame') return validateEncrypted(raw);
+  if (t === 'pair-pending') return validatePairPending(raw);
   throw new ProtocolError(`unknown frame type: ${String(t)}`);
 }
 
@@ -451,6 +452,18 @@ function validateEncrypted(raw: Record<string, unknown>): EncryptedFrame {
   assertBase64(raw.iv, 'frame.iv');
   assertBase64(raw.ciphertext, 'frame.ciphertext');
   return raw as unknown as EncryptedFrame;
+}
+
+const PAIR_CODE_RE = /^\d{3}-\d{3}$/;
+
+function validatePairPending(raw: Record<string, unknown>): import('./frames.js').PairPendingFrame {
+  assertString(raw.mcpId, 'pair-pending.mcpId');
+  if (!isValidMcpId(raw.mcpId)) throw new ProtocolError('pair-pending.mcpId: invalid format');
+  assertString(raw.pairCode, 'pair-pending.pairCode');
+  if (!PAIR_CODE_RE.test(raw.pairCode)) {
+    throw new ProtocolError(`pair-pending.pairCode: must match XXX-XXX, got ${String(raw.pairCode)}`);
+  }
+  return { type: 'pair-pending', mcpId: raw.mcpId, pairCode: raw.pairCode };
 }
 
 /**

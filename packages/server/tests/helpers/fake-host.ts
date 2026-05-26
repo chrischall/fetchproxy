@@ -19,6 +19,10 @@ export function installFakeHost(server: FetchproxyServer): {
     },
     onOwnInner: (_cb: (inner: InnerFrame) => void) => undefined,
     onExtensionDisconnect: (_cb: () => void) => undefined,
+    // 0.5.2+: the fake never reports a pair-pending state — the tests
+    // here are about post-handshake verb behavior, not the pairing UX.
+    onPendingPair: (_cb: (code: string) => void) => undefined,
+    pendingPairCode: (): string | null => null,
   };
   (server as unknown as { hostHandle: typeof fakeHostHandle }).hostHandle = fakeHostHandle;
   return {

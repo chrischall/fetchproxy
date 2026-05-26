@@ -62,6 +62,15 @@ export interface PeerHandle {
    * `sendInner` call will use the new session key automatically.
    */
   onRenegotiate: (cb: () => void) => void;
+  /**
+   * 0.5.2+: fires when the host forwards a `pair-pending` frame for our
+   * mcpId — the extension queued us for the user to approve in the
+   * popup and we won't get a ready frame (or a working session) until
+   * they do. Cleared when a ready frame arrives.
+   */
+  onPendingPair: (cb: (pairCode: string) => void) => void;
+  /** The most recent pair code received via pair-pending, or null if none. */
+  pendingPairCode: () => string | null;
   close: () => void;
 }
 
@@ -110,6 +119,7 @@ export async function startPeer(opts: PeerOpts): Promise<InternalPeerHandle> {
 
   const innerListeners: ((inner: InnerFrame) => void)[] = [];
   const renegotiateListeners: (() => void)[] = [];
+  const pendingPairListeners: ((code: string) => void)[] = [];
   // `session` is the LATEST session derived from a ready frame. Every ready
   // frame for our mcpId replaces it — the extension can renegotiate at any
   // time (most commonly after MV3 service-worker eviction reconnects the
@@ -117,6 +127,11 @@ export async function startPeer(opts: PeerOpts): Promise<InternalPeerHandle> {
   // `session` at call time, not at handshake time, so sealing always uses
   // the current key.
   let session: SessionState | null = null;
+  // 0.5.2+: latest pair code the host has forwarded for our mcpId. Set on
+  // pair-pending; cleared on the next ready (user approved). MCP-level
+  // callers consult it to fail tool calls fast with an actionable error
+  // instead of waiting on a session promise that never resolves.
+  let pendingPairCode: string | null = null;
 
   // `sessionPromise` fires once: it gates the first `sendInner` until the
   // initial ready arrives. After that, renegotiations update `session` in
@@ -144,6 +159,10 @@ export async function startPeer(opts: PeerOpts): Promise<InternalPeerHandle> {
         );
         const isRenegotiation = session !== null;
         session = new SessionState(sessionKey);
+        // 0.5.2+: ready means the user approved; the pair-pending hint is
+        // no longer actionable. Clear so subsequent `pendingPairCode()`
+        // queries don't return a stale code from before this approval.
+        pendingPairCode = null;
         if (isRenegotiation) {
           // Extension reconnected and forgot the old session state. Any
           // request the caller sent under the old key is unreachable now —
@@ -154,6 +173,15 @@ export async function startPeer(opts: PeerOpts): Promise<InternalPeerHandle> {
         } else {
           resolveFirstReady(session);
         }
+        return;
+      }
+      // 0.5.2+: pair-pending notification forwarded by the host. Record so
+      // the upstream caller can include the code in tool errors instead of
+      // hanging on a session promise that will never resolve until the user
+      // approves the popup.
+      if (frame.type === 'pair-pending' && frame.mcpId === opts.mcpId) {
+        pendingPairCode = frame.pairCode;
+        pendingPairListeners.forEach((cb) => cb(frame.pairCode));
         return;
       }
       if (frame.type === 'frame' && frame.mcpId === opts.mcpId) {
@@ -209,6 +237,10 @@ export async function startPeer(opts: PeerOpts): Promise<InternalPeerHandle> {
     onRenegotiate: (cb) => {
       renegotiateListeners.push(cb);
     },
+    onPendingPair: (cb) => {
+      pendingPairListeners.push(cb);
+    },
+    pendingPairCode: () => pendingPairCode,
     close: () => ws.close(),
   };
   return handle;
