@@ -56,6 +56,20 @@ describe('classifyFetchError', () => {
       'no tab matching https://www.compass.com/',
       'no_tab',
     ],
+    // 0.5.2+ multi-tab-fallback template: emitted when one-or-more tabs
+    // matched the URL but every one of them lacked a content script.
+    // The embedded "Receiving end does not exist" in the `Last error:`
+    // suffix triggers the unreachable classifier (correct — the user
+    // needs to refresh the page, not open a new one). Pin the
+    // expectation so a regex tweak that breaks this is caught here.
+    [
+      'all URL-matched tabs lacked content script (multi-tab fallback no-tab template)',
+      'no tab matching https://www.compass.com/ has the fetchproxy content script loaded ' +
+        '(2 URL matches, none responded). Refresh the page in your browser to inject the ' +
+        'content script, then retry. Last error: Error: Could not establish connection. ' +
+        'Receiving end does not exist.',
+      'content_script_unreachable',
+    ],
     [
       'declared-domain check rejected the URL',
       'url https://evil.example.com/x not in domains [compass.com]',
