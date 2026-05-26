@@ -68,6 +68,7 @@ describe('integration: all 0.3.0 bootstrap verbs', () => {
       identityDir: idDir,
     });
     await server.listen();
+    await server.connect();
 
     extWs = new WebSocket(`ws://127.0.0.1:${port}`);
     await new Promise<void>((resolve, reject) => {

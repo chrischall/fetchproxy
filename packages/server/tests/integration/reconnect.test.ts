@@ -122,6 +122,7 @@ describe('extension reconnect (session-key renegotiation)', () => {
       identityDir: idDir,
     });
     await server.listen();
+    await server.connect();
 
     // First connection — complete handshake and verify a fetch round-trips.
     const ext1 = await connectMockExtension(port);
@@ -216,6 +217,7 @@ describe('extension reconnect (session-key renegotiation)', () => {
       identityDir: idDir,
     });
     await server.listen();
+    await server.connect();
 
     const ext = await connectMockExtension(port);
 
@@ -251,6 +253,7 @@ describe('extension reconnect (session-key renegotiation)', () => {
       identityDir: idDir,
     });
     await server.listen();
+    await server.connect();
 
     const ext = await connectMockExtension(port);
 
@@ -274,6 +277,7 @@ describe('extension reconnect (session-key renegotiation)', () => {
       identityDir: idDir,
     });
     await server.listen();
+    await server.connect();
 
     const ext1 = await connectMockExtension(port);
     const ext1Closed = new Promise<void>((r) => ext1.ws.on('close', () => r()));
@@ -438,6 +442,7 @@ describe('extension reconnect (peer MCPs)', () => {
       identityDir: idDir,
     });
     await host.listen();
+    await host.connect();
     expect(host.role).toBe('host');
 
     peer = new FetchproxyServer({
@@ -448,6 +453,7 @@ describe('extension reconnect (peer MCPs)', () => {
       identityDir: idDir,
     });
     await peer.listen();
+    await peer.connect();
     expect(peer.role).toBe('peer');
 
     // Mock extension responder: echoes the request body back to the caller,
@@ -549,6 +555,7 @@ describe('extension reconnect (peer MCPs)', () => {
       identityDir: idDir,
     });
     await host.listen();
+    await host.connect();
 
     peer = new FetchproxyServer({
       port,
@@ -558,6 +565,7 @@ describe('extension reconnect (peer MCPs)', () => {
       identityDir: idDir,
     });
     await peer.listen();
+    await peer.connect();
 
     // Connect extension but never answer the fetch — we want to observe
     // the in-flight rejection path, not an upstream response.

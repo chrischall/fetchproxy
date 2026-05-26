@@ -113,6 +113,7 @@ describe('pair-pending surfaces the pair code to MCP-side callers', () => {
       identityDir: idDir,
     });
     await host.listen();
+    await host.connect();
     expect(host.role).toBe('host');
 
     const ext = await connectMockExtensionThatNeverApproves(port, {
@@ -147,6 +148,7 @@ describe('pair-pending surfaces the pair code to MCP-side callers', () => {
       identityDir: idDir,
     });
     await host.listen();
+    await host.connect();
     peer = new FetchproxyServer({
       port,
       serverName: 'peer-mcp',
@@ -155,6 +157,7 @@ describe('pair-pending surfaces the pair code to MCP-side callers', () => {
       identityDir: idDir,
     });
     await peer.listen();
+    await peer.connect();
     expect(peer.role).toBe('peer');
 
     const ext = await connectMockExtensionThatNeverApproves(port, {
@@ -193,6 +196,7 @@ describe('pair-pending surfaces the pair code to MCP-side callers', () => {
       onPairCode: (c) => codes.push(c),
     });
     await host.listen();
+    await host.connect();
 
     const ext = await connectMockExtensionThatNeverApproves(port, {
       'host-mcp': '567-890',

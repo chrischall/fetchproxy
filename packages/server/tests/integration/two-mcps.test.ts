@@ -48,6 +48,7 @@ describe('integration: two MCPs through one host', () => {
       identityDir: idDir,
     });
     await a.listen();
+    await a.connect();
     expect(a.role).toBe('host');
 
     b = new FetchproxyServer({
@@ -58,6 +59,7 @@ describe('integration: two MCPs through one host', () => {
       identityDir: idDir,
     });
     await b.listen();
+    await b.connect();
     expect(b.role).toBe('peer');
 
     // Mock extension: dial the host's WS.
