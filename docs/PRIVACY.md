@@ -76,7 +76,7 @@ Transporter contains no telemetry, no analytics, no crash reporting, no remote c
 
 ## 5. Permissions
 
-Transporter requests several Chrome permissions. Each is required for core functionality — none is used for data collection. See [`docs/PERMISSIONS.md`](PERMISSIONS.md) for the full per-permission justification.
+Transporter requests several Chrome permissions. Each is required for core functionality — none is used for data collection. See [permission justifications](store-assets/permission-justifications.md) for the full per-permission justification.
 
 ---
 
