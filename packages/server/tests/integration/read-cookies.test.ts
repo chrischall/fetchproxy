@@ -56,6 +56,7 @@ describe('integration: readCookies() round-trip', () => {
       identityDir: idDir,
     });
     await server.listen();
+    await server.connect();
     expect(server.role).toBe('host');
 
     extWs = new WebSocket(`ws://127.0.0.1:${port}`);
@@ -183,6 +184,7 @@ describe('integration: readCookies() round-trip', () => {
       identityDir: idDir,
     });
     await server.listen();
+    await server.connect();
 
     // listen() succeeded; the developer-facing guard should bite without
     // any extension being connected, because it predates the wire send.
