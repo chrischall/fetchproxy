@@ -255,7 +255,6 @@ export interface ReadCookiesResultError {
 }
 
 /**
-/**
  * The MCP-facing handle for the fetchproxy bridge.
  *
  * `listen()` loads identity and reserves nothing. The first verb call
