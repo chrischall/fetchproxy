@@ -1041,17 +1041,29 @@ async function handleFetchRequest(
  * each verb can choose between strict-prefix (`isTabUrlMatch`) and
  * host-or-subdomain (`isTabUrlOnOrigin`) semantics.
  */
-async function sendToFirstResponsiveTab(
+export type SendToFirstResponsiveTabResult =
+  | { kind: 'response'; response: unknown; tabUrl: string }
+  | { kind: 'no-tab'; error: string }
+  | { kind: 'throw'; error: string };
+
+// Exported for unit testing; not surfaced from `./index.ts` because
+// production callers (extension-chrome, extension-safari) have no
+// reason to invoke it directly — the handlers in this file are the
+// only callsites.
+export async function sendToFirstResponsiveTab(
   matcher: (tabUrl: string) => boolean,
   buildMessage: (matchedTabUrl: string) => unknown,
   tabUrlForError: string,
-): Promise<
-  | { kind: 'response'; response: unknown; tabUrl: string }
-  | { kind: 'no-tab'; error: string }
-  | { kind: 'throw'; error: string }
-> {
+): Promise<SendToFirstResponsiveTabResult> {
   const tabs = await chrome.tabs.query({});
-  const matches = tabs.filter((t) => t.url && matcher(t.url));
+  // Fold the ID check into the filter so `matches.length` accurately
+  // reflects the count of tabs we'll actually try — without this, a tab
+  // with `undefined` id would inflate the count and the error message
+  // would claim "N URL matches, none responded" when one of those N
+  // was never even attempted.
+  const matches = tabs.filter(
+    (t) => typeof t.id === 'number' && t.url && matcher(t.url),
+  );
   if (matches.length === 0) {
     return { kind: 'no-tab', error: `no tab matching ${tabUrlForError}` };
   }
@@ -1062,10 +1074,13 @@ async function sendToFirstResponsiveTab(
   // without the user having to refresh every pre-reload tab.
   let lastNoListener: string | null = null;
   for (const match of matches) {
-    if (typeof match.id !== 'number') continue;
+    // `match.id` is guaranteed `number` by the filter above, but the
+    // chrome typings still type it as `number | undefined` so we use a
+    // non-null narrowing here. The filter is the authority.
+    const id = match.id as number;
     const tabUrl = match.url ?? tabUrlForError;
     try {
-      const response = await chrome.tabs.sendMessage(match.id, buildMessage(tabUrl));
+      const response = await chrome.tabs.sendMessage(id, buildMessage(tabUrl));
       return { kind: 'response', response, tabUrl };
     } catch (e) {
       const msg = String(e);
