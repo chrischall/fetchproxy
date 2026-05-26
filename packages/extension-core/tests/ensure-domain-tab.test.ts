@@ -89,4 +89,28 @@ describe('ensureDomainTab', () => {
     expect(result.opened).toBe(true);
     expect(created[0]!.url).toBe('https://example.co.uk/');
   });
+
+  it('opens tabs for all declared domains (multi-domain MCP pattern)', async () => {
+    const { created } = mockTabs([]);
+    const domains = ['honeybook.com', 'hbportal.co'];
+    const results = await Promise.all(domains.map((d) => ensureDomainTab(d)));
+    expect(results.every((r) => r.opened)).toBe(true);
+    expect(created).toHaveLength(2);
+    expect(created.map((t) => t.url)).toEqual([
+      'https://honeybook.com/',
+      'https://hbportal.co/',
+    ]);
+  });
+
+  it('skips domains that already have a tab open (idempotent loop)', async () => {
+    const { created } = mockTabs([
+      { id: 1, url: 'https://vendor.hbportal.co/dashboard' },
+    ]);
+    const domains = ['honeybook.com', 'hbportal.co'];
+    const results = await Promise.all(domains.map((d) => ensureDomainTab(d)));
+    expect(results[0]!.opened).toBe(true);
+    expect(results[1]!.opened).toBe(false);
+    expect(created).toHaveLength(1);
+    expect(created[0]!.url).toBe('https://honeybook.com/');
+  });
 });

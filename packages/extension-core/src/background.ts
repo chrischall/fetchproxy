@@ -738,13 +738,8 @@ async function onServerHello(hello: HelloFrameFromServer): Promise<void> {
     mcpIndexedDbScopes.set(result.mcpId, [...result.indexedDbScopes]);
     mcpLocalStoragePointers.set(result.mcpId, [...result.localStoragePointers]);
     mcpSessionStoragePointers.set(result.mcpId, [...result.sessionStoragePointers]);
-    // TODO: open tabs for ALL declared domains. For 0.2.0 we open one
-    // (the first declared) — multi-domain MCPs (HoneyBook spans two
-    // hosts) ought to surface a tab for each, but a single open tab is
-    // the minimum to make the first fetch succeed.
-    const firstDomain = result.domains[0];
-    if (firstDomain !== undefined) {
-      void ensureDomainTab(firstDomain).catch(() => {
+    for (const d of result.domains) {
+      void ensureDomainTab(d).catch(() => {
         /* fire-and-forget */
       });
     }
@@ -1657,10 +1652,8 @@ async function onApproval(approved: PendingPairRecord): Promise<void> {
     approved.mcpId,
     (approved.sessionStoragePointers ?? []).map((d) => ({ ...d })),
   );
-  // TODO: open tabs for ALL declared domains. See auto-trust path above.
-  const firstDomain = approved.domains[0];
-  if (firstDomain !== undefined) {
-    void ensureDomainTab(firstDomain).catch(() => {
+  for (const d of approved.domains) {
+    void ensureDomainTab(d).catch(() => {
       /* noop */
     });
   }
