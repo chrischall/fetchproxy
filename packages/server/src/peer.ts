@@ -222,11 +222,18 @@ export async function startPeer(opts: PeerOpts): Promise<InternalPeerHandle> {
       // in place, so we read it freshly here rather than reusing the
       // promise's resolved value (which is permanently the first session).
       await sessionPromise;
-      if (!session) throw new Error('peer: no session after ready');
+      // Invariant: `session` is non-null once `sessionPromise` has resolved
+      // — the only assignment path is `session = new SessionState(...)` two
+      // statements before `resolveFirstReady(session)`, and there is no
+      // code path that sets `session` back to null. Renegotiation only
+      // ever replaces it with another non-null SessionState. The non-null
+      // assertion is load-bearing for TypeScript's narrowing but does not
+      // encode runtime hope.
+      const s = session!;
       const sealed = await sealInnerFrame(
-        session.sessionKey,
+        s.sessionKey,
         opts.mcpId,
-        session.nextOutboundSeq(),
+        s.nextOutboundSeq(),
         inner,
       );
       ws.send(JSON.stringify(sealed));

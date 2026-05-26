@@ -54,6 +54,7 @@ import { TrustStore } from './trust-store.js';
 import { SessionKeys } from './session-keys.js';
 import { ensureDomainTab } from './ensure-domain-tab.js';
 import { isUrlAllowedForAnyDomain, isTabUrlMatch, isTabUrlOnOrigin } from './lib/url-match.js';
+import { normalisePendingPair } from './lib/pending-pair.js';
 import { loadOrCreateExtensionIdentity, type ExtensionIdentity } from './extension-identity.js';
 import { startKeepalive } from './keepalive.js';
 
@@ -789,11 +790,14 @@ async function onServerHello(hello: HelloFrameFromServer): Promise<void> {
   // silently clobbered the first MCP's pending entry — the user could only
   // ever pair one at a time. Reading tolerates both shapes (`mergePending`
   // below) so an in-flight legacy record from a pre-upgrade SW survives the
-  // version bump.
-  const got = await chrome.storage.local.get(PENDING_PAIR_KEY);
-  const existing = mergePending(got[PENDING_PAIR_KEY]);
-  existing[pending.mcpId] = pending;
-  await chrome.storage.local.set({ [PENDING_PAIR_KEY]: existing });
+  // version bump. The read-modify-write is wrapped in `withPendingPairLock`
+  // so concurrent peer hellos can't race each other across the await.
+  await withPendingPairLock(async () => {
+    const got = await chrome.storage.local.get(PENDING_PAIR_KEY);
+    const existing = mergePending(got[PENDING_PAIR_KEY]);
+    existing[pending.mcpId] = pending;
+    await chrome.storage.local.set({ [PENDING_PAIR_KEY]: existing });
+  });
   // 0.4.2: surface the pending pair without making the user discover
   // it manually — paint the action-icon badge and best-effort try to
   // open the popup. Both no-op in environments that don't expose
@@ -822,31 +826,39 @@ async function onServerHello(hello: HelloFrameFromServer): Promise<void> {
 }
 
 /**
- * Normalise the stored pendingPair shape. Two legal inputs:
- *
- *   - `Record<mcpId, PendingPairRecord>` — current shape (0.5.2+).
- *   - `PendingPairRecord` (single object with `mcpId` field) — legacy
- *     0.5.1-and-earlier shape. Migrated by wrapping into a dict.
- *
- * Anything else (undefined, malformed) returns an empty dict.
+ * Local alias bound to this file's `PendingPairRecord`. The shared
+ * helper in `./lib/pending-pair.ts` is generic so the popup can use it
+ * against its own structurally-compatible interface without a circular
+ * dependency on this file's exact type.
  */
 function mergePending(stored: unknown): Record<string, PendingPairRecord> {
-  if (!stored || typeof stored !== 'object') return {};
-  const obj = stored as Record<string, unknown>;
-  // Legacy single-record shape: has a top-level `mcpId` string field.
-  if (typeof obj.mcpId === 'string') {
-    return { [obj.mcpId]: obj as unknown as PendingPairRecord };
-  }
-  // Already a dict — keep entries whose value looks like a pending record
-  // (has its own mcpId field). Drops anything malformed so a partial write
-  // can't poison the structure.
-  const out: Record<string, PendingPairRecord> = {};
-  for (const [k, v] of Object.entries(obj)) {
-    if (v && typeof v === 'object' && typeof (v as { mcpId?: unknown }).mcpId === 'string') {
-      out[k] = v as PendingPairRecord;
-    }
-  }
-  return out;
+  return normalisePendingPair<PendingPairRecord>(stored);
+}
+
+/**
+ * 0.5.2+: serialise reads-then-writes of the pendingPair storage key.
+ *
+ * Two `onServerHello` invocations from concurrent peer hellos (or an
+ * `onApproval` interleaving with an `onServerHello`) would otherwise race
+ * the `get → set` pair and one of the entries would silently disappear:
+ * both reads see the same starting state, both writes resolve to that
+ * state plus their own entry, and whichever set lands second wins. The
+ * window is narrow on a real SW (event-loop microtasks), but `await`
+ * boundaries are exactly where Chrome can interleave other callbacks.
+ *
+ * `pendingPairLock` is a tail-promise chain: every mutation appends a
+ * function that runs after the previous one resolves, so the read and
+ * the write for a single logical update happen back-to-back without any
+ * other mutation slipping between. Errors are swallowed on the chain
+ * itself (logged at the call site) so one failure can't permanently
+ * jam the queue.
+ */
+let pendingPairLock: Promise<unknown> = Promise.resolve();
+
+function withPendingPairLock<T>(fn: () => Promise<T>): Promise<T> {
+  const next = pendingPairLock.then(fn, fn);
+  pendingPairLock = next.catch(() => undefined);
+  return next;
 }
 
 async function onEncryptedFrame(frame: EncryptedFrame): Promise<void> {
@@ -1546,11 +1558,31 @@ async function onApproval(approved: PendingPairRecord): Promise<void> {
     sessionSig: toB64(sessionSig),
   };
   ws?.send(JSON.stringify(ready));
-  // Clear popup state.
-  await chrome.storage.local.remove(PENDING_PAIR_KEY);
+  // 0.5.2+: clear popup state for this approved mcpId ONLY. Previously
+  // (when pendingPair was a single record) a blanket remove was correct;
+  // now pendingPair is a dict keyed by mcpId and other unapproved MCPs
+  // may still be queued under their own keys, so we need a read-modify-
+  // write that touches just `approved.mcpId`. The popup's onApprove
+  // handler does the same dance on its side; both paths run for any
+  // single approval (popup writes approvedPair → this listener fires →
+  // we clean up here), so the operation must be idempotent for the
+  // entry we're removing. The RMW shares `withPendingPairLock` with
+  // `onServerHello` so a hello arriving mid-approval can't race the
+  // get/set pair.
+  await withPendingPairLock(async () => {
+    const got = await chrome.storage.local.get(PENDING_PAIR_KEY);
+    const remaining = mergePending(got[PENDING_PAIR_KEY]);
+    delete remaining[approved.mcpId];
+    if (Object.keys(remaining).length === 0) {
+      await chrome.storage.local.remove(PENDING_PAIR_KEY);
+      // Badge clears only when the queue is fully drained — other queued
+      // MCPs still need a visible "!" so the user knows to come back.
+      clearPairPendingBadge();
+    } else {
+      await chrome.storage.local.set({ [PENDING_PAIR_KEY]: remaining });
+    }
+  });
   await chrome.storage.local.remove(APPROVED_PAIR_KEY);
-  // 0.4.2: the pending pair has been approved — clear the badge.
-  clearPairPendingBadge();
 }
 
 // Boot: only run in a real MV3 service worker context. Skipped under vitest

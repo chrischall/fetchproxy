@@ -13,6 +13,7 @@
  */
 
 import { TrustStore } from '../trust-store.js';
+import { normalisePendingPair } from '../lib/pending-pair.js';
 
 const HIGH_RISK_KEYWORDS = ['bank', 'gov', 'mil'];
 
@@ -539,28 +540,13 @@ declare const chrome: {
 };
 
 /**
- * Normalise the stored `pendingPair` value into a `Record<mcpId, ...>` map.
- * Accepts both shapes so a popup opened after a SW upgrade (or before one)
- * still renders correctly:
- *   - 0.5.2+ dict shape `{ <mcpId>: PendingPairRecord }`
- *   - legacy single-record shape `PendingPairRecord` (wrapped into a dict)
- *
- * Anything else is treated as "no pending pair."
+ * Local alias bound to this file's `PendingPairRecord` type. The shared
+ * helper in `../lib/pending-pair.ts` is generic, so the popup and the
+ * background SW agree on what counts as a malformed input — see that
+ * file for the full migration story.
  */
 function readPendingDict(stored: unknown): Record<string, PendingPairRecord> {
-  if (!stored || typeof stored !== 'object') return {};
-  const obj = stored as Record<string, unknown>;
-  if (typeof obj.mcpId === 'string') {
-    // Legacy single record.
-    return { [obj.mcpId]: obj as unknown as PendingPairRecord };
-  }
-  const out: Record<string, PendingPairRecord> = {};
-  for (const [k, v] of Object.entries(obj)) {
-    if (v && typeof v === 'object' && typeof (v as { mcpId?: unknown }).mcpId === 'string') {
-      out[k] = v as PendingPairRecord;
-    }
-  }
-  return out;
+  return normalisePendingPair<PendingPairRecord>(stored);
 }
 
 async function bootstrap(): Promise<void> {

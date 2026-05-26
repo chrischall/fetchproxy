@@ -576,10 +576,16 @@ describe('extension reconnect (peer MCPs)', () => {
     const ext1Closed = new Promise<void>((r) => ext1.ws.on('close', () => r()));
     ext1.ws.close();
     await ext1Closed;
-    await connectMockExtensionMulti(port, 2);
+    const ext2 = await connectMockExtensionMulti(port, 2);
 
     const result = await inflight;
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error).toMatch(/extension disconnected/);
+
+    // Symmetric cleanup with the first peer-reconnect test — the
+    // FetchproxyServer.close() in afterEach drops the server-side socket
+    // and the client closes implicitly, but closing here keeps the test
+    // teardown easy to follow and matches the other test's pattern.
+    ext2.ws.close();
   }, 30_000);
 });
