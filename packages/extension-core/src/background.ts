@@ -956,52 +956,134 @@ async function handleFetchRequest(
     });
     return;
   }
-  // Find a tab matching tabUrl prefix
-  const tabs = await chrome.tabs.query({});
-  const match = tabs.find((t) => t.url && isTabUrlMatch(t.url, req.init.tabUrl));
-  if (!match || typeof match.id !== 'number') {
+  // 0.5.2+: iterate ALL matching tabs instead of `.find()`-ing the first
+  // one. Chrome doesn't retroactively inject content scripts into pages
+  // that were already loaded when the extension was (re)installed —
+  // those tabs match the URL but `sendMessage` to them throws "Receiving
+  // end does not exist". Before this loop, the first such pre-reload tab
+  // returned by `chrome.tabs.query` would shadow any subsequent
+  // freshly-loaded tab that DOES have the content script, and every
+  // fetch failed even though a working tab existed.
+  const result = await sendToFirstResponsiveTab(
+    (tabUrl) => isTabUrlMatch(tabUrl, req.init.tabUrl),
+    (tabUrl) => ({
+      kind: 'fetchproxy-fetch',
+      init: { ...req.init, tabUrl },
+    }),
+    req.init.tabUrl,
+  );
+  if (result.kind === 'no-tab') {
     await sendInner(mcpId, {
       type: 'response',
       id: req.id,
       ok: false,
       op: 'fetch',
-      error: `no tab matching ${req.init.tabUrl}`,
+      error: result.error,
     });
     return;
   }
-  try {
-    const resp = (await chrome.tabs.sendMessage(match.id, {
-      kind: 'fetchproxy-fetch',
-      init: { ...req.init, tabUrl: match.url ?? req.init.tabUrl },
-    })) as { ok: true; status: number; url: string; body: string } | { ok: false; error: string };
-    if (resp.ok) {
-      await sendInner(mcpId, {
-        type: 'response',
-        id: req.id,
-        ok: true,
-        op: 'fetch',
-        status: resp.status,
-        url: resp.url,
-        body: resp.body,
-      });
-    } else {
-      await sendInner(mcpId, {
-        type: 'response',
-        id: req.id,
-        ok: false,
-        op: 'fetch',
-        error: resp.error,
-      });
-    }
-  } catch (e) {
+  if (result.kind === 'throw') {
     await sendInner(mcpId, {
       type: 'response',
       id: req.id,
       ok: false,
       op: 'fetch',
-      error: `tab fetch failed: ${String(e)}`,
+      error: `tab fetch failed: ${result.error}`,
+    });
+    return;
+  }
+  const resp = result.response as
+    | { ok: true; status: number; url: string; body: string }
+    | { ok: false; error: string };
+  if (resp.ok) {
+    await sendInner(mcpId, {
+      type: 'response',
+      id: req.id,
+      ok: true,
+      op: 'fetch',
+      status: resp.status,
+      url: resp.url,
+      body: resp.body,
+    });
+  } else {
+    await sendInner(mcpId, {
+      type: 'response',
+      id: req.id,
+      ok: false,
+      op: 'fetch',
+      error: resp.error,
     });
   }
+}
+
+/**
+ * 0.5.2+: walk every tab whose URL passes `matcher`, send the built
+ * message via `chrome.tabs.sendMessage`, and return the first response.
+ *
+ * Three terminal states:
+ *
+ *   - `{ kind: 'response', response, tabUrl }` — a tab's content script
+ *     replied (the body is the content script's typed payload, opaque
+ *     to this helper; caller knows the shape).
+ *   - `{ kind: 'no-tab', error }` — either no tab matched, or every
+ *     matched tab threw "Receiving end does not exist" (i.e., none of
+ *     them have a loaded content script — the caller's `tabUrl` is
+ *     surfaced in the error so the user knows which page to refresh).
+ *   - `{ kind: 'throw', error }` — one of the matched tabs threw a
+ *     non-receiving-end error. Surfaced verbatim so the caller can
+ *     wrap it in a verb-specific error message; iteration stops at the
+ *     first such throw since it likely indicates a real fault rather
+ *     than a missing content script.
+ *
+ * `buildMessage` is called per-tab so the message can carry the matched
+ * tab's resolved URL (useful for verbs that need to canonicalise their
+ * tabUrl against the actual tab). The caller controls the matcher so
+ * each verb can choose between strict-prefix (`isTabUrlMatch`) and
+ * host-or-subdomain (`isTabUrlOnOrigin`) semantics.
+ */
+async function sendToFirstResponsiveTab(
+  matcher: (tabUrl: string) => boolean,
+  buildMessage: (matchedTabUrl: string) => unknown,
+  tabUrlForError: string,
+): Promise<
+  | { kind: 'response'; response: unknown; tabUrl: string }
+  | { kind: 'no-tab'; error: string }
+  | { kind: 'throw'; error: string }
+> {
+  const tabs = await chrome.tabs.query({});
+  const matches = tabs.filter((t) => t.url && matcher(t.url));
+  if (matches.length === 0) {
+    return { kind: 'no-tab', error: `no tab matching ${tabUrlForError}` };
+  }
+  // "Receiving end does not exist" surfaces when a tab matches the URL
+  // but has no content script (typically post-reload pages that pre-date
+  // the current extension install). Skip those and try the next match —
+  // self-heals the common "extension reloaded, old tabs still open" case
+  // without the user having to refresh every pre-reload tab.
+  let lastNoListener: string | null = null;
+  for (const match of matches) {
+    if (typeof match.id !== 'number') continue;
+    const tabUrl = match.url ?? tabUrlForError;
+    try {
+      const response = await chrome.tabs.sendMessage(match.id, buildMessage(tabUrl));
+      return { kind: 'response', response, tabUrl };
+    } catch (e) {
+      const msg = String(e);
+      if (msg.includes('Receiving end does not exist')) {
+        lastNoListener = msg;
+        continue;
+      }
+      return { kind: 'throw', error: msg };
+    }
+  }
+  return {
+    kind: 'no-tab',
+    error:
+      `no tab matching ${tabUrlForError} has the fetchproxy content script loaded ` +
+      `(${matches.length} URL match${matches.length === 1 ? '' : 'es'}, none responded). ` +
+      `Refresh the page in your browser to inject the content script, then retry.` +
+      (lastNoListener ? ` Last error: ${lastNoListener}` : ''),
+  };
 }
 
 async function handleReadCookiesRequest(
@@ -1045,46 +1127,51 @@ async function handleReadCookiesLegacy(
     });
     return;
   }
-  const tabs = await chrome.tabs.query({});
-  const match = tabs.find((t) => t.url && isTabUrlMatch(t.url, tabUrl));
-  if (!match || typeof match.id !== 'number') {
+  // 0.5.2+: multi-tab fallback via `sendToFirstResponsiveTab` — see the
+  // helper's doc for the per-tab iteration rationale (in short: a
+  // pre-reload tab can shadow a fresh one if we only `.find()` the
+  // first match).
+  const result = await sendToFirstResponsiveTab(
+    (t) => isTabUrlMatch(t, tabUrl),
+    () => ({ kind: 'fetchproxy-read-cookies' }),
+    tabUrl,
+  );
+  if (result.kind === 'no-tab') {
     await sendInner(mcpId, {
       type: 'response',
       id,
       ok: false,
       op: 'read_cookies',
-      error: `no tab matching ${tabUrl}`,
+      error: result.error,
     });
     return;
   }
-  try {
-    const resp = (await chrome.tabs.sendMessage(match.id, {
-      kind: 'fetchproxy-read-cookies',
-    })) as { ok: true; cookies: string } | { ok: false; error: string };
-    if (resp.ok) {
-      await sendInner(mcpId, {
-        type: 'response',
-        id,
-        ok: true,
-        op: 'read_cookies',
-        cookies: resp.cookies,
-      });
-    } else {
-      await sendInner(mcpId, {
-        type: 'response',
-        id,
-        ok: false,
-        op: 'read_cookies',
-        error: resp.error,
-      });
-    }
-  } catch (e) {
+  if (result.kind === 'throw') {
     await sendInner(mcpId, {
       type: 'response',
       id,
       ok: false,
       op: 'read_cookies',
-      error: `tab read_cookies failed: ${String(e)}`,
+      error: `tab read_cookies failed: ${result.error}`,
+    });
+    return;
+  }
+  const resp = result.response as { ok: true; cookies: string } | { ok: false; error: string };
+  if (resp.ok) {
+    await sendInner(mcpId, {
+      type: 'response',
+      id,
+      ok: true,
+      op: 'read_cookies',
+      cookies: resp.cookies,
+    });
+  } else {
+    await sendInner(mcpId, {
+      type: 'response',
+      id,
+      ok: false,
+      op: 'read_cookies',
+      error: resp.error,
     });
   }
 }
@@ -1216,48 +1303,57 @@ async function handleReadStorageRequest(
   // 0.4.1+: match by host-or-subdomain rather than strict prefix.
   // Apex origins (e.g. `https://hbportal.co`) routinely come from
   // multi-vendor MCPs whose real tabs live on a vendor subdomain.
-  const tabs = await chrome.tabs.query({});
-  const match = tabs.find((t) => t.url && isTabUrlOnOrigin(t.url, req.init.origin));
-  if (!match || typeof match.id !== 'number') {
-    await sendInner(mcpId, {
-      type: 'response',
-      id: req.id,
-      ok: false,
-      op,
-      error: `no tab matching origin ${req.init.origin}`,
-    });
-    return;
-  }
-  try {
-    const resp = (await chrome.tabs.sendMessage(match.id, {
+  //
+  // 0.5.2+: multi-tab fallback via `sendToFirstResponsiveTab` so a
+  // pre-reload tab doesn't shadow a freshly-loaded one with the content
+  // script — see the helper's doc.
+  const result = await sendToFirstResponsiveTab(
+    (t) => isTabUrlOnOrigin(t, req.init.origin),
+    () => ({
       kind: bucket === 'local' ? 'fetchproxy-read-local-storage' : 'fetchproxy-read-session-storage',
       keys: [...req.init.keys],
       pointers: req.init.pointers,
-    })) as { ok: true; values: Record<string, string> } | { ok: false; error: string };
-    if (resp.ok) {
-      await sendInner(mcpId, {
-        type: 'response',
-        id: req.id,
-        ok: true,
-        op,
-        values: resp.values,
-      });
-    } else {
-      await sendInner(mcpId, {
-        type: 'response',
-        id: req.id,
-        ok: false,
-        op,
-        error: resp.error,
-      });
-    }
-  } catch (e) {
+    }),
+    `origin ${req.init.origin}`,
+  );
+  if (result.kind === 'no-tab') {
     await sendInner(mcpId, {
       type: 'response',
       id: req.id,
       ok: false,
       op,
-      error: `tab ${op} failed: ${String(e)}`,
+      error: result.error,
+    });
+    return;
+  }
+  if (result.kind === 'throw') {
+    await sendInner(mcpId, {
+      type: 'response',
+      id: req.id,
+      ok: false,
+      op,
+      error: `tab ${op} failed: ${result.error}`,
+    });
+    return;
+  }
+  const resp = result.response as
+    | { ok: true; values: Record<string, string> }
+    | { ok: false; error: string };
+  if (resp.ok) {
+    await sendInner(mcpId, {
+      type: 'response',
+      id: req.id,
+      ok: true,
+      op,
+      values: resp.values,
+    });
+  } else {
+    await sendInner(mcpId, {
+      type: 'response',
+      id: req.id,
+      ok: false,
+      op,
+      error: resp.error,
     });
   }
 }
@@ -1414,49 +1510,58 @@ async function handleReadIndexedDbRequest(
     return;
   }
   const tabUrl = `${req.init.origin}/`;
-  const tabs = await chrome.tabs.query({});
-  const match = tabs.find((t) => t.url && isTabUrlMatch(t.url, tabUrl));
-  if (!match || typeof match.id !== 'number') {
-    await sendInner(mcpId, {
-      type: 'response',
-      id: req.id,
-      ok: false,
-      op: 'read_indexed_db',
-      error: `no tab matching ${tabUrl}`,
-    });
-    return;
-  }
-  try {
-    const resp = (await chrome.tabs.sendMessage(match.id, {
+  // 0.5.2+: multi-tab fallback via `sendToFirstResponsiveTab` — see the
+  // helper's doc. Same rationale as the fetch path: a pre-reload tab
+  // (no content script) can shadow a fresh one, and the user shouldn't
+  // have to refresh every page after every extension update.
+  const result = await sendToFirstResponsiveTab(
+    (t) => isTabUrlMatch(t, tabUrl),
+    () => ({
       kind: 'fetchproxy-read-indexed-db',
       database: req.init.database,
       store: req.init.store,
       keys: [...req.init.keys],
-    })) as { ok: true; values: Record<string, unknown> } | { ok: false; error: string };
-    if (resp.ok) {
-      await sendInner(mcpId, {
-        type: 'response',
-        id: req.id,
-        ok: true,
-        op: 'read_indexed_db',
-        values: resp.values,
-      });
-    } else {
-      await sendInner(mcpId, {
-        type: 'response',
-        id: req.id,
-        ok: false,
-        op: 'read_indexed_db',
-        error: resp.error,
-      });
-    }
-  } catch (e) {
+    }),
+    tabUrl,
+  );
+  if (result.kind === 'no-tab') {
     await sendInner(mcpId, {
       type: 'response',
       id: req.id,
       ok: false,
       op: 'read_indexed_db',
-      error: `tab read_indexed_db failed: ${String(e)}`,
+      error: result.error,
+    });
+    return;
+  }
+  if (result.kind === 'throw') {
+    await sendInner(mcpId, {
+      type: 'response',
+      id: req.id,
+      ok: false,
+      op: 'read_indexed_db',
+      error: `tab read_indexed_db failed: ${result.error}`,
+    });
+    return;
+  }
+  const resp = result.response as
+    | { ok: true; values: Record<string, unknown> }
+    | { ok: false; error: string };
+  if (resp.ok) {
+    await sendInner(mcpId, {
+      type: 'response',
+      id: req.id,
+      ok: true,
+      op: 'read_indexed_db',
+      values: resp.values,
+    });
+  } else {
+    await sendInner(mcpId, {
+      type: 'response',
+      id: req.id,
+      ok: false,
+      op: 'read_indexed_db',
+      error: resp.error,
     });
   }
 }
