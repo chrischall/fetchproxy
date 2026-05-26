@@ -8,9 +8,9 @@ name: PR auto-review
 #       pass | warn | fail
 #     Claude posts findings (as claude[bot] via the installed Claude App)
 #     and emits the verdict to `structured_output`.
-#  4. On `verdict == pass`, adds the `ready-to-merge` label using
-#     RELEASE_PAT, which arms auto-merge.yml. `warn` and `fail` never
-#     auto-arm — those keep a human in the loop.
+#  4. On `verdict != fail`, adds the `ready-to-merge` label using
+#     RELEASE_PAT, which arms auto-merge.yml. Nits (warn) are non-
+#     blocking — only `fail` keeps a human in the loop.
 #
 # Why `pull_request` (not `pull_request_target`):
 # Anthropic's GitHub App OIDC backend has an event-name allowlist that
@@ -225,14 +225,16 @@ jobs:
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Arm auto-merge on pass
+      - name: Arm auto-merge on pass or warn
         if: |
           steps.review.outputs.structured_output != '' &&
-          fromJSON(steps.review.outputs.structured_output).verdict == 'pass'
+          !contains(steps.review.outputs.structured_output, '"verdict":"fail"')
         env:
           GH_TOKEN: ${{ secrets.RELEASE_PAT }}
           PR: ${{ github.event.pull_request.number }}
           REPO: ${{ github.repository }}
+          RAW_OUTPUT: ${{ steps.review.outputs.structured_output }}
         run: |
+          VERDICT=$(echo "$RAW_OUTPUT" | jq -r .verdict)
           gh pr edit "$PR" --repo "$REPO" --add-label ready-to-merge
-          echo "Verdict=pass — added ready-to-merge to arm auto-merge."
+          echo "Verdict=${VERDICT} — added ready-to-merge to arm auto-merge."
