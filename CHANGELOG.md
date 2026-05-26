@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.0](https://github.com/chrischall/fetchproxy/compare/v0.6.0...v0.7.0) (2026-05-26)
+
+
+### Features
+
+* **extension:** Transporter — Chrome Web Store launch prep ([#52](https://github.com/chrischall/fetchproxy/issues/52)) ([f5b3165](https://github.com/chrischall/fetchproxy/commit/f5b316563daa404c1c65607479528b16c291d6bc))
+
 ## [0.6.0](https://github.com/chrischall/fetchproxy/compare/v0.5.1...v0.6.0) (2026-05-26)
 
 
