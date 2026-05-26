@@ -65,6 +65,7 @@ describe('integration: 0.4.0 mutual auth + read_indexed_db', () => {
       },
     });
     await server.listen();
+    await server.connect();
 
     extWs = new WebSocket(`ws://127.0.0.1:${port}`);
     await new Promise<void>((resolve, reject) => {
@@ -190,6 +191,7 @@ describe('integration: 0.4.0 mutual auth + read_indexed_db', () => {
       identityDir: idDir,
     });
     await server.listen();
+    await server.connect();
 
     extWs = new WebSocket(`ws://127.0.0.1:${port}`);
     await new Promise<void>((resolve, reject) => {
