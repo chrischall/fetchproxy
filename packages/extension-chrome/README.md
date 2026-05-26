@@ -49,3 +49,28 @@ Each release also publishes a packaged `fetchproxy-extension-${VERSION}.zip` on 
 - `permissions: ["alarms"]` — used solely for the MV3 service-worker keepalive (`chrome.alarms` ticks every ~24s to wake the SW from idle so the WS bridge stays reachable between bursts of MCP traffic). No alarm payload, no scheduling beyond the single keepalive.
 
 See the [top-level README](https://github.com/chrischall/fetchproxy#readme) for the architecture and the [protocol reference](https://github.com/chrischall/fetchproxy/blob/main/docs/PROTOCOL.md) for the wire format.
+
+## Migrating from the unpacked dev install
+
+The Chrome Web Store version of the extension (listed as **Transporter**)
+gets a new extension ID assigned by Google. Chrome treats it as a
+separate extension from the sideloaded "Load unpacked" version — not an
+upgrade.
+
+**What carries over:**
+
+| Item | Carries over? |
+|---|---|
+| MCP-side identity keys (`~/.fetchproxy/identity/`) | Yes — outside the extension |
+| MCP-captured sessions (e.g. `~/.honeybook-mcp/`) | Yes — outside the extension |
+| Extension identity keypair | No — CWS install starts fresh |
+| Per-MCP trust records | No — stored in the old extension's `chrome.storage.local` |
+
+**What to do:**
+
+1. Install Transporter from the Chrome Web Store.
+2. Remove the sideloaded extension from `chrome://extensions`.
+3. Each MCP will trigger a fresh pair prompt on its next connection.
+   Verify the 6-digit code and click Approve.
+
+No data is lost. The one-time re-pair takes a few seconds per MCP.

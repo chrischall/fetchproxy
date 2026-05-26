@@ -55,7 +55,12 @@ Three pieces, one repo:
 
 ### Extension
 
-The Chrome MV3 extension is not (yet) on the Chrome Web Store. Build and load unpacked:
+Install **Transporter** from the [Chrome Web Store](https://chromewebstore.google.com/detail/transporter/EXTENSION_ID_PLACEHOLDER). One click, auto-updates.
+
+> In the Chrome Web Store it's listed as **Transporter**; the protocol and npm packages are **fetchproxy**.
+
+<details>
+<summary>Manual / sideload install</summary>
 
 ```sh
 git clone https://github.com/chrischall/fetchproxy
@@ -65,6 +70,7 @@ npm --workspace=@fetchproxy/extension-chrome run build
 ```
 
 Then in Chrome: `chrome://extensions` → toggle "Developer mode" → "Load unpacked" → pick `packages/extension-chrome/dist/`.
+</details>
 
 ### Node library
 
