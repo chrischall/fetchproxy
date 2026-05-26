@@ -183,6 +183,104 @@ describe('pair-pending surfaces the pair code to MCP-side callers', () => {
     }
   }, 15_000);
 
+  it('host: readCookies() throws FetchproxyProtocolError with the pair code', async () => {
+    const port = 41093;
+    const idDir = mkdtempSync(join(tmpdir(), 'fp-pair-pending-cookies-'));
+    host = new FetchproxyServer({
+      port,
+      serverName: 'host-mcp',
+      version: '0.0.1',
+      domains: ['host.example.com'],
+      identityDir: idDir,
+      capabilities: ['fetch', 'read_cookies'],
+    });
+    await host.listen();
+    await host.connect();
+
+    const ext = await connectMockExtensionThatNeverApproves(port, {
+      'host-mcp': '901-234',
+    });
+    extWs = ext.ws;
+    await ext.helloCountReached(1);
+    await new Promise((r) => setTimeout(r, 30));
+
+    await expect(host.readCookies()).rejects.toThrow(FetchproxyProtocolError);
+    await expect(host.readCookies()).rejects.toThrow(/901-234/);
+    await expect(host.readCookies()).rejects.toThrow(/pairing required/);
+    await expect(host.readCookies()).rejects.toThrow(/host-mcp/);
+  }, 15_000);
+
+  it('peer: readCookies() throws FetchproxyProtocolError with the pair code', async () => {
+    const port = 41094;
+    const idDir = mkdtempSync(join(tmpdir(), 'fp-pair-pending-cookies-peer-'));
+    host = new FetchproxyServer({
+      port,
+      serverName: 'host-mcp',
+      version: '0.0.1',
+      domains: ['host.example.com'],
+      identityDir: idDir,
+    });
+    await host.listen();
+    await host.connect();
+    peer = new FetchproxyServer({
+      port,
+      serverName: 'peer-mcp',
+      version: '0.0.1',
+      domains: ['peer.example.com'],
+      identityDir: idDir,
+      capabilities: ['fetch', 'read_cookies'],
+    });
+    await peer.listen();
+    await peer.connect();
+
+    const ext = await connectMockExtensionThatNeverApproves(port, {
+      'host-mcp': '111-222',
+      'peer-mcp': '555-666',
+    });
+    extWs = ext.ws;
+    await ext.helloCountReached(2);
+    await new Promise((r) => setTimeout(r, 50));
+
+    await expect(peer.readCookies()).rejects.toThrow(FetchproxyProtocolError);
+    await expect(peer.readCookies()).rejects.toThrow(/555-666/);
+    await expect(peer.readCookies()).rejects.toThrow(/peer-mcp/);
+    await expect(peer.readCookies()).rejects.not.toThrow(/111-222/);
+  }, 15_000);
+
+  it('error message is model-directive — contains instruction to display the code', async () => {
+    const port = 41095;
+    const idDir = mkdtempSync(join(tmpdir(), 'fp-pair-pending-msg-'));
+    host = new FetchproxyServer({
+      port,
+      serverName: 'test-mcp',
+      version: '0.0.1',
+      domains: ['test.example.com'],
+      identityDir: idDir,
+    });
+    await host.listen();
+    await host.connect();
+
+    const ext = await connectMockExtensionThatNeverApproves(port, {
+      'test-mcp': '123-456',
+    });
+    extWs = ext.ws;
+    await ext.helloCountReached(1);
+    await new Promise((r) => setTimeout(r, 30));
+
+    const result = await host.fetch({
+      url: 'https://test.example.com/x',
+      method: 'GET',
+      tabUrl: 'https://test.example.com/',
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toContain('Tell the user');
+      expect(result.error).toContain('display this code');
+      expect(result.error).toContain('Transporter');
+      expect(result.error).toContain('123-456');
+    }
+  }, 15_000);
+
   it('onPairCode callback fires when the bridge reports pair-pending', async () => {
     const port = 41092;
     const idDir = mkdtempSync(join(tmpdir(), 'fp-pair-pending-cb-'));
