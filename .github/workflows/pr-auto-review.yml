@@ -228,12 +228,13 @@ jobs:
       - name: Arm auto-merge on pass or warn
         if: |
           steps.review.outputs.structured_output != '' &&
-          fromJSON(steps.review.outputs.structured_output).verdict != 'fail'
+          !contains(steps.review.outputs.structured_output, '"verdict":"fail"')
         env:
           GH_TOKEN: ${{ secrets.RELEASE_PAT }}
           PR: ${{ github.event.pull_request.number }}
           REPO: ${{ github.repository }}
-          VERDICT: ${{ fromJSON(steps.review.outputs.structured_output).verdict }}
+          RAW_OUTPUT: ${{ steps.review.outputs.structured_output }}
         run: |
+          VERDICT=$(echo "$RAW_OUTPUT" | jq -r .verdict)
           gh pr edit "$PR" --repo "$REPO" --add-label ready-to-merge
           echo "Verdict=${VERDICT} — added ready-to-merge to arm auto-merge."
