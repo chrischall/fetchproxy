@@ -402,6 +402,12 @@ export class FetchproxyServer {
       });
       this.hostHandle.onOwnInner((inner) => this.onInner(inner));
       this.hostHandle.onExtensionDisconnect(() => this.rejectAllPending());
+      // 0.5.2+: the extension queued us for pairing; fail in-flight tool
+      // calls fast with an actionable error including the joint pair code
+      // so the chat shows the same XXX-XXX the popup is displaying.
+      this.hostHandle.onPendingPair((code) => {
+        this.rejectAllPending(this.pairingErrorMessage(code));
+      });
     } else {
       this.role = 'peer';
       this.peerHandle = await startPeer({
@@ -422,7 +428,33 @@ export class FetchproxyServer {
         sessionStoragePointers: this.opts.sessionStoragePointers,
       });
       this.peerHandle.onInner((inner) => this.onInner(inner));
+      // Mirror the host's onExtensionDisconnect → rejectAllPending wiring.
+      // The peer's analogue is "I just renegotiated my session, so any
+      // in-flight requests under the old key are unreachable" — same blast
+      // radius, same recovery: fail pending awaiters with a clear error.
+      this.peerHandle.onRenegotiate(() => this.rejectAllPending());
+      // 0.5.2+: pair-pending from the extension. Same actionable error
+      // treatment as the host path so the chat sees the pair code instead
+      // of a generic MCP-level timeout.
+      this.peerHandle.onPendingPair((code) => {
+        this.rejectAllPending(this.pairingErrorMessage(code));
+      });
+      // 0.5.2+: invoke the caller's onPairCode for the peer path too, so
+      // an MCP that wants to log the code to stderr (or surface it via an
+      // MCP logging notification) gets the same hook on both roles.
+      if (this.opts.onPairCode) {
+        const cb = this.opts.onPairCode;
+        this.peerHandle.onPendingPair((code) => cb(code));
+      }
     }
+  }
+
+  private pairingErrorMessage(code: string): string {
+    return (
+      `fetchproxy: pairing required for ${this.opts.serverName} — ` +
+      `open the fetchproxy extension popup in Chrome and approve the ` +
+      `pair request. Verify the pair code matches: ${code}`
+    );
   }
 
   /**
@@ -442,6 +474,14 @@ export class FetchproxyServer {
   async fetch(init: FetchInit): Promise<FetchResult | FetchResultError> {
     if (!this.hostHandle && !this.peerHandle) {
       throw new Error('FetchproxyServer.fetch called before listen() — not listening');
+    }
+    // 0.5.2+: if the extension has us queued for pairing, fail this call
+    // immediately with the actionable pair-code error rather than sealing
+    // a frame the extension can't process until the user approves.
+    const pendingCode = this.currentPendingPairCode();
+    if (pendingCode !== null) {
+      const error = this.pairingErrorMessage(pendingCode);
+      return { ok: false, error, kind: classifyFetchError(error) };
     }
     const id = this.nextRequestId++;
     const inner: InnerFrame = { type: 'request', id, op: 'fetch', init };
@@ -635,6 +675,7 @@ export class FetchproxyServer {
     if (!this.hostHandle && !this.peerHandle) {
       throw new Error('FetchproxyServer.readCookies called before listen() — not listening');
     }
+    this.throwIfPendingPair();
     if (opts.subdomain !== undefined) assertSubdomainLabel(opts.subdomain);
     const baseDomain = this.resolveBaseDomain(opts.domain);
     const host = opts.subdomain ? `${opts.subdomain}.${baseDomain}` : baseDomain;
@@ -740,6 +781,7 @@ export class FetchproxyServer {
     if (!this.hostHandle && !this.peerHandle) {
       throw new Error(`FetchproxyServer.${op} called before listen() — not listening`);
     }
+    this.throwIfPendingPair();
     if (!Array.isArray(opts.keys) || opts.keys.length === 0) {
       throw new Error(`FetchproxyServer.${op}: opts.keys must be a non-empty array`);
     }
@@ -809,6 +851,7 @@ export class FetchproxyServer {
     if (!this.hostHandle && !this.peerHandle) {
       throw new Error('FetchproxyServer.captureRequestHeader called before listen() — not listening');
     }
+    this.throwIfPendingPair();
     const declared = this.opts.captureHeaders.find(
       (d) => d.urlPattern === opts.urlPattern && d.headerName === opts.headerName,
     );
@@ -865,6 +908,7 @@ export class FetchproxyServer {
     if (!this.hostHandle && !this.peerHandle) {
       throw new Error('FetchproxyServer.readIndexedDb called before listen() — not listening');
     }
+    this.throwIfPendingPair();
     if (!Array.isArray(opts.keys) || opts.keys.length === 0) {
       throw new Error('FetchproxyServer.readIndexedDb: opts.keys must be a non-empty array');
     }
@@ -1070,8 +1114,8 @@ export class FetchproxyServer {
     }
   }
 
-  private rejectAllPending(): void {
-    const err = new FetchproxyProtocolError('extension disconnected');
+  private rejectAllPending(reason: string = 'extension disconnected'): void {
+    const err = new FetchproxyProtocolError(reason);
     for (const cb of this.pending.values()) {
       cb({ ok: false, error: err.message, kind: classifyFetchError(err.message) });
     }
@@ -1086,6 +1130,32 @@ export class FetchproxyServer {
     this.pendingCapture.clear();
     for (const { reject } of this.pendingIdb.values()) reject(err);
     this.pendingIdb.clear();
+  }
+
+  /**
+   * 0.5.2+: read the current pair-pending pair code from whichever handle
+   * is active, returning null when none is pending. Public verbs call this
+   * at the top so that a tool invoked while the bridge is waiting on user
+   * approval fails fast with the actionable error rather than hanging on a
+   * sealed frame the extension will never process.
+   */
+  private currentPendingPairCode(): string | null {
+    if (this.hostHandle) return this.hostHandle.pendingPairCode();
+    if (this.peerHandle) return this.peerHandle.pendingPairCode();
+    return null;
+  }
+
+  /**
+   * 0.5.2+: throw `FetchproxyProtocolError` with the actionable pair-code
+   * message if the bridge is waiting on user approval. Used by the verb
+   * methods (readCookies, readLocalStorage, etc.) that surface errors via
+   * thrown exceptions rather than `ok:false` discriminated unions.
+   */
+  private throwIfPendingPair(): void {
+    const code = this.currentPendingPairCode();
+    if (code !== null) {
+      throw new FetchproxyProtocolError(this.pairingErrorMessage(code));
+    }
   }
 
   /**

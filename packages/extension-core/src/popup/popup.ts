@@ -13,6 +13,7 @@
  */
 
 import { TrustStore } from '../trust-store.js';
+import { normalisePendingPair } from '../lib/pending-pair.js';
 
 const HIGH_RISK_KEYWORDS = ['bank', 'gov', 'mil'];
 
@@ -538,6 +539,16 @@ declare const chrome: {
   };
 };
 
+/**
+ * Local alias bound to this file's `PendingPairRecord` type. The shared
+ * helper in `../lib/pending-pair.ts` is generic, so the popup and the
+ * background SW agree on what counts as a malformed input — see that
+ * file for the full migration story.
+ */
+function readPendingDict(stored: unknown): Record<string, PendingPairRecord> {
+  return normalisePendingPair<PendingPairRecord>(stored);
+}
+
 async function bootstrap(): Promise<void> {
   const root = document.getElementById('root');
   if (!root) return;
@@ -545,9 +556,22 @@ async function bootstrap(): Promise<void> {
     renderPopup(root, { mode: 'empty' });
     return;
   }
-  const got = await chrome.storage.local.get(['pendingPair']);
-  const pending = got['pendingPair'] as PendingPairRecord | undefined;
-  if (pending) {
+
+  // Hoisted so onApprove/onCancel can re-render the next entry without
+  // re-reading from storage (storage gets the write but we want immediate
+  // visual feedback, before the next popup open).
+  const renderNext = async (): Promise<void> => {
+    const got = await chrome.storage!.local.get(['pendingPair']);
+    const dict = readPendingDict(got['pendingPair']);
+    const entries = Object.values(dict);
+    if (entries.length === 0) {
+      // No more pending; fall through to the trusted-MCPs status view.
+      await renderTrustedStatus();
+      return;
+    }
+    // Show the first pending entry. Deterministic order keeps re-renders
+    // stable for the user (entry insertion order from storage.get).
+    const pending = entries[0]!;
     renderPopup(root, {
       mode: 'pending-pair',
       pending: {
@@ -569,49 +593,67 @@ async function bootstrap(): Promise<void> {
       },
       ...(pending.previousScope ? { previous: pending.previousScope } : {}),
       onApprove: () => {
-        void chrome.storage!.local.set({ approvedPair: pending });
-        void chrome.storage!.local.remove('pendingPair');
-        renderPopup(root, { mode: 'status', trusted: [] });
+        void (async () => {
+          // Persist approval (background SW picks it up via the onChanged
+          // listener and runs onApproval -> trust.put + ready frame).
+          await chrome.storage!.local.set({ approvedPair: pending });
+          // Remove THIS entry from the pending dict. Other unpaired MCPs
+          // stay queued so the user can advance through them.
+          const cur = await chrome.storage!.local.get(['pendingPair']);
+          const d = readPendingDict(cur['pendingPair']);
+          delete d[pending.mcpId];
+          if (Object.keys(d).length === 0) {
+            await chrome.storage!.local.remove('pendingPair');
+          } else {
+            await chrome.storage!.local.set({ pendingPair: d });
+          }
+          await renderNext();
+        })();
       },
       onCancel: () => {
-        void chrome.storage!.local.remove('pendingPair');
-        renderPopup(root, { mode: 'empty' });
+        void (async () => {
+          const cur = await chrome.storage!.local.get(['pendingPair']);
+          const d = readPendingDict(cur['pendingPair']);
+          delete d[pending.mcpId];
+          if (Object.keys(d).length === 0) {
+            await chrome.storage!.local.remove('pendingPair');
+          } else {
+            await chrome.storage!.local.set({ pendingPair: d });
+          }
+          await renderNext();
+        })();
       },
     });
-    return;
-  }
-  const ev = chrome.runtime?.getManifest().version ?? '0.2.0';
-  const trust = new TrustStore(ev);
-  const records = await trust.list();
-  const trustedList = Object.entries(records).map(([identityHash, r]) => ({
-    identityHash,
-    serverName: r.serverName,
-    domains: [...r.domains],
-    capabilities: r.capabilities ? [...r.capabilities] : ['fetch'],
-  }));
-  if (trustedList.length === 0) {
-    renderPopup(root, { mode: 'empty' });
+  };
+
+  const renderTrustedStatus = async (): Promise<void> => {
+    const ev2 = chrome.runtime?.getManifest().version ?? '0.2.0';
+    const trust2 = new TrustStore(ev2);
+    const records = await trust2.list();
+    const trustedList = Object.entries(records).map(([identityHash, r]) => ({
+      identityHash,
+      serverName: r.serverName,
+      domains: [...r.domains],
+      capabilities: r.capabilities ? [...r.capabilities] : ['fetch'],
+    }));
+    if (trustedList.length === 0) {
+      renderPopup(root, { mode: 'empty' });
+    } else {
+      const onRevoke = (identityHash: string): void => {
+        void trust2.remove(identityHash).then(() => renderTrustedStatus());
+      };
+      renderPopup(root, { mode: 'status', trusted: trustedList, onRevoke });
+    }
+  };
+
+  // Branch: pending pairs take precedence over the status list. If no
+  // pending pairs, render the trusted-MCPs status view.
+  const got0 = await chrome.storage.local.get(['pendingPair']);
+  const dict0 = readPendingDict(got0['pendingPair']);
+  if (Object.keys(dict0).length > 0) {
+    await renderNext();
   } else {
-    // 0.4.2+: handle revoke clicks. TrustStore.remove() is the only
-    // mutation here; we re-render fresh from disk so the list reflects
-    // the live storage state.
-    const onRevoke = (identityHash: string): void => {
-      void trust.remove(identityHash).then(async () => {
-        const refreshed = await trust.list();
-        const next = Object.entries(refreshed).map(([h, rec]) => ({
-          identityHash: h,
-          serverName: rec.serverName,
-          domains: [...rec.domains],
-          capabilities: rec.capabilities ? [...rec.capabilities] : ['fetch'],
-        }));
-        if (next.length === 0) {
-          renderPopup(root, { mode: 'empty' });
-        } else {
-          renderPopup(root, { mode: 'status', trusted: next, onRevoke });
-        }
-      });
-    };
-    renderPopup(root, { mode: 'status', trusted: trustedList, onRevoke });
+    await renderTrustedStatus();
   }
 }
 

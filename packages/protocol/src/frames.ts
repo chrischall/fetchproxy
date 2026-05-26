@@ -242,7 +242,29 @@ export interface EncryptedFrame {
   ciphertext: string;             // base64 — AES-256-GCM(sessionKey, iv, innerFrameJson)
 }
 
-export type Frame = HelloFrame | ReadyFrame | EncryptedFrame;
+/**
+ * 0.5.2+: extension → MCP notification that the user has been asked to
+ * approve a pair for `mcpId`. Carries the same 6-digit joint pair code
+ * the popup is showing (`SHA256(mcpPub || extPub)[0..3] mod 1_000_000`,
+ * formatted `XXX-XXX`) so the MCP can surface it back to its caller
+ * (typically as a tool error like "pairing required, code: 845-237").
+ *
+ * Routed by mcpId on the host (own → fire onPairCode + record, peer →
+ * forward to peer WS). Unencrypted — the pair code is not a secret on
+ * its own; security comes from the user comparing it across two
+ * channels (extension popup + MCP-side display) before approving.
+ *
+ * Subsequent ready (after user approval) implicitly clears the pending
+ * state on the MCP side. Cancellation has no explicit signal — the
+ * stored pair code is a hint, not authoritative state.
+ */
+export interface PairPendingFrame {
+  type: 'pair-pending';
+  mcpId: string;
+  pairCode: string;               // formatted "XXX-XXX"
+}
+
+export type Frame = HelloFrame | ReadyFrame | EncryptedFrame | PairPendingFrame;
 
 // --- Inner frames (inside ciphertext) ---
 
