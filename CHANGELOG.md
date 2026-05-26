@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.6.0](https://github.com/chrischall/fetchproxy/compare/v0.5.1...v0.6.0) (2026-05-26)
+
+
+### Features
+
+* **server:** lazy bridge connect — listen() loads identity only ([#51](https://github.com/chrischall/fetchproxy/issues/51)) ([8309c2b](https://github.com/chrischall/fetchproxy/commit/8309c2b727f41f7bcc0cef6c464b09005754b557))
+
+
+### Bug Fixes
+
+* 3 MCPs can work concurrently (peer session renegotiation + pendingPair dict) ([#49](https://github.com/chrischall/fetchproxy/issues/49)) ([4272e98](https://github.com/chrischall/fetchproxy/commit/4272e980404055721f35b0c2cd339871b00dc3df))
+* **ci:** prevent labeled event from cancelling auto-review ([#47](https://github.com/chrischall/fetchproxy/issues/47)) ([40bc4db](https://github.com/chrischall/fetchproxy/commit/40bc4dbcbf9b6036d28b5247777fc4d4ccb0dc14))
+* **extension:** handlers iterate ALL matching tabs instead of just the first ([#50](https://github.com/chrischall/fetchproxy/issues/50)) ([8bd437b](https://github.com/chrischall/fetchproxy/commit/8bd437bc59d8ebf1a28aa33987baef5e6634d1fc))
+
 ## [0.5.1](https://github.com/chrischall/fetchproxy/compare/v0.5.0...v0.5.1) (2026-05-25)
 
 
