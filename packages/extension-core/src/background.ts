@@ -783,12 +783,50 @@ async function onServerHello(hello: HelloFrameFromServer): Promise<void> {
     identityEd25519Pub: result.identityEd25519Pub,
     sessionNonceB64: toB64(result.sessionNonce),
   };
-  await chrome.storage.local.set({ [PENDING_PAIR_KEY]: pending });
+  // 0.5.2+: store pending pairs as a dict keyed by mcpId so multiple
+  // simultaneous unpaired MCPs queue up cleanly. Pre-0.5.2 wrote a single
+  // PendingPairRecord under this key, which meant the second MCP's hello
+  // silently clobbered the first MCP's pending entry — the user could only
+  // ever pair one at a time. Reading tolerates both shapes (`mergePending`
+  // below) so an in-flight legacy record from a pre-upgrade SW survives the
+  // version bump.
+  const got = await chrome.storage.local.get(PENDING_PAIR_KEY);
+  const existing = mergePending(got[PENDING_PAIR_KEY]);
+  existing[pending.mcpId] = pending;
+  await chrome.storage.local.set({ [PENDING_PAIR_KEY]: existing });
   // 0.4.2: surface the pending pair without making the user discover
   // it manually — paint the action-icon badge and best-effort try to
   // open the popup. Both no-op in environments that don't expose
   // chrome.action (unit tests, older Chrome).
   setPairPendingBadge();
+}
+
+/**
+ * Normalise the stored pendingPair shape. Two legal inputs:
+ *
+ *   - `Record<mcpId, PendingPairRecord>` — current shape (0.5.2+).
+ *   - `PendingPairRecord` (single object with `mcpId` field) — legacy
+ *     0.5.1-and-earlier shape. Migrated by wrapping into a dict.
+ *
+ * Anything else (undefined, malformed) returns an empty dict.
+ */
+function mergePending(stored: unknown): Record<string, PendingPairRecord> {
+  if (!stored || typeof stored !== 'object') return {};
+  const obj = stored as Record<string, unknown>;
+  // Legacy single-record shape: has a top-level `mcpId` string field.
+  if (typeof obj.mcpId === 'string') {
+    return { [obj.mcpId]: obj as unknown as PendingPairRecord };
+  }
+  // Already a dict — keep entries whose value looks like a pending record
+  // (has its own mcpId field). Drops anything malformed so a partial write
+  // can't poison the structure.
+  const out: Record<string, PendingPairRecord> = {};
+  for (const [k, v] of Object.entries(obj)) {
+    if (v && typeof v === 'object' && typeof (v as { mcpId?: unknown }).mcpId === 'string') {
+      out[k] = v as PendingPairRecord;
+    }
+  }
+  return out;
 }
 
 async function onEncryptedFrame(frame: EncryptedFrame): Promise<void> {
@@ -1521,9 +1559,12 @@ function maybeBoot(): void {
     // 0.4.2: keep the badge in sync with the pending-pair state.
     // Cancel (popup) and the user-driven X removes the key without
     // going through onApproval, so this is the catch-all clear point.
+    // 0.5.2+: the value is now a dict — has any non-empty content means
+    // at least one pending entry remains and the badge should stay lit.
     if (PENDING_PAIR_KEY in changes) {
       const next = changes[PENDING_PAIR_KEY]?.newValue;
-      if (next) setPairPendingBadge();
+      const dict = mergePending(next);
+      if (Object.keys(dict).length > 0) setPairPendingBadge();
       else clearPairPendingBadge();
     }
   });
@@ -1531,7 +1572,8 @@ function maybeBoot(): void {
   // pending pair survives a service-worker eviction without losing
   // its visual indicator.
   void chrome.storage.local.get(PENDING_PAIR_KEY).then((got) => {
-    if (got[PENDING_PAIR_KEY]) setPairPendingBadge();
+    const dict = mergePending(got[PENDING_PAIR_KEY]);
+    if (Object.keys(dict).length > 0) setPairPendingBadge();
     else clearPairPendingBadge();
   });
   // 0.4.1: register the MV3 keepalive alarm before anything else. Each
