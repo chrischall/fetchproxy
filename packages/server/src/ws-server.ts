@@ -422,6 +422,11 @@ export class FetchproxyServer {
         sessionStoragePointers: this.opts.sessionStoragePointers,
       });
       this.peerHandle.onInner((inner) => this.onInner(inner));
+      // Mirror the host's onExtensionDisconnect → rejectAllPending wiring.
+      // The peer's analogue is "I just renegotiated my session, so any
+      // in-flight requests under the old key are unreachable" — same blast
+      // radius, same recovery: fail pending awaiters with a clear error.
+      this.peerHandle.onRenegotiate(() => this.rejectAllPending());
     }
   }
 
