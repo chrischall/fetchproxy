@@ -534,7 +534,7 @@ export class FetchproxyServer {
 
   private pairingErrorMessage(code: string): string {
     return (
-      `fetchproxy transport error: fetchproxy: pairing required for ${this.opts.serverName}. ` +
+      `fetchproxy transport error: pairing required for ${this.opts.serverName}. ` +
       `Tell the user to open the Transporter browser extension popup and approve the pair request. ` +
       `The pair code is: ${code} — display this code to the user so they can verify it matches.`
     );
