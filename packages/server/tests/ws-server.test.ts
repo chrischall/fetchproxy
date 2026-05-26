@@ -125,6 +125,44 @@ describe('FetchproxyServer (orchestrator)', () => {
     expect(srv.role).toBe('host');
   });
 
+  it('0.5.3+: close() awaits an in-flight connect so no handle leaks', async () => {
+    // Repro: trigger `doConnect` (via `connect()`) and `close()` in the
+    // same microtask. Pre-fix, close() observed `hostHandle == null`,
+    // returned without tearing down anything, and then doConnect()
+    // wrote `this.hostHandle = <live handle>` after close() had
+    // already exited — the handle's listener registration and WS state
+    // survived close(), so the supposedly-closed instance still held
+    // bridge resources. Post-fix, close() awaits `connectingPromise`
+    // first, so doConnect()'s handle assignment happens before the
+    // teardown logic runs and the handle gets closed.
+    //
+    // Test the invariant directly by inspecting the private handle
+    // fields: post-close, both must be null regardless of how the
+    // race resolved.
+    const srv = new FetchproxyServer({
+      port: 41059,
+      serverName: 'opentable-mcp',
+      version: '0.9.1',
+      domains: ['opentable.com'],
+      identityDir: mkdtempSync(join(tmpdir(), 'fp-srv-')),
+    });
+    await srv.listen();
+    const connectPromise = srv.connect();
+    // Race close() against the in-flight connect.
+    await Promise.all([connectPromise, srv.close()]);
+    expect(srv.role).toBe(null);
+    // No handle survives the race. Touch private state because
+    // there's no public way to observe the leak otherwise.
+    const internal = srv as unknown as {
+      hostHandle: unknown;
+      peerHandle: unknown;
+      connectingPromise: unknown;
+    };
+    expect(internal.hostHandle).toBe(null);
+    expect(internal.peerHandle).toBe(null);
+    expect(internal.connectingPromise).toBe(null);
+  });
+
   it('close() returns role to null', async () => {
     const srv = new FetchproxyServer({
       port: 41053,

@@ -255,14 +255,16 @@ export interface ReadCookiesResultError {
 }
 
 /**
+/**
  * The MCP-facing handle for the fetchproxy bridge.
  *
- * On `listen()`, the server races the configured port: if it binds,
- * the instance becomes the concentrator (role `'host'`) the extension
- * dials. If the port is already taken by another fetchproxy host, the
- * instance becomes a peer (role `'peer'`) and tunnels through that
- * host's existing WebSocket. Either way, callers issue `fetch()` (or
- * one of the verb shortcuts) and get the response from the user's
+ * `listen()` loads identity and reserves nothing. The first verb call
+ * (or an explicit `connect()`) races the configured port: if the bind
+ * succeeds, the instance becomes the concentrator (role `'host'`) the
+ * extension dials. If the port is already taken by another fetchproxy
+ * host, the instance becomes a peer (role `'peer'`) and tunnels through
+ * that host's existing WebSocket. Either way, callers issue `fetch()`
+ * (or one of the verb shortcuts) and get the response from the user's
  * signed-in browser tab as if they'd run `window.fetch` there
  * themselves.
  *
@@ -271,7 +273,11 @@ export interface ReadCookiesResultError {
  * branch on it.
  */
 export class FetchproxyServer {
-  /** Set after `listen()` succeeds. Null while not listening. */
+  /**
+   * Bridge role. `null` until the first verb call (or an explicit
+   * `connect()`) — `listen()` no longer triggers the role election
+   * as of 0.5.3+. Reset to `null` on `close()`.
+   */
   public role: 'host' | 'peer' | null = null;
 
   private opts: ResolvedOpts;
@@ -1241,10 +1247,24 @@ export class FetchproxyServer {
    */
   async close(): Promise<void> {
     this.rejectAllPending();
+    // 0.5.3+: if a verb call has triggered `doConnect()` but the handle
+    // hasn't been written yet, wait it out before we tear things down.
+    // Otherwise `close()` would observe `hostHandle == null`, return
+    // without calling its `.close()`, and `doConnect()` would then
+    // write `this.hostHandle = <live handle>` after we'd already
+    // returned — leaking the socket. Swallow the rejection: if the
+    // election itself failed, there's nothing to tear down.
+    if (this.connectingPromise) {
+      await this.connectingPromise.catch(() => undefined);
+    }
     if (this.hostHandle) await this.hostHandle.close();
     if (this.peerHandle) this.peerHandle.close();
     this.hostHandle = null;
     this.peerHandle = null;
     this.role = null;
+    // Match the `finally` in `ensureConnected` so a subsequent
+    // `listen()` + `connect()` after `close()` doesn't observe a stale
+    // promise reference.
+    this.connectingPromise = null;
   }
 }
