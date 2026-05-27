@@ -372,6 +372,11 @@ export class FetchproxyServer {
   private hostHandle: HostHandle | null = null;
   private peerHandle: PeerHandle | null = null;
   private nextRequestId = 1;
+  // 0.8.0+: set by `fetch()` as its last action before return so
+  // `request()` can read accurate retry context for the typed-error
+  // throw without re-deriving from the option value. See `fetch()`
+  // for the race-safety argument.
+  private _lastRetryAttempted = false;
   private pending = new Map<number, (r: FetchResult | FetchResultError) => void>();
   // Separate pending map for read_cookies so the response shape (cookies
   // string vs status/body) doesn't have to share a union type with fetch.
@@ -661,7 +666,13 @@ export class FetchproxyServer {
     const first = await this._fetchOnceWithTimeout(init);
     // 0.8.0+: lazy-revive on SW eviction. One-shot retry after the
     // configured delay; the SW typically wakes on the next inbound
-    // WS frame within ~1-2s.
+    // WS frame within ~1-2s. Stash whether we actually retried so
+    // `request()` can thread an accurate `retryAttempted` into
+    // `_typedErrorFor` without re-deriving from the option value.
+    // Safe across overlapping calls: the field is set as the last
+    // action before return, and `request()` reads it on the line
+    // immediately after `await this.fetch(...)` — no microtask yields
+    // between, so a concurrent call can't overwrite the slot in flight.
     const reviveMs = this.opts.bridgeReviveDelayMs;
     if (
       !first.ok &&
@@ -670,8 +681,11 @@ export class FetchproxyServer {
       reviveMs > 0
     ) {
       await new Promise((r) => setTimeout(r, reviveMs));
-      return this._fetchOnceWithTimeout(init);
+      const second = await this._fetchOnceWithTimeout(init);
+      this._lastRetryAttempted = true;
+      return second;
     }
+    this._lastRetryAttempted = false;
     return first;
   }
 
@@ -724,6 +738,7 @@ export class FetchproxyServer {
     result: FetchResultError,
     url: string,
     op: 'fetch' | 'capture_request_header',
+    retryAttempted: boolean,
   ): Error {
     if (result.kind === 'timeout') {
       return new FetchproxyTimeoutError({
@@ -734,8 +749,7 @@ export class FetchproxyServer {
     if (result.kind === 'content_script_unreachable') {
       return new FetchproxyBridgeDownError({
         originalError: result.error,
-        retryAttempted:
-          (this.opts.bridgeReviveDelayMs ?? 0) > 0,
+        retryAttempted,
         op,
         url,
       });
@@ -788,7 +802,18 @@ export class FetchproxyServer {
     };
     const result = await this.fetch(init);
     if (!result.ok) {
-      throw this._typedErrorFor(result, init.url, 'fetch');
+      // _lastRetryAttempted was set by fetch() as its final action
+      // before return; we read it on the line immediately after the
+      // await — no microtask yields between, so concurrent calls can't
+      // overwrite the slot in flight. Test subclasses that override
+      // fetch() see the default `false`, which is correct since they
+      // don't run the retry logic.
+      throw this._typedErrorFor(
+        result,
+        init.url,
+        'fetch',
+        this._lastRetryAttempted,
+      );
     }
     const response: HttpResponse = {
       status: result.status,
@@ -1126,6 +1151,7 @@ export class FetchproxyServer {
             originalError: (retryErr as Error).message,
             retryAttempted: true,
             op: 'capture_request_header',
+            url: opts.urlPattern,
           });
         }
       }
@@ -1133,6 +1159,7 @@ export class FetchproxyServer {
         originalError: (err as Error).message,
         retryAttempted: false,
         op: 'capture_request_header',
+        url: opts.urlPattern,
       });
     }
   }
