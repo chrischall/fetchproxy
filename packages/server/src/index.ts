@@ -8,6 +8,7 @@ export type {
   BodylessRequestOpts,
   ReadCookiesResult,
   ReadCookiesResultError,
+  BridgeHealth,
 } from './ws-server.js';
 export {
   FetchproxyProtocolError,

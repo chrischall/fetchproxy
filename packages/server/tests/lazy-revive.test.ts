@@ -54,8 +54,8 @@ describe('fetch() — lazy-revive on content_script_unreachable', () => {
     if (result.ok) expect(result.body).toBe('ok');
   });
 
-  it('does NOT retry when bridgeReviveDelayMs is unset (default 0 = disabled, back-compat)', async () => {
-    const s = new FetchproxyServer(baseOpts);
+  it('does NOT retry when bridgeReviveDelayMs is explicitly 0 (opt-out back-door)', async () => {
+    const s = new FetchproxyServer({ ...baseOpts, bridgeReviveDelayMs: 0 });
     const harness = installFakeHost(s);
     const pending = s.fetch({
       url: 'https://example.com/x',
@@ -142,7 +142,9 @@ describe('fetch() — fetchTimeoutMs', () => {
 
 describe('convenience methods (request/get/post) — typed errors', () => {
   it('throws FetchproxyBridgeDownError on SW-unreachable (instanceof FetchproxyProtocolError for back-compat)', async () => {
-    const s = new FetchproxyServer(baseOpts);
+    // bridgeReviveDelayMs:0 keeps this test focused on the typed-error
+    // class hierarchy rather than the retry behavior (covered above).
+    const s = new FetchproxyServer({ ...baseOpts, bridgeReviveDelayMs: 0 });
     const harness = installFakeHost(s);
     const pending = s.get('/x');
     await Promise.resolve();
@@ -256,8 +258,8 @@ describe('captureRequestHeader() — lazy-revive', () => {
     await expect(pending).rejects.toThrow(/https:\/\/example\.com\/x\*/);
   });
 
-  it('throws FetchproxyBridgeDownError immediately (retryAttempted=false) when bridgeReviveDelayMs is unset', async () => {
-    const s = new FetchproxyServer(baseOpts);
+  it('throws FetchproxyBridgeDownError immediately (retryAttempted=false) when bridgeReviveDelayMs is explicitly 0', async () => {
+    const s = new FetchproxyServer({ ...baseOpts, bridgeReviveDelayMs: 0 });
     const harness = installFakeHost(s);
     const pending = s.captureRequestHeader({
       urlPattern: 'https://example.com/x*',
