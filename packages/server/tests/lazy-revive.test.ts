@@ -155,6 +155,33 @@ describe('convenience methods (request/get/post) — typed errors', () => {
     });
     await expect(pending).rejects.toBeInstanceOf(FetchproxyBridgeDownError);
     await expect(pending).rejects.toBeInstanceOf(FetchproxyProtocolError);
+    await expect(pending).rejects.toMatchObject({ retryAttempted: false });
+  });
+
+  it('throws FetchproxyBridgeDownError(retryAttempted=true) when bridgeReviveDelayMs fires and the retry also fails', async () => {
+    const s = new FetchproxyServer({ ...baseOpts, bridgeReviveDelayMs: 1 });
+    const harness = installFakeHost(s);
+    const pending = s.get('/x');
+    await Promise.resolve();
+    harness.reply({
+      type: 'response',
+      id: harness.lastInner()!.id,
+      ok: false,
+      op: 'fetch',
+      error: SW_ERROR,
+    });
+    await new Promise((r) => setTimeout(r, 10));
+    harness.reply({
+      type: 'response',
+      id: harness.lastInner()!.id,
+      ok: false,
+      op: 'fetch',
+      error: SW_ERROR,
+    });
+    await expect(pending).rejects.toMatchObject({
+      name: 'FetchproxyBridgeDownError',
+      retryAttempted: true,
+    });
   });
 
   it('throws FetchproxyTimeoutError when fetchTimeoutMs fires', async () => {
@@ -223,7 +250,10 @@ describe('captureRequestHeader() — lazy-revive', () => {
     await expect(pending).rejects.toMatchObject({
       name: 'FetchproxyBridgeDownError',
       retryAttempted: true,
+      op: 'capture_request_header',
+      url: 'https://example.com/x*',
     });
+    await expect(pending).rejects.toThrow(/https:\/\/example\.com\/x\*/);
   });
 
   it('throws FetchproxyBridgeDownError immediately (retryAttempted=false) when bridgeReviveDelayMs is unset', async () => {
@@ -244,6 +274,7 @@ describe('captureRequestHeader() — lazy-revive', () => {
     await expect(pending).rejects.toMatchObject({
       name: 'FetchproxyBridgeDownError',
       retryAttempted: false,
+      url: 'https://example.com/x*',
     });
   });
 
