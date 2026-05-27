@@ -32,6 +32,10 @@ name: PR auto-review
 # Bot-authored PRs (dependabot/renovate/etc.) are skipped via the
 # `user.type == 'User'` filter — those go straight to CI + auto-merge.
 #
+# PRs that already carry `ready-to-merge` are skipped — they've passed
+# review once and are armed for auto-merge, so re-reviewing on a follow-up
+# `synchronize` (or unrelated label change) just burns quota.
+#
 # `ready-to-merge` MUST be added via RELEASE_PAT, not GITHUB_TOKEN.
 # GitHub suppresses workflow runs for `GITHUB_TOKEN`-triggered events,
 # so a label added that way would not fire auto-merge.yml.
@@ -81,6 +85,7 @@ jobs:
       github.event.pull_request.head.repo.full_name == github.repository &&
       !startsWith(github.event.pull_request.head.ref, 'release-please--') &&
       !contains(github.event.pull_request.labels.*.name, 'autorelease: pending') &&
+      !contains(github.event.pull_request.labels.*.name, 'ready-to-merge') &&
       (github.event.action != 'labeled' || github.event.label.name == 'review-with-opus')
     steps:
       - name: Apply auto-review label
