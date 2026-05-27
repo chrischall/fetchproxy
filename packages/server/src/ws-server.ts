@@ -143,6 +143,12 @@ export interface FetchResultError {
    * constructs envelope literals directly stays back-compat.
    */
   retryAttempted?: boolean;
+  /**
+   * 0.8.0+: actual elapsed milliseconds when `kind === 'timeout'`
+   * (the timer firing wins the race). Populated only for the timeout
+   * arm; undefined for other failure kinds.
+   */
+  elapsedMs?: number;
 }
 
 /** Public response shape returned by the convenience helpers. */
@@ -240,6 +246,10 @@ export class FetchproxyBridgeDownError extends FetchproxyProtocolError {
   readonly retryAttempted: boolean;
   readonly op: 'fetch' | 'capture_request_header';
   readonly url?: string;
+  /** 0.8.0+: bridge role at throw time; `null` if listen() hadn't bound yet. */
+  readonly role: 'host' | 'peer' | null;
+  /** 0.8.0+: bridge port at throw time (the same port `listen()` bound to). */
+  readonly port: number;
   readonly hint: string;
 
   constructor(args: {
@@ -247,6 +257,8 @@ export class FetchproxyBridgeDownError extends FetchproxyProtocolError {
     retryAttempted?: boolean;
     op?: 'fetch' | 'capture_request_header';
     url?: string;
+    role?: 'host' | 'peer' | null;
+    port?: number;
   }) {
     const retryAttempted = args.retryAttempted ?? false;
     const op = args.op ?? 'fetch';
@@ -268,6 +280,8 @@ export class FetchproxyBridgeDownError extends FetchproxyProtocolError {
     this.retryAttempted = retryAttempted;
     this.op = op;
     if (args.url !== undefined) this.url = args.url;
+    this.role = args.role ?? null;
+    this.port = args.port ?? 0;
     this.hint = hint;
   }
 }
@@ -281,14 +295,29 @@ export class FetchproxyBridgeDownError extends FetchproxyProtocolError {
 export class FetchproxyTimeoutError extends FetchproxyProtocolError {
   readonly url: string;
   readonly timeoutMs: number;
+  /** 0.8.0+: bridge role at throw time; `null` if listen() hadn't bound yet. */
+  readonly role: 'host' | 'peer' | null;
+  /** 0.8.0+: bridge port at throw time. */
+  readonly port: number;
+  /** 0.8.0+: actual elapsed milliseconds when the timer won the race. */
+  readonly elapsedMs: number;
 
-  constructor(args: { url: string; timeoutMs: number }) {
+  constructor(args: {
+    url: string;
+    timeoutMs: number;
+    role?: 'host' | 'peer' | null;
+    port?: number;
+    elapsedMs?: number;
+  }) {
     super(
       `fetchproxy: ${args.url} did not respond within ${args.timeoutMs}ms`,
     );
     this.name = 'FetchproxyTimeoutError';
     this.url = args.url;
     this.timeoutMs = args.timeoutMs;
+    this.role = args.role ?? null;
+    this.port = args.port ?? 0;
+    this.elapsedMs = args.elapsedMs ?? args.timeoutMs;
   }
 }
 
@@ -301,6 +330,12 @@ export class FetchproxyTimeoutError extends FetchproxyProtocolError {
 export interface BridgeHealth {
   role: 'host' | 'peer' | null;
   port: number;
+  /** 0.8.0+: server version this bridge was constructed with. */
+  serverVersion: string;
+  /** 0.8.0+: resolved per-request timeout (ms); 0 if disabled. */
+  fetchTimeoutMs: number;
+  /** 0.8.0+: resolved lazy-revive delay (ms); 0 if disabled. */
+  bridgeReviveDelayMs: number;
   lastSuccessAt: number | null;
   lastFailureAt: number | null;
   lastFailureReason: string | null;
@@ -768,6 +803,9 @@ export class FetchproxyServer {
     return {
       role: this.role,
       port: this.opts.port,
+      serverVersion: this.opts.version,
+      fetchTimeoutMs: this.opts.fetchTimeoutMs ?? 0,
+      bridgeReviveDelayMs: this.opts.bridgeReviveDelayMs ?? 0,
       lastSuccessAt: this.lastSuccessAt,
       lastFailureAt: this.lastFailureAt,
       lastFailureReason: this.lastFailureReason,
@@ -808,6 +846,7 @@ export class FetchproxyServer {
     const timeoutMs = this.opts.fetchTimeoutMs;
     if (timeoutMs === undefined || timeoutMs <= 0) return pending;
     let timer: ReturnType<typeof setTimeout> | undefined;
+    const start = Date.now();
     try {
       return await Promise.race([
         pending,
@@ -816,12 +855,19 @@ export class FetchproxyServer {
             // Drop the pending resolver so a late bridge response doesn't
             // become an unhandled promise that crashes the host.
             this.pending.delete(id);
+            const elapsedMs = Date.now() - start;
             const error = `fetchproxy: ${init.url} did not respond within ${timeoutMs}ms`;
             // retryAttempted is overwritten by the caller (fetch())
             // when it wraps with `...result, retryAttempted: x`. We
             // emit `false` here as the inner default since the timeout
             // never triggers the SW-eviction retry path.
-            resolve({ ok: false, error, kind: 'timeout', retryAttempted: false });
+            resolve({
+              ok: false,
+              error,
+              kind: 'timeout',
+              retryAttempted: false,
+              elapsedMs,
+            });
           }, timeoutMs);
         }),
       ]);
@@ -846,6 +892,9 @@ export class FetchproxyServer {
       return new FetchproxyTimeoutError({
         url,
         timeoutMs: this.opts.fetchTimeoutMs ?? 0,
+        role: this.role,
+        port: this.opts.port,
+        elapsedMs: result.elapsedMs,
       });
     }
     if (result.kind === 'content_script_unreachable') {
@@ -854,6 +903,8 @@ export class FetchproxyServer {
         retryAttempted,
         op,
         url,
+        role: this.role,
+        port: this.opts.port,
       });
     }
     return new FetchproxyProtocolError(result.error);
@@ -883,13 +934,29 @@ export class FetchproxyServer {
   ): Promise<HttpResponse> {
     if (opts.subdomain !== undefined) assertSubdomainLabel(opts.subdomain);
     const baseDomain = this.resolveBaseDomain(opts.domain);
-    const host = opts.subdomain
-      ? `${opts.subdomain}.${baseDomain}`
-      : baseDomain;
-    const url =
-      path.startsWith('http://') || path.startsWith('https://')
-        ? path
-        : `https://${host}${path}`;
+    const isAbsolute =
+      path.startsWith('http://') || path.startsWith('https://');
+    // 0.8.0+: when `path` is absolute, derive `tabUrl` from the URL's
+    // own host — `opts.subdomain` applies only to relative paths
+    // (where it acts as the default for building `https://{sub}.{base}`).
+    // Before this, absolute paths inherited the subdomain's tabUrl and
+    // the cohort had to conditionally spread `subdomain` based on the
+    // path shape to avoid routing photos.x.com requests through a
+    // www.x.com tab. Now they just always pass `subdomain` and the
+    // server picks the right tabUrl per call.
+    let host: string;
+    if (isAbsolute) {
+      try {
+        host = new URL(path).host;
+      } catch {
+        throw new Error(
+          `FetchproxyServer.request: absolute path is not a valid URL: ${JSON.stringify(path)}`,
+        );
+      }
+    } else {
+      host = opts.subdomain ? `${opts.subdomain}.${baseDomain}` : baseDomain;
+    }
+    const url = isAbsolute ? path : `https://${host}${path}`;
     // Guard: refuse to send any request whose resolved URL leaves the
     // declared domain set. The extension would refuse it anyway; this
     // gives the MCP author a clear error at the call site instead of a
@@ -1301,6 +1368,8 @@ export class FetchproxyServer {
             retryAttempted: true,
             op: 'capture_request_header',
             url: resolved.urlPattern,
+            role: this.role,
+            port: this.opts.port,
           });
         }
       }
@@ -1312,6 +1381,8 @@ export class FetchproxyServer {
         retryAttempted: false,
         op: 'capture_request_header',
         url: resolved.urlPattern,
+        role: this.role,
+        port: this.opts.port,
       });
     }
   }
