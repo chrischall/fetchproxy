@@ -108,6 +108,15 @@ export interface FetchResult {
   status: number;
   url: string;
   body: string;
+  /**
+   * 0.8.0+: true when the server's lazy-revive retry path actually
+   * fired for this call (a `content_script_unreachable` first attempt
+   * followed by a successful retry). False on the no-retry path.
+   * Always populated by the server in 0.8.0+; declared optional in the
+   * type so downstream test code that constructs envelope literals
+   * directly stays back-compat without code changes.
+   */
+  retryAttempted?: boolean;
 }
 
 export interface FetchResultError {
@@ -120,6 +129,15 @@ export interface FetchResultError {
    * the source of truth — `kind` is additive guidance.
    */
   kind: FetchErrorKind;
+  /**
+   * 0.8.0+: true when the server's lazy-revive retry path actually
+   * fired AND the retry also failed. False otherwise (retry was
+   * disabled, or this isn't a `content_script_unreachable` failure
+   * so retry didn't apply). Always populated by the server in 0.8.0+;
+   * declared optional in the type so downstream test code that
+   * constructs envelope literals directly stays back-compat.
+   */
+  retryAttempted?: boolean;
 }
 
 /** Public response shape returned by the convenience helpers. */
@@ -372,11 +390,6 @@ export class FetchproxyServer {
   private hostHandle: HostHandle | null = null;
   private peerHandle: PeerHandle | null = null;
   private nextRequestId = 1;
-  // 0.8.0+: set by `fetch()` as its last action before return so
-  // `request()` can read accurate retry context for the typed-error
-  // throw without re-deriving from the option value. See `fetch()`
-  // for the race-safety argument.
-  private _lastRetryAttempted = false;
   private pending = new Map<number, (r: FetchResult | FetchResultError) => void>();
   // Separate pending map for read_cookies so the response shape (cookies
   // string vs status/body) doesn't have to share a union type with fetch.
@@ -661,18 +674,19 @@ export class FetchproxyServer {
     const pendingCode = this.currentPendingPairCode();
     if (pendingCode !== null) {
       const error = this.pairingErrorMessage(pendingCode);
-      return { ok: false, error, kind: classifyFetchError(error) };
+      return {
+        ok: false,
+        error,
+        kind: classifyFetchError(error),
+        retryAttempted: false,
+      };
     }
     const first = await this._fetchOnceWithTimeout(init);
     // 0.8.0+: lazy-revive on SW eviction. One-shot retry after the
     // configured delay; the SW typically wakes on the next inbound
-    // WS frame within ~1-2s. Stash whether we actually retried so
-    // `request()` can thread an accurate `retryAttempted` into
-    // `_typedErrorFor` without re-deriving from the option value.
-    // Safe across overlapping calls: the field is set as the last
-    // action before return, and `request()` reads it on the line
-    // immediately after `await this.fetch(...)` — no microtask yields
-    // between, so a concurrent call can't overwrite the slot in flight.
+    // WS frame within ~1-2s. The retry context (`retryAttempted`)
+    // rides on the result envelope itself — per-call local state, no
+    // shared instance slot, race-safe across concurrent calls.
     const reviveMs = this.opts.bridgeReviveDelayMs;
     if (
       !first.ok &&
@@ -682,11 +696,9 @@ export class FetchproxyServer {
     ) {
       await new Promise((r) => setTimeout(r, reviveMs));
       const second = await this._fetchOnceWithTimeout(init);
-      this._lastRetryAttempted = true;
-      return second;
+      return { ...second, retryAttempted: true };
     }
-    this._lastRetryAttempted = false;
-    return first;
+    return { ...first, retryAttempted: false };
   }
 
   /**
@@ -719,7 +731,11 @@ export class FetchproxyServer {
             // become an unhandled promise that crashes the host.
             this.pending.delete(id);
             const error = `fetchproxy: ${init.url} did not respond within ${timeoutMs}ms`;
-            resolve({ ok: false, error, kind: 'timeout' });
+            // retryAttempted is overwritten by the caller (fetch())
+            // when it wraps with `...result, retryAttempted: x`. We
+            // emit `false` here as the inner default since the timeout
+            // never triggers the SW-eviction retry path.
+            resolve({ ok: false, error, kind: 'timeout', retryAttempted: false });
           }, timeoutMs);
         }),
       ]);
@@ -802,17 +818,15 @@ export class FetchproxyServer {
     };
     const result = await this.fetch(init);
     if (!result.ok) {
-      // _lastRetryAttempted was set by fetch() as its final action
-      // before return; we read it on the line immediately after the
-      // await — no microtask yields between, so concurrent calls can't
-      // overwrite the slot in flight. Test subclasses that override
-      // fetch() see the default `false`, which is correct since they
-      // don't run the retry logic.
+      // retryAttempted rides on the envelope — per-call local context,
+      // so it's race-safe across concurrent calls. Test subclasses
+      // overriding fetch() may not set the field; default to `false`
+      // (the field is declared optional for that reason).
       throw this._typedErrorFor(
         result,
         init.url,
         'fetch',
-        this._lastRetryAttempted,
+        result.retryAttempted ?? false,
       );
     }
     const response: HttpResponse = {
@@ -1327,13 +1341,29 @@ export class FetchproxyServer {
         // non-fetch op echo so a wire-misroute can't smuggle a storage /
         // capture payload into a fetch awaiter.
         if (inner.op === undefined || inner.op === 'fetch') {
-          fetchCb({ ok: true, status: inner.status, url: inner.url, body: inner.body });
+          fetchCb({
+            ok: true,
+            status: inner.status,
+            url: inner.url,
+            body: inner.body,
+            retryAttempted: false,
+          });
         } else {
           const error = `unexpected ${inner.op} response on fetch awaiter`;
-          fetchCb({ ok: false, error, kind: classifyFetchError(error) });
+          fetchCb({
+            ok: false,
+            error,
+            kind: classifyFetchError(error),
+            retryAttempted: false,
+          });
         }
       } else {
-        fetchCb({ ok: false, error: inner.error, kind: classifyFetchError(inner.error) });
+        fetchCb({
+          ok: false,
+          error: inner.error,
+          kind: classifyFetchError(inner.error),
+          retryAttempted: false,
+        });
       }
       return;
     }
@@ -1425,7 +1455,12 @@ export class FetchproxyServer {
   private rejectAllPending(reason: string = 'extension disconnected'): void {
     const err = new FetchproxyProtocolError(reason);
     for (const cb of this.pending.values()) {
-      cb({ ok: false, error: err.message, kind: classifyFetchError(err.message) });
+      cb({
+        ok: false,
+        error: err.message,
+        kind: classifyFetchError(err.message),
+        retryAttempted: false,
+      });
     }
     this.pending.clear();
     for (const cb of this.pendingReadCookies.values()) {
