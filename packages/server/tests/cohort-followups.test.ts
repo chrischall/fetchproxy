@@ -29,16 +29,26 @@ const SW_ERROR =
 // in healthcheck output.
 describe('typed errors carry role/port/elapsedMs from the server', () => {
   it('FetchproxyTimeoutError exposes role + port + elapsedMs from the throw site', async () => {
-    const s = new FetchproxyServer({ ...baseOpts, fetchTimeoutMs: 5 });
+    // Use a 50ms timeout (not 5ms) so the wall-clock elapsedMs has
+    // room above Node's setTimeout/Date.now jitter on fast CI runners
+    // — saw a 4ms reading on a 5ms timer in CI previously.
+    const TIMEOUT = 50;
+    const s = new FetchproxyServer({ ...baseOpts, fetchTimeoutMs: TIMEOUT });
     installFakeHost(s);
     const before = Date.now();
     const err = await s.get('/x').catch((e) => e);
+    const totalElapsed = Date.now() - before;
     expect(err).toBeInstanceOf(FetchproxyTimeoutError);
     expect((err as FetchproxyTimeoutError).role).toBe('host');
     expect((err as FetchproxyTimeoutError).port).toBe(37149);
-    expect((err as FetchproxyTimeoutError).elapsedMs).toBeGreaterThanOrEqual(5);
-    expect((err as FetchproxyTimeoutError).elapsedMs).toBeLessThan(
-      Date.now() - before + 200,
+    // The threaded elapsedMs is the in-server measurement; it can be
+    // at most a few ms under TIMEOUT due to timer granularity. The
+    // overall test wall clock is the upper bound.
+    expect((err as FetchproxyTimeoutError).elapsedMs).toBeGreaterThanOrEqual(
+      TIMEOUT - 5,
+    );
+    expect((err as FetchproxyTimeoutError).elapsedMs).toBeLessThanOrEqual(
+      totalElapsed,
     );
   });
 
