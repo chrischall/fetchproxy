@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.7.1](https://github.com/chrischall/fetchproxy/compare/v0.7.0...v0.7.1) (2026-05-26)
+
+
+### Bug Fixes
+
+* **ci,extension:** auto-review warn arms merge + open tabs for all domains ([#56](https://github.com/chrischall/fetchproxy/issues/56)) ([0c6d65b](https://github.com/chrischall/fetchproxy/commit/0c6d65b35b70ef5b7c37d9ead7da5ca82047b31c))
+* **server:** model-directive pair-code error message ([#54](https://github.com/chrischall/fetchproxy/issues/54)) ([3b199b9](https://github.com/chrischall/fetchproxy/commit/3b199b9b03f9e147c8971f2ff86a7e41c8e84886))
+
 ## [0.7.0](https://github.com/chrischall/fetchproxy/compare/v0.6.0...v0.7.0) (2026-05-26)
 
 
