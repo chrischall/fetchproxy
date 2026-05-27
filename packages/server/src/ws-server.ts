@@ -81,6 +81,26 @@ export interface FetchproxyServerOpts {
    * MCPs that don't need to print can omit it.
    */
   onPairCode?: (code: string) => void;
+  /**
+   * 0.8.0+: per-request timeout (ms) for `fetch()`. The bridge has
+   * no native timeout, so without this a frozen tab / dropped
+   * extension can hang the call indefinitely. When the timer fires,
+   * `fetch()` returns `{ ok: false, kind: 'timeout', error: '…' }`
+   * (back-compat result shape); convenience methods (`get`/`post`/
+   * `request` etc.) throw `FetchproxyTimeoutError`. Default unset
+   * (no timer — back-compat). Set to 0 to explicitly disable.
+   */
+  fetchTimeoutMs?: number;
+  /**
+   * 0.8.0+: delay (ms) before the one-shot retry when `fetch()` or
+   * `captureRequestHeader()` fail with `content_script_unreachable`.
+   * Chrome MV3 evicts extension service workers after ~30s idle;
+   * this gives Chrome a moment to wake the SW on the next inbound
+   * frame. Default 0 (disabled — back-compat). Set to ~2000 to opt
+   * in. On retry-exhaustion, convenience methods + capture throw
+   * `FetchproxyBridgeDownError` with `retryAttempted: true`.
+   */
+  bridgeReviveDelayMs?: number;
 }
 
 export interface FetchResult {
@@ -182,6 +202,73 @@ export class FetchproxyHttpError extends Error {
   }
 }
 
+/**
+ * 0.8.0+: thrown when the extension's MV3 service worker is
+ * unreachable. Subclass of `FetchproxyProtocolError` so callers
+ * already catching the parent still match.
+ *
+ * `retryAttempted: true` means the server's one-shot lazy-revive
+ * retry (`bridgeReviveDelayMs`) already burned and the SW is still
+ * down. `false` means the retry was disabled (`bridgeReviveDelayMs`
+ * unset / 0), so the user could enable it for next time.
+ */
+export class FetchproxyBridgeDownError extends FetchproxyProtocolError {
+  readonly originalError: string;
+  readonly retryAttempted: boolean;
+  readonly op: 'fetch' | 'capture_request_header';
+  readonly url?: string;
+  readonly hint: string;
+
+  constructor(args: {
+    originalError: string;
+    retryAttempted?: boolean;
+    op?: 'fetch' | 'capture_request_header';
+    url?: string;
+  }) {
+    const retryAttempted = args.retryAttempted ?? false;
+    const op = args.op ?? 'fetch';
+    const retryClause = retryAttempted
+      ? `Server already burned a one-shot lazy-revive retry; SW is still down. `
+      : `Server lazy-revive retry was disabled (bridgeReviveDelayMs unset/0). `;
+    const hint =
+      `the fetchproxy extension's service worker is not responding ` +
+      `("${args.originalError}"). Chrome evicts extension service ` +
+      `workers after ~30s idle by default. ${retryClause}` +
+      `Wake it by clicking the fetchproxy extension toolbar icon, then ` +
+      `retry. If it keeps happening, reload the extension from ` +
+      `chrome://extensions.`;
+    super(
+      `fetchproxy bridge down during ${op}${args.url ? ` (${args.url})` : ''}. ${hint}`,
+    );
+    this.name = 'FetchproxyBridgeDownError';
+    this.originalError = args.originalError;
+    this.retryAttempted = retryAttempted;
+    this.op = op;
+    if (args.url !== undefined) this.url = args.url;
+    this.hint = hint;
+  }
+}
+
+/**
+ * 0.8.0+: thrown by convenience methods when `fetchTimeoutMs` fires.
+ * The lower-level `fetch()` returns `{ ok: false, kind: 'timeout' }`
+ * instead (back-compat with its result-envelope shape). Subclass of
+ * `FetchproxyProtocolError` so existing callers still match.
+ */
+export class FetchproxyTimeoutError extends FetchproxyProtocolError {
+  readonly url: string;
+  readonly timeoutMs: number;
+
+  constructor(args: { url: string; timeoutMs: number }) {
+    super(
+      `fetchproxy: ${args.url} did not respond within ${args.timeoutMs}ms`,
+    );
+    this.name = 'FetchproxyTimeoutError';
+    this.url = args.url;
+    this.timeoutMs = args.timeoutMs;
+  }
+}
+
 /** Single DNS label or dot-separated labels (no scheme, no path). */
 const SUBDOMAIN_LABEL_RE = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$/i;
 
@@ -236,6 +323,8 @@ interface ResolvedOpts {
   indexedDbScopes: IndexedDbScopeDecl[];
   localStoragePointers: StoragePointerDecl[];
   sessionStoragePointers: StoragePointerDecl[];
+  fetchTimeoutMs?: number;
+  bridgeReviveDelayMs?: number;
   identityDir?: string;
   onPairCode?: (code: string) => void;
 }
@@ -375,6 +464,8 @@ export class FetchproxyServer {
         key: d.key,
         jsonPointer: d.jsonPointer,
       })),
+      fetchTimeoutMs: opts.fetchTimeoutMs,
+      bridgeReviveDelayMs: opts.bridgeReviveDelayMs,
       identityDir: opts.identityDir,
       onPairCode: opts.onPairCode,
     };
@@ -567,6 +658,31 @@ export class FetchproxyServer {
       const error = this.pairingErrorMessage(pendingCode);
       return { ok: false, error, kind: classifyFetchError(error) };
     }
+    const first = await this._fetchOnceWithTimeout(init);
+    // 0.8.0+: lazy-revive on SW eviction. One-shot retry after the
+    // configured delay; the SW typically wakes on the next inbound
+    // WS frame within ~1-2s.
+    const reviveMs = this.opts.bridgeReviveDelayMs;
+    if (
+      !first.ok &&
+      first.kind === 'content_script_unreachable' &&
+      reviveMs !== undefined &&
+      reviveMs > 0
+    ) {
+      await new Promise((r) => setTimeout(r, reviveMs));
+      return this._fetchOnceWithTimeout(init);
+    }
+    return first;
+  }
+
+  /**
+   * Single bridge round-trip, wrapped by `fetchTimeoutMs` when set.
+   * On timeout returns the `{ok:false, kind:'timeout'}` envelope —
+   * the throwing surface is the convenience methods.
+   */
+  private async _fetchOnceWithTimeout(
+    init: FetchInit,
+  ): Promise<FetchResult | FetchResultError> {
     const id = this.nextRequestId++;
     const inner: InnerFrame = { type: 'request', id, op: 'fetch', init };
     const pending = new Promise<FetchResult | FetchResultError>((resolve) => {
@@ -577,7 +693,54 @@ export class FetchproxyServer {
     } else if (this.peerHandle) {
       await this.peerHandle.sendInner(inner);
     }
-    return pending;
+    const timeoutMs = this.opts.fetchTimeoutMs;
+    if (timeoutMs === undefined || timeoutMs <= 0) return pending;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([
+        pending,
+        new Promise<FetchResultError>((resolve) => {
+          timer = setTimeout(() => {
+            // Drop the pending resolver so a late bridge response doesn't
+            // become an unhandled promise that crashes the host.
+            this.pending.delete(id);
+            const error = `fetchproxy: ${init.url} did not respond within ${timeoutMs}ms`;
+            resolve({ ok: false, error, kind: 'timeout' });
+          }, timeoutMs);
+        }),
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+
+  /**
+   * Map an `ok:false` fetch result to its typed throwable. Centralizes
+   * the kind-to-error-class switch so `request()` and (via the same
+   * logic re-implemented inline) `captureRequestHeader()` agree on what
+   * to throw.
+   */
+  private _typedErrorFor(
+    result: FetchResultError,
+    url: string,
+    op: 'fetch' | 'capture_request_header',
+  ): Error {
+    if (result.kind === 'timeout') {
+      return new FetchproxyTimeoutError({
+        url,
+        timeoutMs: this.opts.fetchTimeoutMs ?? 0,
+      });
+    }
+    if (result.kind === 'content_script_unreachable') {
+      return new FetchproxyBridgeDownError({
+        originalError: result.error,
+        retryAttempted:
+          (this.opts.bridgeReviveDelayMs ?? 0) > 0,
+        op,
+        url,
+      });
+    }
+    return new FetchproxyProtocolError(result.error);
   }
 
   /**
@@ -625,7 +788,7 @@ export class FetchproxyServer {
     };
     const result = await this.fetch(init);
     if (!result.ok) {
-      throw new FetchproxyProtocolError(result.error);
+      throw this._typedErrorFor(result, init.url, 'fetch');
     }
     const response: HttpResponse = {
       status: result.status,
@@ -941,6 +1104,44 @@ export class FetchproxyServer {
         `FetchproxyServer.captureRequestHeader: (urlPattern=${JSON.stringify(opts.urlPattern)}, headerName=${JSON.stringify(opts.headerName)}) not declared in captureHeaders`,
       );
     }
+    try {
+      return await this._captureRequestHeaderOnce(opts);
+    } catch (err) {
+      const swDown =
+        err instanceof FetchproxyProtocolError &&
+        classifyFetchError(err.message) === 'content_script_unreachable';
+      if (!swDown) throw err;
+      const reviveMs = this.opts.bridgeReviveDelayMs ?? 0;
+      // 0.8.0+: lazy-revive — give Chrome a moment to wake the SW.
+      if (reviveMs > 0) {
+        await new Promise((r) => setTimeout(r, reviveMs));
+        try {
+          return await this._captureRequestHeaderOnce(opts);
+        } catch (retryErr) {
+          const stillDown =
+            retryErr instanceof FetchproxyProtocolError &&
+            classifyFetchError(retryErr.message) === 'content_script_unreachable';
+          if (!stillDown) throw retryErr;
+          throw new FetchproxyBridgeDownError({
+            originalError: (retryErr as Error).message,
+            retryAttempted: true,
+            op: 'capture_request_header',
+          });
+        }
+      }
+      throw new FetchproxyBridgeDownError({
+        originalError: (err as Error).message,
+        retryAttempted: false,
+        op: 'capture_request_header',
+      });
+    }
+  }
+
+  private async _captureRequestHeaderOnce(opts: {
+    urlPattern: string;
+    headerName: string;
+    timeoutMs?: number;
+  }): Promise<string> {
     const id = this.nextRequestId++;
     const inner: InnerFrame = {
       type: 'request',
