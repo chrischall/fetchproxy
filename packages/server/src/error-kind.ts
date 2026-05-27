@@ -41,6 +41,10 @@ export type FetchErrorKind =
    * is moving too much data through the per-request frame; consider
    * a different endpoint or paginating. */
   | 'body_too_large'
+  /** 0.8.0+: server-side `fetchTimeoutMs` fired before the bridge
+   * responded. Not produced by `classifyFetchError` — emitted directly
+   * by `FetchproxyServer.fetch()` when its own timer wins the race. */
+  | 'timeout'
   /** Catch-all for strings this classifier doesn't recognise yet.
    * Forward-compat: a future extension version emitting a new error
    * template lands here until the classifier is updated. */
