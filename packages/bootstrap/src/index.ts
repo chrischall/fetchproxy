@@ -100,6 +100,19 @@ export interface BootstrapOpts {
    */
   onWaiting?: (hint: string) => void;
   /**
+   * 0.8.0+: forwarded as-is to `FetchproxyServer`. Unset → server
+   * default (30000ms in 0.8.0). Set to 0 to disable. Useful for
+   * one-shot consumers that want a shorter ceiling than the default.
+   */
+  fetchTimeoutMs?: number;
+  /**
+   * 0.8.0+: forwarded as-is to `FetchproxyServer`. Unset → server
+   * default (2000ms in 0.8.0). Set to 0 to disable. Useful when a
+   * Pattern-A startup capture should fail fast rather than tolerate
+   * SW eviction (e.g. CI smoke tests).
+   */
+  bridgeReviveDelayMs?: number;
+  /**
    * For tests only: inject a fake `FetchproxyServer` factory. The
    * default uses the real `FetchproxyServer` constructor + `.listen()`.
    * The opts object is the same shape `FetchproxyServer` accepts.
@@ -244,6 +257,14 @@ export async function bootstrap(opts: BootstrapOpts): Promise<Session> {
       jsonPointer: p.jsonPointer,
     })),
     onPairCode: opts.onPairCode,
+    // 0.8.0+ pass-through. Only forwarded when the caller set them;
+    // unset → server defaults apply (30000 / 2000 in 0.8.0).
+    ...(opts.fetchTimeoutMs !== undefined
+      ? { fetchTimeoutMs: opts.fetchTimeoutMs }
+      : {}),
+    ...(opts.bridgeReviveDelayMs !== undefined
+      ? { bridgeReviveDelayMs: opts.bridgeReviveDelayMs }
+      : {}),
   });
   // 0.4.1: pre-build the storage-domain selector once. Used by every
   // per-tab read (cookies / localStorage / sessionStorage / indexedDb).

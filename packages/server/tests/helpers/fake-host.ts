@@ -25,6 +25,11 @@ export function installFakeHost(server: FetchproxyServer): {
     pendingPairCode: (): string | null => null,
   };
   (server as unknown as { hostHandle: typeof fakeHostHandle }).hostHandle = fakeHostHandle;
+  // Mimic listen() resolving by setting the public `role` field too.
+  // The 0.8.0 typed errors (FetchproxyBridgeDownError / FetchproxyTimeoutError)
+  // capture role at throw time; the fake host wouldn't be useful without
+  // simulating the host role.
+  (server as unknown as { role: 'host' | 'peer' | null }).role = 'host';
   return {
     lastInner: () => lastInner,
     reply: (resp) => {
