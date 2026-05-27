@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.8.0](https://github.com/chrischall/fetchproxy/compare/v0.7.1...v0.8.0) (2026-05-27)
+
+
+### Features
+
+* **server,bootstrap:** 0.8.0 cohort follow-ups — typed-error diagnostics, bridgeHealth expansion, tabUrl auto-derive, bootstrap pass-through, classifyBridgeError ([#63](https://github.com/chrischall/fetchproxy/issues/63)) ([415f84d](https://github.com/chrischall/fetchproxy/commit/415f84dad4e76957c484e38152e5020cf7a3c680))
+* **server:** 0.8.0 polish — on-by-default + bridgeHealth() + capture-by-declaration ([#61](https://github.com/chrischall/fetchproxy/issues/61)) ([62b8a0e](https://github.com/chrischall/fetchproxy/commit/62b8a0e5dcd48ae280011929cdd4cc3de1b00e60))
+* **server:** fetchTimeoutMs + bridgeReviveDelayMs + typed errors ([#58](https://github.com/chrischall/fetchproxy/issues/58)) ([ba307d7](https://github.com/chrischall/fetchproxy/commit/ba307d7b03f9f77566bd22987e49b5116542ef89))
+
+
+### Bug Fixes
+
+* **server:** address PR [#58](https://github.com/chrischall/fetchproxy/issues/58) review nits — explicit retryAttempted + url on capture errors ([#60](https://github.com/chrischall/fetchproxy/issues/60)) ([d4e47da](https://github.com/chrischall/fetchproxy/commit/d4e47da05e86600ccddafc2394137e6b752730e5))
+* **server:** thread retryAttempted on the result envelope (PR [#60](https://github.com/chrischall/fetchproxy/issues/60) race) ([#62](https://github.com/chrischall/fetchproxy/issues/62)) ([13bcb0d](https://github.com/chrischall/fetchproxy/commit/13bcb0d76fe96ca494e052dd0b221d78c892311f))
+* **tests:** de-flake elapsedMs assertion on fast CI runners ([#64](https://github.com/chrischall/fetchproxy/issues/64)) ([fc746af](https://github.com/chrischall/fetchproxy/commit/fc746af56034748c7eab742091bbb4450aae9704))
+
 ## [0.7.1](https://github.com/chrischall/fetchproxy/compare/v0.7.0...v0.7.1) (2026-05-26)
 
 
