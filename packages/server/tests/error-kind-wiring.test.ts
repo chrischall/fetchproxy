@@ -10,7 +10,10 @@ const baseOpts = {
 
 describe('FetchproxyServer.fetch — ok:false kind wiring', () => {
   it('populates `kind: \'content_script_unreachable\'` for the Chrome SW-eviction error', async () => {
-    const s = new FetchproxyServer(baseOpts);
+    // bridgeReviveDelayMs:0 — 0.8.0 default would retry once and hang
+    // this test waiting for the second reply. We're testing the kind
+    // wiring on the original result envelope, not the retry behavior.
+    const s = new FetchproxyServer({ ...baseOpts, bridgeReviveDelayMs: 0 });
     const harness = installFakeHost(s);
     const pending = s.fetch({
       url: 'https://example.com/x',

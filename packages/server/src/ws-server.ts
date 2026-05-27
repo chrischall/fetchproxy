@@ -84,11 +84,13 @@ export interface FetchproxyServerOpts {
   /**
    * 0.8.0+: per-request timeout (ms) for `fetch()`. The bridge has
    * no native timeout, so without this a frozen tab / dropped
-   * extension can hang the call indefinitely. When the timer fires,
+   * extension would hang the call indefinitely. When the timer fires,
    * `fetch()` returns `{ ok: false, kind: 'timeout', error: '…' }`
    * (back-compat result shape); convenience methods (`get`/`post`/
-   * `request` etc.) throw `FetchproxyTimeoutError`. Default unset
-   * (no timer — back-compat). Set to 0 to explicitly disable.
+   * `request` etc.) throw `FetchproxyTimeoutError`. **Default 30000**
+   * — pre-0.8.0 callers got no timer; the typical realty/dining MCPs
+   * were already wrapping their own at this same value. Pass `0` to
+   * opt back into the legacy hang-forever behavior.
    */
   fetchTimeoutMs?: number;
   /**
@@ -96,9 +98,12 @@ export interface FetchproxyServerOpts {
    * `captureRequestHeader()` fail with `content_script_unreachable`.
    * Chrome MV3 evicts extension service workers after ~30s idle;
    * this gives Chrome a moment to wake the SW on the next inbound
-   * frame. Default 0 (disabled — back-compat). Set to ~2000 to opt
-   * in. On retry-exhaustion, convenience methods + capture throw
-   * `FetchproxyBridgeDownError` with `retryAttempted: true`.
+   * frame. **Default 2000** — same value the zillow/onehome cohort
+   * had been hand-rolling in their transport adapters. On retry-
+   * exhaustion, convenience methods + capture throw
+   * `FetchproxyBridgeDownError` with `retryAttempted: true`. Pass `0`
+   * to disable the retry entirely (errors surface on the first
+   * attempt with `retryAttempted: false`).
    */
   bridgeReviveDelayMs?: number;
 }
@@ -287,6 +292,30 @@ export class FetchproxyTimeoutError extends FetchproxyProtocolError {
   }
 }
 
+/**
+ * 0.8.0+: snapshot of the bridge's process-wide freshness counters,
+ * returned by `FetchproxyServer.bridgeHealth()`. Downstream MCPs use
+ * this to power their `healthcheck` tools without re-tracking the
+ * same counters in their transport adapters.
+ */
+export interface BridgeHealth {
+  role: 'host' | 'peer' | null;
+  port: number;
+  lastSuccessAt: number | null;
+  lastFailureAt: number | null;
+  lastFailureReason: string | null;
+  consecutiveFailures: number;
+  /**
+   * 0.8.0+ (#23 ask 4): wall-clock timestamp of the most recent
+   * inner frame received from the extension (regardless of whether
+   * it was a success or error for the calling MCP). Distinct from
+   * `lastSuccessAt`/`lastFailureAt`, which track *user-visible*
+   * fetch outcomes — `lastExtensionMessageAt` is "is the extension
+   * still answering?" liveness. Null until the first frame arrives.
+   */
+  lastExtensionMessageAt: number | null;
+}
+
 /** Single DNS label or dot-separated labels (no scheme, no path). */
 const SUBDOMAIN_LABEL_RE = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$/i;
 
@@ -390,6 +419,18 @@ export class FetchproxyServer {
   private hostHandle: HostHandle | null = null;
   private peerHandle: PeerHandle | null = null;
   private nextRequestId = 1;
+  // 0.8.0+: process-wide freshness counters surfaced via bridgeHealth().
+  // Replaces the local copies every downstream MCP was rolling on top
+  // of its own transport adapter — see realty-mcp cohort drift notes.
+  // Updated by recordSuccess / recordFailure from fetch + capture paths.
+  // `lastExtensionMessageAt` (#23 ask 4) is updated whenever any inner
+  // frame from the extension arrives — gives extension-side liveness
+  // distinct from per-call success/failure.
+  private lastSuccessAt: number | null = null;
+  private lastFailureAt: number | null = null;
+  private lastFailureReason: string | null = null;
+  private consecutiveFailures = 0;
+  private lastExtensionMessageAt: number | null = null;
   private pending = new Map<number, (r: FetchResult | FetchResultError) => void>();
   // Separate pending map for read_cookies so the response shape (cookies
   // string vs status/body) doesn't have to share a union type with fetch.
@@ -482,8 +523,12 @@ export class FetchproxyServer {
         key: d.key,
         jsonPointer: d.jsonPointer,
       })),
-      fetchTimeoutMs: opts.fetchTimeoutMs,
-      bridgeReviveDelayMs: opts.bridgeReviveDelayMs,
+      // 0.8.0+: timer + lazy-revive default to ON. Every realty MCP
+      // adapter was about to set these to the same numbers anyway; the
+      // back-door is `0` (explicit opt-out) if a caller genuinely wants
+      // the legacy hang-forever / fail-once-on-SW-eviction behavior.
+      fetchTimeoutMs: opts.fetchTimeoutMs ?? 30_000,
+      bridgeReviveDelayMs: opts.bridgeReviveDelayMs ?? 2_000,
       identityDir: opts.identityDir,
       onPairCode: opts.onPairCode,
     };
@@ -688,6 +733,7 @@ export class FetchproxyServer {
     // rides on the result envelope itself — per-call local state, no
     // shared instance slot, race-safe across concurrent calls.
     const reviveMs = this.opts.bridgeReviveDelayMs;
+    let final = first;
     if (
       !first.ok &&
       first.kind === 'content_script_unreachable' &&
@@ -696,9 +742,49 @@ export class FetchproxyServer {
     ) {
       await new Promise((r) => setTimeout(r, reviveMs));
       const second = await this._fetchOnceWithTimeout(init);
+      // Record the user-visible outcome (so one tool call only ticks
+      // consecutiveFailures by 1 regardless of the internal retry).
+      if (second.ok) this.recordSuccess();
+      else this.recordFailure(`${second.kind ?? 'other'}: ${second.error}`);
       return { ...second, retryAttempted: true };
     }
+    if (first.ok) this.recordSuccess();
+    else this.recordFailure(`${first.kind ?? 'other'}: ${first.error}`);
     return { ...first, retryAttempted: false };
+  }
+
+  /**
+   * 0.8.0+: snapshot of the bridge's process-wide freshness counters,
+   * suitable for surfacing through a downstream MCP's healthcheck tool.
+   * Counters reset on a success (consecutiveFailures), accumulate
+   * across the process lifetime otherwise. Replaces the per-MCP
+   * duplication the realty cohort had been rolling in their adapters.
+   * `lastExtensionMessageAt` is updated whenever ANY inner frame
+   * arrives from the extension — gives extension-side liveness
+   * distinct from server-side success/failure of the user-visible
+   * call (addresses #23 ask 4).
+   */
+  bridgeHealth(): BridgeHealth {
+    return {
+      role: this.role,
+      port: this.opts.port,
+      lastSuccessAt: this.lastSuccessAt,
+      lastFailureAt: this.lastFailureAt,
+      lastFailureReason: this.lastFailureReason,
+      consecutiveFailures: this.consecutiveFailures,
+      lastExtensionMessageAt: this.lastExtensionMessageAt,
+    };
+  }
+
+  private recordSuccess(): void {
+    this.lastSuccessAt = Date.now();
+    this.consecutiveFailures = 0;
+  }
+
+  private recordFailure(reason: string): void {
+    this.lastFailureAt = Date.now();
+    this.lastFailureReason = reason;
+    this.consecutiveFailures += 1;
   }
 
   /**
@@ -1122,9 +1208,9 @@ export class FetchproxyServer {
    * `(urlPattern, headerName)` must exactly match a declared entry in
    * `FetchproxyServerOpts.captureHeaders`.
    */
-  async captureRequestHeader(opts: {
-    urlPattern: string;
-    headerName: string;
+  async captureRequestHeader(opts?: {
+    urlPattern?: string;
+    headerName?: string;
     timeoutMs?: number;
   }): Promise<string> {
     if (!this.opts.capabilities.includes('capture_request_header')) {
@@ -1135,45 +1221,97 @@ export class FetchproxyServer {
     // 0.5.3+: lazy connect — see the doc comment on `ensureConnected`.
     await this.ensureConnected();
     this.throwIfPendingPair();
-    const declared = this.opts.captureHeaders.find(
-      (d) => d.urlPattern === opts.urlPattern && d.headerName === opts.headerName,
-    );
-    if (!declared) {
+    // 0.8.0+: resolve to the declared entry. If the caller supplied
+    // both urlPattern + headerName, require an exact declared match
+    // (the historical behavior). If neither is supplied, default to
+    // the sole declared entry; throw if 0 or >1 are declared so the
+    // ambiguity surfaces at the call site, not silently as the wrong
+    // capture. Supplying only one of the pair is rejected — it would
+    // otherwise silently pair against a different declared entry.
+    const decls = this.opts.captureHeaders;
+    let resolved: CaptureHeaderDecl;
+    if (opts?.urlPattern !== undefined && opts?.headerName !== undefined) {
+      const found = decls.find(
+        (d) => d.urlPattern === opts.urlPattern && d.headerName === opts.headerName,
+      );
+      if (!found) {
+        throw new Error(
+          `FetchproxyServer.captureRequestHeader: (urlPattern=${JSON.stringify(opts.urlPattern)}, headerName=${JSON.stringify(opts.headerName)}) not declared in captureHeaders`,
+        );
+      }
+      resolved = found;
+    } else if (opts?.urlPattern === undefined && opts?.headerName === undefined) {
+      if (decls.length === 0) {
+        throw new Error(
+          'FetchproxyServer.captureRequestHeader: no captureHeaders declared on this server — declare at least one entry in FetchproxyServerOpts.captureHeaders, or pass {urlPattern, headerName} explicitly',
+        );
+      }
+      if (decls.length > 1) {
+        const list = decls
+          .map((d) => `${JSON.stringify(d.urlPattern)}/${JSON.stringify(d.headerName)}`)
+          .join(', ');
+        throw new Error(
+          `FetchproxyServer.captureRequestHeader: multiple captureHeaders declared (${decls.length}: ${list}); pass {urlPattern, headerName} to disambiguate`,
+        );
+      }
+      resolved = decls[0]!;
+    } else {
       throw new Error(
-        `FetchproxyServer.captureRequestHeader: (urlPattern=${JSON.stringify(opts.urlPattern)}, headerName=${JSON.stringify(opts.headerName)}) not declared in captureHeaders`,
+        'FetchproxyServer.captureRequestHeader: pass both urlPattern AND headerName, or neither (which defaults to the single declared entry)',
       );
     }
+    const callOpts = { ...resolved, ...(opts?.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}) };
     try {
-      return await this._captureRequestHeaderOnce(opts);
+      const result = await this._captureRequestHeaderOnce(callOpts);
+      this.recordSuccess();
+      return result;
     } catch (err) {
       const swDown =
         err instanceof FetchproxyProtocolError &&
         classifyFetchError(err.message) === 'content_script_unreachable';
-      if (!swDown) throw err;
+      if (!swDown) {
+        this.recordFailure(
+          `capture_request_header: ${(err as Error).message ?? String(err)}`,
+        );
+        throw err;
+      }
       const reviveMs = this.opts.bridgeReviveDelayMs ?? 0;
       // 0.8.0+: lazy-revive — give Chrome a moment to wake the SW.
       if (reviveMs > 0) {
         await new Promise((r) => setTimeout(r, reviveMs));
         try {
-          return await this._captureRequestHeaderOnce(opts);
+          const result = await this._captureRequestHeaderOnce(callOpts);
+          this.recordSuccess();
+          return result;
         } catch (retryErr) {
           const stillDown =
             retryErr instanceof FetchproxyProtocolError &&
             classifyFetchError(retryErr.message) === 'content_script_unreachable';
-          if (!stillDown) throw retryErr;
+          if (!stillDown) {
+            this.recordFailure(
+              `capture_request_header: ${(retryErr as Error).message ?? String(retryErr)}`,
+            );
+            throw retryErr;
+          }
+          this.recordFailure(
+            `capture_request_header bridge-down: ${(retryErr as Error).message}`,
+          );
           throw new FetchproxyBridgeDownError({
             originalError: (retryErr as Error).message,
             retryAttempted: true,
             op: 'capture_request_header',
-            url: opts.urlPattern,
+            url: resolved.urlPattern,
           });
         }
       }
+      this.recordFailure(
+        `capture_request_header bridge-down: ${(err as Error).message}`,
+      );
       throw new FetchproxyBridgeDownError({
         originalError: (err as Error).message,
         retryAttempted: false,
         op: 'capture_request_header',
-        url: opts.urlPattern,
+        url: resolved.urlPattern,
       });
     }
   }
@@ -1325,6 +1463,9 @@ export class FetchproxyServer {
 
   private onInner(inner: InnerFrame): void {
     if (inner.type !== 'response') return;
+    // 0.8.0+ (#23 ask 4): every response frame counts as extension
+    // liveness, regardless of which awaiter it routes to.
+    this.lastExtensionMessageAt = Date.now();
     // Inner request ids are unique across both pending maps. Look up the
     // right one by the id rather than by op: an error response (`ok: false`)
     // for a read_cookies request may carry no op echo, and we still need
