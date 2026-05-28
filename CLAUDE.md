@@ -206,3 +206,10 @@ MCP tool call is the integration test.
 - Don't merge feature work that adds protocol fields without updating
   `packages/protocol/src/validate.ts` validators (every inbound
   frame is validated before dispatch).
+- Don't use `console.log` / `console.debug` / `console.info` in any
+  code that runs inside an MCP process — Node routes all of those to
+  stdout, which is the MCP JSON-RPC channel, and a stray write
+  corrupts the framing. Use `console.error` / `console.warn` (stderr)
+  for all logging. See `host.ts` for the pattern. Round-3 PR #68
+  shipped a `console.debug` keep-alive log that wedged stdio in the
+  field before this rule was tightened.
