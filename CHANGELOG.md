@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.10.0](https://github.com/chrischall/fetchproxy/compare/v0.9.0...v0.10.0) (2026-05-28)
+
+
+### Features
+
+* **server:** add requestJson + runProbe consumer helpers ([#88](https://github.com/chrischall/fetchproxy/issues/88)) ([#89](https://github.com/chrischall/fetchproxy/issues/89)) ([1b01588](https://github.com/chrischall/fetchproxy/commit/1b01588dcd7f265ef309af14b63fc2e4ed12a160))
+* **server:** expose resolved fetchTimeoutMs + bridgeReviveDelayMs via bridgeHealth() ([#83](https://github.com/chrischall/fetchproxy/issues/83)) ([bace261](https://github.com/chrischall/fetchproxy/commit/bace26125e9a52cfd18f6bf051032f95dbb20bf9))
+* **server:** transport resilience kit — bot-wall classification + throttle + backoff + deadline ([#87](https://github.com/chrischall/fetchproxy/issues/87)) ([8ead6bd](https://github.com/chrischall/fetchproxy/commit/8ead6bdea532f4ab8b9aa61bc97369e7ee0f7b57))
+
 ## [0.9.0](https://github.com/chrischall/fetchproxy/compare/v0.8.0...v0.9.0) (2026-05-28)
 
 
