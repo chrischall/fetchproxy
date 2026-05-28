@@ -98,7 +98,7 @@ const h = fp.bridgeHealth();
 // h.swEviction: {
 //   lazyReviveAttempts: number;
 //   lazyReviveSuccesses: number;
-//   lastEvictionDetectedAt: number | null; // first content_script_unreachable
+//   lastEvictionDetectedAt: number | null; // latest content_script_unreachable (overwritten on each detection)
 // };
 ```
 
