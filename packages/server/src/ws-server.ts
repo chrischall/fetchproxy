@@ -15,9 +15,46 @@ import { loadOrCreateIdentity, type Identity } from './identity.js';
 import { classifyFetchError, type FetchErrorKind } from './error-kind.js';
 
 export interface FetchproxyServerOpts {
+  /**
+   * Localhost TCP port the concentrator binds to. The first MCP to call
+   * a verb races the bind; if it wins it becomes the `'host'` and the
+   * extension dials this port. Subsequent MCPs that lose the race
+   * become `'peer'` and tunnel through the existing host on the same
+   * port. The browser extension's connect target is hard-coded to the
+   * default in its manifest, so you should only override this for
+   * local development or test isolation — production MCPs all need to
+   * share one port for the concentrator to work.
+   *
+   * @default 37149
+   */
   port?: number;
+  /**
+   * Localhost interface to bind. Always keep this on a loopback address
+   * — fetchproxy's threat model assumes single-user, single-host
+   * trust; binding a public address would expose the bridge (and via
+   * it, the user's signed-in cookies) to the network. Override only
+   * for test setups that need a non-`127.0.0.1` loopback alias.
+   *
+   * @default '127.0.0.1'
+   * @see https://github.com/chrischall/fetchproxy/blob/main/docs/SECURITY.md
+   */
   host?: string;
+  /**
+   * Stable identifier for this MCP — typically the npm package name
+   * (`'opentable-mcp'`, `'honeybook-mcp'`). Surfaced in three places:
+   * the extension UI's pair popup, the identity-key filename
+   * (`~/.fetchproxy/identity/<serverName>.json`), and the computed
+   * `mcpId`. Changing it after first pair means the user re-pairs
+   * (different identity file path) — pick a name and keep it. No
+   * default; required.
+   */
   serverName: string;
+  /**
+   * Your MCP's package version (`'0.10.0'`). Surfaced in the pair popup
+   * alongside `serverName` so the user can see what they're approving.
+   * Pure label — does not gate any behavior in the bridge or the
+   * extension. No default; required.
+   */
   version: string;
   /**
    * Trust boundary. Non-empty array of hostnames. The extension refuses
@@ -32,6 +69,9 @@ export interface FetchproxyServerOpts {
    * Multi-domain MCPs (e.g. `domains: ['honeybook.com', 'hbsplit.com']`)
    * must specify `{ domain: 'honeybook.com' }` on every per-call request
    * so the resolver knows which base to use.
+   *
+   * No default; required. Changing the set after first pair forces the
+   * user to re-approve in the extension popup with a diff UI.
    */
   domains: string[];
   /**
@@ -72,13 +112,28 @@ export interface FetchproxyServerOpts {
   localStoragePointers?: StoragePointerDecl[];
   /** 0.4.0+: same shape against sessionStorage. */
   sessionStoragePointers?: StoragePointerDecl[];
+  /**
+   * Override the on-disk directory that holds this MCP's long-term
+   * identity keypair (`<identityDir>/<serverName>.json`, mode 0600).
+   * The identity is what makes pair trust survive restarts; rotating
+   * it forces the user to re-pair. Override for tests (point at a
+   * tmpdir) or for sandboxed deployments where `$HOME` isn't writable.
+   * Production MCPs running as the user should leave this alone.
+   *
+   * @default '~/.fetchproxy/identity/'
+   */
   identityDir?: string;
   /**
    * 0.4.0+: invoked once on receipt of the extension hello, with the
    * joint pair code derived from `SHA256(mcpPub || extPub)`. Used by
    * MCPs that need to surface the code on stderr or similar for the
    * user to verify against the browser popup. Optional — fetch-only
-   * MCPs that don't need to print can omit it.
+   * MCPs that don't need to print can omit it. (Off by default.)
+   *
+   * Override when the MCP host runs in an environment where the user
+   * can't see stdout/stderr by default (e.g. Claude Desktop), so the
+   * code can be surfaced via an MCP logging notification or similar
+   * out-of-band channel.
    */
   onPairCode?: (code: string) => void;
   /**
@@ -87,10 +142,15 @@ export interface FetchproxyServerOpts {
    * extension would hang the call indefinitely. When the timer fires,
    * `fetch()` returns `{ ok: false, kind: 'timeout', error: '…' }`
    * (back-compat result shape); convenience methods (`get`/`post`/
-   * `request` etc.) throw `FetchproxyTimeoutError`. **Default 30000**
-   * — pre-0.8.0 callers got no timer; the typical realty/dining MCPs
-   * were already wrapping their own at this same value. Pass `0` to
-   * opt back into the legacy hang-forever behavior.
+   * `request` etc.) throw `FetchproxyTimeoutError`.
+   *
+   * Override to tighten for latency-sensitive call sites (e.g. interactive
+   * tool calls where the user is waiting), or loosen for endpoints
+   * known to be slow (large file downloads, long-running search). Pass
+   * `0` to opt back into the legacy hang-forever behavior.
+   *
+   * @default 30_000
+   * @see https://github.com/chrischall/fetchproxy/issues/58
    */
   fetchTimeoutMs?: number;
   /**
@@ -98,45 +158,78 @@ export interface FetchproxyServerOpts {
    * `captureRequestHeader()` fail with `content_script_unreachable`.
    * Chrome MV3 evicts extension service workers after ~30s idle;
    * this gives Chrome a moment to wake the SW on the next inbound
-   * frame. **Default 2000** — same value the zillow/onehome cohort
-   * had been hand-rolling in their transport adapters. On retry-
-   * exhaustion, convenience methods + capture throw
-   * `FetchproxyBridgeDownError` with `retryAttempted: true`. Pass `0`
-   * to disable the retry entirely (errors surface on the first
-   * attempt with `retryAttempted: false`).
+   * frame. The default `2_000` is the same value the realty/dining
+   * cohort had been hand-rolling in their transport adapters.
+   *
+   * Override to lengthen for slow machines where 2s isn't enough for
+   * the SW to wake, or shorten if the caller is willing to surface
+   * the bridge-down error sooner. On retry-exhaustion, convenience
+   * methods + capture throw `FetchproxyBridgeDownError` with
+   * `retryAttempted: true`. Pass `0` to disable the retry entirely
+   * (errors surface on the first attempt with `retryAttempted: false`).
+   *
+   * @default 2_000
+   * @see https://github.com/chrischall/fetchproxy/issues/58
    */
   bridgeReviveDelayMs?: number;
   /**
-   * 0.8.1+ (#67): server-initiated keepalive ping interval (ms). The
-   * bridge fires a no-op `{ type: 'ping' }` inner frame to the
-   * extension every `keepAliveIntervalMs` while the MCP has been used
-   * within `keepAliveMaxIdleMs`. The extension already handles `ping`
-   * by responding with `pong`, which resets Chrome's MV3 service-worker
-   * idle timer (frames in/out reset it). Default `25_000` (since 0.10.0
-   * — round-3 #71 cohort showed every consumer was opting into this
-   * value, so it was promoted to the default); set to `0` to disable.
-   * Comfortably under Chrome's ~30s eviction threshold. The
-   * extension-side `chrome.alarms` keepalive still runs; this is the
-   * belt-and-braces server-initiated arm that addresses the round-3
-   * #23 feedback (alarm-only was insufficient because the alarm
-   * doesn't re-arm while the SW is evicted).
+   * Server-initiated keep-alive ping interval (ms). The bridge fires
+   * a no-op `{ type: 'ping' }` inner frame to the extension every
+   * `keepAliveIntervalMs` while the MCP has been active (fetch /
+   * capture success or failure, or `markActive()`) within
+   * `keepAliveMaxIdleMs`. The extension responds with `pong`, which
+   * resets Chrome's MV3 service-worker idle timer (any frame in/out
+   * resets it).
+   *
+   * Comfortably under Chrome's ~30s eviction threshold. Override only
+   * if you've measured a specific eviction pattern that needs a
+   * different cadence. Set to `0` to disable (no pings).
+   *
+   * The extension-side `chrome.alarms` keepalive still runs
+   * independently; this is the belt-and-braces server-initiated arm
+   * that addresses the round-3 #23 feedback (alarm-only was
+   * insufficient because the alarm doesn't re-arm while the SW is
+   * evicted).
+   *
+   * @default 25_000 (since 0.10.0 — round-3 #71 cohort showed every
+   *   consumer was opting into this value, so it was promoted to the
+   *   default; previously off by default)
+   * @see https://github.com/chrischall/fetchproxy/issues/67
+   * @see https://github.com/chrischall/fetchproxy/issues/71
    */
   keepAliveIntervalMs?: number;
   /**
-   * 0.8.1+ (#67): how long after the most-recent user-visible activity
+   * 0.8.1+: how long after the most-recent user-visible activity
    * (fetch / capture success or failure, or `markActive()`) to keep
-   * firing keep-alive pings. Default 5 minutes. Paired with
-   * `keepAliveIntervalMs` — without an idle gate, a long-running but
-   * dormant MCP would ping forever and waste the SW's wake-budget on
-   * nothing. Has no effect when `keepAliveIntervalMs` is `0`.
+   * firing keep-alive pings. Paired with `keepAliveIntervalMs` —
+   * without an idle gate, a long-running but dormant MCP would ping
+   * forever and waste the SW's wake-budget on nothing.
+   *
+   * Override to lengthen for MCPs whose user-visible activity is
+   * spread across long gaps (e.g. multi-step workflows where the user
+   * thinks for a while between tool calls). Has no effect when
+   * `keepAliveIntervalMs` is `0`.
+   *
+   * @default 300_000 (5 minutes)
+   * @see https://github.com/chrischall/fetchproxy/issues/67
    */
   keepAliveMaxIdleMs?: number;
 }
 
+/**
+ * The successful arm of the `fetch()` discriminated union. Any
+ * upstream HTTP status (2xx, 3xx, 4xx, 5xx) returns this shape —
+ * `ok: true` means "the bridge delivered a response", not "the
+ * upstream returned 2xx". Inspect `status` for HTTP-level success.
+ */
 export interface FetchResult {
+  /** Discriminator for the union with `FetchResultError`. */
   ok: true;
+  /** Upstream HTTP status code (any 1xx-5xx). */
   status: number;
+  /** Final URL after redirects, as observed by the browser. */
   url: string;
+  /** Raw response body as a UTF-8 string. */
   body: string;
   /**
    * 0.8.0+: true when the server's lazy-revive retry path actually
@@ -149,8 +242,18 @@ export interface FetchResult {
   retryAttempted?: boolean;
 }
 
+/**
+ * The failure arm of the `fetch()` discriminated union. Only returned
+ * when the bridge itself failed to deliver the request (no signed-in
+ * tab, extension offline, transport timeout, etc.) — upstream HTTP
+ * errors come back as `FetchResult` with a non-2xx `status`. The
+ * convenience methods (`request`/`get`/`post`/…) translate this into
+ * a typed throwable via `_typedErrorFor`.
+ */
 export interface FetchResultError {
+  /** Discriminator for the union with `FetchResult`. */
   ok: false;
+  /** Human-readable error string from the bridge or extension. */
   error: string;
   /**
    * Derived categorization of `error` so downstream MCPs can branch
@@ -176,10 +279,18 @@ export interface FetchResultError {
   elapsedMs?: number;
 }
 
-/** Public response shape returned by the convenience helpers. */
+/**
+ * Public response shape returned by the convenience helpers
+ * (`get`/`post`/`request`/…). Strictly the success path — these
+ * methods throw `FetchproxyHttpError` / `FetchproxyProtocolError`
+ * on failure rather than returning a discriminated union.
+ */
 export interface HttpResponse {
+  /** Upstream HTTP status code (any 1xx-5xx). */
   status: number;
+  /** Raw response body as a UTF-8 string. */
   body: string;
+  /** Final URL after redirects, as observed by the browser. */
   url: string;
 }
 
@@ -199,34 +310,56 @@ export interface HttpResponse {
  * `FetchproxyServerOpts.domains`.
  */
 export interface RequestOpts {
+  /**
+   * Per-call HTTP request headers. Merged into the outbound request
+   * verbatim. JSON shortcuts add `Content-Type: application/json`
+   * unless the caller already provided one. Off by default.
+   */
   headers?: Record<string, string>;
+  /**
+   * Raw request body as a string. The bridge does not transform it —
+   * `JSON.stringify` your own object if you're not using the JSON
+   * shortcuts. Off by default (no body sent).
+   */
   body?: string;
   /**
    * If provided, throws `FetchproxyHttpError` when the response status
    * does not match. A number is matched exactly; an array means "must be in this set".
+   * Off by default — the caller inspects `response.status` themselves.
    */
   expectStatus?: number | number[];
   /**
    * Optional subdomain label(s) to prepend to the chosen base domain.
    * E.g. with base `'opentable.com'`, `subdomain: 'www'` builds the
    * URL against `https://www.opentable.com`. May be a single label
-   * (`'www'`) or dot-separated labels (`'auth.api'`).
+   * (`'www'`) or dot-separated labels (`'auth.api'`). Off by default
+   * (uses the apex domain).
    */
   subdomain?: string;
   /**
    * Optional base domain selector for multi-domain MCPs. Must match one
    * of the entries in `FetchproxyServerOpts.domains` exactly. Required
    * on every per-call request when the MCP declared multiple domains;
-   * may be omitted when only one domain is declared.
+   * may be omitted when only one domain is declared (the lone entry
+   * becomes the implicit default).
    */
   domain?: string;
 }
 
-/** Options accepted by JSON/HTML shortcuts (no `body` — provided positionally). */
+/**
+ * Options accepted by JSON/HTML shortcuts (`getJson`/`postJson`/
+ * `getHtml`/`get`/`delete`/…) — body is provided positionally so it
+ * isn't part of this options object. Otherwise identical to
+ * `RequestOpts`.
+ */
 export interface BodylessRequestOpts {
+  /** Same as `RequestOpts.headers`. */
   headers?: Record<string, string>;
+  /** Same as `RequestOpts.expectStatus`. */
   expectStatus?: number | number[];
+  /** Same as `RequestOpts.subdomain`. */
   subdomain?: string;
+  /** Same as `RequestOpts.domain`. */
   domain?: string;
 }
 
@@ -353,7 +486,9 @@ export class FetchproxyTimeoutError extends FetchproxyProtocolError {
  * same counters in their transport adapters.
  */
 export interface BridgeHealth {
+  /** Bridge role at snapshot time; `null` if `listen()` never connected. */
   role: 'host' | 'peer' | null;
+  /** Localhost port the bridge is bound to (matches `FetchproxyServerOpts.port`). */
   port: number;
   /** 0.8.0+: server version this bridge was constructed with. */
   serverVersion: string;
@@ -361,9 +496,26 @@ export interface BridgeHealth {
   fetchTimeoutMs: number;
   /** 0.8.0+: resolved lazy-revive delay (ms); 0 if disabled. */
   bridgeReviveDelayMs: number;
+  /**
+   * Wall-clock timestamp of the most recent user-visible `fetch()` /
+   * capture success. Null until the first success lands.
+   */
   lastSuccessAt: number | null;
+  /**
+   * Wall-clock timestamp of the most recent user-visible `fetch()` /
+   * capture failure (any kind). Null until the first failure lands.
+   */
   lastFailureAt: number | null;
+  /**
+   * `${kind}: ${error}` string from the most recent failure — handy
+   * for surfacing the latest reason in a healthcheck tool. Null until
+   * the first failure lands.
+   */
   lastFailureReason: string | null;
+  /**
+   * Failures since the last success. Resets to 0 on any success. Use
+   * as a "soft degraded" signal in a healthcheck tool.
+   */
   consecutiveFailures: number;
   /**
    * 0.8.0+ (#23 ask 4): wall-clock timestamp of the most recent
@@ -473,13 +625,22 @@ const DEFAULT_JSON_OK_STATUSES: readonly number[] = [200, 201, 202, 204];
 
 /** Result of a successful `read_cookies` call. */
 export interface ReadCookiesResult {
+  /** Discriminator for the union with `ReadCookiesResultError`. */
   ok: true;
+  /**
+   * Raw `document.cookie` value (semicolon-separated `k=v` pairs).
+   * HttpOnly cookies are NOT included — they're invisible to page JS
+   * by design, which is the intentional security boundary of the
+   * `read_cookies` capability.
+   */
   cookies: string;
 }
 
 /** Result of a failed `read_cookies` call (transport / capability / no-tab). */
 export interface ReadCookiesResultError {
+  /** Discriminator for the union with `ReadCookiesResult`. */
   ok: false;
+  /** Human-readable error string from the bridge or extension. */
   error: string;
 }
 

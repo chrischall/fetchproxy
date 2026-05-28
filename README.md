@@ -144,6 +144,16 @@ await fp.close();
 
 The `listen()` call elects host or peer automatically — call it from every MCP that wants to share the bridge.
 
+## Server options
+
+`FetchproxyServerOpts` has three required fields (`serverName`,
+`version`, `domains`) and a dozen optional ones — timeouts, retry
+delays, keep-alive cadence, declared storage scopes. See the
+[`@fetchproxy/server` README's Server options
+table](packages/server/README.md#server-options) for defaults and
+"when to override" guidance on every field, mirrored by JSDoc on the
+`FetchproxyServerOpts` type itself.
+
 ## Capabilities
 
 Each MCP declares an opt-in capability set in its hello frame. The extension stores the approved set in its trust record and forces a re-pair if it ever changes.

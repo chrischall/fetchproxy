@@ -55,28 +55,77 @@ const data = await fp.postJson('/dapi/fe/gql', {
 await fp.close();
 ```
 
+## Server options
+
+Every public field on `FetchproxyServerOpts` at a glance — defaults
+plus a one-liner on what each option does. The same information is
+mirrored as JSDoc on the type itself, so editors and hover help reach
+parity with this table. For longer "when to override" guidance, see
+[Choosing the right options](#choosing-the-right-options) below.
+
+| Option | Type | Default | What it does |
+|---|---|---|---|
+| `serverName` | `string` | — (required) | Stable MCP identifier. Used in the pair popup, identity-key filename, and `mcpId`. |
+| `version` | `string` | — (required) | Your MCP's package version. Surfaced in the pair popup. |
+| `domains` | `string[]` | — (required) | Trust boundary. The extension refuses any fetch outside this set or its subdomains. |
+| `capabilities` | `Capability[]` | `['fetch']` | Opt-in verb set. Add `'read_cookies'` / `'read_local_storage'` / `'capture_request_header'` / etc. Changing this forces a re-pair. |
+| `port` | `number` | `37149` | Localhost concentrator port. Only override for local development or test isolation — production MCPs all need to share one port. |
+| `host` | `string` | `'127.0.0.1'` | Loopback bind interface. Keep on loopback — the threat model assumes single-user trust. |
+| `identityDir` | `string` | `~/.fetchproxy/identity/` | Where to store the long-term identity keypair. Override for tests or sandboxed deployments. |
+| `onPairCode` | `(code: string) => void` | (off by default) | Invoked once with the joint pair code on extension hello, so an MCP can surface it via stderr / MCP logging. |
+| `fetchTimeoutMs` | `number` | `30_000` | Per-request timeout for `fetch()`. `0` opts back into legacy hang-forever. ([#58](https://github.com/chrischall/fetchproxy/issues/58)) |
+| `bridgeReviveDelayMs` | `number` | `2_000` | Delay before the one-shot retry after `content_script_unreachable`. Gives Chrome a moment to wake the evicted MV3 SW. `0` disables. ([#58](https://github.com/chrischall/fetchproxy/issues/58)) |
+| `keepAliveIntervalMs` | `number` | `25_000` | Server-initiated ping cadence that keeps the MV3 SW resident across activity bursts. Comfortably under Chrome's ~30s eviction threshold. Pass `0` to disable. Default flipped from `undefined` in 0.10.0 ([#71](https://github.com/chrischall/fetchproxy/issues/71)). ([#67](https://github.com/chrischall/fetchproxy/issues/67)) |
+| `keepAliveMaxIdleMs` | `number` | `300_000` (5 min) | How long after the most-recent activity the keep-alive pings keep firing. No-op when `keepAliveIntervalMs` is `0`. ([#67](https://github.com/chrischall/fetchproxy/issues/67)) |
+| `cookieKeys` | `string[]` | `[]` | Declared cookie names for `readCookies({ keys })`. Gates the call site (gate #1) before the extension re-checks (gate #2). |
+| `localStorageKeys` | `string[]` | `[]` | Declared localStorage keys for `readLocalStorage`. |
+| `sessionStorageKeys` | `string[]` | `[]` | Declared sessionStorage keys for `readSessionStorage`. |
+| `captureHeaders` | `CaptureHeaderDecl[]` | `[]` | Declared `(urlPattern, headerName)` pairs for `captureRequestHeader`. |
+| `indexedDbScopes` | `IndexedDbScopeDecl[]` | `[]` | Declared IndexedDB `(origin, database, store, keys)` scopes for `readIndexedDb`. |
+| `localStoragePointers` | `StoragePointerDecl[]` | `[]` | Declared `(key, jsonPointer)` extractions over localStorage. |
+| `sessionStoragePointers` | `StoragePointerDecl[]` | `[]` | Same shape as `localStoragePointers`, against sessionStorage. |
+
+### Choosing the right options
+
+- **`fetchTimeoutMs`.** The default `30_000` matches what every realty
+  / dining MCP was already wrapping. Tighten for latency-sensitive
+  interactive tool calls; loosen for known-slow endpoints (large
+  downloads, long-running search). Pass `0` to opt back into the
+  legacy hang-forever behavior. On timeout, `fetch()` returns
+  `{ ok: false, kind: 'timeout' }` and the convenience methods throw
+  `FetchproxyTimeoutError`.
+- **`bridgeReviveDelayMs`.** Chrome MV3 evicts extension service
+  workers after ~30s idle. The default `2_000` ms is the same delay
+  the zillow/onehome cohort had been hand-rolling in their transport
+  adapters before the option existed. Lengthen on slow machines where
+  2s isn't enough for the SW to wake; shorten if the caller is
+  willing to surface the bridge-down error sooner. Pass `0` to
+  disable the retry entirely.
+- **`keepAliveIntervalMs`.** Default `25_000` since 0.10.0 (the
+  round-3 #71 cohort showed every consumer was opting into the same
+  value, so it was promoted to the default). Comfortably under
+  Chrome's ~30s eviction threshold — keeps the MV3 SW resident
+  across activity bursts (a user opens a search, thinks for 30s,
+  runs another tool). Pass `0` to disable. Pairs with
+  `keepAliveMaxIdleMs` (default 5 min) so the pings self-quiesce on
+  idle processes.
+- **`domains`.** Trust boundary, required. Use the apex hostname
+  (`'opentable.com'`) and let the extension match subdomains
+  automatically. Multi-domain MCPs (HoneyBook, Resy two-host setups)
+  pass every declared domain on every per-call request via
+  `{ domain: 'x.com' }`.
+- **`port` / `host`.** The defaults are load-bearing — the browser
+  extension's connect target is hard-coded to `127.0.0.1:37149`, so
+  every MCP that wants to share the concentrator needs to keep the
+  defaults. Override only for local development or test isolation.
+
 ## API
 
 ### `new FetchproxyServer(opts)`
 
-| Option | Type | Required | Notes |
-|---|---|:-:|---|
-| `serverName` | `string` | yes | Stable identifier. Used in `mcpId`, identity-key filename, and the pair popup. |
-| `version` | `string` | yes | Your MCP's package version. Surfaced in the pair popup. |
-| `domains` | `string[]` | yes | Non-empty array of hostnames. The extension refuses any fetch outside this set or its subdomains. |
-| `capabilities` | `('fetch' \| 'read_cookies')[]` | no | Defaults to `['fetch']`. Add `'read_cookies'` to enable `readCookies()`. Changing the set later forces the user to re-pair. |
-| `port` | `number` | no | Defaults to `37149`. |
-| `host` | `string` | no | Defaults to `'127.0.0.1'`. Never bind a public address — see the [security model](https://github.com/chrischall/fetchproxy/blob/main/docs/SECURITY.md). |
-| `identityDir` | `string` | no | Override the identity-key storage directory. Defaults to `~/.fetchproxy/identity/`. |
-
-#### Server options (timeout / keep-alive)
-
-| Option | Type | Default | Notes |
-|---|---|---|---|
-| `fetchTimeoutMs` | `number` | `30_000` | Per-request timeout. Pass `0` to opt back into hang-forever. |
-| `bridgeReviveDelayMs` | `number` | `2_000` | One-shot retry delay after `content_script_unreachable` (MV3 SW eviction). Pass `0` to disable the retry. |
-| `keepAliveIntervalMs` | `number` | `25_000` | Server-side proactive keep-alive ping interval. **Flipped from `undefined` to `25_000` in 0.10.0** ([#72](https://github.com/chrischall/fetchproxy/issues/72)) — the round-3 #71 cohort wave showed every Pattern A consumer was opting into this value. Pass `0` to disable. |
-| `keepAliveMaxIdleMs` | `number` | `5 * 60 * 1000` (300_000) | After this long without a successful fetch / capture / `markActive()` the keep-alive ping interval self-quiesces. |
+See [Server options](#server-options) for the full table. Three
+fields are required: `serverName`, `version`, `domains`. Everything
+else has a default.
 
 `fp.bridgeHealth()` exposes a snapshot of the bridge's process-wide
 freshness counters — downstream MCPs surface this through their
