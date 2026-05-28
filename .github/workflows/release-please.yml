@@ -103,7 +103,7 @@ jobs:
           git checkout "$PR_HEAD"
           NEW_VERSION=$(node -p "require('./package.json').version")
           echo "Syncing cross-package @fetchproxy/* deps to ^${NEW_VERSION}"
-          for pkg in packages/bootstrap packages/extension-chrome packages/extension-core packages/protocol packages/server; do
+          for pkg in packages/bootstrap packages/extension-chrome packages/extension-core packages/protocol packages/server packages/test-helpers; do
             node -e "
               const fs = require('fs');
               const file = '${pkg}/package.json';
@@ -189,7 +189,7 @@ jobs:
       # bootstrap → extension-core. extension-chrome's bundle is built
       # separately below (needs protocol/dist on disk first).
       - name: Build packages
-        run: npm run build --workspace=@fetchproxy/protocol --workspace=@fetchproxy/server --workspace=@fetchproxy/bootstrap --workspace=@fetchproxy/extension-core
+        run: npm run build --workspace=@fetchproxy/protocol --workspace=@fetchproxy/server --workspace=@fetchproxy/bootstrap --workspace=@fetchproxy/extension-core --workspace=@fetchproxy/test-helpers
 
       # Publish each non-private package at the version pinned in its
       # OWN package.json. release-please bumps packages independently,
@@ -226,6 +226,16 @@ jobs:
             exit 0
           fi
           npm publish --workspace=@fetchproxy/bootstrap --access=public --provenance
+
+      - name: Publish @fetchproxy/test-helpers to npm
+        run: |
+          PKG_VERSION=$(node -p "require('./packages/test-helpers/package.json').version")
+          PUBLISHED=$(npm view "@fetchproxy/test-helpers@${PKG_VERSION}" version 2>/dev/null || true)
+          if [ "$PUBLISHED" = "$PKG_VERSION" ]; then
+            echo "npm already has @fetchproxy/test-helpers@${PKG_VERSION} — skipping."
+            exit 0
+          fi
+          npm publish --workspace=@fetchproxy/test-helpers --access=public --provenance
 
       # Build & zip the Chrome extension for sideload distribution
       # before the Chrome Web Store review of each release.

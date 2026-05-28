@@ -47,6 +47,7 @@ Three pieces, one repo:
 |---|---|---|
 | [`@fetchproxy/server`](packages/server) | Node library MCP authors depend on. Elects host/peer, runs the handshake, exposes `fetch()` + convenience verbs (`get`, `postJson`, `readCookies`, …). | `packages/server/` |
 | [`@fetchproxy/protocol`](packages/protocol) | Wire types, validators, crypto wrappers. Shared between server and extension. | `packages/protocol/` |
+| [`@fetchproxy/test-helpers`](packages/test-helpers) | Vitest mocks for downstream MCP test suites — drop-in `FetchproxyServer` replacement that captures constructor opts and exposes spy-able verbs. | `packages/test-helpers/` |
 | `fetchproxy-extension` | Browser extension. Connects to the WS, runs `fetch(url, { credentials: 'include' })` in the page MAIN world of a matching tab, returns the response. | `packages/extension-core/` + `packages/extension-chrome/` |
 
 `extension-core/` holds the shared TypeScript; `extension-chrome/` is the per-browser MV3 manifest + esbuild bundle. Safari/Firefox targets can slot in alongside without forking the core.
@@ -189,6 +190,7 @@ new FetchproxyServer({ port: 37150, host: '127.0.0.1', /* … */ });
 packages/
   protocol/          @fetchproxy/protocol         (npm, public)
   server/            @fetchproxy/server           (npm, public)
+  test-helpers/      @fetchproxy/test-helpers     (npm, public)
   extension-core/    shared TS for the extension  (workspace internal)
   extension-chrome/  Chrome MV3 build target      (workspace internal)
 docs/

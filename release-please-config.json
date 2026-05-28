@@ -9,7 +9,8 @@
         { "type": "json", "path": "packages/extension-chrome/manifest.json", "jsonpath": "$.version" },
         { "type": "json", "path": "packages/extension-core/package.json", "jsonpath": "$.version" },
         { "type": "json", "path": "packages/protocol/package.json", "jsonpath": "$.version" },
-        { "type": "json", "path": "packages/server/package.json", "jsonpath": "$.version" }
+        { "type": "json", "path": "packages/server/package.json", "jsonpath": "$.version" },
+        { "type": "json", "path": "packages/test-helpers/package.json", "jsonpath": "$.version" }
       ]
     }
   },

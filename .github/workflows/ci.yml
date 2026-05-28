@@ -26,7 +26,7 @@ jobs:
       # `exports` field resolves to `./dist/index.js`, so `server` and
       # `extension-core` need dist/ on disk to import it during vitest.
       - name: Build TS workspaces
-        run: npm run build --workspace=@fetchproxy/protocol --workspace=@fetchproxy/server --workspace=@fetchproxy/extension-core
+        run: npm run build --workspace=@fetchproxy/protocol --workspace=@fetchproxy/server --workspace=@fetchproxy/extension-core --workspace=@fetchproxy/test-helpers
 
       - name: Test (full monorepo via vitest)
         run: npm test
