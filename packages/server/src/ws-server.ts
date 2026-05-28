@@ -107,14 +107,14 @@ export interface FetchproxyServerOpts {
    */
   bridgeReviveDelayMs?: number;
   /**
-   * 0.8.1+ (#67): server-initiated keepalive ping interval (ms). When
-   * set, the bridge fires a no-op `{ type: 'ping' }` inner frame to the
+   * 0.8.1+ (#67): server-initiated keepalive ping interval (ms). The
+   * bridge fires a no-op `{ type: 'ping' }` inner frame to the
    * extension every `keepAliveIntervalMs` while the MCP has been used
    * within `keepAliveMaxIdleMs`. The extension already handles `ping`
    * by responding with `pong`, which resets Chrome's MV3 service-worker
    * idle timer (frames in/out reset it). Default `25_000` (since 0.10.0
    * — round-3 #71 cohort showed every consumer was opting into this
-   * value, so it was promoted to the default). Pass `0` to opt out.
+   * value, so it was promoted to the default); set to `0` to disable.
    * Comfortably under Chrome's ~30s eviction threshold. The
    * extension-side `chrome.alarms` keepalive still runs; this is the
    * belt-and-braces server-initiated arm that addresses the round-3
@@ -128,7 +128,7 @@ export interface FetchproxyServerOpts {
    * firing keep-alive pings. Default 5 minutes. Paired with
    * `keepAliveIntervalMs` — without an idle gate, a long-running but
    * dormant MCP would ping forever and waste the SW's wake-budget on
-   * nothing. Has no effect when `keepAliveIntervalMs` is unset.
+   * nothing. Has no effect when `keepAliveIntervalMs` is `0`.
    */
   keepAliveMaxIdleMs?: number;
 }
@@ -395,9 +395,10 @@ export interface BridgeHealth {
    * increments when the lazy-revive retry path fires (one-shot on
    * `content_script_unreachable`); `lazyReviveSuccesses` increments
    * when the post-revive retry actually succeeds.
-   * `lastEvictionDetectedAt` stamps the first time we observed a
-   * `content_script_unreachable` failure (the canonical symptom of
-   * Chrome having evicted the SW between bursts).
+   * `lastEvictionDetectedAt` stamps the most recent time we observed
+   * a `content_script_unreachable` failure (the canonical symptom of
+   * Chrome having evicted the SW between bursts) — overwritten on
+   * each detection, so it reflects the latest eviction, not the first.
    */
   swEviction: {
     lazyReviveAttempts: number;
@@ -947,7 +948,7 @@ export class FetchproxyServer {
    * the extension. Useful for MCPs that do a chain of side-effectful
    * work between bridge calls and don't want the SW to evict in the
    * gap (e.g. server-side parsing of a previous response that takes
-   * tens of seconds). No-op when `keepAliveIntervalMs` was not set.
+   * tens of seconds). No-op when `keepAliveIntervalMs` is `0`.
    */
   markActive(): void {
     this.noteActivityForKeepalive();
