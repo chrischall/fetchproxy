@@ -106,6 +106,31 @@ export interface FetchproxyServerOpts {
    * attempt with `retryAttempted: false`).
    */
   bridgeReviveDelayMs?: number;
+  /**
+   * 0.8.1+ (#67): server-initiated keepalive ping interval (ms). When
+   * set, the bridge fires a no-op `{ type: 'ping' }` inner frame to the
+   * extension every `keepAliveIntervalMs` while the MCP has been used
+   * within `keepAliveMaxIdleMs`. The extension already handles `ping`
+   * by responding with `pong`, which resets Chrome's MV3 service-worker
+   * idle timer (frames in/out reset it). Default `undefined` (off, no
+   * pings) — back-compat with 0.8.0. Recommended value for MCPs that
+   * see sporadic-but-clustered activity: `25_000`, comfortably under
+   * Chrome's ~30s eviction threshold. The extension-side
+   * `chrome.alarms` keepalive still runs; this is the belt-and-braces
+   * server-initiated arm that addresses the round-3 #23 feedback
+   * (alarm-only was insufficient because the alarm doesn't re-arm
+   * while the SW is evicted).
+   */
+  keepAliveIntervalMs?: number;
+  /**
+   * 0.8.1+ (#67): how long after the most-recent user-visible activity
+   * (fetch / capture success or failure, or `markActive()`) to keep
+   * firing keep-alive pings. Default 5 minutes. Paired with
+   * `keepAliveIntervalMs` — without an idle gate, a long-running but
+   * dormant MCP would ping forever and waste the SW's wake-budget on
+   * nothing. Has no effect when `keepAliveIntervalMs` is unset.
+   */
+  keepAliveMaxIdleMs?: number;
 }
 
 export interface FetchResult {
@@ -407,6 +432,8 @@ interface ResolvedOpts {
   sessionStoragePointers: StoragePointerDecl[];
   fetchTimeoutMs?: number;
   bridgeReviveDelayMs?: number;
+  keepAliveIntervalMs?: number;
+  keepAliveMaxIdleMs: number;
   identityDir?: string;
   onPairCode?: (code: string) => void;
 }
@@ -500,6 +527,13 @@ export class FetchproxyServer {
   // for "we're connecting right now" so two parallel first-calls don't
   // race the port bind.
   private connectingPromise: Promise<void> | null = null;
+  // 0.8.1+ (#67): server-initiated keep-alive ping. Active when
+  // `keepAliveIntervalMs` is set AND we've seen recent activity
+  // (fetch/capture success or failure, or markActive()) within
+  // `keepAliveMaxIdleMs`. The interval handle is created lazily on
+  // first activity and torn down on close() / extension disconnect.
+  private keepAliveTimer: ReturnType<typeof setInterval> | null = null;
+  private lastActiveAt: number | null = null;
 
   constructor(opts: FetchproxyServerOpts) {
     if (!Array.isArray(opts.domains) || opts.domains.length === 0) {
@@ -564,6 +598,10 @@ export class FetchproxyServer {
       // the legacy hang-forever / fail-once-on-SW-eviction behavior.
       fetchTimeoutMs: opts.fetchTimeoutMs ?? 30_000,
       bridgeReviveDelayMs: opts.bridgeReviveDelayMs ?? 2_000,
+      // 0.8.1+ (#67): keep-alive is off by default for back-compat;
+      // downstream MCPs opt in by passing keepAliveIntervalMs.
+      keepAliveIntervalMs: opts.keepAliveIntervalMs,
+      keepAliveMaxIdleMs: opts.keepAliveMaxIdleMs ?? 5 * 60 * 1000,
       identityDir: opts.identityDir,
       onPairCode: opts.onPairCode,
     };
@@ -673,7 +711,10 @@ export class FetchproxyServer {
         onPairCode: this.opts.onPairCode,
       });
       this.hostHandle.onOwnInner((inner) => this.onInner(inner));
-      this.hostHandle.onExtensionDisconnect(() => this.rejectAllPending());
+      this.hostHandle.onExtensionDisconnect(() => {
+        this.stopKeepalive();
+        this.rejectAllPending();
+      });
       // 0.5.2+: the extension queued us for pairing; fail in-flight tool
       // calls fast with an actionable error including the joint pair code
       // so the chat shows the same XXX-XXX the popup is displaying.
@@ -704,7 +745,10 @@ export class FetchproxyServer {
       // The peer's analogue is "I just renegotiated my session, so any
       // in-flight requests under the old key are unreachable" — same blast
       // radius, same recovery: fail pending awaiters with a clear error.
-      this.peerHandle.onRenegotiate(() => this.rejectAllPending());
+      this.peerHandle.onRenegotiate(() => {
+        this.stopKeepalive();
+        this.rejectAllPending();
+      });
       // 0.5.2+: pair-pending from the extension. Same actionable error
       // treatment as the host path so the chat sees the pair code instead
       // of a generic MCP-level timeout.
@@ -817,12 +861,75 @@ export class FetchproxyServer {
   private recordSuccess(): void {
     this.lastSuccessAt = Date.now();
     this.consecutiveFailures = 0;
+    this.noteActivityForKeepalive();
   }
 
   private recordFailure(reason: string): void {
     this.lastFailureAt = Date.now();
     this.lastFailureReason = reason;
     this.consecutiveFailures += 1;
+    this.noteActivityForKeepalive();
+  }
+
+  /**
+   * 0.8.1+ (#67): caller-side hint that work is happening or about to
+   * happen — bumps the keep-alive idle gate so the server keeps pinging
+   * the extension. Useful for MCPs that do a chain of side-effectful
+   * work between bridge calls and don't want the SW to evict in the
+   * gap (e.g. server-side parsing of a previous response that takes
+   * tens of seconds). No-op when `keepAliveIntervalMs` was not set.
+   */
+  markActive(): void {
+    this.noteActivityForKeepalive();
+  }
+
+  private noteActivityForKeepalive(): void {
+    if (this.opts.keepAliveIntervalMs === undefined) return;
+    this.lastActiveAt = Date.now();
+    this.startKeepaliveIfIdle();
+  }
+
+  private startKeepaliveIfIdle(): void {
+    if (this.keepAliveTimer !== null) return;
+    const intervalMs = this.opts.keepAliveIntervalMs;
+    if (intervalMs === undefined || intervalMs <= 0) return;
+    this.keepAliveTimer = setInterval(() => {
+      const now = Date.now();
+      if (
+        this.lastActiveAt === null ||
+        now - this.lastActiveAt > this.opts.keepAliveMaxIdleMs
+      ) {
+        this.stopKeepalive();
+        return;
+      }
+      // Fire-and-forget; the extension answers with `pong` which we
+      // ignore (the `onInner` handler already drops pong frames).
+      // Swallow errors — a transient bridge hiccup shouldn't crash the
+      // host process via an unhandled rejection.
+      void this.sendKeepalivePing();
+    }, intervalMs);
+  }
+
+  private async sendKeepalivePing(): Promise<void> {
+    try {
+      const inner: InnerFrame = { type: 'ping' };
+      if (this.hostHandle) {
+        await this.hostHandle.sendOwnInner(inner);
+      } else if (this.peerHandle) {
+        await this.peerHandle.sendInner(inner);
+      }
+    } catch (e) {
+      // Best-effort — keepalive is opportunistic.
+      // eslint-disable-next-line no-console
+      console.debug('[fetchproxy] keepalive ping send failed:', e);
+    }
+  }
+
+  private stopKeepalive(): void {
+    if (this.keepAliveTimer !== null) {
+      clearInterval(this.keepAliveTimer);
+      this.keepAliveTimer = null;
+    }
   }
 
   /**
@@ -1720,6 +1827,7 @@ export class FetchproxyServer {
    * twice in a row.
    */
   async close(): Promise<void> {
+    this.stopKeepalive();
     this.rejectAllPending();
     // 0.5.3+: if a verb call has triggered `doConnect()` but the handle
     // hasn't been written yet, wait it out before we tear things down.
