@@ -198,7 +198,7 @@ docs/
   SECURITY.md        threat model
 ```
 
-`npm test` runs the full vitest suite across all workspaces. `npm run typecheck` runs tsc-build on the three TS packages (extension-chrome is bundled, not typechecked separately).
+`npm test` runs the full vitest suite across all workspaces. `npm run typecheck` runs tsc-build on all TS workspaces (extension-chrome is bundled, not typechecked separately).
 
 ## License
 

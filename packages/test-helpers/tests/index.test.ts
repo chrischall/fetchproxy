@@ -3,7 +3,10 @@
 // onehome / opentable / resy) re-implemented by hand before this
 // package existed.
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { createMockFetchproxyServer } from '../src/index.js';
+import {
+  createMockFetchproxyServer,
+  type MockFetchproxyServerHelpers,
+} from '../src/index.js';
 
 describe('createMockFetchproxyServer', () => {
   describe('constructor capture', () => {
@@ -212,5 +215,53 @@ describe('createMockFetchproxyServer — beforeEach(reset) pattern', () => {
     });
     expect(helper.ctorCalls).toHaveLength(1);
     expect(helper.getLastCtorOpts()?.serverName).toBe('isolated-2');
+  });
+});
+
+// Smoke test for the README's documented `vi.mock('@fetchproxy/server', ...)`
+// pattern. The dogfood tests above instantiate `MockServer` directly, which
+// doesn't exercise vitest's hoisting — without this test a regression that
+// breaks the hoisted-import path (e.g. accidentally pulling a value out of
+// module scope into the factory) would slip through. The factory imports
+// `../src/index.js` dynamically (the only safe way to reach module-scope
+// state from inside a hoisted factory) and stashes the helpers on
+// `globalThis` so the test body can assert on the captured opts.
+declare global {
+  // eslint-disable-next-line no-var
+  var __fetchproxyTestHelpersSmoke: MockFetchproxyServerHelpers | undefined;
+}
+vi.mock('@fetchproxy/server', async () => {
+  const helpers = await import('../src/index.js');
+  const mock = helpers.createMockFetchproxyServer();
+  globalThis.__fetchproxyTestHelpersSmoke = mock;
+  return { FetchproxyServer: mock.MockServer };
+});
+
+describe('vi.mock(@fetchproxy/server) hoisted pattern (README usage)', () => {
+  it('returns our MockServer as FetchproxyServer and captures constructor opts', async () => {
+    const { FetchproxyServer } = (await import('@fetchproxy/server')) as unknown as {
+      FetchproxyServer: new (opts: {
+        serverName: string;
+        version: string;
+        domains: string[];
+        keepAliveIntervalMs?: number;
+      }) => { listen: unknown; close: unknown };
+    };
+
+    new FetchproxyServer({
+      serverName: 'readme-smoke',
+      version: '1.2.3',
+      domains: ['example.com'],
+      keepAliveIntervalMs: 25_000,
+    });
+
+    const smokeMock = globalThis.__fetchproxyTestHelpersSmoke;
+    expect(smokeMock).toBeDefined();
+    // The mock captured the constructor call with the documented shape.
+    const opts = smokeMock?.getLastCtorOpts();
+    expect(opts?.serverName).toBe('readme-smoke');
+    expect(opts?.version).toBe('1.2.3');
+    expect(opts?.domains).toEqual(['example.com']);
+    expect(opts?.keepAliveIntervalMs).toBe(25_000);
   });
 });
