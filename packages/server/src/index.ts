@@ -9,6 +9,7 @@ export type {
   ReadCookiesResult,
   ReadCookiesResultError,
   BridgeHealth,
+  BridgeProbeResult,
 } from './ws-server.js';
 export {
   FetchproxyProtocolError,

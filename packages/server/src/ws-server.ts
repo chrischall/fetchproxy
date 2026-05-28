@@ -13,6 +13,7 @@ import { startHost, type HostHandle } from './host.js';
 import { startPeer, type PeerHandle } from './peer.js';
 import { loadOrCreateIdentity, type Identity } from './identity.js';
 import { classifyFetchError, type FetchErrorKind } from './error-kind.js';
+import { classifyBridgeError, type BridgeError } from './classify-bridge-error.js';
 
 export interface FetchproxyServerOpts {
   /**
@@ -577,6 +578,50 @@ export interface BridgeHealth {
     lazyReviveAttempts: number;
     lazyReviveSuccesses: number;
     lastEvictionDetectedAt: number | null;
+  };
+}
+
+/**
+ * 0.11.0+: the typed result of `FetchproxyServer.runProbe()`. The
+ * transport half of the healthcheck loop zillow/redfin/homes had been
+ * duplicating verbatim in `src/tools/healthcheck.ts` — run a probe
+ * fetch, measure elapsed ms, classify any error, and project
+ * `bridgeHealth()` into a `bridge` sub-object.
+ *
+ * The tool registration + the site-specific hint text STAY in the
+ * consumer — `runProbe` only does probe execution + classification +
+ * the bridge projection, so each MCP keeps its own `${Site} redirecting
+ * on login` phrasing.
+ */
+export interface BridgeProbeResult {
+  /** True iff the probe `fetchFn` resolved without throwing. */
+  ok: boolean;
+  /** Wall-clock milliseconds the probe `fetchFn` took (success or failure). */
+  elapsed_ms: number;
+  /**
+   * Snake-cased projection of `bridgeHealth()` — the subset cohort
+   * healthcheck tools surface. Read after the probe so the freshness
+   * counters reflect this very round-trip.
+   */
+  bridge: {
+    role: 'host' | 'peer' | null;
+    port: number;
+    server_version: string;
+    fetch_timeout_ms: number;
+    last_success_at: number | null;
+    last_failure_at: number | null;
+    last_failure_reason: string | null;
+    consecutive_failures: number;
+  };
+  /**
+   * Present only when `ok` is false. `kind` is `classifyBridgeError`'s
+   * verdict over the thrown error (`'timeout' | 'bridge_down' | 'http' |
+   * 'protocol' | 'other'`); `message` is the error's message (or its
+   * `String()` for a non-Error throw).
+   */
+  error?: {
+    kind: BridgeError;
+    message: string;
   };
 }
 
@@ -1457,6 +1502,132 @@ export class FetchproxyServer {
   ): Promise<string> {
     const response = await this.get(path, this.applyJsonDefaults(opts));
     return response.body;
+  }
+
+  /**
+   * 0.11.0+: method-generic JSON convenience helper. Generalizes the
+   * `fetchJson<T>(path, { method, headers, body })` that
+   * zillow/redfin/compass/homes hand-rolled char-for-char in their
+   * `src/client.ts`:
+   *
+   *  - sets `Accept: application/json`;
+   *  - adds `Content-Type: application/json` only for a non-GET request
+   *    that carries a `body` (and only if the caller didn't set one);
+   *  - `JSON.stringify`s the body (GET / no-body sends nothing);
+   *  - treats a `204` or an empty body as `data: null` (no parse);
+   *  - otherwise `JSON.parse`s the body.
+   *
+   * Scope is serialization + header defaults + 204-handling +
+   * JSON.parse ONLY. It deliberately does NOT assert on the HTTP status
+   * or look for a sign-in interstitial — those guards differ per site
+   * (Zillow's `captcha-delivery`, Redfin's AWS-WAF challenge, …), so it
+   * returns BOTH the parsed `data` and the raw `FetchResult` and leaves
+   * the consumer to run its own `throwIfNotOk` / `throwIfSignInPage`
+   * over `result`.
+   *
+   * Bridge-level failures (no signed-in tab, SW down, timeout) still
+   * throw the typed errors via `request()`, exactly like the verb
+   * helpers — only successful round-trips (any HTTP status) return.
+   */
+  async requestJson<T = unknown>(
+    method: string,
+    path: string,
+    opts: {
+      subdomain?: string;
+      domain?: string;
+      headers?: Record<string, string>;
+      body?: unknown;
+    } = {},
+  ): Promise<{ data: T; result: FetchResult }> {
+    const isGet = method.toUpperCase() === 'GET';
+    const sendBody = !isGet && opts.body !== undefined;
+    const headers: Record<string, string> = {
+      Accept: 'application/json',
+      ...(sendBody && !this.hasContentType(opts.headers ?? {})
+        ? { 'Content-Type': 'application/json' }
+        : {}),
+      ...(opts.headers ?? {}),
+    };
+    const response = await this.request(method, path, {
+      headers,
+      body: sendBody ? JSON.stringify(opts.body) : undefined,
+      ...(opts.subdomain !== undefined ? { subdomain: opts.subdomain } : {}),
+      ...(opts.domain !== undefined ? { domain: opts.domain } : {}),
+    });
+    // Re-expose the success-arm FetchResult so callers keep their
+    // per-site guards. `request()` already threw on any bridge failure,
+    // so reaching here means a delivered HTTP response (`ok: true`).
+    const result: FetchResult = {
+      ok: true,
+      status: response.status,
+      url: response.url,
+      body: response.body,
+    };
+    if (response.status === 204 || response.body === '') {
+      return { data: null as T, result };
+    }
+    let data: T;
+    try {
+      data = JSON.parse(response.body) as T;
+    } catch (e) {
+      throw new Error(
+        `fetchproxy ${method} ${path} — response was not JSON: ${String(
+          (e as Error).message,
+        )}`,
+      );
+    }
+    return { data, result };
+  }
+
+  /**
+   * 0.11.0+: run a single healthcheck probe through `fetchFn`, measure
+   * the elapsed round-trip, classify any thrown error, and project the
+   * post-probe `bridgeHealth()` into a snake-cased `bridge` sub-object.
+   *
+   * This is the transport half of the probe loop zillow/redfin/homes
+   * had duplicated verbatim in `src/tools/healthcheck.ts`. The MCP
+   * supplies its own probe call (`(path) => client.fetchHtml(path)`)
+   * and probe path (e.g. `'/robots.txt'`); the tool registration and
+   * the site-specific plain-English hint text STAY in the consumer.
+   *
+   * `bridgeHealth()` is read AFTER the probe so its freshness counters
+   * (`lastSuccessAt` / `consecutiveFailures` / …) reflect this very
+   * round-trip rather than a stale pre-probe snapshot.
+   */
+  async runProbe(
+    fetchFn: (path: string) => Promise<unknown>,
+    probePath: string,
+  ): Promise<BridgeProbeResult> {
+    const start = Date.now();
+    let ok = false;
+    let error: BridgeProbeResult['error'];
+    try {
+      await fetchFn(probePath);
+      ok = true;
+    } catch (e) {
+      error = {
+        kind: classifyBridgeError(e),
+        message: e instanceof Error ? e.message : String(e),
+      };
+    }
+    const elapsed_ms = Date.now() - start;
+    // Read after the probe so the freshness counters include this call.
+    const health = this.bridgeHealth();
+    return {
+      ok,
+      elapsed_ms,
+      bridge: {
+        role: health.role,
+        port: health.port,
+        server_version: health.serverVersion,
+        fetch_timeout_ms: health.fetchTimeoutMs,
+        last_success_at: health.lastSuccessAt,
+        last_failure_at: health.lastFailureAt,
+        last_failure_reason: health.lastFailureReason,
+        consecutive_failures: health.consecutiveFailures,
+      },
+      ...(error ? { error } : {}),
+    };
   }
 
   /**
