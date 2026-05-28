@@ -82,6 +82,33 @@ npm install @fetchproxy/server
 
 `@fetchproxy/protocol` is pulled in transitively. You only need to depend on it directly if you're building your own bridge.
 
+## Pre-release builds
+
+Some MCP changes need to land alongside a not-yet-released fetchproxy version. The canonical example: a cohort migration across the consumer MCPs (`zillow-mcp`, `redfin-mcp`, `compass-mcp`, `homes-mcp`, `onehome-mcp`, `opentable-mcp`, `resy-mcp`, …) that all depend on a new `@fetchproxy/server` feature. Previously each consumer PR worked around this with `npm link` against a local checkout or carefully-mismatched `package.json`/lockfile pins; the structural fix is **pre-release dist-tags**.
+
+### Consuming a pre-release
+
+```sh
+npm install @fetchproxy/server@next
+```
+
+`@next` always points at the latest published rc (`<base>-rc.<N>`). Once the corresponding `release-please` PR merges and the canonical version publishes to `@latest`, consumer MCPs can drop the `@next` pin in the same PR that bumps to the real version. Until then, CI on consumer PRs goes green against the rc.
+
+The `next` dist-tag is **only** ever ahead of `latest`, never the other way around — installing `@latest` (the default) continues to give you the stable line.
+
+### Cutting an rc (maintainers)
+
+`.github/workflows/release-please-next.yml` is a manual workflow. From the **Actions** tab:
+
+1. Run **release-please-next** (`workflow_dispatch`).
+2. `next_version` = the target base version (e.g. `0.10.0`).
+3. `rc_number` = `1` for the first rc of that base, increment for each follow-up.
+4. Leave `create_git_tag` on (default) unless you're dry-running.
+
+It builds `main` HEAD, rewrites every published package's version to `<base>-rc.<N>` in-memory (never committed back to `main`), syncs cross-package `@fetchproxy/*` caret ranges, and publishes to npm under the `next` dist-tag via the same Trusted-Publisher OIDC trust the canonical `release-please.yml` uses — no `NPM_TOKEN` involved.
+
+The canonical `latest`-channel flow (push to `main` → `release-please.yml` opens a release PR → merging publishes to `@latest`) is unchanged. Pre-releases are a strict addition.
+
 ## Quickstart
 
 A minimal MCP shape using `FetchproxyServer`:

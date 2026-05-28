@@ -1,0 +1,225 @@
+name: release-please-next
+
+# Pre-release ("next" dist-tag) publish flow for fetchproxy.
+#
+# Why this exists: cohort migrations across consumer MCPs (zillow,
+# redfin, compass, homes, onehome, opentable, resy …) chronically
+# need to validate against an UNPUBLISHED `@fetchproxy/server`
+# version before the canonical release-please PR merges. Without
+# pre-releases, each consumer PR sits DRAFT with red CI, working
+# around the missing version via `npm link` or carefully-mismatched
+# `package.json`/lockfile pins. See #75 (and the keep-alive cohort
+# wave #71) for the recurring pain.
+#
+# Shape: a maintainer fires this workflow manually
+# (`workflow_dispatch`) with a target base version and an rc number.
+# It builds main HEAD, rewrites every published package's version
+# to `<base>-rc.<N>`, rewrites cross-package `@fetchproxy/*` deps
+# to match, publishes each to npm under the `next` dist-tag via the
+# existing Trusted-Publisher OIDC trust (no NPM_TOKEN required),
+# then optionally cuts a `v<base>-rc.<N>` git tag + GitHub prerelease.
+#
+# Critical invariants:
+#   * The repo state is NEVER committed back. Version rewrites are
+#     in-memory only — the canonical `release-please.yml` flow stays
+#     the sole writer of versions on `main`.
+#   * `npm publish --tag next` puts the build on the `next` dist-tag,
+#     NOT `latest`. Consumers opt in with `@fetchproxy/server@next`.
+#   * Same OIDC publishing path as release-please.yml — no token
+#     management, no .npmrc divergence.
+
+on:
+  workflow_dispatch:
+    inputs:
+      next_version:
+        description: 'Base version for the rc (e.g. 0.9.0 or 0.10.0). The published tag will be <base>-rc.<rc_number>.'
+        required: true
+        type: string
+      rc_number:
+        description: 'rc counter (1, 2, 3 …). Combined with next_version into <base>-rc.<N>.'
+        required: true
+        type: string
+        default: '1'
+      create_git_tag:
+        description: 'Tag the commit as v<base>-rc.<N> and cut a GitHub prerelease. Leave true unless dry-running.'
+        required: false
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+  id-token: write
+
+concurrency:
+  group: release-please-next-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish-rc:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6.0.2
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v6.4.0
+        with:
+          node-version: 24
+          cache: npm
+          registry-url: https://registry.npmjs.org
+
+      # Mirror release-please.yml: strip the deprecated `always-auth`
+      # line so npm 11 doesn't warn; keep `_authToken=${NODE_AUTH_TOKEN}`
+      # so OIDC takes over with NODE_AUTH_TOKEN unset.
+      - name: Strip always-auth from .npmrc
+        run: sed -i '/always-auth/d' "$NPM_CONFIG_USERCONFIG"
+
+      - name: Compute RC version
+        id: rc
+        env:
+          NEXT_VERSION: ${{ inputs.next_version }}
+          RC_NUMBER: ${{ inputs.rc_number }}
+        run: |
+          set -euo pipefail
+          # Reject anything other than dotted numerics + an rc counter.
+          # Keeps us from accidentally publishing a tag like
+          # `latest-rc.1` or a SemVer-illegal `0.9-rc.1`.
+          if ! [[ "$NEXT_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "next_version '$NEXT_VERSION' must be MAJOR.MINOR.PATCH (e.g. 0.9.0)" >&2
+            exit 1
+          fi
+          if ! [[ "$RC_NUMBER" =~ ^[0-9]+$ ]]; then
+            echo "rc_number '$RC_NUMBER' must be a non-negative integer" >&2
+            exit 1
+          fi
+          RC_VERSION="${NEXT_VERSION}-rc.${RC_NUMBER}"
+          echo "RC_VERSION=${RC_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Computed rc version: ${RC_VERSION}"
+
+      - run: npm ci
+
+      # Rewrite every workspace's package.json `version` field, plus
+      # the Chrome extension manifest's `version`, plus every
+      # cross-package `@fetchproxy/*` caret range. Mirrors the
+      # `extra-files` set in release-please-config.json — keep them
+      # in sync if either list changes.
+      - name: Rewrite versions to RC
+        env:
+          RC_VERSION: ${{ steps.rc.outputs.RC_VERSION }}
+        run: |
+          set -euo pipefail
+          # Chrome extension manifest.version is NOT SemVer-aware and
+          # rejects pre-release suffixes (`0.9.0-rc.1` is invalid).
+          # We only publish npm packages from this workflow; the
+          # extension zip is NOT cut here. Skip the manifest entirely.
+          for pkg in packages/bootstrap packages/extension-chrome packages/extension-core packages/protocol packages/server; do
+            node -e "
+              const fs = require('fs');
+              const file = '${pkg}/package.json';
+              const j = JSON.parse(fs.readFileSync(file, 'utf8'));
+              j.version = '${RC_VERSION}';
+              for (const key of ['dependencies', 'devDependencies', 'peerDependencies']) {
+                if (!j[key]) continue;
+                for (const dep of Object.keys(j[key])) {
+                  if (dep.startsWith('@fetchproxy/')) {
+                    // Caret range, not bare pin — matches
+                    // release-please.yml's cross-dep sync convention.
+                    // Functionally identical for the single-PR-publish
+                    // case (server + bootstrap go out together at the
+                    // same RC), but lets a consumer install
+                    // @fetchproxy/server@next then @fetchproxy/bootstrap@next
+                    // without lockfile pin-up if the two ever land at
+                    // slightly different RC numbers.
+                    j[key][dep] = '^${RC_VERSION}';
+                  }
+                }
+              }
+              fs.writeFileSync(file, JSON.stringify(j, null, 2) + '\n');
+            "
+          done
+          # Root package.json version too — keeps `npm pack`/build
+          # diagnostics consistent.
+          node -e "
+            const fs = require('fs');
+            const j = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+            j.version = '${RC_VERSION}';
+            fs.writeFileSync('package.json', JSON.stringify(j, null, 2) + '\n');
+          "
+          # Refresh the lockfile in-tree so workspace resolution
+          # uses the new exact versions during publish. Lockfile is
+          # never committed back; the workflow exits with a dirty
+          # tree but no `git push`.
+          npm install --package-lock-only --ignore-scripts
+
+      # Same dependency order — and same workspace set — as
+      # release-please.yml's publish job. extension-core is
+      # `"private": true` and not a transitive dep of the two
+      # published packages (server, bootstrap), so it's not strictly
+      # required to gate the publish. Kept here for symmetry with
+      # release-please.yml and as a compile gate: if extension-core
+      # stops building against a shared protocol/server change, we'd
+      # rather catch it in the RC flow than discover it on the next
+      # stable release.
+      - name: Build packages
+        run: npm run build --workspace=@fetchproxy/protocol --workspace=@fetchproxy/server --workspace=@fetchproxy/bootstrap --workspace=@fetchproxy/extension-core
+
+      # Publish each non-private package under the `next` dist-tag.
+      # Idempotent: if a previous run already pushed the same rc
+      # (e.g. partial failure mid-loop), `npm view` short-circuits.
+      - name: Publish @fetchproxy/protocol to npm (next)
+        env:
+          RC_VERSION: ${{ steps.rc.outputs.RC_VERSION }}
+        run: |
+          PUBLISHED=$(npm view "@fetchproxy/protocol@${RC_VERSION}" version 2>/dev/null || true)
+          if [ "$PUBLISHED" = "$RC_VERSION" ]; then
+            echo "npm already has @fetchproxy/protocol@${RC_VERSION} — skipping."
+            exit 0
+          fi
+          npm publish --workspace=@fetchproxy/protocol --access=public --provenance --tag next
+
+      - name: Publish @fetchproxy/server to npm (next)
+        env:
+          RC_VERSION: ${{ steps.rc.outputs.RC_VERSION }}
+        run: |
+          PUBLISHED=$(npm view "@fetchproxy/server@${RC_VERSION}" version 2>/dev/null || true)
+          if [ "$PUBLISHED" = "$RC_VERSION" ]; then
+            echo "npm already has @fetchproxy/server@${RC_VERSION} — skipping."
+            exit 0
+          fi
+          npm publish --workspace=@fetchproxy/server --access=public --provenance --tag next
+
+      - name: Publish @fetchproxy/bootstrap to npm (next)
+        env:
+          RC_VERSION: ${{ steps.rc.outputs.RC_VERSION }}
+        run: |
+          PUBLISHED=$(npm view "@fetchproxy/bootstrap@${RC_VERSION}" version 2>/dev/null || true)
+          if [ "$PUBLISHED" = "$RC_VERSION" ]; then
+            echo "npm already has @fetchproxy/bootstrap@${RC_VERSION} — skipping."
+            exit 0
+          fi
+          npm publish --workspace=@fetchproxy/bootstrap --access=public --provenance --tag next
+
+      # Optional: tag the source commit + cut a prerelease GitHub
+      # Release pointing at it. Skipping this (set create_git_tag=false)
+      # is the dry-run mode — useful if you want to validate the
+      # workflow end-to-end without leaving artifacts.
+      - name: Tag commit and create GitHub prerelease
+        if: ${{ inputs.create_git_tag }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RC_VERSION: ${{ steps.rc.outputs.RC_VERSION }}
+        run: |
+          set -euo pipefail
+          TAG="v${RC_VERSION}"
+          if git rev-parse "$TAG" >/dev/null 2>&1; then
+            echo "Tag $TAG already exists — skipping create."
+            exit 0
+          fi
+          git -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
+              -c user.name='github-actions[bot]' \
+              tag -a "$TAG" -m "Pre-release ${RC_VERSION} (next dist-tag)"
+          git push origin "refs/tags/$TAG"
+          gh release create "$TAG" \
+            --title "$TAG" \
+            --notes "Pre-release published to the npm \`next\` dist-tag. Install with \`npm install @fetchproxy/server@next\`. Promoted to \`latest\` when the corresponding release-please PR merges." \
+            --prerelease
