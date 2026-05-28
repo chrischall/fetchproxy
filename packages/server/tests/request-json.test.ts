@@ -102,7 +102,9 @@ describe('requestJson<T>', () => {
   it('204: returns null data without attempting to parse', async () => {
     const s = new TestServer(baseOpts);
     s.canned = { ok: true, status: 204, url: 'x', body: '' };
-    const { data, result } = await s.requestJson<unknown>('DELETE', '/api');
+    // The return type is `T | null`, so a real `T` is safe here: the 204
+    // arm narrows `data` to `null` rather than lying about it being a `T`.
+    const { data, result } = await s.requestJson<{ id: number }>('DELETE', '/api');
     expect(data).toBeNull();
     expect(result.status).toBe(204);
   });
@@ -110,7 +112,7 @@ describe('requestJson<T>', () => {
   it('empty body on a 200: returns null data without attempting to parse', async () => {
     const s = new TestServer(baseOpts);
     s.canned = { ok: true, status: 200, url: 'x', body: '' };
-    const { data } = await s.requestJson<unknown>('GET', '/api');
+    const { data } = await s.requestJson<{ id: number }>('GET', '/api');
     expect(data).toBeNull();
   });
 

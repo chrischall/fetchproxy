@@ -1538,7 +1538,7 @@ export class FetchproxyServer {
       headers?: Record<string, string>;
       body?: unknown;
     } = {},
-  ): Promise<{ data: T; result: FetchResult }> {
+  ): Promise<{ data: T | null; result: FetchResult }> {
     const isGet = method.toUpperCase() === 'GET';
     const sendBody = !isGet && opts.body !== undefined;
     const headers: Record<string, string> = {
@@ -1564,16 +1564,16 @@ export class FetchproxyServer {
       body: response.body,
     };
     if (response.status === 204 || response.body === '') {
-      return { data: null as T, result };
+      return { data: null, result };
     }
     let data: T;
     try {
       data = JSON.parse(response.body) as T;
     } catch (e) {
       throw new Error(
-        `fetchproxy ${method} ${path} — response was not JSON: ${String(
-          (e as Error).message,
-        )}`,
+        `fetchproxy ${method} ${path} — response was not JSON: ${
+          e instanceof Error ? e.message : String(e)
+        }`,
       );
     }
     return { data, result };
