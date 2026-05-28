@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.9.0](https://github.com/chrischall/fetchproxy/compare/v0.8.0...v0.9.0) (2026-05-28)
+
+
+### Features
+
+* **ci:** add pre-release dist-tag (next) flow for cohort migrations ([#79](https://github.com/chrischall/fetchproxy/issues/79)) ([edd2e54](https://github.com/chrischall/fetchproxy/commit/edd2e54d0e006349e8f9cce5419f596b436aad56))
+* **server:** flip keepAliveIntervalMs default to 25_000 + bridgeHealth().keepAlive observability surface ([#77](https://github.com/chrischall/fetchproxy/issues/77)) ([62faa38](https://github.com/chrischall/fetchproxy/commit/62faa38b8ce0f118c450862ecfad73b0de7444c0))
+* **server:** hoist bulk-fan-out helpers (mapWithConcurrency, retryOnceOnTimeout, classifyRowError) ([#69](https://github.com/chrischall/fetchproxy/issues/69)) ([80c78c0](https://github.com/chrischall/fetchproxy/commit/80c78c00ac801f70aebd8a6bd986b6f3b64c95a8))
+* **server:** proactive keep-alive ping (closes [#67](https://github.com/chrischall/fetchproxy/issues/67)) ([#68](https://github.com/chrischall/fetchproxy/issues/68)) ([6d46b47](https://github.com/chrischall/fetchproxy/commit/6d46b476c74b3bc4845be833d909ce2a27f92f5a))
+
+
+### Documentation
+
+* **server:** JSDoc audit + Server options README section ([#80](https://github.com/chrischall/fetchproxy/issues/80)) ([89490e1](https://github.com/chrischall/fetchproxy/commit/89490e1e2ca63f2621ffb4054539801f59707be2))
+* **server:** refresh keepAlive JSDoc + bridgeHealth wording per [#77](https://github.com/chrischall/fetchproxy/issues/77) review nits ([#81](https://github.com/chrischall/fetchproxy/issues/81)) ([520a272](https://github.com/chrischall/fetchproxy/commit/520a272a71e4f5eaa21330f4cb4241aba37e48bb))
+
 ## [0.8.0](https://github.com/chrischall/fetchproxy/compare/v0.7.1...v0.8.0) (2026-05-27)
 
 
