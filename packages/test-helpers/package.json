@@ -1,0 +1,33 @@
+{
+  "name": "@fetchproxy/test-helpers",
+  "version": "0.8.0",
+  "description": "Vitest mock helpers for @fetchproxy/server — drop-in FetchproxyServer mock that captures constructor opts and exposes spy-able request/fetch/captureRequestHeader/bridgeHealth methods.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -b"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/chrischall/fetchproxy.git",
+    "directory": "packages/test-helpers"
+  },
+  "license": "MIT",
+  "peerDependencies": {
+    "@fetchproxy/server": "^0.8.0",
+    "vitest": ">=1.0.0"
+  }
+}

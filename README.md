@@ -47,6 +47,7 @@ Three pieces, one repo:
 |---|---|---|
 | [`@fetchproxy/server`](packages/server) | Node library MCP authors depend on. Elects host/peer, runs the handshake, exposes `fetch()` + convenience verbs (`get`, `postJson`, `readCookies`, …). | `packages/server/` |
 | [`@fetchproxy/protocol`](packages/protocol) | Wire types, validators, crypto wrappers. Shared between server and extension. | `packages/protocol/` |
+| [`@fetchproxy/test-helpers`](packages/test-helpers) | Vitest mocks for downstream MCP test suites — drop-in `FetchproxyServer` replacement that captures constructor opts and exposes spy-able verbs. | `packages/test-helpers/` |
 | `fetchproxy-extension` | Browser extension. Connects to the WS, runs `fetch(url, { credentials: 'include' })` in the page MAIN world of a matching tab, returns the response. | `packages/extension-core/` + `packages/extension-chrome/` |
 
 `extension-core/` holds the shared TypeScript; `extension-chrome/` is the per-browser MV3 manifest + esbuild bundle. Safari/Firefox targets can slot in alongside without forking the core.
@@ -81,6 +82,33 @@ npm install @fetchproxy/server
 ```
 
 `@fetchproxy/protocol` is pulled in transitively. You only need to depend on it directly if you're building your own bridge.
+
+## Pre-release builds
+
+Some MCP changes need to land alongside a not-yet-released fetchproxy version. The canonical example: a cohort migration across the consumer MCPs (`zillow-mcp`, `redfin-mcp`, `compass-mcp`, `homes-mcp`, `onehome-mcp`, `opentable-mcp`, `resy-mcp`, …) that all depend on a new `@fetchproxy/server` feature. Previously each consumer PR worked around this with `npm link` against a local checkout or carefully-mismatched `package.json`/lockfile pins; the structural fix is **pre-release dist-tags**.
+
+### Consuming a pre-release
+
+```sh
+npm install @fetchproxy/server@next
+```
+
+`@next` always points at the latest published rc (`<base>-rc.<N>`). Once the corresponding `release-please` PR merges and the canonical version publishes to `@latest`, consumer MCPs can drop the `@next` pin in the same PR that bumps to the real version. Until then, CI on consumer PRs goes green against the rc.
+
+The `next` dist-tag is **only** ever ahead of `latest`, never the other way around — installing `@latest` (the default) continues to give you the stable line.
+
+### Cutting an rc (maintainers)
+
+`.github/workflows/release-please-next.yml` is a manual workflow. From the **Actions** tab:
+
+1. Run **release-please-next** (`workflow_dispatch`).
+2. `next_version` = the target base version (e.g. `0.10.0`).
+3. `rc_number` = `1` for the first rc of that base, increment for each follow-up.
+4. Leave `create_git_tag` on (default) unless you're dry-running.
+
+It builds `main` HEAD, rewrites every published package's version to `<base>-rc.<N>` in-memory (never committed back to `main`), syncs cross-package `@fetchproxy/*` caret ranges, and publishes to npm under the `next` dist-tag via the same Trusted-Publisher OIDC trust the canonical `release-please.yml` uses — no `NPM_TOKEN` involved.
+
+The canonical `latest`-channel flow (push to `main` → `release-please.yml` opens a release PR → merging publishes to `@latest`) is unchanged. Pre-releases are a strict addition.
 
 ## Quickstart
 
@@ -189,6 +217,7 @@ new FetchproxyServer({ port: 37150, host: '127.0.0.1', /* … */ });
 packages/
   protocol/          @fetchproxy/protocol         (npm, public)
   server/            @fetchproxy/server           (npm, public)
+  test-helpers/      @fetchproxy/test-helpers     (npm, public)
   extension-core/    shared TS for the extension  (workspace internal)
   extension-chrome/  Chrome MV3 build target      (workspace internal)
 docs/
@@ -196,7 +225,7 @@ docs/
   SECURITY.md        threat model
 ```
 
-`npm test` runs the full vitest suite across all workspaces. `npm run typecheck` runs tsc-build on the three TS packages (extension-chrome is bundled, not typechecked separately).
+`npm test` runs the full vitest suite across all workspaces. `npm run typecheck` runs tsc-build on all TS workspaces (extension-chrome is bundled, not typechecked separately).
 
 ## License
 
