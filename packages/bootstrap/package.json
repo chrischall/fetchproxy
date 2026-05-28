@@ -27,7 +27,7 @@
   },
   "license": "MIT",
   "dependencies": {
-    "@fetchproxy/protocol": "^0.9.0",
-    "@fetchproxy/server": "^0.9.0"
+    "@fetchproxy/protocol": "^0.10.0",
+    "@fetchproxy/server": "^0.10.0"
   }
 }
