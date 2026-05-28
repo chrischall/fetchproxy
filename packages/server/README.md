@@ -132,10 +132,16 @@ freshness counters — downstream MCPs surface this through their
 healthcheck tool. As of 0.10.0 ([#73](https://github.com/chrischall/fetchproxy/issues/73))
 the return shape includes `keepAlive` and `swEviction` sub-objects
 so consumers can verify the keep-alive is actually preventing
-Chrome MV3 service-worker eviction:
+Chrome MV3 service-worker eviction. As of 0.11.0 ([#82](https://github.com/chrischall/fetchproxy/issues/82))
+the resolved `fetchTimeoutMs` and `bridgeReviveDelayMs` are also
+top-level fields so cohort healthcheck tools can drop their local
+`DEFAULT_FETCH_TIMEOUT_MS` / `DEFAULT_BRIDGE_REVIVE_DELAY_MS`
+constants and read the resolved value directly:
 
 ```ts
 const h = fp.bridgeHealth();
+// h.fetchTimeoutMs: number;       // resolved (30_000 default, or override; 0 = disabled)
+// h.bridgeReviveDelayMs: number;  // resolved (2_000 default, or override; 0 = disabled)
 // h.keepAlive: {
 //   enabled: boolean;          // true when intervalMs > 0
 //   intervalMs: number;        // resolved (25_000 default)
