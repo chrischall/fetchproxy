@@ -20,4 +20,10 @@ export { classifyFetchError } from './error-kind.js';
 export type { FetchErrorKind } from './error-kind.js';
 export { classifyBridgeError } from './classify-bridge-error.js';
 export type { BridgeError } from './classify-bridge-error.js';
+export {
+  mapWithConcurrency,
+  retryOnceOnTimeout,
+  classifyRowError,
+  BRIDGE_CONCURRENCY,
+} from './bulk.js';
 export type { Capability, FetchInit } from '@fetchproxy/protocol';
