@@ -69,6 +69,39 @@ await fp.close();
 | `host` | `string` | no | Defaults to `'127.0.0.1'`. Never bind a public address — see the [security model](https://github.com/chrischall/fetchproxy/blob/main/docs/SECURITY.md). |
 | `identityDir` | `string` | no | Override the identity-key storage directory. Defaults to `~/.fetchproxy/identity/`. |
 
+#### Server options (timeout / keep-alive)
+
+| Option | Type | Default | Notes |
+|---|---|---|---|
+| `fetchTimeoutMs` | `number` | `30_000` | Per-request timeout. Pass `0` to opt back into hang-forever. |
+| `bridgeReviveDelayMs` | `number` | `2_000` | One-shot retry delay after `content_script_unreachable` (MV3 SW eviction). Pass `0` to disable the retry. |
+| `keepAliveIntervalMs` | `number` | `25_000` | Server-side proactive keep-alive ping interval. **Flipped from `undefined` to `25_000` in 0.10.0** ([#72](https://github.com/chrischall/fetchproxy/issues/72)) — the round-3 #71 cohort wave showed every Pattern A consumer was opting into this value. Pass `0` to disable. |
+| `keepAliveMaxIdleMs` | `number` | `5 * 60 * 1000` (300_000) | After this long without a successful fetch / capture / `markActive()` the keep-alive ping interval self-quiesces. |
+
+`fp.bridgeHealth()` exposes a snapshot of the bridge's process-wide
+freshness counters — downstream MCPs surface this through their
+healthcheck tool. As of 0.10.0 ([#73](https://github.com/chrischall/fetchproxy/issues/73))
+the return shape includes `keepAlive` and `swEviction` sub-objects
+so consumers can verify the keep-alive is actually preventing
+Chrome MV3 service-worker eviction:
+
+```ts
+const h = fp.bridgeHealth();
+// h.keepAlive: {
+//   enabled: boolean;          // true when intervalMs > 0
+//   intervalMs: number;        // resolved (25_000 default)
+//   maxIdleMs: number;         // resolved (300_000 default)
+//   lastPingAt: number | null; // epoch ms; null until first tick
+//   totalPings: number;        // monotonic across the process lifetime
+//   idleSinceMs: number | null;// elapsed ms since lastActiveAt
+// };
+// h.swEviction: {
+//   lazyReviveAttempts: number;
+//   lazyReviveSuccesses: number;
+//   lastEvictionDetectedAt: number | null; // first content_script_unreachable
+// };
+```
+
 ### `await fp.listen(): Promise<void>`
 
 Loads or creates the identity keypair, races the port, and stands up either a host (binds the port) or peer (dials the host) connection. Idempotent only in the sense that it leaves `role` populated on success; calling `listen()` twice without `close()` is a programming error.
