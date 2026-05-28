@@ -75,8 +75,8 @@ parity with this table. For longer "when to override" guidance, see
 | `onPairCode` | `(code: string) => void` | (off by default) | Invoked once with the joint pair code on extension hello, so an MCP can surface it via stderr / MCP logging. |
 | `fetchTimeoutMs` | `number` | `30_000` | Per-request timeout for `fetch()`. `0` opts back into legacy hang-forever. ([#58](https://github.com/chrischall/fetchproxy/issues/58)) |
 | `bridgeReviveDelayMs` | `number` | `2_000` | Delay before the one-shot retry after `content_script_unreachable`. Gives Chrome a moment to wake the evicted MV3 SW. `0` disables. ([#58](https://github.com/chrischall/fetchproxy/issues/58)) |
-| `keepAliveIntervalMs` | `number` | `undefined` (off) | Server-initiated ping cadence that keeps the MV3 SW resident across activity bursts. `25_000` is the recommended on-value. ([#67](https://github.com/chrischall/fetchproxy/issues/67)) |
-| `keepAliveMaxIdleMs` | `number` | `300_000` (5 min) | How long after the most-recent activity the keep-alive pings keep firing. No-op when `keepAliveIntervalMs` is unset. ([#67](https://github.com/chrischall/fetchproxy/issues/67)) |
+| `keepAliveIntervalMs` | `number` | `25_000` | Server-initiated ping cadence that keeps the MV3 SW resident across activity bursts. Comfortably under Chrome's ~30s eviction threshold. Pass `0` to disable. Default flipped from `undefined` in 0.10.0 ([#71](https://github.com/chrischall/fetchproxy/issues/71)). ([#67](https://github.com/chrischall/fetchproxy/issues/67)) |
+| `keepAliveMaxIdleMs` | `number` | `300_000` (5 min) | How long after the most-recent activity the keep-alive pings keep firing. No-op when `keepAliveIntervalMs` is `0`. ([#67](https://github.com/chrischall/fetchproxy/issues/67)) |
 | `cookieKeys` | `string[]` | `[]` | Declared cookie names for `readCookies({ keys })`. Gates the call site (gate #1) before the extension re-checks (gate #2). |
 | `localStorageKeys` | `string[]` | `[]` | Declared localStorage keys for `readLocalStorage`. |
 | `sessionStorageKeys` | `string[]` | `[]` | Declared sessionStorage keys for `readSessionStorage`. |
@@ -101,12 +101,14 @@ parity with this table. For longer "when to override" guidance, see
   2s isn't enough for the SW to wake; shorten if the caller is
   willing to surface the bridge-down error sooner. Pass `0` to
   disable the retry entirely.
-- **`keepAliveIntervalMs`.** Off by default for back-compat with
-  0.8.0. MCPs that see sporadic-but-clustered activity (a user opens
-  a search, thinks for 30s, runs another tool) should opt in with
-  `25_000` — comfortably under Chrome's ~30s eviction threshold.
-  Pairs with `keepAliveMaxIdleMs` (default 5 min) so the pings don't
-  run forever on an idle process.
+- **`keepAliveIntervalMs`.** Default `25_000` since 0.10.0 (the
+  round-3 #71 cohort showed every consumer was opting into the same
+  value, so it was promoted to the default). Comfortably under
+  Chrome's ~30s eviction threshold — keeps the MV3 SW resident
+  across activity bursts (a user opens a search, thinks for 30s,
+  runs another tool). Pass `0` to disable. Pairs with
+  `keepAliveMaxIdleMs` (default 5 min) so the pings self-quiesce on
+  idle processes.
 - **`domains`.** Trust boundary, required. Use the apex hostname
   (`'opentable.com'`) and let the extension match subdomains
   automatically. Multi-domain MCPs (HoneyBook, Resy two-host setups)
@@ -124,15 +126,6 @@ parity with this table. For longer "when to override" guidance, see
 See [Server options](#server-options) for the full table. Three
 fields are required: `serverName`, `version`, `domains`. Everything
 else has a default.
-
-#### Server options (timeout / keep-alive)
-
-| Option | Type | Default | Notes |
-|---|---|---|---|
-| `fetchTimeoutMs` | `number` | `30_000` | Per-request timeout. Pass `0` to opt back into hang-forever. |
-| `bridgeReviveDelayMs` | `number` | `2_000` | One-shot retry delay after `content_script_unreachable` (MV3 SW eviction). Pass `0` to disable the retry. |
-| `keepAliveIntervalMs` | `number` | `25_000` | Server-side proactive keep-alive ping interval. **Flipped from `undefined` to `25_000` in 0.10.0** ([#72](https://github.com/chrischall/fetchproxy/issues/72)) — the round-3 #71 cohort wave showed every Pattern A consumer was opting into this value. Pass `0` to disable. |
-| `keepAliveMaxIdleMs` | `number` | `5 * 60 * 1000` (300_000) | After this long without a successful fetch / capture / `markActive()` the keep-alive ping interval self-quiesces. |
 
 `fp.bridgeHealth()` exposes a snapshot of the bridge's process-wide
 freshness counters — downstream MCPs surface this through their
