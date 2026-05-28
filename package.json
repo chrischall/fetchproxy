@@ -10,7 +10,7 @@
     "build": "npm run build --workspaces --if-present",
     "test": "vitest run",
     "test:watch": "vitest",
-    "typecheck": "tsc -b packages/protocol packages/server packages/bootstrap packages/extension-core"
+    "typecheck": "tsc -b packages/protocol packages/server packages/bootstrap packages/extension-core packages/test-helpers"
   },
   "devDependencies": {
     "@types/node": "^25.9.1",
