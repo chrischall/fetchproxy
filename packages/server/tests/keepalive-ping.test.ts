@@ -52,7 +52,66 @@ function installRecordingHost(server: FetchproxyServer): RecordingHost {
   };
 }
 
-async function doOneFetch(server: FetchproxyServer, host: RecordingHost): Promise<void> {
+interface RecordingPeer extends RecordingHost {
+  triggerRenegotiate: () => void;
+}
+
+// Peer-role analogue of installRecordingHost. The peer handle surface
+// differs from the host handle (sendInner vs sendOwnInner, onRenegotiate
+// instead of onExtensionDisconnect, no onOwnInner), so doConnect's peer
+// branch wires the keepalive to a different lifecycle hook. We need a
+// separate fake to exercise that branch — including the
+// `onRenegotiate → stopKeepalive` wiring added alongside the keepalive.
+//
+// The fake reproduces doConnect's peer-branch wiring so a test simply
+// observing `peer.triggerRenegotiate()` exercises the same code path
+// real callers do (we can't run doConnect itself without a real WS).
+function installRecordingPeer(server: FetchproxyServer): RecordingPeer {
+  const sent: InnerFrame[] = [];
+  let renegotiateCb: (() => void) | null = null;
+  const fakePeerHandle = {
+    close: () => undefined,
+    sendInner: async (inner: InnerFrame): Promise<void> => {
+      sent.push(inner);
+    },
+    onInner: (_cb: (inner: InnerFrame) => void) => undefined,
+    onRenegotiate: (cb: () => void) => {
+      renegotiateCb = cb;
+    },
+    onPendingPair: (_cb: (code: string) => void) => undefined,
+    pendingPairCode: (): string | null => null,
+  };
+  (server as unknown as { peerHandle: typeof fakePeerHandle }).peerHandle = fakePeerHandle;
+  (server as unknown as { role: 'host' | 'peer' | null }).role = 'peer';
+  // Mirror doConnect's peer-branch wiring: onRenegotiate → stopKeepalive.
+  // The production path runs this inside doConnect; the fake skips
+  // doConnect entirely, so we have to re-create the subscription here for
+  // the wiring to be exercised under test.
+  fakePeerHandle.onRenegotiate(() => {
+    (server as unknown as { stopKeepalive(): void }).stopKeepalive();
+  });
+  return {
+    sent,
+    lastRequest: () => {
+      for (let i = sent.length - 1; i >= 0; i--) {
+        const f = sent[i];
+        if (f && f.type === 'request') return f;
+      }
+      return null;
+    },
+    reply: (frame) => {
+      (server as unknown as { onInner(i: InnerFrame): void }).onInner(frame);
+    },
+    triggerRenegotiate: () => {
+      if (renegotiateCb) renegotiateCb();
+    },
+  };
+}
+
+async function doOneFetch(
+  server: FetchproxyServer,
+  host: RecordingHost,
+): Promise<void> {
   const pending = server.fetch({
     url: 'https://example.com/x',
     method: 'GET',
@@ -163,6 +222,48 @@ describe('keepAliveIntervalMs — server-side proactive keepalive (#67)', () => 
     s.markActive();
     await new Promise((r) => setTimeout(r, 150));
     expect(pings(host).length).toBe(0);
+    await s.close();
+  });
+
+  // Peer-role coverage: the host branch above exercises
+  // `hostHandle.sendOwnInner` from `sendKeepalivePing`. The peer branch
+  // calls `peerHandle.sendInner` instead, and doConnect wires
+  // `onRenegotiate → stopKeepalive` (instead of the host's
+  // `onExtensionDisconnect → stopKeepalive`). Both deserve their own tests.
+  it('sends ping frames over peerHandle.sendInner when role is peer', async () => {
+    const s = new FetchproxyServer({
+      ...baseOpts,
+      keepAliveIntervalMs: 50,
+      keepAliveMaxIdleMs: 5_000,
+    });
+    const peer = installRecordingPeer(s);
+    await doOneFetch(s, peer);
+    await new Promise((r) => setTimeout(r, 175));
+    // Same threshold as the host-side equivalent — at 50ms interval over
+    // ~175ms we expect >=2 ticks even on slow CI.
+    expect(pings(peer).length).toBeGreaterThanOrEqual(2);
+    await s.close();
+  });
+
+  it('peer onRenegotiate stops the ping interval', async () => {
+    const s = new FetchproxyServer({
+      ...baseOpts,
+      keepAliveIntervalMs: 30,
+      keepAliveMaxIdleMs: 5_000,
+    });
+    const peer = installRecordingPeer(s);
+    await doOneFetch(s, peer);
+    await new Promise((r) => setTimeout(r, 100));
+    const pingsBefore = pings(peer).length;
+    expect(pingsBefore).toBeGreaterThan(0);
+    // Simulate the host telling us "session renegotiated" — the keepalive
+    // should quiesce immediately because doConnect (mirrored by
+    // installRecordingPeer) wired onRenegotiate → stopKeepalive.
+    peer.triggerRenegotiate();
+    await new Promise((r) => setTimeout(r, 150));
+    const pingsAfter = pings(peer).length;
+    // Allow one extra in-flight ping in the same tick the gate flipped.
+    expect(pingsAfter - pingsBefore).toBeLessThanOrEqual(1);
     await s.close();
   });
 });

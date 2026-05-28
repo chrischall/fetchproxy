@@ -884,7 +884,11 @@ export class FetchproxyServer {
   }
 
   private noteActivityForKeepalive(): void {
-    if (this.opts.keepAliveIntervalMs === undefined) return;
+    // Match the gate `startKeepaliveIfIdle` uses (<= 0 disables) so a
+    // caller passing `keepAliveIntervalMs: 0` doesn't stamp `lastActiveAt`
+    // for a feature that will never fire.
+    const intervalMs = this.opts.keepAliveIntervalMs;
+    if (intervalMs === undefined || intervalMs <= 0) return;
     this.lastActiveAt = Date.now();
     this.startKeepaliveIfIdle();
   }
@@ -919,9 +923,11 @@ export class FetchproxyServer {
         await this.peerHandle.sendInner(inner);
       }
     } catch (e) {
-      // Best-effort — keepalive is opportunistic.
+      // Best-effort — keepalive is opportunistic. Use stderr (console.error)
+      // not stdout — MCPs speak JSON-RPC over stdio; any stray stdout byte
+      // corrupts the protocol stream. Mirrors host.ts's logging convention.
       // eslint-disable-next-line no-console
-      console.debug('[fetchproxy] keepalive ping send failed:', e);
+      console.error('[fetchproxy] keepalive ping send failed:', e);
     }
   }
 
