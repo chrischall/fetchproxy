@@ -203,6 +203,19 @@ describe('bridgeHealth()', () => {
     expect(s.bridgeHealth().bridgeReviveDelayMs).toBe(500);
   });
 
+  // Pin the documented `0 = disabled` opt-out so a future refactor swapping
+  // `??` for `||` can't silently break it (0 is falsy, so a `||` default
+  // would clobber the opt-out path into the default value).
+  it('reflects fetchTimeoutMs: 0 (disabled / hang-forever) in bridgeHealth() (#82)', () => {
+    const s = new FetchproxyServer({ ...baseOpts, fetchTimeoutMs: 0 });
+    expect(s.bridgeHealth().fetchTimeoutMs).toBe(0);
+  });
+
+  it('reflects bridgeReviveDelayMs: 0 (disabled / no retry) in bridgeHealth() (#82)', () => {
+    const s = new FetchproxyServer({ ...baseOpts, bridgeReviveDelayMs: 0 });
+    expect(s.bridgeHealth().bridgeReviveDelayMs).toBe(0);
+  });
+
   it('records failure on captureRequestHeader bridge-down (after retry exhaustion)', async () => {
     const s = new FetchproxyServer({ ...baseOpts, bridgeReviveDelayMs: 1 });
     const harness = installFakeHost(s);
