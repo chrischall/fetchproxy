@@ -45,6 +45,16 @@ export type FetchErrorKind =
    * responded. Not produced by `classifyFetchError` — emitted directly
    * by `FetchproxyServer.fetch()` when its own timer wins the race. */
   | 'timeout'
+  /** 0.11.x+ (#86): the upstream site served a bot-wall / CAPTCHA
+   * interstitial (PerimeterX, AWS WAF, Cloudflare, DataDome) instead of
+   * real content. Detected by `classifyBotWall` on the response
+   * body/status — NOT by this string classifier (a bot-wall is content,
+   * not an extension error string). Distinct from `no_tab` / not-found
+   * and from `tab_fetch_failed`: a bot-wall is transient and retryable
+   * (back off via `backoffDelayMs`, ideally with a smaller batch) and
+   * must never be mistaken for "not found" — that's the silent-data-
+   * corruption failure class the cohort guards against. */
+  | 'bot_challenge'
   /** Catch-all for strings this classifier doesn't recognise yet.
    * Forward-compat: a future extension version emitting a new error
    * template lands here until the classifier is updated. */

@@ -262,6 +262,34 @@ Closes the WS / extension connection. Safe to call before `listen()` (no-op) and
 | `FetchproxyProtocolError` | Bridge-side failure (no signed-in tab, extension offline, transport error, capability not granted at the extension layer). |
 | `FetchproxyHttpError` | Upstream HTTP status was outside `expectStatus`. Carries the full `HttpResponse`. |
 
+## Resilience helpers
+
+Pure, I/O-free utilities for rate-limit / bot-wall resilience, hoisted
+from the portal-MCP cohort so every consumer imports one shared
+implementation. All are independent and tree-shakeable.
+
+| Export | What it does |
+|---|---|
+| `classifyBotWall(body, status, headers?)` | Detects a bot-wall / CAPTCHA interstitial → `{ blocked: true, vendor } \| { blocked: false }`. Vendors: `perimeterx`, `aws_waf`, `cloudflare`, `datadome`, `unknown`. Body-keyed first (a PerimeterX wall can be HTTP 200), with status/headers as additional signal. Pairs with the `bot_challenge` `FetchErrorKind` — distinct from not-found / bridge-down / timeout. |
+| `TokenBucket` | Per-host requests-per-minute governor. `new TokenBucket({ ratePerMinute, burst?, now? })`; `await bucket.acquire()` resolves when a token is free. Governs *total request volume*, complementing the concurrency cap. Inject `now` for deterministic tests. |
+| `backoffDelayMs(attempt, { baseMs, capMs, rng?, retryAfterMs? })` | Exponential backoff (`baseMs * 2^attempt`, capped at `capMs`) with full jitter, floored at an optional `retryAfterMs` hint. Inject `rng` for deterministic schedules. |
+| `withDeadline(promise, ms)` | Races a promise against a timer → `{ timedOut: false, value } \| { timedOut: true }`. Clears and `unref`s the timer; inner rejections propagate (not folded into a timeout). For bulk partial-results below the MCP request deadline. |
+
+```ts
+import {
+  classifyBotWall,
+  TokenBucket,
+  backoffDelayMs,
+  withDeadline,
+} from '@fetchproxy/server';
+
+const wall = classifyBotWall(res.body, res.status, res.headers);
+if (wall.blocked) {
+  // back off + retry rather than treating it as "not found"
+  await new Promise((r) => setTimeout(r, backoffDelayMs(attempt, { baseMs: 500, capMs: 30_000 })));
+}
+```
+
 ## License
 
 MIT.
