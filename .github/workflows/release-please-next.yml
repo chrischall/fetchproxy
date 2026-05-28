@@ -122,7 +122,15 @@ jobs:
                 if (!j[key]) continue;
                 for (const dep of Object.keys(j[key])) {
                   if (dep.startsWith('@fetchproxy/')) {
-                    j[key][dep] = '${RC_VERSION}';
+                    // Caret range, not bare pin — matches
+                    // release-please.yml's cross-dep sync convention.
+                    // Functionally identical for the single-PR-publish
+                    // case (server + bootstrap go out together at the
+                    // same RC), but lets a consumer install
+                    // @fetchproxy/server@next then @fetchproxy/bootstrap@next
+                    // without lockfile pin-up if the two ever land at
+                    // slightly different RC numbers.
+                    j[key][dep] = '^${RC_VERSION}';
                   }
                 }
               }
@@ -143,7 +151,15 @@ jobs:
           # tree but no `git push`.
           npm install --package-lock-only --ignore-scripts
 
-      # Same dependency order as release-please.yml's publish job.
+      # Same dependency order — and same workspace set — as
+      # release-please.yml's publish job. extension-core is
+      # `"private": true` and not a transitive dep of the two
+      # published packages (server, bootstrap), so it's not strictly
+      # required to gate the publish. Kept here for symmetry with
+      # release-please.yml and as a compile gate: if extension-core
+      # stops building against a shared protocol/server change, we'd
+      # rather catch it in the RC flow than discover it on the next
+      # stable release.
       - name: Build packages
         run: npm run build --workspace=@fetchproxy/protocol --workspace=@fetchproxy/server --workspace=@fetchproxy/bootstrap --workspace=@fetchproxy/extension-core
 
