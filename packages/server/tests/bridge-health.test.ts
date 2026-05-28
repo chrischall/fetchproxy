@@ -179,6 +179,30 @@ describe('bridgeHealth()', () => {
     expect(s.bridgeHealth().consecutiveFailures).toBe(0);
   });
 
+  // #82: bridgeHealth surfaces the resolved fetchTimeoutMs /
+  // bridgeReviveDelayMs so cohort healthcheck tools don't carry a
+  // local DEFAULT_FETCH_TIMEOUT_MS constant that risks drifting from
+  // the server when defaults move.
+  it('reports the default fetchTimeoutMs (30_000) when no override is set (#82)', () => {
+    const s = new FetchproxyServer(baseOpts);
+    expect(s.bridgeHealth().fetchTimeoutMs).toBe(30_000);
+  });
+
+  it('reflects an explicit fetchTimeoutMs override in bridgeHealth() (#82)', () => {
+    const s = new FetchproxyServer({ ...baseOpts, fetchTimeoutMs: 5_000 });
+    expect(s.bridgeHealth().fetchTimeoutMs).toBe(5_000);
+  });
+
+  it('reports the default bridgeReviveDelayMs (2_000) when no override is set (#82)', () => {
+    const s = new FetchproxyServer(baseOpts);
+    expect(s.bridgeHealth().bridgeReviveDelayMs).toBe(2_000);
+  });
+
+  it('reflects an explicit bridgeReviveDelayMs override in bridgeHealth() (#82)', () => {
+    const s = new FetchproxyServer({ ...baseOpts, bridgeReviveDelayMs: 500 });
+    expect(s.bridgeHealth().bridgeReviveDelayMs).toBe(500);
+  });
+
   it('records failure on captureRequestHeader bridge-down (after retry exhaustion)', async () => {
     const s = new FetchproxyServer({ ...baseOpts, bridgeReviveDelayMs: 1 });
     const harness = installFakeHost(s);

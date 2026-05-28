@@ -492,9 +492,30 @@ export interface BridgeHealth {
   port: number;
   /** 0.8.0+: server version this bridge was constructed with. */
   serverVersion: string;
-  /** 0.8.0+: resolved per-request timeout (ms); 0 if disabled. */
+  /**
+   * 0.8.0+: resolved per-request timeout (ms). Reflects either the
+   * constructor override or the 0.8.0+ default of 30_000. Surfaced
+   * so cohort healthcheck tools don't need a local
+   * `DEFAULT_FETCH_TIMEOUT_MS` constant that risks drifting from the
+   * server when defaults move. `0` means the caller explicitly opted
+   * back into the legacy hang-forever behavior.
+   *
+   * @default 30_000
+   * @see https://github.com/chrischall/fetchproxy/issues/58
+   * @see https://github.com/chrischall/fetchproxy/issues/82
+   */
   fetchTimeoutMs: number;
-  /** 0.8.0+: resolved lazy-revive delay (ms); 0 if disabled. */
+  /**
+   * 0.8.0+: resolved lazy-revive delay after `content_script_unreachable`
+   * (ms). Reflects either the constructor override or the 0.8.0+ default
+   * of 2_000. Surfaced for the same drift-avoidance reason as
+   * `fetchTimeoutMs`. `0` means the caller explicitly opted out of the
+   * one-shot retry.
+   *
+   * @default 2_000
+   * @see https://github.com/chrischall/fetchproxy/issues/58
+   * @see https://github.com/chrischall/fetchproxy/issues/82
+   */
   bridgeReviveDelayMs: number;
   /**
    * Wall-clock timestamp of the most recent user-visible `fetch()` /
