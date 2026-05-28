@@ -230,6 +230,36 @@ interface FetchInit {
 
 `fetch()` returns a discriminated union — `{ ok: true, status, url, body }` on any successful upstream HTTP exchange (any 2xx/3xx/4xx/5xx — status alone does NOT turn this into `ok: false`), or `{ ok: false, error }` only when the bridge itself failed. It does NOT throw on non-2xx.
 
+### Consumer helpers
+
+Two convenience methods that consolidate boilerplate the Pattern-A cohort (zillow / redfin / compass / homes) had been hand-rolling identically in their own `src/client.ts` / `src/tools/healthcheck.ts`.
+
+#### `await fp.requestJson<T>(method, path, opts?): Promise<{ data: T | null; result: FetchResult }>`
+
+Method-generic JSON helper. Sets `Accept: application/json`; adds `Content-Type: application/json` for a non-GET request that carries a `body` (unless the caller set one); `JSON.stringify`s the body; treats `204` / empty body as `data: null`; otherwise `JSON.parse`s.
+
+```ts
+const { data, result } = await fp.requestJson<MyShape>('POST', '/api/x', {
+  body: { q: 'foo' },
+  subdomain: 'api',
+});
+```
+
+Its scope is **serialization + header defaults + 204-handling + JSON.parse only**. It deliberately does NOT assert on the HTTP status or detect a sign-in interstitial — those guards differ per site — so it returns BOTH the parsed `data` and the raw `result: FetchResult`, leaving the consumer to run its own `throwIfNotOk` / `throwIfSignInPage` over `result`. Bridge-level failures still throw the typed errors (via `request()`); only successful round-trips return.
+
+`opts` is `{ subdomain?, domain?, headers?, body? }` (same domain/subdomain semantics as the verb shortcuts; `body` is any JSON-serializable value).
+
+#### `await fp.runProbe(fetchFn, probePath): Promise<BridgeProbeResult>`
+
+Runs one healthcheck probe through the caller's `fetchFn`, measures elapsed ms, classifies any thrown error with [`classifyBridgeError`](#errors), and projects the post-probe `bridgeHealth()` into a snake-cased `bridge` sub-object:
+
+```ts
+const probe = await fp.runProbe((path) => client.fetchHtml(path), '/robots.txt');
+// { ok, elapsed_ms, bridge: { role, port, server_version, ... }, error?: { kind, message } }
+```
+
+`runProbe` only does probe execution + classification + the bridge projection. The healthcheck **tool registration and the site-specific hint text stay in the consumer**, which wraps this result with its own plain-English next-step guidance.
+
 ### `await fp.readCookies(opts?): Promise<string>`
 
 ```ts
