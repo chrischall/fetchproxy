@@ -112,14 +112,14 @@ export interface FetchproxyServerOpts {
    * extension every `keepAliveIntervalMs` while the MCP has been used
    * within `keepAliveMaxIdleMs`. The extension already handles `ping`
    * by responding with `pong`, which resets Chrome's MV3 service-worker
-   * idle timer (frames in/out reset it). Default `undefined` (off, no
-   * pings) — back-compat with 0.8.0. Recommended value for MCPs that
-   * see sporadic-but-clustered activity: `25_000`, comfortably under
-   * Chrome's ~30s eviction threshold. The extension-side
-   * `chrome.alarms` keepalive still runs; this is the belt-and-braces
-   * server-initiated arm that addresses the round-3 #23 feedback
-   * (alarm-only was insufficient because the alarm doesn't re-arm
-   * while the SW is evicted).
+   * idle timer (frames in/out reset it). Default `25_000` (since 0.10.0
+   * — round-3 #71 cohort showed every consumer was opting into this
+   * value, so it was promoted to the default). Pass `0` to opt out.
+   * Comfortably under Chrome's ~30s eviction threshold. The
+   * extension-side `chrome.alarms` keepalive still runs; this is the
+   * belt-and-braces server-initiated arm that addresses the round-3
+   * #23 feedback (alarm-only was insufficient because the alarm
+   * doesn't re-arm while the SW is evicted).
    */
   keepAliveIntervalMs?: number;
   /**
@@ -374,6 +374,36 @@ export interface BridgeHealth {
    * still answering?" liveness. Null until the first frame arrives.
    */
   lastExtensionMessageAt: number | null;
+  /**
+   * 0.10.0+ (#73): keep-alive observability surface for downstream
+   * healthcheck tools. `enabled` mirrors the `> 0` interval guard;
+   * `intervalMs` / `maxIdleMs` are the resolved option values (25_000
+   * / 300_000 by default); `lastPingAt` / `totalPings` track timer
+   * activity (monotonic, never reset); `idleSinceMs` is the elapsed
+   * time since `lastActiveAt`, or null if no activity has been recorded.
+   */
+  keepAlive: {
+    enabled: boolean;
+    intervalMs: number;
+    maxIdleMs: number;
+    lastPingAt: number | null;
+    totalPings: number;
+    idleSinceMs: number | null;
+  };
+  /**
+   * 0.10.0+ (#73): MV3 SW-eviction observability. `lazyReviveAttempts`
+   * increments when the lazy-revive retry path fires (one-shot on
+   * `content_script_unreachable`); `lazyReviveSuccesses` increments
+   * when the post-revive retry actually succeeds.
+   * `lastEvictionDetectedAt` stamps the first time we observed a
+   * `content_script_unreachable` failure (the canonical symptom of
+   * Chrome having evicted the SW between bursts).
+   */
+  swEviction: {
+    lazyReviveAttempts: number;
+    lazyReviveSuccesses: number;
+    lastEvictionDetectedAt: number | null;
+  };
 }
 
 /** Single DNS label or dot-separated labels (no scheme, no path). */
@@ -432,7 +462,7 @@ interface ResolvedOpts {
   sessionStoragePointers: StoragePointerDecl[];
   fetchTimeoutMs?: number;
   bridgeReviveDelayMs?: number;
-  keepAliveIntervalMs?: number;
+  keepAliveIntervalMs: number;
   keepAliveMaxIdleMs: number;
   identityDir?: string;
   onPairCode?: (code: string) => void;
@@ -534,6 +564,18 @@ export class FetchproxyServer {
   // first activity and torn down on close() / extension disconnect.
   private keepAliveTimer: ReturnType<typeof setInterval> | null = null;
   private lastActiveAt: number | null = null;
+  // 0.10.0+ (#73): observability counters surfaced via
+  // bridgeHealth().keepAlive / .swEviction. Monotonic across the process
+  // lifetime so a downstream healthcheck tool can verify the keep-alive
+  // is actually preventing SW eviction. `lastPingAt` and `totalPings`
+  // are stamped from `startKeepaliveIfIdle`'s tick. `lazyRevive*` and
+  // `lastEvictionDetectedAt` are stamped from the lazy-revive code path
+  // in fetch() / captureRequestHeader().
+  private lastPingAt: number | null = null;
+  private totalPings = 0;
+  private lazyReviveAttempts = 0;
+  private lazyReviveSuccesses = 0;
+  private lastEvictionDetectedAt: number | null = null;
 
   constructor(opts: FetchproxyServerOpts) {
     if (!Array.isArray(opts.domains) || opts.domains.length === 0) {
@@ -598,9 +640,11 @@ export class FetchproxyServer {
       // the legacy hang-forever / fail-once-on-SW-eviction behavior.
       fetchTimeoutMs: opts.fetchTimeoutMs ?? 30_000,
       bridgeReviveDelayMs: opts.bridgeReviveDelayMs ?? 2_000,
-      // 0.8.1+ (#67): keep-alive is off by default for back-compat;
-      // downstream MCPs opt in by passing keepAliveIntervalMs.
-      keepAliveIntervalMs: opts.keepAliveIntervalMs,
+      // 0.10.0+ (#72): keep-alive defaults to 25s — round-3 #71 cohort
+      // wave showed every Pattern A consumer was opting into this same
+      // value. Pass `0` to disable; the existing `<= 0` guards in
+      // `startKeepaliveIfIdle` / `noteActivityForKeepalive` honour that.
+      keepAliveIntervalMs: opts.keepAliveIntervalMs ?? 25_000,
       keepAliveMaxIdleMs: opts.keepAliveMaxIdleMs ?? 5 * 60 * 1000,
       identityDir: opts.identityDir,
       onPairCode: opts.onPairCode,
@@ -812,19 +856,28 @@ export class FetchproxyServer {
     // rides on the result envelope itself — per-call local state, no
     // shared instance slot, race-safe across concurrent calls.
     const reviveMs = this.opts.bridgeReviveDelayMs;
-    let final = first;
+    // 0.10.0+ (#73): stamp eviction-detection counter on the first
+    // `content_script_unreachable` symptom regardless of whether the
+    // retry path is enabled — the symptom is the eviction signal, the
+    // retry is the response.
+    if (!first.ok && first.kind === 'content_script_unreachable') {
+      this.lastEvictionDetectedAt = Date.now();
+    }
     if (
       !first.ok &&
       first.kind === 'content_script_unreachable' &&
       reviveMs !== undefined &&
       reviveMs > 0
     ) {
+      this.lazyReviveAttempts += 1;
       await new Promise((r) => setTimeout(r, reviveMs));
       const second = await this._fetchOnceWithTimeout(init);
       // Record the user-visible outcome (so one tool call only ticks
       // consecutiveFailures by 1 regardless of the internal retry).
-      if (second.ok) this.recordSuccess();
-      else this.recordFailure(`${second.kind ?? 'other'}: ${second.error}`);
+      if (second.ok) {
+        this.lazyReviveSuccesses += 1;
+        this.recordSuccess();
+      } else this.recordFailure(`${second.kind ?? 'other'}: ${second.error}`);
       return { ...second, retryAttempted: true };
     }
     if (first.ok) this.recordSuccess();
@@ -844,6 +897,10 @@ export class FetchproxyServer {
    * call (addresses #23 ask 4).
    */
   bridgeHealth(): BridgeHealth {
+    const intervalMs = this.opts.keepAliveIntervalMs;
+    const maxIdleMs = this.opts.keepAliveMaxIdleMs;
+    const idleSinceMs =
+      this.lastActiveAt === null ? null : Date.now() - this.lastActiveAt;
     return {
       role: this.role,
       port: this.opts.port,
@@ -855,6 +912,19 @@ export class FetchproxyServer {
       lastFailureReason: this.lastFailureReason,
       consecutiveFailures: this.consecutiveFailures,
       lastExtensionMessageAt: this.lastExtensionMessageAt,
+      keepAlive: {
+        enabled: intervalMs > 0,
+        intervalMs,
+        maxIdleMs,
+        lastPingAt: this.lastPingAt,
+        totalPings: this.totalPings,
+        idleSinceMs,
+      },
+      swEviction: {
+        lazyReviveAttempts: this.lazyReviveAttempts,
+        lazyReviveSuccesses: this.lazyReviveSuccesses,
+        lastEvictionDetectedAt: this.lastEvictionDetectedAt,
+      },
     };
   }
 
@@ -888,7 +958,7 @@ export class FetchproxyServer {
     // caller passing `keepAliveIntervalMs: 0` doesn't stamp `lastActiveAt`
     // for a feature that will never fire.
     const intervalMs = this.opts.keepAliveIntervalMs;
-    if (intervalMs === undefined || intervalMs <= 0) return;
+    if (intervalMs <= 0) return;
     this.lastActiveAt = Date.now();
     this.startKeepaliveIfIdle();
   }
@@ -896,7 +966,7 @@ export class FetchproxyServer {
   private startKeepaliveIfIdle(): void {
     if (this.keepAliveTimer !== null) return;
     const intervalMs = this.opts.keepAliveIntervalMs;
-    if (intervalMs === undefined || intervalMs <= 0) return;
+    if (intervalMs <= 0) return;
     this.keepAliveTimer = setInterval(() => {
       const now = Date.now();
       if (
@@ -906,6 +976,13 @@ export class FetchproxyServer {
         this.stopKeepalive();
         return;
       }
+      // 0.10.0+ (#73): observability counters for downstream healthcheck
+      // tools. Stamped before the actual send so a transient send error
+      // doesn't lose the tick — `totalPings` reflects ticks the gate
+      // permitted, `lastPingAt` reflects when the most-recent attempt
+      // happened.
+      this.totalPings += 1;
+      this.lastPingAt = now;
       // Fire-and-forget; the extension answers with `pong` which we
       // ignore (the `onInner` handler already drops pong frames).
       // Swallow errors — a transient bridge hiccup shouldn't crash the
@@ -1455,12 +1532,17 @@ export class FetchproxyServer {
         );
         throw err;
       }
+      // 0.10.0+ (#73): mirror fetch()'s eviction-detection stamp — the
+      // SW-eviction symptom counter ticks regardless of the retry knob.
+      this.lastEvictionDetectedAt = Date.now();
       const reviveMs = this.opts.bridgeReviveDelayMs ?? 0;
       // 0.8.0+: lazy-revive — give Chrome a moment to wake the SW.
       if (reviveMs > 0) {
+        this.lazyReviveAttempts += 1;
         await new Promise((r) => setTimeout(r, reviveMs));
         try {
           const result = await this._captureRequestHeaderOnce(callOpts);
+          this.lazyReviveSuccesses += 1;
           this.recordSuccess();
           return result;
         } catch (retryErr) {

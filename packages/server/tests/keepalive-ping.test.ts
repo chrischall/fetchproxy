@@ -137,8 +137,10 @@ const pings = (host: RecordingHost): InnerFrame[] =>
   host.sent.filter((f) => f.type === 'ping');
 
 describe('keepAliveIntervalMs — server-side proactive keepalive (#67)', () => {
-  it('does NOT send ping frames when keepAliveIntervalMs is unset (back-compat)', async () => {
-    const s = new FetchproxyServer(baseOpts);
+  it('does NOT send ping frames when keepAliveIntervalMs: 0 (opt-out)', async () => {
+    // 0.10.0+ (#72): the default flipped to 25_000; the only way to
+    // disable the keep-alive is to pass `0` explicitly.
+    const s = new FetchproxyServer({ ...baseOpts, keepAliveIntervalMs: 0 });
     const host = installRecordingHost(s);
     await doOneFetch(s, host);
     // Wait long enough that *if* a keepalive were running it would have
@@ -216,8 +218,9 @@ describe('keepAliveIntervalMs — server-side proactive keepalive (#67)', () => 
     await s.close();
   });
 
-  it('markActive() is a no-op when keepAliveIntervalMs is unset', async () => {
-    const s = new FetchproxyServer(baseOpts);
+  it('markActive() is a no-op when keepAliveIntervalMs: 0 (opt-out)', async () => {
+    // 0.10.0+ (#72): opt-out via 0, since 25_000 is the new default.
+    const s = new FetchproxyServer({ ...baseOpts, keepAliveIntervalMs: 0 });
     const host = installRecordingHost(s);
     s.markActive();
     await new Promise((r) => setTimeout(r, 150));
