@@ -74,8 +74,8 @@ parity with this table. For longer "when to override" guidance, see
 | `identityDir` | `string` | `~/.fetchproxy/identity/` | Where to store the long-term identity keypair. Override for tests or sandboxed deployments. |
 | `onPairCode` | `(code: string) => void` | (off by default) | Invoked once with the joint pair code on extension hello, so an MCP can surface it via stderr / MCP logging. |
 | `fetchTimeoutMs` | `number` | `30_000` | Per-request timeout for `fetch()`. `0` opts back into legacy hang-forever. ([#58](https://github.com/chrischall/fetchproxy/issues/58)) |
-| `bridgeReviveDelayMs` | `number` | `2_000` | Delay before the one-shot retry after `content_script_unreachable`. Gives Chrome a moment to wake the evicted MV3 SW. `0` disables. ([#58](https://github.com/chrischall/fetchproxy/issues/58)) |
-| `keepAliveIntervalMs` | `number` | `25_000` | Server-initiated ping cadence that keeps the MV3 SW resident across activity bursts. Comfortably under Chrome's ~30s eviction threshold. Pass `0` to disable. Default flipped from `undefined` in 0.10.0 ([#71](https://github.com/chrischall/fetchproxy/issues/71)). ([#67](https://github.com/chrischall/fetchproxy/issues/67)) |
+| `bridgeReviveDelayMs` | `number` | `2_000` | Delay before the one-shot retry on the SW-eviction cold-start symptom — `content_script_unreachable`, plus a `fetch()` `timeout` ([#90](https://github.com/chrischall/fetchproxy/issues/90)). Gives Chrome a moment to wake the evicted MV3 SW. `0` disables. ([#58](https://github.com/chrischall/fetchproxy/issues/58)) |
+| `keepAliveIntervalMs` | `number` | `20_000` | Server-initiated ping cadence that keeps the MV3 SW resident across activity bursts. Below Chrome's ~30s eviction threshold with real margin. Pass `0` to disable. Default flipped from `undefined` in 0.10.0 ([#71](https://github.com/chrischall/fetchproxy/issues/71)), tightened from `25_000` → `20_000` in [#90](https://github.com/chrischall/fetchproxy/issues/90) (25s still lost the cold-start race). ([#67](https://github.com/chrischall/fetchproxy/issues/67)) |
 | `keepAliveMaxIdleMs` | `number` | `300_000` (5 min) | How long after the most-recent activity the keep-alive pings keep firing. No-op when `keepAliveIntervalMs` is `0`. ([#67](https://github.com/chrischall/fetchproxy/issues/67)) |
 | `cookieKeys` | `string[]` | `[]` | Declared cookie names for `readCookies({ keys })`. Gates the call site (gate #1) before the extension re-checks (gate #2). |
 | `localStorageKeys` | `string[]` | `[]` | Declared localStorage keys for `readLocalStorage`. |
@@ -97,18 +97,25 @@ parity with this table. For longer "when to override" guidance, see
 - **`bridgeReviveDelayMs`.** Chrome MV3 evicts extension service
   workers after ~30s idle. The default `2_000` ms is the same delay
   the zillow/onehome cohort had been hand-rolling in their transport
-  adapters before the option existed. Lengthen on slow machines where
-  2s isn't enough for the SW to wake; shorten if the caller is
-  willing to surface the bridge-down error sooner. Pass `0` to
-  disable the retry entirely.
-- **`keepAliveIntervalMs`.** Default `25_000` since 0.10.0 (the
-  round-3 #71 cohort showed every consumer was opting into the same
-  value, so it was promoted to the default). Comfortably under
-  Chrome's ~30s eviction threshold — keeps the MV3 SW resident
-  across activity bursts (a user opens a search, thinks for 30s,
-  runs another tool). Pass `0` to disable. Pairs with
-  `keepAliveMaxIdleMs` (default 5 min) so the pings self-quiesce on
-  idle processes.
+  adapters before the option existed. The one-shot retry fires on the
+  cold-start symptom: `content_script_unreachable`, plus a `fetch()`
+  server-side `timeout` (#90 — a fully-cold worker often surfaces the
+  first post-idle `fetch()` as a timeout while Chrome spins the SW up,
+  so a cold-start never surfaces to the caller). Lengthen on slow
+  machines where 2s isn't enough for the SW to wake; shorten if the
+  caller is willing to surface the bridge-down error sooner. Pass `0`
+  to disable the retry entirely.
+- **`keepAliveIntervalMs`.** Default `20_000` (tightened from the
+  0.10.0 default of `25_000` in #90 — 25s left only ~5s of slack under
+  Chrome's ~30s eviction window, which timer drift, a busy host event
+  loop, and ping round-trip latency routinely ate, so the SW evicted
+  and the next call cold-started). Keeps the MV3 SW resident across
+  activity bursts (a user opens a search, thinks for 30s, runs another
+  tool). Pass `0` to disable. Pairs with `keepAliveMaxIdleMs` (default
+  5 min) so the pings self-quiesce on idle processes. (The extension
+  `chrome.alarms` backstop is clamped by Chrome to a 30s minimum
+  period — it fires *at* the eviction edge, so the server ping is the
+  real defense against a sub-30s race.)
 - **`domains`.** Trust boundary, required. Use the apex hostname
   (`'opentable.com'`) and let the extension match subdomains
   automatically. Multi-domain MCPs (HoneyBook, Resy two-host setups)
@@ -144,7 +151,7 @@ const h = fp.bridgeHealth();
 // h.bridgeReviveDelayMs: number;  // resolved (2_000 default, or override; 0 = disabled)
 // h.keepAlive: {
 //   enabled: boolean;          // true when intervalMs > 0
-//   intervalMs: number;        // resolved (25_000 default)
+//   intervalMs: number;        // resolved (20_000 default)
 //   maxIdleMs: number;         // resolved (300_000 default)
 //   lastPingAt: number | null; // epoch ms; null until first tick
 //   totalPings: number;        // monotonic across the process lifetime

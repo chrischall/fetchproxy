@@ -155,22 +155,28 @@ export interface FetchproxyServerOpts {
    */
   fetchTimeoutMs?: number;
   /**
-   * 0.8.0+: delay (ms) before the one-shot retry when `fetch()` or
-   * `captureRequestHeader()` fail with `content_script_unreachable`.
-   * Chrome MV3 evicts extension service workers after ~30s idle;
-   * this gives Chrome a moment to wake the SW on the next inbound
-   * frame. The default `2_000` is the same value the realty/dining
-   * cohort had been hand-rolling in their transport adapters.
+   * 0.8.0+: delay (ms) before the one-shot retry on the SW-eviction
+   * cold-start symptom. `captureRequestHeader()` revives on
+   * `content_script_unreachable`; `fetch()` revives on that AND on a
+   * server-side `timeout` (#90 — a fully-cold worker often surfaces the
+   * first post-idle `fetch()` as a `timeout` while Chrome is still
+   * spinning the SW up). Chrome MV3 evicts extension service workers
+   * after ~30s idle; this gives Chrome a moment to wake the SW on the
+   * next inbound frame. The default `2_000` is the same value the
+   * realty/dining cohort had been hand-rolling in their transport
+   * adapters.
    *
    * Override to lengthen for slow machines where 2s isn't enough for
    * the SW to wake, or shorten if the caller is willing to surface
    * the bridge-down error sooner. On retry-exhaustion, convenience
-   * methods + capture throw `FetchproxyBridgeDownError` with
+   * methods + capture throw `FetchproxyBridgeDownError` (or
+   * `FetchproxyTimeoutError` when the cold-start was a timeout) with
    * `retryAttempted: true`. Pass `0` to disable the retry entirely
    * (errors surface on the first attempt with `retryAttempted: false`).
    *
    * @default 2_000
    * @see https://github.com/chrischall/fetchproxy/issues/58
+   * @see https://github.com/chrischall/fetchproxy/issues/90
    */
   bridgeReviveDelayMs?: number;
   /**
@@ -192,11 +198,13 @@ export interface FetchproxyServerOpts {
    * insufficient because the alarm doesn't re-arm while the SW is
    * evicted).
    *
-   * @default 25_000 (since 0.10.0 — round-3 #71 cohort showed every
-   *   consumer was opting into this value, so it was promoted to the
-   *   default; previously off by default)
+   * @default 20_000 (since #90 — tightened from the 0.10.0 default of
+   *   25_000, which left too little margin under Chrome's ~30s eviction
+   *   window and still lost the cold-start race; 25_000 itself was the
+   *   round-3 #71 cohort value promoted from off-by-default)
    * @see https://github.com/chrischall/fetchproxy/issues/67
    * @see https://github.com/chrischall/fetchproxy/issues/71
+   * @see https://github.com/chrischall/fetchproxy/issues/90
    */
   keepAliveIntervalMs?: number;
   /**
@@ -234,7 +242,8 @@ export interface FetchResult {
   body: string;
   /**
    * 0.8.0+: true when the server's lazy-revive retry path actually
-   * fired for this call (a `content_script_unreachable` first attempt
+   * fired for this call (a `content_script_unreachable` first attempt —
+   * or, since 0.11.0+/#90, a cold-start `timeout` first attempt —
    * followed by a successful retry). False on the no-retry path.
    * Always populated by the server in 0.8.0+; declared optional in the
    * type so downstream test code that constructs envelope literals
@@ -266,10 +275,12 @@ export interface FetchResultError {
   /**
    * 0.8.0+: true when the server's lazy-revive retry path actually
    * fired AND the retry also failed. False otherwise (retry was
-   * disabled, or this isn't a `content_script_unreachable` failure
-   * so retry didn't apply). Always populated by the server in 0.8.0+;
-   * declared optional in the type so downstream test code that
-   * constructs envelope literals directly stays back-compat.
+   * disabled, or this isn't a cold-start symptom so retry didn't
+   * apply). The retry arms on a `content_script_unreachable` failure
+   * or — since 0.11.0+/#90 — a cold-start `timeout`. Always populated
+   * by the server in 0.8.0+; declared optional in the type so
+   * downstream test code that constructs envelope literals directly
+   * stays back-compat.
    */
   retryAttempted?: boolean;
   /**
@@ -428,9 +439,15 @@ export class FetchproxyBridgeDownError extends FetchproxyProtocolError {
       `the fetchproxy extension's service worker is not responding ` +
       `("${args.originalError}"). Chrome evicts extension service ` +
       `workers after ~30s idle by default. ${retryClause}` +
-      `Wake it by clicking the fetchproxy extension toolbar icon, then ` +
-      `retry. If it keeps happening, reload the extension from ` +
-      `chrome://extensions.`;
+      // #90 (P1-1): the real fix per the error's own diagnostic
+      // (content_script_unreachable = a matched tab with no loaded
+      // content script) is having a loaded, signed-in tab for that
+      // domain — NOT clicking the toolbar icon (which doesn't inject a
+      // content script into pre-existing tabs). Make the guidance match.
+      `Make sure a tab for this domain is open, fully loaded, and ` +
+      `signed in (the bridge fetches through that tab) — then retry. ` +
+      `If it keeps happening, reload the extension from ` +
+      `chrome://extensions and reload the tab.`;
     super(
       `fetchproxy bridge down during ${op}${args.url ? ` (${args.url})` : ''}. ${hint}`,
     );
@@ -450,6 +467,14 @@ export class FetchproxyBridgeDownError extends FetchproxyProtocolError {
  * The lower-level `fetch()` returns `{ ok: false, kind: 'timeout' }`
  * instead (back-compat with its result-envelope shape). Subclass of
  * `FetchproxyProtocolError` so existing callers still match.
+ *
+ * `retryAttempted: true` (0.11.0+, #90/#91) means the server's one-shot
+ * lazy-revive retry (`bridgeReviveDelayMs`) treated this timeout as the
+ * SW-eviction cold-start symptom, warmed the worker, and the retry also
+ * timed out. `false` means the retry was disabled
+ * (`bridgeReviveDelayMs` unset / 0), so the timeout surfaced on the
+ * first attempt. Mirrors `FetchproxyBridgeDownError.retryAttempted` so
+ * callers can branch identically across both throwable kinds.
  */
 export class FetchproxyTimeoutError extends FetchproxyProtocolError {
   readonly url: string;
@@ -460,6 +485,14 @@ export class FetchproxyTimeoutError extends FetchproxyProtocolError {
   readonly port: number;
   /** 0.8.0+: actual elapsed milliseconds when the timer won the race. */
   readonly elapsedMs: number;
+  /**
+   * 0.11.0+ (#90/#91): true when the server's lazy-revive retry path
+   * fired for this timeout (a cold-start `timeout` symptom followed by
+   * a warm-and-retry that also timed out). False when the retry was
+   * disabled (`bridgeReviveDelayMs` unset/0) so the timeout surfaced on
+   * the first attempt.
+   */
+  readonly retryAttempted: boolean;
 
   constructor(args: {
     url: string;
@@ -467,6 +500,7 @@ export class FetchproxyTimeoutError extends FetchproxyProtocolError {
     role?: 'host' | 'peer' | null;
     port?: number;
     elapsedMs?: number;
+    retryAttempted?: boolean;
   }) {
     super(
       `fetchproxy: ${args.url} did not respond within ${args.timeoutMs}ms`,
@@ -477,6 +511,7 @@ export class FetchproxyTimeoutError extends FetchproxyProtocolError {
     this.role = args.role ?? null;
     this.port = args.port ?? 0;
     this.elapsedMs = args.elapsedMs ?? args.timeoutMs;
+    this.retryAttempted = args.retryAttempted ?? false;
   }
 }
 
@@ -551,8 +586,9 @@ export interface BridgeHealth {
   /**
    * 0.10.0+ (#73): keep-alive observability surface for downstream
    * healthcheck tools. `enabled` mirrors the `> 0` interval guard;
-   * `intervalMs` / `maxIdleMs` are the resolved option values (25_000
-   * / 300_000 by default); `lastPingAt` / `totalPings` track timer
+   * `intervalMs` / `maxIdleMs` are the resolved option values (20_000
+   * / 300_000 by default, since #90 tightened the interval from 25_000);
+   * `lastPingAt` / `totalPings` track timer
    * activity (monotonic, never reset); `idleSinceMs` is the elapsed
    * time since `lastActiveAt`, or null if no activity has been recorded.
    */
@@ -566,13 +602,14 @@ export interface BridgeHealth {
   };
   /**
    * 0.10.0+ (#73): MV3 SW-eviction observability. `lazyReviveAttempts`
-   * increments when the lazy-revive retry path fires (one-shot on
-   * `content_script_unreachable`); `lazyReviveSuccesses` increments
-   * when the post-revive retry actually succeeds.
-   * `lastEvictionDetectedAt` stamps the most recent time we observed
-   * a `content_script_unreachable` failure (the canonical symptom of
-   * Chrome having evicted the SW between bursts) — overwritten on
-   * each detection, so it reflects the latest eviction, not the first.
+   * increments when the lazy-revive retry path fires (one-shot on the
+   * cold-start symptom — `content_script_unreachable`, or a `fetch()`
+   * `timeout` as of #90); `lazyReviveSuccesses` increments when the
+   * post-revive retry actually succeeds. `lastEvictionDetectedAt`
+   * stamps the most recent time we observed a cold-start symptom (the
+   * canonical sign of Chrome having evicted the SW between bursts) —
+   * overwritten on each detection, so it reflects the latest eviction,
+   * not the first.
    */
   swEviction: {
     lazyReviveAttempts: number;
@@ -872,7 +909,17 @@ export class FetchproxyServer {
       // wave showed every Pattern A consumer was opting into this same
       // value. Pass `0` to disable; the existing `<= 0` guards in
       // `startKeepaliveIfIdle` / `noteActivityForKeepalive` honour that.
-      keepAliveIntervalMs: opts.keepAliveIntervalMs ?? 25_000,
+      //
+      // #90 (P1-1): tightened to 20s. 25s left only ~5s of slack under
+      // Chrome's ~30s SW-eviction window — slack that timer drift, a
+      // busy host event loop (CPU-bound response parsing between calls),
+      // and the ping's own round-trip latency routinely ate, so the SW
+      // evicted before the next ping landed and the next call cold-
+      // started. 20s restores real margin. (The extension
+      // `chrome.alarms` backstop is clamped by Chrome to a 30s minimum
+      // period, firing *at* the edge — it can't rescue a sub-30s race;
+      // the server ping is the real defense.)
+      keepAliveIntervalMs: opts.keepAliveIntervalMs ?? 20_000,
       keepAliveMaxIdleMs: opts.keepAliveMaxIdleMs ?? 5 * 60 * 1000,
       identityDir: opts.identityDir,
       onPairCode: opts.onPairCode,
@@ -1084,19 +1131,26 @@ export class FetchproxyServer {
     // rides on the result envelope itself — per-call local state, no
     // shared instance slot, race-safe across concurrent calls.
     const reviveMs = this.opts.bridgeReviveDelayMs;
-    // 0.10.0+ (#73): stamp eviction-detection counter on the first
-    // `content_script_unreachable` symptom regardless of whether the
-    // retry path is enabled — the symptom is the eviction signal, the
-    // retry is the response.
-    if (!first.ok && first.kind === 'content_script_unreachable') {
+    // #90 (P1-1): a fully-cold worker surfaces the first post-idle call
+    // EITHER as `content_script_unreachable` (the matched tab's content
+    // script answered before Chrome finished evicting, then the SW died)
+    // OR as a `timeout` (Chrome is still spinning the SW up and the
+    // round-trip exceeds `fetchTimeoutMs`). 0.8.0 only revived the
+    // former, so the timeout cold-start sailed straight to the caller —
+    // the "batch timeout-then-warm-retry" / "Redfin row timing out then
+    // succeeding on retry" symptom in the report. Both kinds are now the
+    // eviction signal that arms the one-shot warm-and-retry.
+    const isColdStartSymptom =
+      !first.ok &&
+      (first.kind === 'content_script_unreachable' ||
+        first.kind === 'timeout');
+    // 0.10.0+ (#73): stamp eviction-detection counter on the cold-start
+    // symptom regardless of whether the retry path is enabled — the
+    // symptom is the eviction signal, the retry is the response.
+    if (isColdStartSymptom) {
       this.lastEvictionDetectedAt = Date.now();
     }
-    if (
-      !first.ok &&
-      first.kind === 'content_script_unreachable' &&
-      reviveMs !== undefined &&
-      reviveMs > 0
-    ) {
+    if (isColdStartSymptom && reviveMs !== undefined && reviveMs > 0) {
       this.lazyReviveAttempts += 1;
       await new Promise((r) => setTimeout(r, reviveMs));
       const second = await this._fetchOnceWithTimeout(init);
@@ -1313,6 +1367,7 @@ export class FetchproxyServer {
         role: this.role,
         port: this.opts.port,
         elapsedMs: result.elapsedMs,
+        retryAttempted,
       });
     }
     if (result.kind === 'content_script_unreachable') {

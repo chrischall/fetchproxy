@@ -6,6 +6,8 @@ import { installFakeHost } from './helpers/fake-host.js';
 // Issue #72 — flip `keepAliveIntervalMs` default to 25_000.
 // Issue #73 — extend `bridgeHealth()` with keepAlive / swEviction
 // observability counters.
+// Issue #90 (P1-1) — tighten that default from 25_000 → 20_000 (25s
+// still lost the cold-start race against a ~30s eviction window).
 //
 // Both issues touch the same region of ws-server.ts and ship together
 // as a 0.10.0 feature pair. The round-3 #71 cohort wave (zillow#87,
@@ -76,7 +78,7 @@ describe('#72 keepAliveIntervalMs default flip', () => {
     vi.useRealTimers();
   });
 
-  it('fires the keep-alive timer when no keepAliveIntervalMs is passed (default 25s)', async () => {
+  it('fires the keep-alive timer when no keepAliveIntervalMs is passed (default 20s since #90)', async () => {
     const s = new FetchproxyServer(baseOpts);
     const host = installRecordingHost(s);
     // Trigger one fetch round-trip so noteActivityForKeepalive stamps
@@ -101,11 +103,14 @@ describe('#72 keepAliveIntervalMs default flip', () => {
     await pending;
     // No pings yet (timer hasn't ticked).
     expect(pings(host).length).toBe(0);
-    // Advance one full 25_000ms interval — timer ticks once.
-    await vi.advanceTimersByTimeAsync(25_000);
+    // Just before the 20s default — still no tick.
+    await vi.advanceTimersByTimeAsync(19_999);
+    expect(pings(host).length).toBe(0);
+    // Cross the 20_000ms boundary — timer ticks once.
+    await vi.advanceTimersByTimeAsync(1);
     expect(pings(host).length).toBe(1);
-    // Another interval — twice total.
-    await vi.advanceTimersByTimeAsync(25_000);
+    // Another full interval — twice total.
+    await vi.advanceTimersByTimeAsync(20_000);
     expect(pings(host).length).toBe(2);
     // close() must stop the timer cleanly so the test doesn't leak.
     await s.close();
@@ -173,7 +178,9 @@ describe('#73 bridgeHealth().keepAlive observability', () => {
     const s = new FetchproxyServer(baseOpts);
     const h = s.bridgeHealth();
     expect(h.keepAlive.enabled).toBe(true);
-    expect(h.keepAlive.intervalMs).toBe(25_000);
+    // #90 (P1-1): default tightened from 25_000 → 20_000 (more margin
+    // under Chrome's ~30s SW-eviction window — 25s lost the race).
+    expect(h.keepAlive.intervalMs).toBe(20_000);
     expect(h.keepAlive.maxIdleMs).toBe(5 * 60 * 1000); // 300_000
     expect(h.keepAlive.lastPingAt).toBeNull();
     expect(h.keepAlive.totalPings).toBe(0);
