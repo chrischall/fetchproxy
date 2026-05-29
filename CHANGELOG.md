@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.11.0](https://github.com/chrischall/fetchproxy/compare/v0.10.0...v0.11.0) (2026-05-29)
+
+
+### Features
+
+* **server:** shared SSR-parsing + batch-paging helpers ([#94](https://github.com/chrischall/fetchproxy/issues/94)) ([ee4ed05](https://github.com/chrischall/fetchproxy/commit/ee4ed05ce8c9941722af98f477ff69f0e6f89479))
+
+
+### Bug Fixes
+
+* **ci:** treat instant-merge race as success in auto-merge arm ([#93](https://github.com/chrischall/fetchproxy/issues/93)) ([4354fb2](https://github.com/chrischall/fetchproxy/commit/4354fb2eb27cd9ba0ddf3c00c05515ec3eb43535))
+* **server:** win the SW-eviction cold-start race ([#90](https://github.com/chrischall/fetchproxy/issues/90)) ([#91](https://github.com/chrischall/fetchproxy/issues/91)) ([50e12cc](https://github.com/chrischall/fetchproxy/commit/50e12ccdaab0ad13689a76771eb9175bf6e32b40))
+
 ## [0.10.0](https://github.com/chrischall/fetchproxy/compare/v0.9.0...v0.10.0) (2026-05-28)
 
 
