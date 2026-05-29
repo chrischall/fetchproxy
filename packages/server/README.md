@@ -327,6 +327,50 @@ if (wall.blocked) {
 }
 ```
 
+## Parsing helpers
+
+Pure, dependency-free string utilities for SSR-scraping MCPs, hoisted
+from the portal-MCP cohort so every consumer imports one shared
+implementation instead of re-hand-rolling them. Anything portal-specific
+— the `window.X` variable *names*, CDN-host filters, GraphQL bodies —
+stays in the consumer.
+
+| Export | What it does |
+|---|---|
+| `extractGlobalAssign(html, varName)` | Lift a `window.<varName> = {…}` / `global.<varName> = {…}` / `var <varName> = {…}` JSON object out of inline-script HTML via string-aware balanced-brace walking → the parsed object, or `null`. Skips an unparseable same-named occurrence and keeps scanning; the name is matched literally with an identifier-boundary guard (so `uc` won't match `myuc`). |
+| `extractBalancedObject(text, startIndex)` | Lower-level brace walker behind `extractGlobalAssign`. `startIndex` must point at a `{`. String-aware: braces inside double-quoted strings and `\"` / `\\` escapes don't move the depth counter; stops at the first balanced close (a trailing `;` is ignored) → the parsed object, or `null` on imbalance / parse error. |
+| `extractImgTags(html)` | Regex-scrape `<img>` tags → `{ src, alt }[]`. Attribute-order agnostic, single/double quotes, case-insensitive. Tags with no `src` are skipped; `alt` is omitted when absent but a present-but-empty `alt=""` is kept as `''`. Host/CDN filtering and dedup stay in the caller. |
+| `lastPathSegment(urlOrPath)` | Strip scheme/host, then `?query` / `#fragment`, and return the final non-empty path segment (the canonical opaque-id extractor — `<zpid>_zpid`, a base36 hash, `<id>_lid`, …). Tolerates trailing slashes and `//` runs; `''` when there is no path segment. |
+
+```ts
+import { extractGlobalAssign, extractImgTags, lastPathSegment } from '@fetchproxy/server';
+
+const state = extractGlobalAssign(html, '__INITIAL_DATA__'); // variable name stays caller-side
+const photos = extractImgTags(html).filter((img) => img.src.includes('cdn.example.com'));
+const id = lastPathSegment(listing.url ?? listing['@id']); // pick the fragment-free field first
+```
+
+## Batch-paging primitives
+
+Pair with the fan-out kit (`mapWithConcurrency` / `TokenBucket` /
+`backoffDelayMs`): split a big id list into safe-sized pages, dispatch
+one page at a time, and space them out — so a single bulk-get tool call
+doesn't stampede the upstream.
+
+| Export | What it does |
+|---|---|
+| `chunk(arr, size)` | Split `arr` into pages of at most `size`, in order. `size <= 0` collapses to a single page (never loops forever). Returns fresh slices; the input is never mutated. `[]` for an empty input. |
+| `sleep(ms)` | Promise-based sleep — resolves after `ms` ms. Spaces out paged dispatches. |
+
+```ts
+import { chunk, sleep, mapWithConcurrency, BRIDGE_CONCURRENCY } from '@fetchproxy/server';
+
+for (const page of chunk(ids, 20)) {
+  await mapWithConcurrency(page, BRIDGE_CONCURRENCY, (id) => fetchOne(id));
+  await sleep(250); // breathe between pages
+}
+```
+
 ## License
 
 MIT.

@@ -37,4 +37,16 @@ export { backoffDelayMs } from './backoff.js';
 export type { BackoffOptions } from './backoff.js';
 export { withDeadline } from './deadline.js';
 export type { DeadlineOutcome } from './deadline.js';
+// Shared SSR-HTML / URL parsing helpers (pure, dependency-free) hoisted
+// from the scraping portal-MCP cohort. Anything portal-specific (the
+// `window.X` variable names, CDN-host filters, GraphQL bodies) stays in
+// the consumer.
+export {
+  extractBalancedObject,
+  extractGlobalAssign,
+  extractImgTags,
+  lastPathSegment,
+} from './parse-html.js';
+// Batch-paging primitives that pair with the fan-out kit above.
+export { chunk, sleep } from './batch.js';
 export type { Capability, FetchInit } from '@fetchproxy/protocol';
