@@ -288,6 +288,43 @@ describe('#90 fetch() lazy-revive covers the first post-idle timeout', () => {
     await expect(pending).rejects.toBeInstanceOf(FetchproxyTimeoutError);
     await s.close();
   });
+
+  it('the thrown FetchproxyTimeoutError carries retryAttempted:true when the warm-and-retry was burned', async () => {
+    const s = new FetchproxyServer({
+      ...baseOpts,
+      fetchTimeoutMs: 100,
+      bridgeReviveDelayMs: 10,
+    });
+    installRecordingHost(s);
+    const pending = s.get('/x');
+    pending.catch(() => undefined);
+    await vi.advanceTimersByTimeAsync(100); // first attempt times out
+    await vi.advanceTimersByTimeAsync(10); // revive delay elapses
+    await vi.advanceTimersByTimeAsync(100); // retry times out
+    const err = await pending.catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(FetchproxyTimeoutError);
+    // The contract the JSDoc promises: a caller branching on
+    // `!err.retryAttempted` must see `true` here, not `undefined`, so it
+    // doesn't redundantly retry what the server already exhausted.
+    expect((err as FetchproxyTimeoutError).retryAttempted).toBe(true);
+    await s.close();
+  });
+
+  it('the thrown FetchproxyTimeoutError carries retryAttempted:false when the retry was opted out', async () => {
+    const s = new FetchproxyServer({
+      ...baseOpts,
+      fetchTimeoutMs: 100,
+      bridgeReviveDelayMs: 0, // opt out of the warm-and-retry
+    });
+    installRecordingHost(s);
+    const pending = s.get('/x');
+    pending.catch(() => undefined);
+    await vi.advanceTimersByTimeAsync(100); // first (and only) attempt times out
+    const err = await pending.catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(FetchproxyTimeoutError);
+    expect((err as FetchproxyTimeoutError).retryAttempted).toBe(false);
+    await s.close();
+  });
 });
 
 // ---------------------------------------------------------------------------

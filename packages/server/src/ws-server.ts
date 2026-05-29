@@ -242,7 +242,8 @@ export interface FetchResult {
   body: string;
   /**
    * 0.8.0+: true when the server's lazy-revive retry path actually
-   * fired for this call (a `content_script_unreachable` first attempt
+   * fired for this call (a `content_script_unreachable` first attempt —
+   * or, since 0.11.0+/#90, a cold-start `timeout` first attempt —
    * followed by a successful retry). False on the no-retry path.
    * Always populated by the server in 0.8.0+; declared optional in the
    * type so downstream test code that constructs envelope literals
@@ -274,10 +275,12 @@ export interface FetchResultError {
   /**
    * 0.8.0+: true when the server's lazy-revive retry path actually
    * fired AND the retry also failed. False otherwise (retry was
-   * disabled, or this isn't a `content_script_unreachable` failure
-   * so retry didn't apply). Always populated by the server in 0.8.0+;
-   * declared optional in the type so downstream test code that
-   * constructs envelope literals directly stays back-compat.
+   * disabled, or this isn't a cold-start symptom so retry didn't
+   * apply). The retry arms on a `content_script_unreachable` failure
+   * or — since 0.11.0+/#90 — a cold-start `timeout`. Always populated
+   * by the server in 0.8.0+; declared optional in the type so
+   * downstream test code that constructs envelope literals directly
+   * stays back-compat.
    */
   retryAttempted?: boolean;
   /**
@@ -464,6 +467,14 @@ export class FetchproxyBridgeDownError extends FetchproxyProtocolError {
  * The lower-level `fetch()` returns `{ ok: false, kind: 'timeout' }`
  * instead (back-compat with its result-envelope shape). Subclass of
  * `FetchproxyProtocolError` so existing callers still match.
+ *
+ * `retryAttempted: true` (0.11.0+, #90/#91) means the server's one-shot
+ * lazy-revive retry (`bridgeReviveDelayMs`) treated this timeout as the
+ * SW-eviction cold-start symptom, warmed the worker, and the retry also
+ * timed out. `false` means the retry was disabled
+ * (`bridgeReviveDelayMs` unset / 0), so the timeout surfaced on the
+ * first attempt. Mirrors `FetchproxyBridgeDownError.retryAttempted` so
+ * callers can branch identically across both throwable kinds.
  */
 export class FetchproxyTimeoutError extends FetchproxyProtocolError {
   readonly url: string;
@@ -474,6 +485,14 @@ export class FetchproxyTimeoutError extends FetchproxyProtocolError {
   readonly port: number;
   /** 0.8.0+: actual elapsed milliseconds when the timer won the race. */
   readonly elapsedMs: number;
+  /**
+   * 0.11.0+ (#90/#91): true when the server's lazy-revive retry path
+   * fired for this timeout (a cold-start `timeout` symptom followed by
+   * a warm-and-retry that also timed out). False when the retry was
+   * disabled (`bridgeReviveDelayMs` unset/0) so the timeout surfaced on
+   * the first attempt.
+   */
+  readonly retryAttempted: boolean;
 
   constructor(args: {
     url: string;
@@ -481,6 +500,7 @@ export class FetchproxyTimeoutError extends FetchproxyProtocolError {
     role?: 'host' | 'peer' | null;
     port?: number;
     elapsedMs?: number;
+    retryAttempted?: boolean;
   }) {
     super(
       `fetchproxy: ${args.url} did not respond within ${args.timeoutMs}ms`,
@@ -491,6 +511,7 @@ export class FetchproxyTimeoutError extends FetchproxyProtocolError {
     this.role = args.role ?? null;
     this.port = args.port ?? 0;
     this.elapsedMs = args.elapsedMs ?? args.timeoutMs;
+    this.retryAttempted = args.retryAttempted ?? false;
   }
 }
 
@@ -1346,6 +1367,7 @@ export class FetchproxyServer {
         role: this.role,
         port: this.opts.port,
         elapsedMs: result.elapsedMs,
+        retryAttempted,
       });
     }
     if (result.kind === 'content_script_unreachable') {
