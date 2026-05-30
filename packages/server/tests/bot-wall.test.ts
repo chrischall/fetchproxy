@@ -50,6 +50,18 @@ const NORMAL_LISTING = `<!DOCTYPE html><html><head><title>123 Main St | $750,000
 <a href="/user/login">Sign in</a>
 </main></body></html>`;
 
+// A normal SSR listing page that ALSO embeds the PerimeterX *sensor*
+// bootstrap — which real portals (Zillow, etc.) inline into EVERY page,
+// blocked or not. `window._pxAppId` is the sensor, NOT a block-page
+// marker, so this must classify as clean. Keying on the sensor
+// false-flagged every real listing as a bot-wall (zillow #92).
+const NORMAL_LISTING_WITH_PX_SENSOR = `<!DOCTYPE html><html><head><title>123 Main St | $750,000</title>
+<script>window._pxAppId = "PXxxxxxxxx"; window._pxJsClientSrc = "/xxxx/init.js";</script>
+</head><body><main><h1>123 Main St, Springfield</h1>
+<div class="price">$750,000</div>
+<script id="__NEXT_DATA__" type="application/json">{"props":{"pageProps":{}}}</script>
+</main></body></html>`;
+
 describe('classifyBotWall', () => {
   describe('PerimeterX', () => {
     it('detects the px interstitial served as HTTP 200 (body-keyed)', () => {
@@ -69,17 +81,25 @@ describe('classifyBotWall', () => {
     });
 
     it.each([
-      ['window._pxAppId', '<html><script>window._pxAppId="PX1"</script></html>'],
       ['meta px-captcha', '<html><head><meta name="px-captcha" content=""></head></html>'],
       [
         'access-denied phrase',
         '<html><body>Access to this page has been denied</body></html>',
       ],
-    ])('matches on the %s marker alone', (_label, body) => {
+    ])('matches on the %s block-page marker alone', (_label, body) => {
       expect(classifyBotWall(body, 200)).toEqual({
         blocked: true,
         vendor: 'perimeterx',
       });
+    });
+
+    it('does NOT flag a page that only carries the px sensor bootstrap', () => {
+      // zillow #92: `window._pxAppId` is the PerimeterX sensor, inlined
+      // into every real SSR page — not a block-page marker. On its own it
+      // must never trip the wall.
+      expect(
+        classifyBotWall('<html><script>window._pxAppId="PX1"</script></html>', 200),
+      ).toEqual({ blocked: false });
     });
   });
 
@@ -139,6 +159,12 @@ describe('classifyBotWall', () => {
   describe('clean pages', () => {
     it('returns blocked:false on a normal 200 listing page', () => {
       expect(classifyBotWall(NORMAL_LISTING, 200)).toEqual({ blocked: false });
+    });
+
+    it('returns blocked:false on a listing page that embeds the px sensor', () => {
+      expect(classifyBotWall(NORMAL_LISTING_WITH_PX_SENSOR, 200)).toEqual({
+        blocked: false,
+      });
     });
 
     it('returns blocked:false on a 403 with no bot-wall markers', () => {
