@@ -37,12 +37,17 @@ export type BotWallResult =
   | { blocked: false };
 
 /**
- * The three PerimeterX px-captcha body markers (zillow #90/#91). Any
- * one is sufficient — the interstitial reliably carries at least one,
- * and they don't appear in legitimate listing HTML.
+ * PerimeterX px-captcha *block-page* body markers. Any one is
+ * sufficient — the interstitial reliably carries at least one, and these
+ * appear only on the block page, never on legitimate listing HTML.
+ *
+ * zillow #92: the original list (zillow #90/#91) also carried
+ * `window._pxAppId`. That string is the PerimeterX *sensor* bootstrap,
+ * which real portals inline into EVERY SSR page — blocked or not — so it
+ * false-flagged every legitimate listing as a bot-wall. It is NOT a
+ * block-page marker and must never appear here.
  */
 const PX_MARKERS = [
-  'window._pxAppId',
   'meta name="px-captcha"',
   'Access to this page has been denied',
 ] as const;
