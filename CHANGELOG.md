@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.11.1](https://github.com/chrischall/fetchproxy/compare/v0.11.0...v0.11.1) (2026-05-30)
+
+
+### Bug Fixes
+
+* **server:** drop px-sensor marker that false-flagged every SSR page ([#95](https://github.com/chrischall/fetchproxy/issues/95)) ([54de894](https://github.com/chrischall/fetchproxy/commit/54de8941ebd61676e5277cbef8ddfee2435eec09))
+
 ## [0.11.0](https://github.com/chrischall/fetchproxy/compare/v0.10.0...v0.11.0) (2026-05-29)
 
 
