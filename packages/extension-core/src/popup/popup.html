@@ -69,6 +69,17 @@
         color: #b91c1c;
         border-color: #fca5a5;
       }
+      /* Part 3: per-entry connection-status dot */
+      .status-dot {
+        display: inline-block;
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        margin-right: 6px;
+        vertical-align: middle;
+      }
+      .status-dot.connected { background: #2ecc71; }
+      .status-dot.offline { background: #bbb; }
     </style>
   </head>
   <body>

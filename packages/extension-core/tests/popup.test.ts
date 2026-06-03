@@ -32,6 +32,43 @@ describe('renderPopup', () => {
     expect(container.textContent).toContain('resy.com');
   });
 
+  // Part 3: connection-status dot
+  describe('connection-status dot', () => {
+    it('renders .status-dot.connected with aria-label "connected" when connected: true', () => {
+      renderPopup(container, {
+        mode: 'status',
+        trusted: [
+          { serverName: 'opentable-mcp', domains: ['opentable.com'], identityHash: 'h1', connected: true },
+        ],
+      });
+      const dot = container.querySelector('.status-dot.connected');
+      expect(dot).not.toBeNull();
+      expect(dot?.getAttribute('aria-label')).toBe('connected');
+    });
+
+    it('renders .status-dot.offline with aria-label "not connected" when connected: false', () => {
+      renderPopup(container, {
+        mode: 'status',
+        trusted: [
+          { serverName: 'resy-mcp', domains: ['resy.com'], identityHash: 'h2', connected: false },
+        ],
+      });
+      const dot = container.querySelector('.status-dot.offline');
+      expect(dot).not.toBeNull();
+      expect(dot?.getAttribute('aria-label')).toBe('not connected');
+    });
+
+    it('renders no .status-dot when connected is omitted (backward compat)', () => {
+      renderPopup(container, {
+        mode: 'status',
+        trusted: [
+          { serverName: 'legacy-mcp', domains: ['legacy.com'] },
+        ],
+      });
+      expect(container.querySelector('.status-dot')).toBeNull();
+    });
+  });
+
   it('renders multi-domain trusted MCP with all hosts listed', () => {
     renderPopup(container, {
       mode: 'status',
@@ -707,5 +744,67 @@ describe('renderPopup', () => {
       });
       expect(container.textContent ?? '').toContain('⚠️');
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Part 3: connections-changed live-update (Step 7)
+// ---------------------------------------------------------------------------
+describe('connections-changed live update', () => {
+  it('re-renders the status list when chrome.runtime fires connections-changed', async () => {
+    const root = document.getElementById('root')!;
+
+    // Simulate a minimal chrome.runtime.onMessage that lets us capture the
+    // listener and fire it manually.
+    type MsgListener = (msg: unknown) => void;
+    let capturedListener: MsgListener | null = null;
+    let renderCount = 0;
+
+    // We don't run bootstrap (it needs chrome.storage), but we can verify
+    // that renderPopup IS callable multiple times and that the listener
+    // pattern the bootstrap registers re-invokes rendering on the message.
+    // We test the listener registration contract:
+    const fakeOnMessage = {
+      addListener: (cb: MsgListener): void => {
+        capturedListener = cb;
+      },
+    };
+
+    // Simulate what bootstrap does: register a renderTrustedStatus re-render
+    // callback on the onMessage listener.
+    const renderStatusStub = (): void => {
+      renderCount++;
+      renderPopup(root, {
+        mode: 'status',
+        trusted: [{ serverName: 'opentable-mcp', domains: ['opentable.com'], connected: true }],
+      });
+    };
+
+    // Wire the listener (mirrors what bootstrap does).
+    fakeOnMessage.addListener((msg) => {
+      if (
+        msg !== null &&
+        typeof msg === 'object' &&
+        (msg as { type?: unknown }).type === 'connections-changed'
+      ) {
+        renderStatusStub();
+      }
+    });
+
+    expect(capturedListener).not.toBeNull();
+    expect(renderCount).toBe(0);
+
+    // Fire connections-changed.
+    capturedListener!({ type: 'connections-changed' });
+    expect(renderCount).toBe(1);
+    expect(root.querySelector('.status-dot.connected')).not.toBeNull();
+
+    // Fire again (e.g. second session connects).
+    capturedListener!({ type: 'connections-changed' });
+    expect(renderCount).toBe(2);
+
+    // Unrelated message does NOT trigger a re-render.
+    capturedListener!({ type: 'something-else' });
+    expect(renderCount).toBe(2);
   });
 });

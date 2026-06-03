@@ -101,6 +101,12 @@ export interface TrustedSummary {
    * Optional in older callers; required for the revoke button to render.
    */
   identityHash?: string;
+  /**
+   * Part 3: whether an instance of this identity is currently connected
+   * (≥1 live session). Green dot when true; grey dot when false. Omitted
+   * in older callers — no dot rendered when absent.
+   */
+  connected?: boolean;
 }
 
 /**
@@ -412,6 +418,19 @@ export function renderPopup(root: HTMLElement, state: PopupState): void {
     const ul = elem('ul', { class: 'trusted-list' });
     for (const t of state.trusted) {
       const li = elem('li', { class: 'trusted-entry' });
+      // Part 3: connection-status dot — only rendered when `connected` is
+      // explicitly set (boolean). Omitted when the field is absent so
+      // legacy callers and unit tests that don't exercise the live-session
+      // path continue to work unchanged.
+      if (t.connected !== undefined) {
+        li.appendChild(
+          elem('span', {
+            class: `status-dot ${t.connected ? 'connected' : 'offline'}`,
+            'aria-label': t.connected ? 'connected' : 'not connected',
+            title: t.connected ? 'Connected' : 'Not connected',
+          }),
+        );
+      }
       li.appendChild(
         elem('span', { class: 'trusted-label' }, `${t.serverName} → ${t.domains.join(', ')}`),
       );
@@ -619,7 +638,19 @@ interface PendingScopeUpdateRecord {
 type AnyPendingRecord = PendingPairRecord | PendingScopeUpdateRecord;
 
 declare const chrome: {
-  runtime?: { getManifest: () => { version: string } };
+  runtime?: {
+    getManifest: () => { version: string };
+    sendMessage?: (msg: unknown) => Promise<unknown>;
+    onMessage?: {
+      addListener: (
+        cb: (
+          msg: unknown,
+          _sender: unknown,
+          sendResponse: (r: unknown) => void,
+        ) => boolean | void,
+      ) => void;
+    };
+  };
   storage?: {
     local: {
       get: (k: string | string[]) => Promise<Record<string, unknown>>;
@@ -764,11 +795,26 @@ async function bootstrap(): Promise<void> {
     const ev2 = chrome.runtime?.getManifest().version ?? '0.2.0';
     const trust2 = new TrustStore(ev2);
     const records = await trust2.list();
+    // Part 3: query the background for the currently-connected identity set
+    // so we can render the connection-status dot on each entry. Best-effort:
+    // if the query fails (no background, old SW), fall back to no dot.
+    let connectedHashes: Set<string> = new Set();
+    if (chrome.runtime?.sendMessage) {
+      try {
+        const resp = await chrome.runtime.sendMessage({ type: 'get-connected-identities' }) as
+          | { connectedHashes?: string[] }
+          | undefined;
+        connectedHashes = new Set(resp?.connectedHashes ?? []);
+      } catch {
+        // Background not available — dots will be absent.
+      }
+    }
     const trustedList = Object.entries(records).map(([identityHash, r]) => ({
       identityHash,
       serverName: r.serverName,
       domains: [...r.domains],
       capabilities: r.capabilities ? [...r.capabilities] : ['fetch'],
+      connected: connectedHashes.has(identityHash),
     }));
     if (trustedList.length === 0) {
       renderPopup(root, { mode: 'empty' });
@@ -788,6 +834,22 @@ async function bootstrap(): Promise<void> {
     await renderNext();
   } else {
     await renderTrustedStatus();
+  }
+
+  // Part 3: listen for connection-change notifications from the background
+  // service worker. When a session comes up or tears down, re-render the
+  // status view so the dots update without the user closing/re-opening the
+  // popup. Guard: `onMessage` is absent in jsdom / older environments.
+  if (chrome.runtime?.onMessage) {
+    chrome.runtime.onMessage.addListener((msg) => {
+      if (
+        msg !== null &&
+        typeof msg === 'object' &&
+        (msg as { type?: unknown }).type === 'connections-changed'
+      ) {
+        void renderTrustedStatus();
+      }
+    });
   }
 }
 

@@ -397,7 +397,24 @@ const PENDING_PAIR_KEY = 'pendingPair';
 const APPROVED_PAIR_KEY = 'approvedPair';
 
 declare const chrome: {
-  runtime: { getManifest: () => { version: string } };
+  runtime: {
+    getManifest: () => { version: string };
+    /**
+     * Part 3: broadcast a message to all extension pages (e.g. open
+     * popups). Used to notify the popup that the connected-session set
+     * changed so it can re-render the status dots.
+     */
+    sendMessage?: (msg: unknown) => void;
+    onMessage?: {
+      addListener: (
+        cb: (
+          msg: unknown,
+          _sender: unknown,
+          sendResponse: (r: unknown) => void,
+        ) => boolean | void,
+      ) => void;
+    };
+  };
   storage: {
     local: {
       get: (k: string | string[]) => Promise<Record<string, unknown>>;
@@ -688,6 +705,26 @@ const mcpIndexedDbScopes = new Map<string, IndexedDbScopeDecl[]>();
 // handlers gate per-request pointer fields on these.
 const mcpLocalStoragePointers = new Map<string, { key: string; jsonPointer: string }[]>();
 const mcpSessionStoragePointers = new Map<string, { key: string; jsonPointer: string }[]>();
+// Part 3: per-mcpId identity hash — set when a session is established
+// (auto-trust or post-approval), cleared on session teardown. Used to
+// expose the set of currently-connected identity hashes to the popup.
+const mcpIdentityHash = new Map<string, string>();
+
+export function connectedIdentityHashes(): Set<string> {
+  return new Set(
+    [...mcpIdentityHash.values()].filter((h): h is string => !!h),
+  );
+}
+
+/** Part 3: notify any open popup that the connected-session set changed. */
+function broadcastConnectionsChanged(): void {
+  const c = (globalThis as { chrome?: { runtime?: { sendMessage?: (m: unknown) => void } } }).chrome;
+  try {
+    c?.runtime?.sendMessage?.({ type: 'connections-changed' });
+  } catch {
+    // No listeners (popup closed) — ignore the error Chrome throws.
+  }
+}
 
 function connect(): void {
   if (!trust || !sessions || !extIdentity) return;
@@ -732,6 +769,9 @@ function connect(): void {
     mcpIndexedDbScopes.clear();
     mcpLocalStoragePointers.clear();
     mcpSessionStoragePointers.clear();
+    // Part 3: clear identity hash map on teardown.
+    mcpIdentityHash.clear();
+    broadcastConnectionsChanged();
     scheduleReconnect();
   });
   ws.addEventListener('error', () => {
@@ -784,6 +824,9 @@ async function onServerHello(hello: HelloFrameFromServer): Promise<void> {
     mcpIndexedDbScopes.set(result.mcpId, [...result.indexedDbScopes]);
     mcpLocalStoragePointers.set(result.mcpId, [...result.localStoragePointers]);
     mcpSessionStoragePointers.set(result.mcpId, [...result.sessionStoragePointers]);
+    // Part 3: track identity hash per session for connected-status dot.
+    mcpIdentityHash.set(result.mcpId, toHex(await sha256(fromB64(hello.identityX25519Pub))));
+    broadcastConnectionsChanged();
     for (const d of result.domains) {
       void ensureDomainTab(d).catch(() => {
         /* fire-and-forget */
@@ -1830,6 +1873,9 @@ async function onApproval(approved: AnyPendingRecord): Promise<void> {
         mcpId,
         (approved.sessionStoragePointers ?? []).map((d) => ({ ...d })),
       );
+      // Part 3: track identity hash per approved session.
+      mcpIdentityHash.set(mcpId, approved.identityHash);
+      broadcastConnectionsChanged();
       // 0.4.0: sign over (mcpHelloNonce || extHello.sessionNonce). The
       // MCP host verifies this against the extension's claimed Ed25519
       // pub and gates session-key derivation on it.
@@ -1924,6 +1970,19 @@ function maybeBoot(): void {
   }
   trust = new TrustStore(chrome.runtime.getManifest().version);
   sessions = new SessionKeys();
+  // Part 3: respond to popup queries for the connected identity hash set.
+  if (typeof chrome.runtime.onMessage?.addListener === 'function') {
+    chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+      if (
+        msg !== null &&
+        typeof msg === 'object' &&
+        (msg as { type?: unknown }).type === 'get-connected-identities'
+      ) {
+        sendResponse({ connectedHashes: [...connectedIdentityHashes()] });
+        return true;
+      }
+    });
+  }
   chrome.storage.local.onChanged.addListener((changes) => {
     const approved = changes[APPROVED_PAIR_KEY]?.newValue as AnyPendingRecord | undefined;
     if (approved) {
