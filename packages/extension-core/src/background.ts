@@ -55,6 +55,13 @@ import { SessionKeys } from './session-keys.js';
 import { ensureDomainTab } from './ensure-domain-tab.js';
 import { isUrlAllowedForAnyDomain, isTabUrlMatch, isTabUrlOnOrigin } from './lib/url-match.js';
 import { normalisePendingPair } from './lib/pending-pair.js';
+import {
+  sameCapabilitySet,
+  sameScopeArrays,
+  sameCaptureHeaders,
+  sameIndexedDbScopes,
+  sameStoragePointers,
+} from './lib/scope.js';
 import { loadOrCreateExtensionIdentity, type ExtensionIdentity } from './extension-identity.js';
 import { startKeepalive } from './keepalive.js';
 
@@ -147,19 +154,6 @@ function sameDomainSet(a: readonly string[], b: readonly string[]): boolean {
   return true;
 }
 
-/**
- * Order-insensitive equality for two capability lists. A capability
- * upgrade (e.g. fetch → fetch+read_cookies) is conservative: we want
- * the user to re-approve when the MCP asks for more access.
- */
-function sameCapabilitySet(a: readonly string[], b: readonly string[]): boolean {
-  if (a.length !== b.length) return false;
-  const sa = [...a].sort();
-  const sb = [...b].sort();
-  for (let i = 0; i < sa.length; i++) if (sa[i] !== sb[i]) return false;
-  return true;
-}
-
 /** Default capability set when the server hello doesn't carry one. */
 const DEFAULT_CAPABILITIES: readonly Capability[] = ['fetch'];
 
@@ -203,59 +197,6 @@ function declaredScope(hello: HelloFrameFromServer): DeclaredScope {
       jsonPointer: d.jsonPointer,
     })),
   };
-}
-
-function sameScopeArrays(a: readonly string[], b: readonly string[]): boolean {
-  if (a.length !== b.length) return false;
-  const sa = [...a].sort();
-  const sb = [...b].sort();
-  for (let i = 0; i < sa.length; i++) if (sa[i] !== sb[i]) return false;
-  return true;
-}
-
-function sameCaptureHeaders(
-  a: readonly { urlPattern: string; headerName: string }[],
-  b: readonly { urlPattern: string; headerName: string }[],
-): boolean {
-  if (a.length !== b.length) return false;
-  const norm = (
-    arr: readonly { urlPattern: string; headerName: string }[],
-  ): string[] => arr.map((d) => `${d.urlPattern}\x00${d.headerName}`).sort();
-  const sa = norm(a);
-  const sb = norm(b);
-  for (let i = 0; i < sa.length; i++) if (sa[i] !== sb[i]) return false;
-  return true;
-}
-
-function sameIndexedDbScopes(
-  a: readonly IndexedDbScopeDecl[],
-  b: readonly IndexedDbScopeDecl[],
-): boolean {
-  if (a.length !== b.length) return false;
-  const norm = (arr: readonly IndexedDbScopeDecl[]): string[] =>
-    arr
-      .map(
-        (d) =>
-          `${d.origin}\x00${d.database}\x00${d.store}\x00${[...d.keys].sort().join(',')}`,
-      )
-      .sort();
-  const sa = norm(a);
-  const sb = norm(b);
-  for (let i = 0; i < sa.length; i++) if (sa[i] !== sb[i]) return false;
-  return true;
-}
-
-function sameStoragePointers(
-  a: readonly StoragePointerDecl[],
-  b: readonly StoragePointerDecl[],
-): boolean {
-  if (a.length !== b.length) return false;
-  const norm = (arr: readonly StoragePointerDecl[]): string[] =>
-    arr.map((d) => `${d.key}\x00${d.jsonPointer}`).sort();
-  const sa = norm(a);
-  const sb = norm(b);
-  for (let i = 0; i < sa.length; i++) if (sa[i] !== sb[i]) return false;
-  return true;
 }
 
 export async function handleServerHello(
