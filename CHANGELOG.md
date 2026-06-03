@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.13.0](https://github.com/chrischall/fetchproxy/compare/v0.12.0...v0.13.0) (2026-06-03)
+
+
+### Features
+
+* **server:** peer re-elects to host when its host dies ([#100](https://github.com/chrischall/fetchproxy/issues/100)) ([4bd94fe](https://github.com/chrischall/fetchproxy/commit/4bd94fe5312eb5ee226750d3e4ef28aef42a591a))
+
 ## [0.12.0](https://github.com/chrischall/fetchproxy/compare/v0.11.1...v0.12.0) (2026-06-03)
 
 
