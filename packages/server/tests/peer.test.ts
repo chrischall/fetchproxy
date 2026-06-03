@@ -135,4 +135,32 @@ describe('peer client', () => {
       /peer WS closed before ready/,
     );
   });
+
+  it('fires onClose listeners when the host WS closes', async () => {
+    // The peer needs to tell its owner (FetchproxyServer) when the host
+    // vanished so the owner can tear down the stranded handle and re-elect.
+    // peer.ts is intent-agnostic: it fires onClose on ANY ws close.
+    const idDir = mkdtempSync(join(tmpdir(), 'fp-peer-'));
+    const identity = await loadOrCreateIdentity('opentable-mcp', idDir);
+
+    const port = 41203;
+    wss = new WebSocketServer({ port });
+    // Host accepts the hello, then closes — simulates the host dying.
+    wss.on('connection', (ws: WebSocket) => {
+      ws.once('message', () => ws.close());
+    });
+
+    peer = await startPeer({
+      host: '127.0.0.1',
+      port,
+      identity,
+      mcpId: 'opentable-mcp:0.9.1:a3f7c91d2e8b4f56',
+      serverName: 'opentable-mcp',
+      version: '0.9.1',
+      domains: ['opentable.com'],
+    });
+
+    const closed = new Promise<void>((resolve) => peer!.onClose(() => resolve()));
+    await expect(closed).resolves.toBeUndefined();
+  });
 });

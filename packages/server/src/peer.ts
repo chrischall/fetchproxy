@@ -71,6 +71,15 @@ export interface PeerHandle {
   onPendingPair: (cb: (pairCode: string) => void) => void;
   /** The most recent pair code received via pair-pending, or null if none. */
   pendingPairCode: () => string | null;
+  /**
+   * 0.13.0+: fires when the WebSocket to the host closes — most importantly
+   * when the host process dies, stranding this peer. The owning
+   * `FetchproxyServer` uses this to tear down the dead peer handle and
+   * re-elect (becoming the new host if the port is now free). Fires on ANY
+   * close, including our own `close()`; the peer is intent-agnostic, so the
+   * owner decides what a close means.
+   */
+  onClose: (cb: () => void) => void;
   close: () => void;
 }
 
@@ -120,6 +129,7 @@ export async function startPeer(opts: PeerOpts): Promise<InternalPeerHandle> {
   const innerListeners: ((inner: InnerFrame) => void)[] = [];
   const renegotiateListeners: (() => void)[] = [];
   const pendingPairListeners: ((code: string) => void)[] = [];
+  const closeListeners: (() => void)[] = [];
   // `session` is the LATEST session derived from a ready frame. Every ready
   // frame for our mcpId replaces it — the extension can renegotiate at any
   // time (most commonly after MV3 service-worker eviction reconnects the
@@ -208,6 +218,10 @@ export async function startPeer(opts: PeerOpts): Promise<InternalPeerHandle> {
   // safe to wire unconditionally.
   ws.once('close', () => {
     rejectFirstReady(new Error('peer WS closed before ready'));
+    // 0.13.0+: notify the owner the host link dropped, so it can tear down
+    // this stranded handle and re-elect. Fires after rejectFirstReady so a
+    // pre-ready close still surfaces the original error to in-flight awaiters.
+    closeListeners.forEach((cb) => cb());
   });
   // Swallow unhandled-rejection noise when no caller has subscribed to
   // sessionPromise at the moment we reject. The rejection is still surfaced
@@ -248,6 +262,9 @@ export async function startPeer(opts: PeerOpts): Promise<InternalPeerHandle> {
       pendingPairListeners.push(cb);
     },
     pendingPairCode: () => pendingPairCode,
+    onClose: (cb) => {
+      closeListeners.push(cb);
+    },
     close: () => ws.close(),
   };
   return handle;
