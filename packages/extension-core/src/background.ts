@@ -56,11 +56,6 @@ import { ensureDomainTab } from './ensure-domain-tab.js';
 import { isUrlAllowedForAnyDomain, isTabUrlMatch, isTabUrlOnOrigin } from './lib/url-match.js';
 import { normalisePendingPair } from './lib/pending-pair.js';
 import {
-  sameCapabilitySet,
-  sameScopeArrays,
-  sameCaptureHeaders,
-  sameIndexedDbScopes,
-  sameStoragePointers,
   scopeHash,
   intersectScope,
   isScopeSubset,
@@ -170,7 +165,6 @@ export type HandleHelloResult =
         approvedIndexedDbScopes: IndexedDbScopeDecl[];
         approvedLocalStoragePointers: StoragePointerDecl[];
         approvedSessionStoragePointers: StoragePointerDecl[];
-        sessionNonce: Uint8Array;
       };
     };
 
@@ -358,7 +352,6 @@ export async function handleServerHello(
             })),
             approvedLocalStoragePointers: approvedScope.localStoragePointers.map((d) => ({ ...d })),
             approvedSessionStoragePointers: approvedScope.sessionStoragePointers.map((d) => ({ ...d })),
-            sessionNonce,
           },
         } : {}),
       };
