@@ -61,6 +61,7 @@ import {
   sameCaptureHeaders,
   sameIndexedDbScopes,
   sameStoragePointers,
+  scopeHash,
 } from './lib/scope.js';
 import { loadOrCreateExtensionIdentity, type ExtensionIdentity } from './extension-identity.js';
 import { startKeepalive } from './keepalive.js';
@@ -510,11 +511,31 @@ function clearPairPendingBadge(): void {
   syncBadge();
 }
 
-// Track which mcpId's hello is queued for the popup.
+/**
+ * 0.6.0+: pending pair record keyed by `${identityHash}:${scopeHash}`.
+ *
+ * Replacing the old `mcpId`-keyed shape so that concurrent processes sharing
+ * the same identity + scope collapse into a single user-visible approval prompt.
+ * The `mcpIds` array tracks every process waiting on this entry; `sessionNonces`
+ * maps each process's nonce so the approval handler can drive per-process ECDH.
+ *
+ * The `key` field is the authoritative dict key in `chrome.storage.local`.
+ * `kind` is 'pair' now; Part 2 will add 'scope-update'.
+ */
 interface PendingPairRecord {
-  mcpId: string;
+  /** `${identityHash}:${scopeHash}` — dict key. */
+  key: string;
+  kind: 'pair';
+  identityHash: string;
   serverName: string;
   version: string;
+  /** All MCP process IDs waiting on this identity+scope approval. */
+  mcpIds: string[];
+  /**
+   * Per-process hello nonce (b64). Used in session-key derivation after
+   * approval. Each process sends its own hello with its own nonce.
+   */
+  sessionNonces: Record<string, string>;
   domains: string[];
   capabilities: string[];
   cookieKeys: string[];
@@ -541,10 +562,8 @@ interface PendingPairRecord {
     sessionStoragePointers: StoragePointerDecl[];
   };
   pairCode: string;
-  identityHash: string;
   identityX25519Pub: string;
   identityEd25519Pub: string;
-  sessionNonceB64: string;
 }
 
 let ws: WebSocket | null = null;
@@ -700,11 +719,11 @@ async function onServerHello(hello: HelloFrameFromServer): Promise<void> {
     return;
   }
   // needs-pair: queue for popup.
-  const pending: PendingPairRecord = {
-    mcpId: result.mcpId,
-    serverName: result.serverName,
-    version: result.version,
-    domains: [...result.domains],
+  // 0.6.0+: compute the composite key (identityHash + scopeHash) so that
+  // concurrent processes sharing the same identity and scope collapse into a
+  // single approval prompt rather than flooding the user with N identical
+  // dialogs. The scope object is reconstructed from the result fields.
+  const declaredScopeForHash = {
     capabilities: [...result.capabilities],
     cookieKeys: [...result.cookieKeys],
     localStorageKeys: [...result.localStorageKeys],
@@ -713,25 +732,53 @@ async function onServerHello(hello: HelloFrameFromServer): Promise<void> {
     indexedDbScopes: [...result.indexedDbScopes],
     localStoragePointers: [...result.localStoragePointers],
     sessionStoragePointers: [...result.sessionStoragePointers],
-    ...(result.previousScope ? { previousScope: result.previousScope } : {}),
-    pairCode: result.pairCode,
-    identityHash: result.identityHash,
-    identityX25519Pub: result.identityX25519Pub,
-    identityEd25519Pub: result.identityEd25519Pub,
-    sessionNonceB64: toB64(result.sessionNonce),
   };
-  // 0.5.2+: store pending pairs as a dict keyed by mcpId so multiple
-  // simultaneous unpaired MCPs queue up cleanly. Pre-0.5.2 wrote a single
-  // PendingPairRecord under this key, which meant the second MCP's hello
-  // silently clobbered the first MCP's pending entry — the user could only
-  // ever pair one at a time. Reading tolerates both shapes (`mergePending`
-  // below) so an in-flight legacy record from a pre-upgrade SW survives the
-  // version bump. The read-modify-write is wrapped in `withPendingPairLock`
-  // so concurrent peer hellos can't race each other across the await.
+  const pendingKey = `${result.identityHash}:${await scopeHash(declaredScopeForHash)}`;
+  const sessionNonceB64 = toB64(result.sessionNonce);
+  // 0.6.0+: store pending pairs as a dict keyed by `${identityHash}:${scopeHash}`.
+  // If an entry for this key already exists, add the current mcpId to its
+  // `mcpIds` array (dedup) and record its session nonce — the rest of the
+  // record (pairCode, domain list, capabilities, etc.) is identical across
+  // processes that share the same identity+scope, so we don't overwrite it.
+  // If no entry exists yet, create one fresh.
+  // The read-modify-write is wrapped in `withPendingPairLock` so concurrent
+  // peer hellos can't race the get/set pair.
   await withPendingPairLock(async () => {
     const got = await chrome.storage.local.get(PENDING_PAIR_KEY);
     const existing = mergePending(got[PENDING_PAIR_KEY]);
-    existing[pending.mcpId] = pending;
+    const currentEntry = existing[pendingKey];
+    if (currentEntry) {
+      // Collapse: add this mcpId to the waiting set (dedup).
+      if (!currentEntry.mcpIds.includes(result.mcpId)) {
+        currentEntry.mcpIds.push(result.mcpId);
+      }
+      currentEntry.sessionNonces[result.mcpId] = sessionNonceB64;
+    } else {
+      // New entry.
+      const pending: PendingPairRecord = {
+        key: pendingKey,
+        kind: 'pair',
+        identityHash: result.identityHash,
+        serverName: result.serverName,
+        version: result.version,
+        mcpIds: [result.mcpId],
+        sessionNonces: { [result.mcpId]: sessionNonceB64 },
+        domains: [...result.domains],
+        capabilities: [...result.capabilities],
+        cookieKeys: [...result.cookieKeys],
+        localStorageKeys: [...result.localStorageKeys],
+        sessionStorageKeys: [...result.sessionStorageKeys],
+        captureHeaders: [...result.captureHeaders],
+        indexedDbScopes: [...result.indexedDbScopes],
+        localStoragePointers: [...result.localStoragePointers],
+        sessionStoragePointers: [...result.sessionStoragePointers],
+        ...(result.previousScope ? { previousScope: result.previousScope } : {}),
+        pairCode: result.pairCode,
+        identityX25519Pub: result.identityX25519Pub,
+        identityEd25519Pub: result.identityEd25519Pub,
+      };
+      existing[pendingKey] = pending;
+    }
     await chrome.storage.local.set({ [PENDING_PAIR_KEY]: existing });
   });
   // 0.4.2: surface the pending pair without making the user discover
@@ -740,21 +787,27 @@ async function onServerHello(hello: HelloFrameFromServer): Promise<void> {
   // chrome.action (unit tests, older Chrome).
   setPairPendingBadge();
   // 0.5.2+: notify the MCP-side server (host or peer) that the user has
-  // been asked to approve. The MCP can then include `pending.pairCode`
-  // in tool errors so the chat shows the same XXX-XXX the popup is
-  // displaying — the whole point of the joint pair code is the user
-  // comparing it across two channels, which doesn't work if only the
-  // popup has it. Best-effort: if the WS dropped between the hello and
-  // here, the next reconnect's hello triggers a fresh pair-pending.
+  // been asked to approve. The MCP can then include `pairCode` in tool
+  // errors so the chat shows the same XXX-XXX the popup is displaying.
+  // We send one pair-pending notification per mcpId — each process's MCP
+  // host needs to know its own pairing is pending. Best-effort: if the WS
+  // dropped between the hello and here, the next reconnect triggers a fresh
+  // pair-pending.
   if (ws && ws.readyState === WebSocket.OPEN) {
     try {
-      ws.send(
-        JSON.stringify({
-          type: 'pair-pending',
-          mcpId: pending.mcpId,
-          pairCode: pending.pairCode,
-        }),
-      );
+      // Look up the (possibly just-updated) entry to get the pairCode.
+      const got = await chrome.storage.local.get(PENDING_PAIR_KEY);
+      const dict = mergePending(got[PENDING_PAIR_KEY]);
+      const entry = dict[pendingKey];
+      if (entry) {
+        ws.send(
+          JSON.stringify({
+            type: 'pair-pending',
+            mcpId: result.mcpId,
+            pairCode: entry.pairCode,
+          }),
+        );
+      }
     } catch (e) {
       console.warn('[fetchproxy] pair-pending send failed:', e);
     }
@@ -1525,6 +1578,8 @@ async function onApproval(approved: PendingPairRecord): Promise<void> {
     approved.capabilities && approved.capabilities.length > 0
       ? [...approved.capabilities]
       : ['fetch'];
+  // Trust is keyed by identityHash — write it once for the entire group of
+  // waiting processes (all share the same identity and scope).
   await trust.put(approved.identityHash, {
     serverName: approved.serverName,
     domains: [...approved.domains],
@@ -1558,79 +1613,87 @@ async function onApproval(approved: PendingPairRecord): Promise<void> {
     extensionIdentityX25519Pub: toB64(extIdentity.x25519Pub),
     extensionIdentityEd25519Pub: toB64(extIdentity.ed25519Pub),
   });
-  // Derive session key.
+  // 0.6.0+: replay the post-approval session setup for EVERY mcpId in the
+  // entry. Each process had its own hello nonce (for ECDH uniqueness), but
+  // they share the same identity pub and approval outcome — so we drive the
+  // same session-key derivation + ReadyFrame send independently for each.
   const identityPub = fromB64(approved.identityX25519Pub);
-  const sessionNonce = fromB64(approved.sessionNonceB64);
-  const ephemeral = await generateX25519();
-  const shared = await ecdhX25519(ephemeral.privateKey, identityPub);
-  const sessionKey = await hkdfSha256(
-    shared,
-    sessionNonce,
-    enc.encode(HKDF_SESSION_INFO),
-    32,
-  );
-  sessions.set(approved.mcpId, sessionKey);
-  mcpDomains.set(approved.mcpId, [...approved.domains]);
-  mcpCapabilities.set(approved.mcpId, approvedCapabilities);
-  mcpCookieKeys.set(approved.mcpId, [...(approved.cookieKeys ?? [])]);
-  mcpLocalStorageKeys.set(approved.mcpId, [...(approved.localStorageKeys ?? [])]);
-  mcpSessionStorageKeys.set(approved.mcpId, [...(approved.sessionStorageKeys ?? [])]);
-  mcpCaptureHeaders.set(approved.mcpId, (approved.captureHeaders ?? []).map((d) => ({ ...d })));
-  mcpIndexedDbScopes.set(
-    approved.mcpId,
-    (approved.indexedDbScopes ?? []).map((d) => ({
-      origin: d.origin,
-      database: d.database,
-      store: d.store,
-      keys: [...d.keys],
-    })),
-  );
-  mcpLocalStoragePointers.set(
-    approved.mcpId,
-    (approved.localStoragePointers ?? []).map((d) => ({ ...d })),
-  );
-  mcpSessionStoragePointers.set(
-    approved.mcpId,
-    (approved.sessionStoragePointers ?? []).map((d) => ({ ...d })),
-  );
+  const mcpIdsToUnblock = approved.mcpIds ?? [];
+  for (const mcpId of mcpIdsToUnblock) {
+    const sessionNonceB64 = approved.sessionNonces?.[mcpId];
+    if (!sessionNonceB64) {
+      console.warn(`[fetchproxy] onApproval: missing sessionNonce for mcpId ${mcpId}; skipping`);
+      continue;
+    }
+    const sessionNonce = fromB64(sessionNonceB64);
+    // Each process gets its own fresh ephemeral keypair so the resulting
+    // session keys are independent.
+    const ephemeral = await generateX25519();
+    const shared = await ecdhX25519(ephemeral.privateKey, identityPub);
+    const sessionKey = await hkdfSha256(
+      shared,
+      sessionNonce,
+      enc.encode(HKDF_SESSION_INFO),
+      32,
+    );
+    sessions.set(mcpId, sessionKey);
+    mcpDomains.set(mcpId, [...approved.domains]);
+    mcpCapabilities.set(mcpId, approvedCapabilities);
+    mcpCookieKeys.set(mcpId, [...(approved.cookieKeys ?? [])]);
+    mcpLocalStorageKeys.set(mcpId, [...(approved.localStorageKeys ?? [])]);
+    mcpSessionStorageKeys.set(mcpId, [...(approved.sessionStorageKeys ?? [])]);
+    mcpCaptureHeaders.set(mcpId, (approved.captureHeaders ?? []).map((d) => ({ ...d })));
+    mcpIndexedDbScopes.set(
+      mcpId,
+      (approved.indexedDbScopes ?? []).map((d) => ({
+        origin: d.origin,
+        database: d.database,
+        store: d.store,
+        keys: [...d.keys],
+      })),
+    );
+    mcpLocalStoragePointers.set(
+      mcpId,
+      (approved.localStoragePointers ?? []).map((d) => ({ ...d })),
+    );
+    mcpSessionStoragePointers.set(
+      mcpId,
+      (approved.sessionStoragePointers ?? []).map((d) => ({ ...d })),
+    );
+    // 0.4.0: sign over (mcpHelloNonce || extHello.sessionNonce). The
+    // MCP host verifies this against the extension's claimed Ed25519
+    // pub and gates session-key derivation on it.
+    const sessionSig = await ed25519Sign(
+      extIdentity.ed25519Priv,
+      concatBytes(sessionNonce, currentExtSessionNonce!),
+    );
+    const ready: ReadyFrame = {
+      type: 'ready',
+      mcpId,
+      extensionSessionPub: toB64(ephemeral.publicKey),
+      sessionSig: toB64(sessionSig),
+    };
+    ws?.send(JSON.stringify(ready));
+  }
+  // Ensure domain tabs for the approved domains (once for the group).
   for (const d of approved.domains) {
     void ensureDomainTab(d).catch(() => {
       /* noop */
     });
   }
-  // 0.4.0: sign over (mcpHelloNonce || extHello.sessionNonce). The
-  // MCP host verifies this against the extension's claimed Ed25519
-  // pub and gates session-key derivation on it.
-  const sessionSig = await ed25519Sign(
-    extIdentity.ed25519Priv,
-    concatBytes(sessionNonce, currentExtSessionNonce),
-  );
-  const ready: ReadyFrame = {
-    type: 'ready',
-    mcpId: approved.mcpId,
-    extensionSessionPub: toB64(ephemeral.publicKey),
-    sessionSig: toB64(sessionSig),
-  };
-  ws?.send(JSON.stringify(ready));
-  // 0.5.2+: clear popup state for this approved mcpId ONLY. Previously
-  // (when pendingPair was a single record) a blanket remove was correct;
-  // now pendingPair is a dict keyed by mcpId and other unapproved MCPs
-  // may still be queued under their own keys, so we need a read-modify-
-  // write that touches just `approved.mcpId`. The popup's onApprove
-  // handler does the same dance on its side; both paths run for any
-  // single approval (popup writes approvedPair → this listener fires →
-  // we clean up here), so the operation must be idempotent for the
-  // entry we're removing. The RMW shares `withPendingPairLock` with
-  // `onServerHello` so a hello arriving mid-approval can't race the
-  // get/set pair.
+  // 0.6.0+: clear popup state for the entire approved key entry. All waiting
+  // mcpIds were handled in the loop above. The popup's onApprove handler
+  // writes approvedPair → this listener fires → we clean up here. The RMW
+  // shares `withPendingPairLock` with `onServerHello` so a hello arriving
+  // mid-approval can't race the get/set pair.
   await withPendingPairLock(async () => {
     const got = await chrome.storage.local.get(PENDING_PAIR_KEY);
     const remaining = mergePending(got[PENDING_PAIR_KEY]);
-    delete remaining[approved.mcpId];
+    delete remaining[approved.key];
     if (Object.keys(remaining).length === 0) {
       await chrome.storage.local.remove(PENDING_PAIR_KEY);
       // Badge clears only when the queue is fully drained — other queued
-      // MCPs still need a visible "!" so the user knows to come back.
+      // identities still need a visible "!" so the user knows to come back.
       clearPairPendingBadge();
     } else {
       await chrome.storage.local.set({ [PENDING_PAIR_KEY]: remaining });

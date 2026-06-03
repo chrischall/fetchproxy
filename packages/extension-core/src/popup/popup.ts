@@ -507,8 +507,13 @@ export function renderPopup(root: HTMLElement, state: PopupState): void {
 // Bootstrap (runs in popup context only — skipped in tests)
 // -------------------------------------------------------------------
 
+// 0.6.0+: keyed by `${identityHash}:${scopeHash}`, carries mcpIds[].
 interface PendingPairRecord {
-  mcpId: string;
+  key: string;
+  kind: 'pair';
+  identityHash: string;
+  mcpIds: string[];
+  sessionNonces: Record<string, string>;
   serverName: string;
   version: string;
   domains: string[];
@@ -522,10 +527,8 @@ interface PendingPairRecord {
   sessionStoragePointers?: { key: string; jsonPointer: string }[];
   previousScope?: PreviousScope;
   pairCode: string;
-  identityHash: string;
   identityX25519Pub: string;
   identityEd25519Pub: string;
-  sessionNonceB64: string;
 }
 
 declare const chrome: {
@@ -601,7 +604,7 @@ async function bootstrap(): Promise<void> {
           // stay queued so the user can advance through them.
           const cur = await chrome.storage!.local.get(['pendingPair']);
           const d = readPendingDict(cur['pendingPair']);
-          delete d[pending.mcpId];
+          delete d[pending.key];
           if (Object.keys(d).length === 0) {
             await chrome.storage!.local.remove('pendingPair');
           } else {
@@ -614,7 +617,7 @@ async function bootstrap(): Promise<void> {
         void (async () => {
           const cur = await chrome.storage!.local.get(['pendingPair']);
           const d = readPendingDict(cur['pendingPair']);
-          delete d[pending.mcpId];
+          delete d[pending.key];
           if (Object.keys(d).length === 0) {
             await chrome.storage!.local.remove('pendingPair');
           } else {
