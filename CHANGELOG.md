@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.12.0](https://github.com/chrischall/fetchproxy/compare/v0.11.1...v0.12.0) (2026-06-03)
+
+
+### Features
+
+* **extension:** per-identity pairing + non-blocking scope growth + connection dot ([#97](https://github.com/chrischall/fetchproxy/issues/97)) ([daf4046](https://github.com/chrischall/fetchproxy/commit/daf40468e69cc7fe839d6a58095e83be11691200))
+
+
+### Bug Fixes
+
+* **extension:** address [#97](https://github.com/chrischall/fetchproxy/issues/97) review nits (supersede-on-collision + dead code) ([#99](https://github.com/chrischall/fetchproxy/issues/99)) ([1a98d25](https://github.com/chrischall/fetchproxy/commit/1a98d2558c32f2e932ea08009d92802093a9863e))
+
 ## [0.11.1](https://github.com/chrischall/fetchproxy/compare/v0.11.0...v0.11.1) (2026-05-30)
 
 
