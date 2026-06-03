@@ -666,7 +666,57 @@ interface PendingScopeUpdateRecord extends PendingRecordBase {
   };
 }
 
-type AnyPendingRecord = PendingPairRecord | PendingScopeUpdateRecord;
+export type AnyPendingRecord = PendingPairRecord | PendingScopeUpdateRecord;
+
+/**
+ * Apply a needs-pair record to a pending dict.
+ *
+ * Three cases:
+ *  1. Key is occupied by another `pair` entry → collapse (dedup mcpId).
+ *  2. Key is unoccupied → create a new `pair` entry.
+ *  3. Key is occupied by a `scope-update` entry → the needs-pair supersedes it:
+ *     trust is gone, so the scope-update offer is moot. Replace with a `pair`
+ *     entry, unioning the mcpIds so every waiting process gets unblocked.
+ *
+ * Exported for unit testing; production callers use `onServerHello`.
+ *
+ * @internal
+ */
+export function applyNeedsPairRecord(
+  existing: Record<string, AnyPendingRecord>,
+  pendingKey: string,
+  newRecord: PendingPairRecord,
+): void {
+  const currentEntry = existing[pendingKey];
+  if (currentEntry && currentEntry.kind === 'pair') {
+    // Case 1: Collapse — add this mcpId to the waiting set (dedup).
+    const mcpId = newRecord.mcpIds[0]!;
+    const nonce = newRecord.sessionNonces[mcpId]!;
+    if (!currentEntry.mcpIds.includes(mcpId)) {
+      currentEntry.mcpIds.push(mcpId);
+    }
+    currentEntry.sessionNonces[mcpId] = nonce;
+  } else if (!currentEntry) {
+    // Case 2: New entry.
+    existing[pendingKey] = newRecord;
+  } else {
+    // Case 3: A scope-update sits at this key. The needs-pair supersedes it —
+    // trust has been revoked, so the non-blocking scope-update offer is moot.
+    // Replace with the pair record, unioning the mcpIds so every process
+    // waiting on this identity (including those that drove the scope-update)
+    // gets a prompt on the next approval.
+    const inherited = currentEntry.mcpIds.filter((id) => !newRecord.mcpIds.includes(id));
+    const mergedRecord: PendingPairRecord = {
+      ...newRecord,
+      mcpIds: [...inherited, ...newRecord.mcpIds],
+    };
+    // Carry over any session nonces already recorded for the inherited mcpIds.
+    // (scope-update records don't have sessionNonces, so nothing to copy —
+    // the inherited mcpIds will just be missing nonces, which is safe: the
+    // approval handler skips mcpIds with missing nonces gracefully.)
+    existing[pendingKey] = mergedRecord;
+  }
+}
 
 let ws: WebSocket | null = null;
 let reconnectAttempt = 0;
@@ -947,49 +997,36 @@ async function onServerHello(hello: HelloFrameFromServer): Promise<void> {
   const pendingKey = `${result.identityHash}:${await scopeHash(declaredScopeForHash)}`;
   const sessionNonceB64 = toB64(result.sessionNonce);
   // 0.6.0+: store pending pairs as a dict keyed by `${identityHash}:${scopeHash}`.
-  // If an entry for this key already exists, add the current mcpId to its
-  // `mcpIds` array (dedup) and record its session nonce — the rest of the
-  // record (pairCode, domain list, capabilities, etc.) is identical across
-  // processes that share the same identity+scope, so we don't overwrite it.
-  // If no entry exists yet, create one fresh.
+  // `applyNeedsPairRecord` handles all three cases: existing pair (dedup),
+  // no entry (create), and existing scope-update (supersede — trust is gone).
   // The read-modify-write is wrapped in `withPendingPairLock` so concurrent
   // peer hellos can't race the get/set pair.
+  const newPendingRecord: PendingPairRecord = {
+    key: pendingKey,
+    kind: 'pair',
+    identityHash: result.identityHash,
+    serverName: result.serverName,
+    version: result.version,
+    mcpIds: [result.mcpId],
+    sessionNonces: { [result.mcpId]: sessionNonceB64 },
+    domains: [...result.domains],
+    capabilities: [...result.capabilities],
+    cookieKeys: [...result.cookieKeys],
+    localStorageKeys: [...result.localStorageKeys],
+    sessionStorageKeys: [...result.sessionStorageKeys],
+    captureHeaders: [...result.captureHeaders],
+    indexedDbScopes: [...result.indexedDbScopes],
+    localStoragePointers: [...result.localStoragePointers],
+    sessionStoragePointers: [...result.sessionStoragePointers],
+    ...(result.previousScope ? { previousScope: result.previousScope } : {}),
+    pairCode: result.pairCode,
+    identityX25519Pub: result.identityX25519Pub,
+    identityEd25519Pub: result.identityEd25519Pub,
+  };
   await withPendingPairLock(async () => {
     const got = await chrome.storage.local.get(PENDING_PAIR_KEY);
     const existing = mergePending(got[PENDING_PAIR_KEY]);
-    const currentEntry = existing[pendingKey];
-    if (currentEntry && currentEntry.kind === 'pair') {
-      // Collapse: add this mcpId to the waiting set (dedup).
-      if (!currentEntry.mcpIds.includes(result.mcpId)) {
-        currentEntry.mcpIds.push(result.mcpId);
-      }
-      currentEntry.sessionNonces[result.mcpId] = sessionNonceB64;
-    } else if (!currentEntry) {
-      // New entry.
-      const pending: PendingPairRecord = {
-        key: pendingKey,
-        kind: 'pair',
-        identityHash: result.identityHash,
-        serverName: result.serverName,
-        version: result.version,
-        mcpIds: [result.mcpId],
-        sessionNonces: { [result.mcpId]: sessionNonceB64 },
-        domains: [...result.domains],
-        capabilities: [...result.capabilities],
-        cookieKeys: [...result.cookieKeys],
-        localStorageKeys: [...result.localStorageKeys],
-        sessionStorageKeys: [...result.sessionStorageKeys],
-        captureHeaders: [...result.captureHeaders],
-        indexedDbScopes: [...result.indexedDbScopes],
-        localStoragePointers: [...result.localStoragePointers],
-        sessionStoragePointers: [...result.sessionStoragePointers],
-        ...(result.previousScope ? { previousScope: result.previousScope } : {}),
-        pairCode: result.pairCode,
-        identityX25519Pub: result.identityX25519Pub,
-        identityEd25519Pub: result.identityEd25519Pub,
-      };
-      existing[pendingKey] = pending;
-    }
+    applyNeedsPairRecord(existing, pendingKey, newPendingRecord);
     await chrome.storage.local.set({ [PENDING_PAIR_KEY]: existing });
   });
   // 0.4.2: surface the pending pair without making the user discover
