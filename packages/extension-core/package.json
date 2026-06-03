@@ -8,7 +8,7 @@
     "build": "tsc -b"
   },
   "dependencies": {
-    "@fetchproxy/protocol": "^0.12.0"
+    "@fetchproxy/protocol": "^0.13.0"
   },
   "devDependencies": {
     "@types/chrome": "^0.1.42",
