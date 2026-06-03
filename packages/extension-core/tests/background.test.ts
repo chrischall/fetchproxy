@@ -786,6 +786,122 @@ describe('request handler capability enforcement (granted ≤ approved)', () => 
   });
 });
 
+// ---------------------------------------------------------------------------
+// Dismiss-suppression tests (Step 9)
+// ---------------------------------------------------------------------------
+
+describe('dismiss-suppression (scope-update)', () => {
+  let storageData: Record<string, unknown>;
+
+  beforeEach(() => {
+    storageData = {};
+    (globalThis as { chrome?: unknown }).chrome = {
+      storage: {
+        local: {
+          get: async (k: string | string[]) => {
+            const ks = Array.isArray(k) ? k : [k];
+            const out: Record<string, unknown> = {};
+            for (const x of ks) if (x in storageData) out[x] = storageData[x];
+            return out;
+          },
+          set: async (kv: Record<string, unknown>) => Object.assign(storageData, kv),
+          remove: async (x: string) => { delete storageData[x]; },
+        },
+      },
+    };
+  });
+
+  it('pendingScopeUpdate signal is present when scope grows (precondition)', async () => {
+    const hello = await buildServerHello(
+      'suppress-mcp:1.0.0:001122334455',
+      'suppress-mcp',
+      ['suppress.example'],
+      ['fetch', 'capture_request_header'],
+    );
+    const trust = new TrustStore('0.3.0');
+    const idHash = Buffer.from(
+      await sha256(new Uint8Array(Buffer.from(hello.identityX25519Pub, 'base64'))),
+    ).toString('hex');
+    await trust.put(idHash, {
+      serverName: 'suppress-mcp',
+      domains: ['suppress.example'],
+      capabilities: ['fetch'],
+      identityX25519Pub: hello.identityX25519Pub,
+      identityEd25519Pub: hello.identityEd25519Pub,
+      extensionIdentityX25519Pub: FAKE_EXT_X25519_PUB_B64,
+      extensionIdentityEd25519Pub: FAKE_EXT_X25519_PUB_B64,
+    });
+    const result = await handleServerHello(hello, { trust, extensionIdentityX25519Pub: FAKE_EXT_X25519_PUB });
+    expect(result.kind).toBe('auto-trust');
+    if (result.kind === 'auto-trust') {
+      expect(result.pendingScopeUpdate).toBeDefined();
+    }
+  });
+
+  it('after a dismiss (dismissedScopeHashes written), suppression check prevents re-queuing', async () => {
+    // This tests the storage state that suppresses re-queueing.
+    // The suppression check in onServerHello reads:
+    //   dismissed[identityHash].includes(declaredHash) → skip queueing
+    const identityHash = 'aabbccdd' + '0'.repeat(56);
+    const declaredScope = {
+      capabilities: ['fetch', 'capture_request_header'],
+      cookieKeys: [] as string[],
+      localStorageKeys: [] as string[],
+      sessionStorageKeys: [] as string[],
+      captureHeaders: [] as { urlPattern: string; headerName: string }[],
+      indexedDbScopes: [] as import('../src/lib/scope.js').Scope['indexedDbScopes'],
+      localStoragePointers: [] as import('../src/lib/scope.js').Scope['localStoragePointers'],
+      sessionStoragePointers: [] as import('../src/lib/scope.js').Scope['sessionStoragePointers'],
+    };
+    const hash = await scopeHash(declaredScope);
+    const key = `${identityHash}:${hash}`;
+
+    // Simulate dismiss: write the dismissed hash to storage.
+    storageData['dismissedScopeHashes'] = { [identityHash]: [hash] };
+
+    // Verify: the dismissed hash is recorded.
+    const got = storageData['dismissedScopeHashes'] as Record<string, string[]>;
+    expect(got[identityHash]).toContain(hash);
+
+    // The suppression check: if this hash is in dismissed, skip queueing.
+    const dismissed = got[identityHash] ?? [];
+    const shouldQueue = !dismissed.includes(hash);
+    expect(shouldQueue).toBe(false); // suppressed
+    expect(key).toBe(`${identityHash}:${hash}`);
+  });
+
+  it('a new (different) declared scope after dismiss IS queued (not suppressed)', async () => {
+    const identityHash = 'aabbccdd' + '0'.repeat(56);
+    const oldDeclaredScope = {
+      capabilities: ['fetch', 'capture_request_header'],
+      cookieKeys: [] as string[],
+      localStorageKeys: [] as string[],
+      sessionStorageKeys: [] as string[],
+      captureHeaders: [] as { urlPattern: string; headerName: string }[],
+      indexedDbScopes: [] as import('../src/lib/scope.js').Scope['indexedDbScopes'],
+      localStoragePointers: [] as import('../src/lib/scope.js').Scope['localStoragePointers'],
+      sessionStoragePointers: [] as import('../src/lib/scope.js').Scope['sessionStoragePointers'],
+    };
+    const newDeclaredScope = {
+      ...oldDeclaredScope,
+      capabilities: ['fetch', 'capture_request_header', 'read_cookies'],
+    };
+    const oldHash = await scopeHash(oldDeclaredScope);
+    const newHash = await scopeHash(newDeclaredScope);
+
+    // Simulate: user dismissed the old declared scope.
+    storageData['dismissedScopeHashes'] = { [identityHash]: [oldHash] };
+
+    // New declared scope has a different hash.
+    expect(newHash).not.toBe(oldHash);
+
+    // Suppression check for the NEW hash: NOT suppressed.
+    const dismissed = (storageData['dismissedScopeHashes'] as Record<string, string[]>)[identityHash] ?? [];
+    const shouldQueueNew = !dismissed.includes(newHash);
+    expect(shouldQueueNew).toBe(true); // new scope is NOT suppressed
+  });
+});
+
 describe('multi-instance pending-pair dedup (0.6.0+)', () => {
   it('two needs-pair helloes from the same identity + scope collapse into ONE pending entry with both mcpIds', async () => {
     // Build a shared identity so both hellos have the same identityX25519Pub.

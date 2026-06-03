@@ -499,6 +499,179 @@ describe('renderPopup', () => {
       expect(container.textContent).toContain('(none)');
     });
 
+    // ---------------------------------------------------------------------------
+    // Part 2: scope-update mode
+    // ---------------------------------------------------------------------------
+    describe('scope-update mode', () => {
+      it('renders the added/removed scope diff for a scope-update state', () => {
+        renderPopup(container, {
+          mode: 'scope-update',
+          serverName: 'musescore-mcp',
+          pending: {
+            capabilities: ['fetch', 'capture_request_header'],
+            cookieKeys: [],
+            localStorageKeys: [],
+            sessionStorageKeys: [],
+            captureHeaders: [],
+            indexedDbScopes: [],
+            localStoragePointers: [],
+            sessionStoragePointers: [],
+          },
+          previous: {
+            capabilities: ['fetch'],
+            cookieKeys: [],
+            localStorageKeys: [],
+            sessionStorageKeys: [],
+            captureHeaders: [],
+            indexedDbScopes: [],
+            localStoragePointers: [],
+            sessionStoragePointers: [],
+          },
+          onGrant: () => undefined,
+          onKeepAsIs: () => undefined,
+        });
+        // Should show the diff sections.
+        expect(container.textContent).toContain('Previously approved');
+        expect(container.textContent).toContain('Now requesting (new)');
+        expect(container.textContent).toContain('Capability: capture_request_header');
+        // The kept capability should appear under "Previously approved".
+        expect(container.textContent).toContain('Capability: fetch');
+      });
+
+      it('renders [Grant] and [Keep as is] buttons, NOT Approve/Cancel', () => {
+        renderPopup(container, {
+          mode: 'scope-update',
+          serverName: 'musescore-mcp',
+          pending: {
+            capabilities: ['fetch', 'capture_request_header'],
+            cookieKeys: [],
+            localStorageKeys: [],
+            sessionStorageKeys: [],
+            captureHeaders: [],
+            indexedDbScopes: [],
+            localStoragePointers: [],
+            sessionStoragePointers: [],
+          },
+          previous: {
+            capabilities: ['fetch'],
+            cookieKeys: [],
+            localStorageKeys: [],
+            sessionStorageKeys: [],
+            captureHeaders: [],
+            indexedDbScopes: [],
+            localStoragePointers: [],
+            sessionStoragePointers: [],
+          },
+          onGrant: () => undefined,
+          onKeepAsIs: () => undefined,
+        });
+        expect(container.querySelector('[data-action="grant"]')).not.toBeNull();
+        expect(container.querySelector('[data-action="keep-as-is"]')).not.toBeNull();
+        // Must NOT have pair-style Approve/Cancel buttons.
+        expect(container.querySelector('[data-action="approve"]')).toBeNull();
+        expect(container.querySelector('[data-action="cancel"]')).toBeNull();
+      });
+
+      it('calls onGrant when [Grant] is clicked', () => {
+        const calls: string[] = [];
+        renderPopup(container, {
+          mode: 'scope-update',
+          serverName: 'musescore-mcp',
+          pending: {
+            capabilities: ['fetch', 'capture_request_header'],
+            cookieKeys: [],
+            localStorageKeys: [],
+            sessionStorageKeys: [],
+            captureHeaders: [],
+            indexedDbScopes: [],
+            localStoragePointers: [],
+            sessionStoragePointers: [],
+          },
+          previous: {
+            capabilities: ['fetch'],
+            cookieKeys: [],
+            localStorageKeys: [],
+            sessionStorageKeys: [],
+            captureHeaders: [],
+            indexedDbScopes: [],
+            localStoragePointers: [],
+            sessionStoragePointers: [],
+          },
+          onGrant: () => calls.push('grant'),
+          onKeepAsIs: () => calls.push('keep'),
+        });
+        (container.querySelector('[data-action="grant"]') as HTMLButtonElement).click();
+        expect(calls).toEqual(['grant']);
+      });
+
+      it('calls onKeepAsIs when [Keep as is] is clicked WITHOUT writing trust', () => {
+        const calls: string[] = [];
+        renderPopup(container, {
+          mode: 'scope-update',
+          serverName: 'musescore-mcp',
+          pending: {
+            capabilities: ['fetch', 'capture_request_header'],
+            cookieKeys: [],
+            localStorageKeys: [],
+            sessionStorageKeys: [],
+            captureHeaders: [],
+            indexedDbScopes: [],
+            localStoragePointers: [],
+            sessionStoragePointers: [],
+          },
+          previous: {
+            capabilities: ['fetch'],
+            cookieKeys: [],
+            localStorageKeys: [],
+            sessionStorageKeys: [],
+            captureHeaders: [],
+            indexedDbScopes: [],
+            localStoragePointers: [],
+            sessionStoragePointers: [],
+          },
+          // onGrant would write trust — we verify it is NOT called.
+          onGrant: () => calls.push('grant'),
+          onKeepAsIs: () => calls.push('keep'),
+        });
+        (container.querySelector('[data-action="keep-as-is"]') as HTMLButtonElement).click();
+        // keep must have fired, grant must NOT.
+        expect(calls).toEqual(['keep']);
+        expect(calls).not.toContain('grant');
+      });
+
+      it('shows serverName in the heading', () => {
+        renderPopup(container, {
+          mode: 'scope-update',
+          serverName: 'ofw-mcp',
+          pending: {
+            capabilities: ['fetch', 'read_local_storage'],
+            cookieKeys: [],
+            localStorageKeys: ['auth', 'newKey'],
+            sessionStorageKeys: [],
+            captureHeaders: [],
+            indexedDbScopes: [],
+            localStoragePointers: [],
+            sessionStoragePointers: [],
+          },
+          previous: {
+            capabilities: ['fetch', 'read_local_storage'],
+            cookieKeys: [],
+            localStorageKeys: ['auth'],
+            sessionStorageKeys: [],
+            captureHeaders: [],
+            indexedDbScopes: [],
+            localStoragePointers: [],
+            sessionStoragePointers: [],
+          },
+          onGrant: () => undefined,
+          onKeepAsIs: () => undefined,
+        });
+        expect(container.textContent).toContain('ofw-mcp');
+        // The diff should show newKey was added.
+        expect(container.textContent).toContain('localStorage: newKey');
+      });
+    });
+
     it('first pair has no previous → standard heading + "Approve" button', () => {
       renderPopup(container, {
         mode: 'pending-pair',
