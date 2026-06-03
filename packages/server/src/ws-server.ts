@@ -775,6 +775,12 @@ export class FetchproxyServer {
   private opts: ResolvedOpts;
   private hostHandle: HostHandle | null = null;
   private peerHandle: PeerHandle | null = null;
+  // 0.13.0+: true from the start of `close()` until the next `doConnect()`.
+  // Distinguishes an intentional shutdown (whose WS close we must ignore)
+  // from the host process dying (which strands a peer and must trigger
+  // re-election). The WS `close` event fires asynchronously, so this stays
+  // latched across `close()` rather than being reset in its tail.
+  private closing = false;
   private nextRequestId = 1;
   // 0.8.0+: process-wide freshness counters surfaced via bridgeHealth().
   // Replaces the local copies every downstream MCP was rolling on top
@@ -1009,6 +1015,12 @@ export class FetchproxyServer {
     // Identity / mcpId are guaranteed by `ensureConnected`'s precondition.
     const identity = this.identity!;
     const mcpId = this.mcpId!;
+    // 0.13.0+: re-arm the host-death guard before wiring a fresh handle.
+    // (A stray WS-close from a torn-down socket can fire after `close()`
+    // returned; keeping `closing` latched until here means it's correctly
+    // ignored, while a genuine new connection treats future closes as
+    // host death.)
+    this.closing = false;
     const el = await electRole({ host: this.opts.host, port: this.opts.port });
     if (el.role === 'host') {
       this.role = 'host';
@@ -1081,6 +1093,19 @@ export class FetchproxyServer {
         const cb = this.opts.onPairCode;
         this.peerHandle.onPendingPair((code) => cb(code));
       }
+      // 0.13.0+: the host process died (or otherwise dropped our upstream
+      // WS). Tear down this stranded peer handle and reset role so the next
+      // verb call re-elects — becoming the new host if the port is now free,
+      // or a peer of whoever grabbed it. `closing` suppresses this during an
+      // intentional `close()`; the `peerHandle` null-check guards against a
+      // late close event from a previous socket clobbering a fresh handle.
+      this.peerHandle.onClose(() => {
+        if (this.closing || this.peerHandle === null) return;
+        this.stopKeepalive();
+        this.rejectAllPending();
+        this.peerHandle = null;
+        this.role = null;
+      });
     }
   }
 
@@ -2324,6 +2349,10 @@ export class FetchproxyServer {
    * twice in a row.
    */
   async close(): Promise<void> {
+    // 0.13.0+: latch the host-death guard so the peer's WS close (which
+    // fires asynchronously, possibly after this method returns) is treated
+    // as an intentional shutdown, not a host dying. Re-armed by doConnect().
+    this.closing = true;
     this.stopKeepalive();
     this.rejectAllPending();
     // 0.5.3+: if a verb call has triggered `doConnect()` but the handle

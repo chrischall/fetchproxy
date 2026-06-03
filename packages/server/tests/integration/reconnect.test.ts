@@ -597,3 +597,97 @@ describe('extension reconnect (peer MCPs)', () => {
     ext2.ws.close();
   }, 30_000);
 });
+
+/**
+ * 0.13.0+ peer re-host on host loss. The concentrator role is elected once;
+ * before this, a peer whose host process died was stranded as a peer forever
+ * (every verb call reused the dead handle and failed with "peer WS closed
+ * before ready"), even though the port was now free and it could trivially
+ * become the new host. The fix: on host-WS-close, tear down the peer handle
+ * and let the next verb call re-elect.
+ */
+describe('peer re-host on host loss', () => {
+  let host: FetchproxyServer | null = null;
+  let peer: FetchproxyServer | null = null;
+
+  afterEach(async () => {
+    if (peer) await peer.close();
+    if (host) await host.close();
+    host = null;
+    peer = null;
+    await new Promise((r) => setTimeout(r, 50));
+  });
+
+  it('a stranded peer re-elects to host on the next call after its host dies', async () => {
+    const port = 41090;
+    const idDir = mkdtempSync(join(tmpdir(), 'fp-rehost-'));
+
+    host = new FetchproxyServer({
+      port,
+      serverName: 'host-mcp',
+      version: '0.0.1',
+      domains: ['host.example.com'],
+      identityDir: idDir,
+    });
+    await host.listen();
+    await host.connect();
+    expect(host.role).toBe('host');
+
+    peer = new FetchproxyServer({
+      port,
+      serverName: 'peer-mcp',
+      version: '0.0.1',
+      domains: ['peer.example.com'],
+      identityDir: idDir,
+    });
+    await peer.listen();
+    await peer.connect();
+    expect(peer.role).toBe('peer');
+
+    // Host dies — drops the peer's upstream WS.
+    await host.close();
+    host = null;
+
+    // The peer observes the close and tears down its stranded handle
+    // (lazy: role returns to null, awaiting the next verb call to re-elect).
+    await new Promise((r) => setTimeout(r, 100));
+    expect(peer.role).toBe(null);
+
+    // Next call re-elects on the now-free port → becomes the new host.
+    await peer.connect();
+    expect(peer.role).toBe('host');
+  }, 30_000);
+
+  it('intentional peer.close() does not re-elect to host (closing guard)', async () => {
+    const port = 41091;
+    const idDir = mkdtempSync(join(tmpdir(), 'fp-rehost-guard-'));
+
+    host = new FetchproxyServer({
+      port,
+      serverName: 'host-mcp',
+      version: '0.0.1',
+      domains: ['host.example.com'],
+      identityDir: idDir,
+    });
+    await host.listen();
+    await host.connect();
+
+    peer = new FetchproxyServer({
+      port,
+      serverName: 'peer-mcp',
+      version: '0.0.1',
+      domains: ['peer.example.com'],
+      identityDir: idDir,
+    });
+    await peer.listen();
+    await peer.connect();
+    expect(peer.role).toBe('peer');
+
+    // Intentional shutdown — the ensuing WS close must NOT be mistaken for
+    // host death. Role stays null; the peer does not spontaneously re-elect.
+    await peer.close();
+    await new Promise((r) => setTimeout(r, 100));
+    expect(peer.role).toBe(null);
+    peer = null;
+  }, 30_000);
+});

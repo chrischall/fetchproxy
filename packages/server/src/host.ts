@@ -332,7 +332,14 @@ export async function startHost(opts: HostOpts): Promise<HostHandle> {
             // ignore — best-effort cleanup
           }
         }
-        wss.close(() => resolve());
+        // `wss.close()` only detaches the WS upgrade handler — it does NOT
+        // close an externally-provided HTTP server (the one electRole bound
+        // to the port). Close that too, or the port stays bound until process
+        // exit: a leaked listener, and a blocker for a same-process
+        // re-election after this host steps down (0.13.0+ peer re-host).
+        wss.close(() => {
+          opts.httpServer.close(() => resolve());
+        });
       }),
     sendOwnInner: async (inner) => {
       // Wait for the extension's ready frame to land and the session key to be
