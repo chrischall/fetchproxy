@@ -101,6 +101,27 @@ export interface TrustedSummary {
    * Optional in older callers; required for the revoke button to render.
    */
   identityHash?: string;
+  /**
+   * Part 3: whether an instance of this identity is currently connected
+   * (≥1 live session). Green dot when true; grey dot when false. Omitted
+   * in older callers — no dot rendered when absent.
+   */
+  connected?: boolean;
+}
+
+/**
+ * Part 2: scope info for a `scope-update` state. Mirrors the shape of
+ * `PreviousScope` but represents the DECLARED (new) scope the MCP wants.
+ */
+export interface ScopeSnapshot {
+  capabilities: string[];
+  cookieKeys: string[];
+  localStorageKeys: string[];
+  sessionStorageKeys: string[];
+  captureHeaders: { urlPattern: string; headerName: string }[];
+  indexedDbScopes: { origin: string; database: string; store: string; keys: string[] }[];
+  localStoragePointers: { key: string; jsonPointer: string }[];
+  sessionStoragePointers: { key: string; jsonPointer: string }[];
 }
 
 export type PopupState =
@@ -128,6 +149,23 @@ export type PopupState =
       previous?: PreviousScope;
       onApprove: () => void;
       onCancel: () => void;
+    }
+  | {
+      /**
+       * Part 2: non-blocking scope-growth offer. The MCP is already
+       * connected with the approved (intersection) scope. The user
+       * can Grant the wider scope or dismiss (keep as is).
+       */
+      mode: 'scope-update';
+      serverName: string;
+      /** The FULL declared scope the MCP now wants. */
+      pending: ScopeSnapshot;
+      /** The previously approved scope — used as the diff baseline. */
+      previous: PreviousScope;
+      /** [Grant]: write the declared scope to trust (via onApproval). */
+      onGrant: () => void;
+      /** [Keep as is]: dismiss without writing trust. */
+      onKeepAsIs: () => void;
     };
 
 function isHighRisk(domain: string): boolean {
@@ -380,6 +418,19 @@ export function renderPopup(root: HTMLElement, state: PopupState): void {
     const ul = elem('ul', { class: 'trusted-list' });
     for (const t of state.trusted) {
       const li = elem('li', { class: 'trusted-entry' });
+      // Part 3: connection-status dot — only rendered when `connected` is
+      // explicitly set (boolean). Omitted when the field is absent so
+      // legacy callers and unit tests that don't exercise the live-session
+      // path continue to work unchanged.
+      if (t.connected !== undefined) {
+        li.appendChild(
+          elem('span', {
+            class: `status-dot ${t.connected ? 'connected' : 'offline'}`,
+            'aria-label': t.connected ? 'connected' : 'not connected',
+            title: t.connected ? 'Connected' : 'Not connected',
+          }),
+        );
+      }
       li.appendChild(
         elem('span', { class: 'trusted-label' }, `${t.serverName} → ${t.domains.join(', ')}`),
       );
@@ -403,6 +454,37 @@ export function renderPopup(root: HTMLElement, state: PopupState): void {
       ul.appendChild(li);
     }
     root.appendChild(ul);
+    return;
+  }
+
+  if (state.mode === 'scope-update') {
+    const { serverName, pending, previous, onGrant, onKeepAsIs } = state;
+    root.appendChild(
+      elem('h3', {}, `${serverName} wants to expand its access`),
+    );
+    // Reuse the existing diff renderer — `pending` is a ScopeSnapshot which
+    // is structurally compatible with PendingPair for the diff fields.
+    appendDiffSummary(root, {
+      serverName,
+      version: '',
+      domains: [],
+      capabilities: pending.capabilities,
+      cookieKeys: pending.cookieKeys,
+      localStorageKeys: pending.localStorageKeys,
+      sessionStorageKeys: pending.sessionStorageKeys,
+      captureHeaders: pending.captureHeaders,
+      indexedDbScopes: pending.indexedDbScopes,
+      pairCode: '',
+    }, previous);
+
+    const btnRow = elem('div', { class: 'btn-row' });
+    const keepBtn = elem('button', { 'data-action': 'keep-as-is', autofocus: 'true' }, 'Keep as is');
+    keepBtn.addEventListener('click', onKeepAsIs);
+    const grantBtn = elem('button', { 'data-action': 'grant' }, 'Grant');
+    grantBtn.addEventListener('click', onGrant);
+    btnRow.appendChild(keepBtn);
+    btnRow.appendChild(grantBtn);
+    root.appendChild(btnRow);
     return;
   }
 
@@ -507,8 +589,13 @@ export function renderPopup(root: HTMLElement, state: PopupState): void {
 // Bootstrap (runs in popup context only — skipped in tests)
 // -------------------------------------------------------------------
 
+// 0.6.0+: keyed by `${identityHash}:${scopeHash}`, carries mcpIds[].
 interface PendingPairRecord {
-  mcpId: string;
+  key: string;
+  kind: 'pair';
+  identityHash: string;
+  mcpIds: string[];
+  sessionNonces: Record<string, string>;
   serverName: string;
   version: string;
   domains: string[];
@@ -522,14 +609,48 @@ interface PendingPairRecord {
   sessionStoragePointers?: { key: string; jsonPointer: string }[];
   previousScope?: PreviousScope;
   pairCode: string;
-  identityHash: string;
   identityX25519Pub: string;
   identityEd25519Pub: string;
-  sessionNonceB64: string;
 }
 
+/** Part 2: non-blocking scope-update offer. MCP is already connected. */
+interface PendingScopeUpdateRecord {
+  key: string;
+  kind: 'scope-update';
+  identityHash: string;
+  mcpIds: string[];
+  serverName: string;
+  version: string;
+  domains: string[];
+  capabilities: string[];
+  cookieKeys?: string[];
+  localStorageKeys?: string[];
+  sessionStorageKeys?: string[];
+  captureHeaders?: { urlPattern: string; headerName: string }[];
+  indexedDbScopes?: { origin: string; database: string; store: string; keys: string[] }[];
+  localStoragePointers?: { key: string; jsonPointer: string }[];
+  sessionStoragePointers?: { key: string; jsonPointer: string }[];
+  previousScope: PreviousScope;
+  identityX25519Pub: string;
+  identityEd25519Pub: string;
+}
+
+type AnyPendingRecord = PendingPairRecord | PendingScopeUpdateRecord;
+
 declare const chrome: {
-  runtime?: { getManifest: () => { version: string } };
+  runtime?: {
+    getManifest: () => { version: string };
+    sendMessage?: (msg: unknown) => Promise<unknown>;
+    onMessage?: {
+      addListener: (
+        cb: (
+          msg: unknown,
+          _sender: unknown,
+          sendResponse: (r: unknown) => void,
+        ) => boolean | void,
+      ) => void;
+    };
+  };
   storage?: {
     local: {
       get: (k: string | string[]) => Promise<Record<string, unknown>>;
@@ -540,13 +661,13 @@ declare const chrome: {
 };
 
 /**
- * Local alias bound to this file's `PendingPairRecord` type. The shared
+ * Local alias bound to this file's `AnyPendingRecord` union. The shared
  * helper in `../lib/pending-pair.ts` is generic, so the popup and the
  * background SW agree on what counts as a malformed input — see that
  * file for the full migration story.
  */
-function readPendingDict(stored: unknown): Record<string, PendingPairRecord> {
-  return normalisePendingPair<PendingPairRecord>(stored);
+function readPendingDict(stored: unknown): Record<string, AnyPendingRecord> {
+  return normalisePendingPair<AnyPendingRecord>(stored);
 }
 
 async function bootstrap(): Promise<void> {
@@ -572,6 +693,70 @@ async function bootstrap(): Promise<void> {
     // Show the first pending entry. Deterministic order keeps re-renders
     // stable for the user (entry insertion order from storage.get).
     const pending = entries[0]!;
+
+    // Helper: remove this entry and re-render.
+    const removePendingAndContinue = async (): Promise<void> => {
+      const cur = await chrome.storage!.local.get(['pendingPair']);
+      const d = readPendingDict(cur['pendingPair']);
+      delete d[pending.key];
+      if (Object.keys(d).length === 0) {
+        await chrome.storage!.local.remove('pendingPair');
+      } else {
+        await chrome.storage!.local.set({ pendingPair: d });
+      }
+      await renderNext();
+    };
+
+    if (pending.kind === 'scope-update') {
+      renderPopup(root, {
+        mode: 'scope-update',
+        serverName: pending.serverName,
+        pending: {
+          capabilities: [...(pending.capabilities ?? [])],
+          cookieKeys: [...(pending.cookieKeys ?? [])],
+          localStorageKeys: [...(pending.localStorageKeys ?? [])],
+          sessionStorageKeys: [...(pending.sessionStorageKeys ?? [])],
+          captureHeaders: (pending.captureHeaders ?? []).map((d) => ({ ...d })),
+          indexedDbScopes: (pending.indexedDbScopes ?? []).map((d) => ({
+            origin: d.origin,
+            database: d.database,
+            store: d.store,
+            keys: [...d.keys],
+          })),
+          localStoragePointers: (pending.localStoragePointers ?? []).map((d) => ({ ...d })),
+          sessionStoragePointers: (pending.sessionStoragePointers ?? []).map((d) => ({ ...d })),
+        },
+        previous: pending.previousScope,
+        onGrant: () => {
+          void (async () => {
+            // Write approvedPair — background SW picks it up via onChanged,
+            // calls onApproval(scope-update) → trust.put with declared scope.
+            await chrome.storage!.local.set({ approvedPair: pending });
+            await removePendingAndContinue();
+          })();
+        },
+        onKeepAsIs: () => {
+          void (async () => {
+            // Dismiss: write dismissedScopeUpdate — background SW records
+            // the dismissed hash so this scope is not re-queued until changed.
+            // Extract the declared scopeHash from the key (format: `${identityHash}:${scopeHash}`).
+            const colonIdx = pending.key.indexOf(':');
+            const dismissedHash = colonIdx >= 0 ? pending.key.slice(colonIdx + 1) : pending.key;
+            await chrome.storage!.local.set({
+              dismissedScopeUpdate: {
+                key: pending.key,
+                identityHash: pending.identityHash,
+                scopeHash: dismissedHash,
+              },
+            });
+            await removePendingAndContinue();
+          })();
+        },
+      });
+      return;
+    }
+
+    // kind === 'pair'
     renderPopup(root, {
       mode: 'pending-pair',
       pending: {
@@ -597,31 +782,11 @@ async function bootstrap(): Promise<void> {
           // Persist approval (background SW picks it up via the onChanged
           // listener and runs onApproval -> trust.put + ready frame).
           await chrome.storage!.local.set({ approvedPair: pending });
-          // Remove THIS entry from the pending dict. Other unpaired MCPs
-          // stay queued so the user can advance through them.
-          const cur = await chrome.storage!.local.get(['pendingPair']);
-          const d = readPendingDict(cur['pendingPair']);
-          delete d[pending.mcpId];
-          if (Object.keys(d).length === 0) {
-            await chrome.storage!.local.remove('pendingPair');
-          } else {
-            await chrome.storage!.local.set({ pendingPair: d });
-          }
-          await renderNext();
+          await removePendingAndContinue();
         })();
       },
       onCancel: () => {
-        void (async () => {
-          const cur = await chrome.storage!.local.get(['pendingPair']);
-          const d = readPendingDict(cur['pendingPair']);
-          delete d[pending.mcpId];
-          if (Object.keys(d).length === 0) {
-            await chrome.storage!.local.remove('pendingPair');
-          } else {
-            await chrome.storage!.local.set({ pendingPair: d });
-          }
-          await renderNext();
-        })();
+        void removePendingAndContinue();
       },
     });
   };
@@ -630,11 +795,26 @@ async function bootstrap(): Promise<void> {
     const ev2 = chrome.runtime?.getManifest().version ?? '0.2.0';
     const trust2 = new TrustStore(ev2);
     const records = await trust2.list();
+    // Part 3: query the background for the currently-connected identity set
+    // so we can render the connection-status dot on each entry. Best-effort:
+    // if the query fails (no background, old SW), fall back to no dot.
+    let connectedHashes: Set<string> = new Set();
+    if (chrome.runtime?.sendMessage) {
+      try {
+        const resp = await chrome.runtime.sendMessage({ type: 'get-connected-identities' }) as
+          | { connectedHashes?: string[] }
+          | undefined;
+        connectedHashes = new Set(resp?.connectedHashes ?? []);
+      } catch {
+        // Background not available — dots will be absent.
+      }
+    }
     const trustedList = Object.entries(records).map(([identityHash, r]) => ({
       identityHash,
       serverName: r.serverName,
       domains: [...r.domains],
       capabilities: r.capabilities ? [...r.capabilities] : ['fetch'],
+      connected: connectedHashes.has(identityHash),
     }));
     if (trustedList.length === 0) {
       renderPopup(root, { mode: 'empty' });
@@ -654,6 +834,22 @@ async function bootstrap(): Promise<void> {
     await renderNext();
   } else {
     await renderTrustedStatus();
+  }
+
+  // Part 3: listen for connection-change notifications from the background
+  // service worker. When a session comes up or tears down, re-render the
+  // status view so the dots update without the user closing/re-opening the
+  // popup. Guard: `onMessage` is absent in jsdom / older environments.
+  if (chrome.runtime?.onMessage) {
+    chrome.runtime.onMessage.addListener((msg) => {
+      if (
+        msg !== null &&
+        typeof msg === 'object' &&
+        (msg as { type?: unknown }).type === 'connections-changed'
+      ) {
+        void renderTrustedStatus();
+      }
+    });
   }
 }
 
