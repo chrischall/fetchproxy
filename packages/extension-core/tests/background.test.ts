@@ -308,19 +308,20 @@ describe('handleServerHello', () => {
       }
     });
 
-    it('falls back to needs-pair when an MCP adds a capability (upgrade)', async () => {
+    // Part 2: scope-growth → auto-trust with intersection + scope-update signal
+    it('auto-trusts with GRANTED (intersection) capabilities when MCP declares growth', async () => {
       const hello = await buildServerHello(
         'credit-karma-mcp:0.0.1:1234567890abcdef',
         'credit-karma-mcp',
         ['creditkarma.com'],
-        ['fetch', 'read_cookies'],
+        ['fetch', 'capture_request_header'],
       );
       const trust = new TrustStore('0.2.0');
       const idHash = Buffer.from(
         await sha256(new Uint8Array(Buffer.from(hello.identityX25519Pub, 'base64'))),
       ).toString('hex');
-      // Previously paired without read_cookies — the upgrade should
-      // force the user to re-approve rather than silently auto-trusting.
+      // Previously approved only 'fetch' — MCP now declares additional capability.
+      // New behaviour: auto-trust with granted = intersection (['fetch']), NOT needs-pair.
       await trust.put(idHash, {
         serverName: 'credit-karma-mcp',
         domains: ['creditkarma.com'],
@@ -331,13 +332,19 @@ describe('handleServerHello', () => {
         extensionIdentityEd25519Pub: FAKE_EXT_X25519_PUB_B64,
       });
       const result = await handleServerHello(hello, { trust, extensionIdentityX25519Pub: FAKE_EXT_X25519_PUB });
-      expect(result.kind).toBe('needs-pair');
-      if (result.kind === 'needs-pair') {
-        expect(result.capabilities).toEqual(['fetch', 'read_cookies']);
+      // Must be auto-trust (not needs-pair) — the MCP continues to work.
+      expect(result.kind).toBe('auto-trust');
+      if (result.kind === 'auto-trust') {
+        // Granted capabilities = intersection (approved ∩ declared) = ['fetch'] only.
+        expect(result.capabilities).toEqual(['fetch']);
+        // Signal for the caller to queue a scope-update offer in the popup.
+        expect(result.pendingScopeUpdate).toBeDefined();
+        expect(result.pendingScopeUpdate!.declaredCapabilities).toEqual(['fetch', 'capture_request_header']);
+        expect(result.pendingScopeUpdate!.approvedCapabilities).toEqual(['fetch']);
       }
     });
 
-    it('falls back to needs-pair when an MCP drops a capability (downgrade)', async () => {
+    it('auto-trusts with declared capabilities when declared ⊆ approved (downgrade / exact match)', async () => {
       const hello = await buildServerHello(
         'credit-karma-mcp:0.0.1:1234567890abcdef',
         'credit-karma-mcp',
@@ -358,7 +365,48 @@ describe('handleServerHello', () => {
         extensionIdentityEd25519Pub: FAKE_EXT_X25519_PUB_B64,
       });
       const result = await handleServerHello(hello, { trust, extensionIdentityX25519Pub: FAKE_EXT_X25519_PUB });
-      expect(result.kind).toBe('needs-pair');
+      // Downgrade: declared ⊆ approved → auto-trust with granted = declared, no scope-update.
+      expect(result.kind).toBe('auto-trust');
+      if (result.kind === 'auto-trust') {
+        expect(result.capabilities).toEqual(['fetch']);
+        // No scope-update needed when declared ⊆ approved.
+        expect(result.pendingScopeUpdate).toBeUndefined();
+      }
+    });
+
+    it('does NOT queue scope-update when declared ⊆ approved (no growth)', async () => {
+      const hello = await buildServerHello(
+        'ofw-mcp:0.5.0:1234567890abcdef',
+        'ofw-mcp',
+        ['ourfamilywizard.com'],
+        ['fetch', 'read_local_storage'],
+        { localStorageKeys: ['auth'] },
+      );
+      const trust = new TrustStore('0.3.0');
+      const idHash = Buffer.from(
+        await sha256(new Uint8Array(Buffer.from(hello.identityX25519Pub, 'base64'))),
+      ).toString('hex');
+      await trust.put(idHash, {
+        serverName: 'ofw-mcp',
+        domains: ['ourfamilywizard.com'],
+        capabilities: ['fetch', 'read_local_storage'],
+        cookieKeys: [],
+        localStorageKeys: ['auth', 'tokenExpiry'], // approved has MORE keys
+        sessionStorageKeys: [],
+        captureHeaders: [],
+        identityX25519Pub: hello.identityX25519Pub,
+        identityEd25519Pub: hello.identityEd25519Pub,
+        extensionIdentityX25519Pub: FAKE_EXT_X25519_PUB_B64,
+        extensionIdentityEd25519Pub: FAKE_EXT_X25519_PUB_B64,
+      });
+      const result = await handleServerHello(hello, { trust, extensionIdentityX25519Pub: FAKE_EXT_X25519_PUB });
+      expect(result.kind).toBe('auto-trust');
+      if (result.kind === 'auto-trust') {
+        // Declared ⊆ approved → no scope-update.
+        expect(result.pendingScopeUpdate).toBeUndefined();
+        // Granted = declared (the intersection = declared when declared ⊆ approved).
+        expect(result.localStorageKeys).toEqual(['auth']);
+      }
     });
 
     it('surfaces declared scope arrays on needs-pair (0.3.0)', async () => {
@@ -387,7 +435,7 @@ describe('handleServerHello', () => {
       }
     });
 
-    it('falls back to needs-pair when a new localStorage key is declared', async () => {
+    it('auto-trusts with intersection when a new localStorage key is declared (scope-growth)', async () => {
       const hello = await buildServerHello(
         'ofw-mcp:0.5.0:1234567890abcdef',
         'ofw-mcp',
@@ -413,10 +461,17 @@ describe('handleServerHello', () => {
         extensionIdentityEd25519Pub: FAKE_EXT_X25519_PUB_B64,
       });
       const result = await handleServerHello(hello, { trust, extensionIdentityX25519Pub: FAKE_EXT_X25519_PUB });
-      expect(result.kind).toBe('needs-pair');
+      // Scope grew (new key) → auto-trust with intersection, scope-update signalled.
+      expect(result.kind).toBe('auto-trust');
+      if (result.kind === 'auto-trust') {
+        // Only approved key is granted.
+        expect(result.localStorageKeys).toEqual(['auth']);
+        // scope-update offer queued.
+        expect(result.pendingScopeUpdate).toBeDefined();
+      }
     });
 
-    it('falls back to needs-pair when a new captureHeader is declared', async () => {
+    it('auto-trusts with intersection when a new captureHeader is declared (scope-growth)', async () => {
       const hello = await buildServerHello(
         'honeybook-mcp:0.1.0:abcdef1234567890',
         'honeybook-mcp',
@@ -433,7 +488,7 @@ describe('handleServerHello', () => {
       const idHash = Buffer.from(
         await sha256(new Uint8Array(Buffer.from(hello.identityX25519Pub, 'base64'))),
       ).toString('hex');
-      // Trust record only includes v2 — v3 added since.
+      // Trust record only includes v2 — v3 added since (scope growth).
       await trust.put(idHash, {
         serverName: 'honeybook-mcp',
         domains: ['honeybook.com'],
@@ -450,7 +505,14 @@ describe('handleServerHello', () => {
         extensionIdentityEd25519Pub: FAKE_EXT_X25519_PUB_B64,
       });
       const result = await handleServerHello(hello, { trust, extensionIdentityX25519Pub: FAKE_EXT_X25519_PUB });
-      expect(result.kind).toBe('needs-pair');
+      // Scope grew (new captureHeader) → auto-trust with intersection, scope-update signalled.
+      expect(result.kind).toBe('auto-trust');
+      if (result.kind === 'auto-trust') {
+        // Only the approved v2 header is granted.
+        expect(result.captureHeaders).toHaveLength(1);
+        expect(result.captureHeaders[0]?.urlPattern).toContain('api/v2');
+        expect(result.pendingScopeUpdate).toBeDefined();
+      }
     });
 
     it('auto-trusts when scope set matches (permutation OK)', async () => {
@@ -628,6 +690,101 @@ async function buildHelloWithIdentity(
     sessionSig: Buffer.from(sig).toString('base64'),
   };
 }
+
+// ---------------------------------------------------------------------------
+// Request-handler capability enforcement (Step 5)
+// ---------------------------------------------------------------------------
+
+describe('request handler capability enforcement (granted ≤ approved)', () => {
+  it('auto-trust result.capabilities contains only GRANTED (intersection) capabilities — the request handler enforces these', async () => {
+    // This test pins that when an MCP grows scope (approved=['fetch'], declared=['fetch','capture_request_header']),
+    // the auto-trust result.capabilities is ['fetch'] — the intersection.
+    // onServerHello sets mcpCapabilities.set(mcpId, result.capabilities), so
+    // the request handler's `if (!capabilities.includes(req.op))` check at line ~893
+    // correctly rejects capture_request_header requests without a blocked session.
+    const hello = await buildServerHello(
+      'musescore-mcp:0.3.0:aabbccdd00000001',
+      'musescore-mcp',
+      ['musescore.com'],
+      ['fetch', 'capture_request_header'],
+    );
+    const trust = new TrustStore('0.3.0');
+    const idHash = Buffer.from(
+      await sha256(new Uint8Array(Buffer.from(hello.identityX25519Pub, 'base64'))),
+    ).toString('hex');
+    await trust.put(idHash, {
+      serverName: 'musescore-mcp',
+      domains: ['musescore.com'],
+      capabilities: ['fetch'], // approved only fetch
+      identityX25519Pub: hello.identityX25519Pub,
+      identityEd25519Pub: hello.identityEd25519Pub,
+      extensionIdentityX25519Pub: FAKE_EXT_X25519_PUB_B64,
+      extensionIdentityEd25519Pub: FAKE_EXT_X25519_PUB_B64,
+    });
+    const result = await handleServerHello(hello, { trust, extensionIdentityX25519Pub: FAKE_EXT_X25519_PUB });
+    // Decision must be auto-trust (not needs-pair, not reject).
+    expect(result.kind).toBe('auto-trust');
+    if (result.kind === 'auto-trust') {
+      // SECURITY: granted capabilities MUST NOT include capture_request_header.
+      expect(result.capabilities).not.toContain('capture_request_header');
+      expect(result.capabilities).toContain('fetch');
+      // The request handler in onServerHello sets:
+      //   mcpCapabilities.set(result.mcpId, [...result.capabilities])
+      // So any request with op='capture_request_header' hits the capability gate:
+      //   if (!capabilities.includes(req.op)) → error response
+      // This is the enforcement path — the test above proves result.capabilities
+      // is the intersection, so the gate will fire.
+    }
+  });
+
+  it('granted scope returned by auto-trust NEVER exceeds approved scope (security invariant)', async () => {
+    // Comprehensive check: try several scope-growth cases and verify the
+    // intersection never leaks unapproved items.
+    const hello = await buildServerHello(
+      'ofw-mcp:0.5.0:aabbccdd00000002',
+      'ofw-mcp',
+      ['ourfamilywizard.com'],
+      ['fetch', 'read_local_storage', 'capture_request_header'],
+      {
+        localStorageKeys: ['auth', 'tokenExpiry', 'newKey'],
+        captureHeaders: [
+          { urlPattern: 'https://api.ourfamilywizard.com/v1/*', headerName: 'x-csrf' },
+          { urlPattern: 'https://api.ourfamilywizard.com/v2/*', headerName: 'x-csrf' },
+        ],
+      },
+    );
+    const trust = new TrustStore('0.3.0');
+    const idHash = Buffer.from(
+      await sha256(new Uint8Array(Buffer.from(hello.identityX25519Pub, 'base64'))),
+    ).toString('hex');
+    await trust.put(idHash, {
+      serverName: 'ofw-mcp',
+      domains: ['ourfamilywizard.com'],
+      capabilities: ['fetch', 'read_local_storage'],
+      cookieKeys: [],
+      localStorageKeys: ['auth', 'tokenExpiry'],
+      sessionStorageKeys: [],
+      captureHeaders: [],
+      identityX25519Pub: hello.identityX25519Pub,
+      identityEd25519Pub: hello.identityEd25519Pub,
+      extensionIdentityX25519Pub: FAKE_EXT_X25519_PUB_B64,
+      extensionIdentityEd25519Pub: FAKE_EXT_X25519_PUB_B64,
+    });
+    const result = await handleServerHello(hello, { trust, extensionIdentityX25519Pub: FAKE_EXT_X25519_PUB });
+    expect(result.kind).toBe('auto-trust');
+    if (result.kind === 'auto-trust') {
+      // Capabilities: only approved ones.
+      expect(result.capabilities).not.toContain('capture_request_header');
+      // localStorageKeys: only approved keys (not 'newKey').
+      expect(result.localStorageKeys).not.toContain('newKey');
+      expect(result.localStorageKeys.sort()).toEqual(['auth', 'tokenExpiry']);
+      // captureHeaders: none (not in approved).
+      expect(result.captureHeaders).toHaveLength(0);
+      // scope-update IS flagged.
+      expect(result.pendingScopeUpdate).toBeDefined();
+    }
+  });
+});
 
 describe('multi-instance pending-pair dedup (0.6.0+)', () => {
   it('two needs-pair helloes from the same identity + scope collapse into ONE pending entry with both mcpIds', async () => {

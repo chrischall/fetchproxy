@@ -62,6 +62,8 @@ import {
   sameIndexedDbScopes,
   sameStoragePointers,
   scopeHash,
+  intersectScope,
+  isScopeSubset,
 } from './lib/scope.js';
 import { loadOrCreateExtensionIdentity, type ExtensionIdentity } from './extension-identity.js';
 import { startKeepalive } from './keepalive.js';
@@ -122,6 +124,12 @@ export type HandleHelloResult =
       kind: 'auto-trust';
       mcpId: string;
       domains: string[];
+      /**
+       * The GRANTED (intersection of approved and declared) capabilities.
+       * When declared ⊆ approved, this equals declared. When declared
+       * grows beyond approved, this equals approved ∩ declared (a subset
+       * of declared). The request handler MUST enforce these, not declared.
+       */
       capabilities: string[];
       cookieKeys: string[];
       localStorageKeys: string[];
@@ -138,6 +146,32 @@ export type HandleHelloResult =
        * produce a `ReadyFrame.sessionSig`.
        */
       mcpSessionNonce: Uint8Array;
+      /**
+       * Part 2 (scope-growth): present when declared scope exceeds
+       * approved scope. The caller should queue a non-blocking
+       * `scope-update` offer so the user can Grant the wider scope
+       * at their leisure. Absent when declared ⊆ approved.
+       */
+      pendingScopeUpdate?: {
+        identityHash: string;
+        declaredCapabilities: string[];
+        declaredCookieKeys: string[];
+        declaredLocalStorageKeys: string[];
+        declaredSessionStorageKeys: string[];
+        declaredCaptureHeaders: { urlPattern: string; headerName: string }[];
+        declaredIndexedDbScopes: IndexedDbScopeDecl[];
+        declaredLocalStoragePointers: StoragePointerDecl[];
+        declaredSessionStoragePointers: StoragePointerDecl[];
+        approvedCapabilities: string[];
+        approvedCookieKeys: string[];
+        approvedLocalStorageKeys: string[];
+        approvedSessionStorageKeys: string[];
+        approvedCaptureHeaders: { urlPattern: string; headerName: string }[];
+        approvedIndexedDbScopes: IndexedDbScopeDecl[];
+        approvedLocalStoragePointers: StoragePointerDecl[];
+        approvedSessionStoragePointers: StoragePointerDecl[];
+        sessionNonce: Uint8Array;
+      };
     };
 
 const enc = new TextEncoder();
@@ -244,60 +278,31 @@ export async function handleServerHello(
     if (recordedExtPubB64 !== toB64(deps.extensionIdentityX25519Pub)) {
       // Fall through to needs-pair path.
     } else {
-      // Conservative: any change in declared scope (capabilities or any of
-      // the 0.3.0 scope arrays) triggers re-pair. The user approved a
-      // specific scope; we won't widen it silently.
-      const scopeChanged =
-        !sameCapabilitySet(record.capabilities, capabilities) ||
-        !sameScopeArrays(record.cookieKeys, scope.cookieKeys) ||
-        !sameScopeArrays(record.localStorageKeys, scope.localStorageKeys) ||
-        !sameScopeArrays(record.sessionStorageKeys, scope.sessionStorageKeys) ||
-        !sameCaptureHeaders(record.captureHeaders, scope.captureHeaders) ||
-        !sameIndexedDbScopes(record.indexedDbScopes ?? [], scope.indexedDbScopes) ||
-        !sameStoragePointers(record.localStoragePointers ?? [], scope.localStoragePointers) ||
-        !sameStoragePointers(record.sessionStoragePointers ?? [], scope.sessionStoragePointers);
-      if (scopeChanged) {
-        const pairCode = await derivePairCodeFromIds(
-          identityX25519Pub,
-          deps.extensionIdentityX25519Pub,
-        );
-        return {
-          kind: 'needs-pair',
-          pairCode,
-          identityHash: hash,
-          mcpId: hello.mcpId,
-          serverName: hello.serverName,
-          domains: [...hello.domains],
-          capabilities,
-          ...scope,
-          version: hello.version,
-          identityX25519Pub: hello.identityX25519Pub,
-          identityEd25519Pub: hello.identityEd25519Pub,
-          sessionNonce,
-          // 0.4.0: snapshot the previously approved scope so the popup
-          // can render an "update" diff. The user sees what was added
-          // vs what was already approved.
-          previousScope: {
-            capabilities: [...record.capabilities],
-            cookieKeys: [...record.cookieKeys],
-            localStorageKeys: [...record.localStorageKeys],
-            sessionStorageKeys: [...record.sessionStorageKeys],
-            captureHeaders: record.captureHeaders.map((d) => ({ ...d })),
-            indexedDbScopes: (record.indexedDbScopes ?? []).map((d) => ({
-              origin: d.origin,
-              database: d.database,
-              store: d.store,
-              keys: [...d.keys],
-            })),
-            localStoragePointers: (record.localStoragePointers ?? []).map((d) => ({
-              ...d,
-            })),
-            sessionStoragePointers: (record.sessionStoragePointers ?? []).map((d) => ({
-              ...d,
-            })),
-          },
-        };
-      }
+      // Part 2 (scope-growth): instead of blocking on any scope change,
+      // compute the intersection of approved and declared scope. If
+      // declared ⊆ approved, serve declared as-is (no change to the user).
+      // If declared GROWS beyond approved, serve the intersection (approved
+      // ∩ declared) so the MCP keeps working, and queue a non-blocking
+      // `scope-update` offer so the user can grant the wider scope later.
+      // Only changes to domains/serverName still force needs-pair (above).
+      const approvedScope = {
+        capabilities: [...record.capabilities],
+        cookieKeys: [...(record.cookieKeys ?? [])],
+        localStorageKeys: [...(record.localStorageKeys ?? [])],
+        sessionStorageKeys: [...(record.sessionStorageKeys ?? [])],
+        captureHeaders: (record.captureHeaders ?? []).map((d) => ({ ...d })),
+        indexedDbScopes: (record.indexedDbScopes ?? []).map((d) => ({
+          origin: d.origin,
+          database: d.database,
+          store: d.store,
+          keys: [...d.keys],
+        })),
+        localStoragePointers: (record.localStoragePointers ?? []).map((d) => ({ ...d })),
+        sessionStoragePointers: (record.sessionStoragePointers ?? []).map((d) => ({ ...d })),
+      };
+      const declaredScopeObj = { capabilities, ...scope };
+      const granted = intersectScope(approvedScope, declaredScopeObj);
+      const scopeGrew = !isScopeSubset(declaredScopeObj, approvedScope);
       // Derive session key with fresh ephemeral keypair.
       const ephemeral = await generateX25519();
       const shared = await ecdhX25519(ephemeral.privateKey, identityX25519Pub);
@@ -311,11 +316,51 @@ export async function handleServerHello(
         kind: 'auto-trust',
         mcpId: hello.mcpId,
         domains: [...hello.domains],
-        capabilities,
-        ...scope,
+        // GRANTED scope (intersection): never exceeds approved scope.
+        capabilities: [...granted.capabilities],
+        cookieKeys: [...granted.cookieKeys],
+        localStorageKeys: [...granted.localStorageKeys],
+        sessionStorageKeys: [...granted.sessionStorageKeys],
+        captureHeaders: [...granted.captureHeaders],
+        indexedDbScopes: [...granted.indexedDbScopes],
+        localStoragePointers: [...granted.localStoragePointers],
+        sessionStoragePointers: [...granted.sessionStoragePointers],
         sessionKey,
         extensionSessionPub: ephemeral.publicKey,
         mcpSessionNonce: sessionNonce,
+        // Signal the caller to queue a scope-update offer only when growth occurred.
+        ...(scopeGrew ? {
+          pendingScopeUpdate: {
+            identityHash: hash,
+            declaredCapabilities: [...capabilities],
+            declaredCookieKeys: [...scope.cookieKeys],
+            declaredLocalStorageKeys: [...scope.localStorageKeys],
+            declaredSessionStorageKeys: [...scope.sessionStorageKeys],
+            declaredCaptureHeaders: scope.captureHeaders.map((d) => ({ ...d })),
+            declaredIndexedDbScopes: scope.indexedDbScopes.map((d) => ({
+              origin: d.origin,
+              database: d.database,
+              store: d.store,
+              keys: [...d.keys],
+            })),
+            declaredLocalStoragePointers: scope.localStoragePointers.map((d) => ({ ...d })),
+            declaredSessionStoragePointers: scope.sessionStoragePointers.map((d) => ({ ...d })),
+            approvedCapabilities: [...approvedScope.capabilities],
+            approvedCookieKeys: [...approvedScope.cookieKeys],
+            approvedLocalStorageKeys: [...approvedScope.localStorageKeys],
+            approvedSessionStorageKeys: [...approvedScope.sessionStorageKeys],
+            approvedCaptureHeaders: approvedScope.captureHeaders.map((d) => ({ ...d })),
+            approvedIndexedDbScopes: approvedScope.indexedDbScopes.map((d) => ({
+              origin: d.origin,
+              database: d.database,
+              store: d.store,
+              keys: [...d.keys],
+            })),
+            approvedLocalStoragePointers: approvedScope.localStoragePointers.map((d) => ({ ...d })),
+            approvedSessionStoragePointers: approvedScope.sessionStoragePointers.map((d) => ({ ...d })),
+            sessionNonce,
+          },
+        } : {}),
       };
     }
   }
@@ -512,31 +557,38 @@ function clearPairPendingBadge(): void {
 }
 
 /**
- * 0.6.0+: pending pair record keyed by `${identityHash}:${scopeHash}`.
+ * Shared fields for all pending record kinds.
+ * keyed by `${identityHash}:${scopeHash}` in `chrome.storage.local`.
+ */
+interface PendingRecordBase {
+  /** `${identityHash}:${scopeHash}` — dict key. */
+  key: string;
+  identityHash: string;
+  serverName: string;
+  version: string;
+  /** All MCP process IDs associated with this entry. */
+  mcpIds: string[];
+  domains: string[];
+  identityX25519Pub: string;
+  identityEd25519Pub: string;
+}
+
+/**
+ * 0.6.0+: pending PAIR record. The MCP is not yet connected — the user
+ * must approve before any session is established.
  *
  * Replacing the old `mcpId`-keyed shape so that concurrent processes sharing
  * the same identity + scope collapse into a single user-visible approval prompt.
  * The `mcpIds` array tracks every process waiting on this entry; `sessionNonces`
  * maps each process's nonce so the approval handler can drive per-process ECDH.
- *
- * The `key` field is the authoritative dict key in `chrome.storage.local`.
- * `kind` is 'pair' now; Part 2 will add 'scope-update'.
  */
-interface PendingPairRecord {
-  /** `${identityHash}:${scopeHash}` — dict key. */
-  key: string;
+interface PendingPairRecord extends PendingRecordBase {
   kind: 'pair';
-  identityHash: string;
-  serverName: string;
-  version: string;
-  /** All MCP process IDs waiting on this identity+scope approval. */
-  mcpIds: string[];
   /**
    * Per-process hello nonce (b64). Used in session-key derivation after
    * approval. Each process sends its own hello with its own nonce.
    */
   sessionNonces: Record<string, string>;
-  domains: string[];
   capabilities: string[];
   cookieKeys: string[];
   localStorageKeys: string[];
@@ -562,9 +614,42 @@ interface PendingPairRecord {
     sessionStoragePointers: StoragePointerDecl[];
   };
   pairCode: string;
-  identityX25519Pub: string;
-  identityEd25519Pub: string;
 }
+
+/**
+ * Part 2: non-blocking scope-update record. The MCP is already connected
+ * (session live, granted = approved ∩ declared). This offers the user a
+ * chance to widen the approved scope to cover the new declaration.
+ *
+ * [Grant] → trust.put with declared scope; no session restart needed.
+ * [Keep as is] → dismiss: remove this entry, record the dismissed scopeHash
+ *   so the same declared scope does not re-queue until it changes again.
+ */
+interface PendingScopeUpdateRecord extends PendingRecordBase {
+  kind: 'scope-update';
+  /** The FULL declared scope (what the MCP now wants). */
+  capabilities: string[];
+  cookieKeys: string[];
+  localStorageKeys: string[];
+  sessionStorageKeys: string[];
+  captureHeaders: { urlPattern: string; headerName: string }[];
+  indexedDbScopes: IndexedDbScopeDecl[];
+  localStoragePointers: StoragePointerDecl[];
+  sessionStoragePointers: StoragePointerDecl[];
+  /** The previously approved scope shown as the diff baseline. */
+  previousScope: {
+    capabilities: string[];
+    cookieKeys: string[];
+    localStorageKeys: string[];
+    sessionStorageKeys: string[];
+    captureHeaders: { urlPattern: string; headerName: string }[];
+    indexedDbScopes: IndexedDbScopeDecl[];
+    localStoragePointers: StoragePointerDecl[];
+    sessionStoragePointers: StoragePointerDecl[];
+  };
+}
+
+type AnyPendingRecord = PendingPairRecord | PendingScopeUpdateRecord;
 
 let ws: WebSocket | null = null;
 let reconnectAttempt = 0;
@@ -688,6 +773,7 @@ async function onServerHello(hello: HelloFrameFromServer): Promise<void> {
     return;
   }
   if (result.kind === 'auto-trust') {
+    // Store GRANTED (intersection) scope in the mcp* maps.
     sessions.set(result.mcpId, result.sessionKey);
     mcpDomains.set(result.mcpId, [...result.domains]);
     mcpCapabilities.set(result.mcpId, [...result.capabilities]);
@@ -716,6 +802,88 @@ async function onServerHello(hello: HelloFrameFromServer): Promise<void> {
       sessionSig: toB64(sessionSig),
     };
     ws?.send(JSON.stringify(ready));
+
+    // Part 2: if the MCP declared more than approved, queue a non-blocking
+    // scope-update offer. The user can Grant (update trust) or dismiss.
+    if (result.pendingScopeUpdate) {
+      const su = result.pendingScopeUpdate;
+      // Compute the declared-scope hash to key the entry.
+      const declaredScopeForHash = {
+        capabilities: su.declaredCapabilities,
+        cookieKeys: su.declaredCookieKeys,
+        localStorageKeys: su.declaredLocalStorageKeys,
+        sessionStorageKeys: su.declaredSessionStorageKeys,
+        captureHeaders: su.declaredCaptureHeaders,
+        indexedDbScopes: su.declaredIndexedDbScopes,
+        localStoragePointers: su.declaredLocalStoragePointers,
+        sessionStoragePointers: su.declaredSessionStoragePointers,
+      };
+      const declaredHash = await scopeHash(declaredScopeForHash);
+      const suKey = `${su.identityHash}:${declaredHash}`;
+      await withPendingPairLock(async () => {
+        // Check dismiss suppression: skip queuing if this identity dismissed
+        // this exact declared scope hash before.
+        const dismissedGot = await chrome.storage.local.get(DISMISSED_SCOPE_KEY);
+        const dismissed = (dismissedGot[DISMISSED_SCOPE_KEY] ?? {}) as Record<string, string[]>;
+        const dismissedForIdentity = dismissed[su.identityHash] ?? [];
+        if (dismissedForIdentity.includes(declaredHash)) {
+          // Suppressed: user dismissed this scope, don't re-queue.
+          return;
+        }
+        const got = await chrome.storage.local.get(PENDING_PAIR_KEY);
+        const existing = mergePending(got[PENDING_PAIR_KEY]);
+        const currentEntry = existing[suKey];
+        if (currentEntry) {
+          // Dedup: add mcpId to the existing entry.
+          if (!currentEntry.mcpIds.includes(result.mcpId)) {
+            currentEntry.mcpIds.push(result.mcpId);
+          }
+        } else {
+          const suRecord: PendingScopeUpdateRecord = {
+            key: suKey,
+            kind: 'scope-update',
+            identityHash: su.identityHash,
+            serverName: hello.serverName,
+            version: hello.version,
+            mcpIds: [result.mcpId],
+            domains: [...hello.domains],
+            capabilities: [...su.declaredCapabilities],
+            cookieKeys: [...su.declaredCookieKeys],
+            localStorageKeys: [...su.declaredLocalStorageKeys],
+            sessionStorageKeys: [...su.declaredSessionStorageKeys],
+            captureHeaders: su.declaredCaptureHeaders.map((d) => ({ ...d })),
+            indexedDbScopes: su.declaredIndexedDbScopes.map((d) => ({
+              origin: d.origin,
+              database: d.database,
+              store: d.store,
+              keys: [...d.keys],
+            })),
+            localStoragePointers: su.declaredLocalStoragePointers.map((d) => ({ ...d })),
+            sessionStoragePointers: su.declaredSessionStoragePointers.map((d) => ({ ...d })),
+            identityX25519Pub: hello.identityX25519Pub,
+            identityEd25519Pub: hello.identityEd25519Pub,
+            previousScope: {
+              capabilities: [...su.approvedCapabilities],
+              cookieKeys: [...su.approvedCookieKeys],
+              localStorageKeys: [...su.approvedLocalStorageKeys],
+              sessionStorageKeys: [...su.approvedSessionStorageKeys],
+              captureHeaders: su.approvedCaptureHeaders.map((d) => ({ ...d })),
+              indexedDbScopes: su.approvedIndexedDbScopes.map((d) => ({
+                origin: d.origin,
+                database: d.database,
+                store: d.store,
+                keys: [...d.keys],
+              })),
+              localStoragePointers: su.approvedLocalStoragePointers.map((d) => ({ ...d })),
+              sessionStoragePointers: su.approvedSessionStoragePointers.map((d) => ({ ...d })),
+            },
+          };
+          existing[suKey] = suRecord;
+        }
+        await chrome.storage.local.set({ [PENDING_PAIR_KEY]: existing });
+      });
+      setPairPendingBadge();
+    }
     return;
   }
   // needs-pair: queue for popup.
@@ -747,13 +915,13 @@ async function onServerHello(hello: HelloFrameFromServer): Promise<void> {
     const got = await chrome.storage.local.get(PENDING_PAIR_KEY);
     const existing = mergePending(got[PENDING_PAIR_KEY]);
     const currentEntry = existing[pendingKey];
-    if (currentEntry) {
+    if (currentEntry && currentEntry.kind === 'pair') {
       // Collapse: add this mcpId to the waiting set (dedup).
       if (!currentEntry.mcpIds.includes(result.mcpId)) {
         currentEntry.mcpIds.push(result.mcpId);
       }
       currentEntry.sessionNonces[result.mcpId] = sessionNonceB64;
-    } else {
+    } else if (!currentEntry) {
       // New entry.
       const pending: PendingPairRecord = {
         key: pendingKey,
@@ -799,7 +967,7 @@ async function onServerHello(hello: HelloFrameFromServer): Promise<void> {
       const got = await chrome.storage.local.get(PENDING_PAIR_KEY);
       const dict = mergePending(got[PENDING_PAIR_KEY]);
       const entry = dict[pendingKey];
-      if (entry) {
+      if (entry && entry.kind === 'pair') {
         ws.send(
           JSON.stringify({
             type: 'pair-pending',
@@ -815,13 +983,13 @@ async function onServerHello(hello: HelloFrameFromServer): Promise<void> {
 }
 
 /**
- * Local alias bound to this file's `PendingPairRecord`. The shared
+ * Local alias bound to this file's `AnyPendingRecord`. The shared
  * helper in `./lib/pending-pair.ts` is generic so the popup can use it
  * against its own structurally-compatible interface without a circular
  * dependency on this file's exact type.
  */
-function mergePending(stored: unknown): Record<string, PendingPairRecord> {
-  return normalisePendingPair<PendingPairRecord>(stored);
+function mergePending(stored: unknown): Record<string, AnyPendingRecord> {
+  return normalisePendingPair<AnyPendingRecord>(stored);
 }
 
 /**
@@ -1570,7 +1738,7 @@ async function handleReadIndexedDbRequest(
   }
 }
 
-async function onApproval(approved: PendingPairRecord): Promise<void> {
+async function onApproval(approved: AnyPendingRecord): Promise<void> {
   if (!trust || !sessions || !extIdentity || !currentExtSessionNonce) return;
   // Persist trust. Default to ['fetch'] when older popup state somehow
   // omits the field — defensive, the popup always populates it in 0.2.0+.
@@ -1613,74 +1781,80 @@ async function onApproval(approved: PendingPairRecord): Promise<void> {
     extensionIdentityX25519Pub: toB64(extIdentity.x25519Pub),
     extensionIdentityEd25519Pub: toB64(extIdentity.ed25519Pub),
   });
-  // 0.6.0+: replay the post-approval session setup for EVERY mcpId in the
-  // entry. Each process had its own hello nonce (for ECDH uniqueness), but
-  // they share the same identity pub and approval outcome — so we drive the
-  // same session-key derivation + ReadyFrame send independently for each.
-  const identityPub = fromB64(approved.identityX25519Pub);
-  const mcpIdsToUnblock = approved.mcpIds ?? [];
-  for (const mcpId of mcpIdsToUnblock) {
-    const sessionNonceB64 = approved.sessionNonces?.[mcpId];
-    if (!sessionNonceB64) {
-      console.warn(`[fetchproxy] onApproval: missing sessionNonce for mcpId ${mcpId}; skipping`);
-      continue;
+
+  if (approved.kind === 'pair') {
+    // 0.6.0+: replay the post-approval session setup for EVERY mcpId in the
+    // entry. Each process had its own hello nonce (for ECDH uniqueness), but
+    // they share the same identity pub and approval outcome — so we drive the
+    // same session-key derivation + ReadyFrame send independently for each.
+    const identityPub = fromB64(approved.identityX25519Pub);
+    const mcpIdsToUnblock = approved.mcpIds ?? [];
+    for (const mcpId of mcpIdsToUnblock) {
+      const sessionNonceB64 = approved.sessionNonces?.[mcpId];
+      if (!sessionNonceB64) {
+        console.warn(`[fetchproxy] onApproval: missing sessionNonce for mcpId ${mcpId}; skipping`);
+        continue;
+      }
+      const sessionNonce = fromB64(sessionNonceB64);
+      // Each process gets its own fresh ephemeral keypair so the resulting
+      // session keys are independent.
+      const ephemeral = await generateX25519();
+      const shared = await ecdhX25519(ephemeral.privateKey, identityPub);
+      const sessionKey = await hkdfSha256(
+        shared,
+        sessionNonce,
+        enc.encode(HKDF_SESSION_INFO),
+        32,
+      );
+      sessions.set(mcpId, sessionKey);
+      mcpDomains.set(mcpId, [...approved.domains]);
+      mcpCapabilities.set(mcpId, approvedCapabilities);
+      mcpCookieKeys.set(mcpId, [...(approved.cookieKeys ?? [])]);
+      mcpLocalStorageKeys.set(mcpId, [...(approved.localStorageKeys ?? [])]);
+      mcpSessionStorageKeys.set(mcpId, [...(approved.sessionStorageKeys ?? [])]);
+      mcpCaptureHeaders.set(mcpId, (approved.captureHeaders ?? []).map((d) => ({ ...d })));
+      mcpIndexedDbScopes.set(
+        mcpId,
+        (approved.indexedDbScopes ?? []).map((d) => ({
+          origin: d.origin,
+          database: d.database,
+          store: d.store,
+          keys: [...d.keys],
+        })),
+      );
+      mcpLocalStoragePointers.set(
+        mcpId,
+        (approved.localStoragePointers ?? []).map((d) => ({ ...d })),
+      );
+      mcpSessionStoragePointers.set(
+        mcpId,
+        (approved.sessionStoragePointers ?? []).map((d) => ({ ...d })),
+      );
+      // 0.4.0: sign over (mcpHelloNonce || extHello.sessionNonce). The
+      // MCP host verifies this against the extension's claimed Ed25519
+      // pub and gates session-key derivation on it.
+      const sessionSig = await ed25519Sign(
+        extIdentity.ed25519Priv,
+        concatBytes(sessionNonce, currentExtSessionNonce!),
+      );
+      const ready: ReadyFrame = {
+        type: 'ready',
+        mcpId,
+        extensionSessionPub: toB64(ephemeral.publicKey),
+        sessionSig: toB64(sessionSig),
+      };
+      ws?.send(JSON.stringify(ready));
     }
-    const sessionNonce = fromB64(sessionNonceB64);
-    // Each process gets its own fresh ephemeral keypair so the resulting
-    // session keys are independent.
-    const ephemeral = await generateX25519();
-    const shared = await ecdhX25519(ephemeral.privateKey, identityPub);
-    const sessionKey = await hkdfSha256(
-      shared,
-      sessionNonce,
-      enc.encode(HKDF_SESSION_INFO),
-      32,
-    );
-    sessions.set(mcpId, sessionKey);
-    mcpDomains.set(mcpId, [...approved.domains]);
-    mcpCapabilities.set(mcpId, approvedCapabilities);
-    mcpCookieKeys.set(mcpId, [...(approved.cookieKeys ?? [])]);
-    mcpLocalStorageKeys.set(mcpId, [...(approved.localStorageKeys ?? [])]);
-    mcpSessionStorageKeys.set(mcpId, [...(approved.sessionStorageKeys ?? [])]);
-    mcpCaptureHeaders.set(mcpId, (approved.captureHeaders ?? []).map((d) => ({ ...d })));
-    mcpIndexedDbScopes.set(
-      mcpId,
-      (approved.indexedDbScopes ?? []).map((d) => ({
-        origin: d.origin,
-        database: d.database,
-        store: d.store,
-        keys: [...d.keys],
-      })),
-    );
-    mcpLocalStoragePointers.set(
-      mcpId,
-      (approved.localStoragePointers ?? []).map((d) => ({ ...d })),
-    );
-    mcpSessionStoragePointers.set(
-      mcpId,
-      (approved.sessionStoragePointers ?? []).map((d) => ({ ...d })),
-    );
-    // 0.4.0: sign over (mcpHelloNonce || extHello.sessionNonce). The
-    // MCP host verifies this against the extension's claimed Ed25519
-    // pub and gates session-key derivation on it.
-    const sessionSig = await ed25519Sign(
-      extIdentity.ed25519Priv,
-      concatBytes(sessionNonce, currentExtSessionNonce!),
-    );
-    const ready: ReadyFrame = {
-      type: 'ready',
-      mcpId,
-      extensionSessionPub: toB64(ephemeral.publicKey),
-      sessionSig: toB64(sessionSig),
-    };
-    ws?.send(JSON.stringify(ready));
+    // Ensure domain tabs for the approved domains (once for the group).
+    for (const d of approved.domains) {
+      void ensureDomainTab(d).catch(() => {
+        /* noop */
+      });
+    }
   }
-  // Ensure domain tabs for the approved domains (once for the group).
-  for (const d of approved.domains) {
-    void ensureDomainTab(d).catch(() => {
-      /* noop */
-    });
-  }
+  // scope-update kind: trust.put done above. Sessions already live — the
+  // wider scope takes effect on the next hello (reconnect). No ECDH/ReadyFrame.
+
   // 0.6.0+: clear popup state for the entire approved key entry. All waiting
   // mcpIds were handled in the loop above. The popup's onApprove handler
   // writes approvedPair → this listener fires → we clean up here. The RMW
@@ -1702,6 +1876,36 @@ async function onApproval(approved: PendingPairRecord): Promise<void> {
   await chrome.storage.local.remove(APPROVED_PAIR_KEY);
 }
 
+/** Part 2: dismiss a scope-update entry without writing trust. */
+const DISMISSED_SCOPE_KEY = 'dismissedScopeHashes';
+
+async function onScopeUpdateDismiss(key: string, identityHash: string, dismissedScopeHash: string): Promise<void> {
+  // Record the dismissed scopeHash so we don't re-queue it for this identity.
+  await withPendingPairLock(async () => {
+    const [pendingGot, dismissedGot] = await Promise.all([
+      chrome.storage.local.get(PENDING_PAIR_KEY),
+      chrome.storage.local.get(DISMISSED_SCOPE_KEY),
+    ]);
+    // Remove from pending.
+    const remaining = mergePending(pendingGot[PENDING_PAIR_KEY]);
+    delete remaining[key];
+    if (Object.keys(remaining).length === 0) {
+      await chrome.storage.local.remove(PENDING_PAIR_KEY);
+      clearPairPendingBadge();
+    } else {
+      await chrome.storage.local.set({ [PENDING_PAIR_KEY]: remaining });
+    }
+    // Persist dismissed hash: Record<identityHash, string[]>
+    const dismissed = (dismissedGot[DISMISSED_SCOPE_KEY] ?? {}) as Record<string, string[]>;
+    const current = dismissed[identityHash] ?? [];
+    if (!current.includes(dismissedScopeHash)) {
+      dismissed[identityHash] = [...current, dismissedScopeHash];
+    }
+    await chrome.storage.local.set({ [DISMISSED_SCOPE_KEY]: dismissed });
+  });
+  await chrome.storage.local.remove('dismissedScopeUpdate');
+}
+
 // Boot: only run in a real MV3 service worker context. Skipped under vitest
 // (no chrome.runtime.getManifest, no chrome.storage.local.onChanged).
 function maybeBoot(): void {
@@ -1721,9 +1925,17 @@ function maybeBoot(): void {
   trust = new TrustStore(chrome.runtime.getManifest().version);
   sessions = new SessionKeys();
   chrome.storage.local.onChanged.addListener((changes) => {
-    const approved = changes[APPROVED_PAIR_KEY]?.newValue as PendingPairRecord | undefined;
+    const approved = changes[APPROVED_PAIR_KEY]?.newValue as AnyPendingRecord | undefined;
     if (approved) {
       void onApproval(approved).catch((e) => console.error('[fetchproxy] approval:', e));
+    }
+    // Part 2: dismiss message from popup — remove scope-update entry + record dismissed hash.
+    const dismiss = changes['dismissedScopeUpdate']?.newValue as
+      | { key: string; identityHash: string; scopeHash: string }
+      | undefined;
+    if (dismiss) {
+      void onScopeUpdateDismiss(dismiss.key, dismiss.identityHash, dismiss.scopeHash)
+        .catch((e) => console.error('[fetchproxy] dismiss:', e));
     }
     // 0.4.2: keep the badge in sync with the pending-pair state.
     // Cancel (popup) and the user-driven X removes the key without
