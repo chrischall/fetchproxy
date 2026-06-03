@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { handleServerHello, connectedIdentityHashes } from '../src/background.js';
+import { handleServerHello, connectedIdentityHashes, applyNeedsPairRecord } from '../src/background.js';
 import { TrustStore } from '../src/trust-store.js';
 import { normalisePendingPair } from '../src/lib/pending-pair.js';
 import { scopeHash } from '../src/lib/scope.js';
@@ -1114,5 +1114,116 @@ describe('connectedIdentityHashes (Part 3)', () => {
     // is tested via the broadcastConnectionsChanged integration.
     const hashes = connectedIdentityHashes();
     expect(hashes instanceof Set).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Finding 2: needs-pair must supersede a queued scope-update at the same key
+// ---------------------------------------------------------------------------
+//
+// Scenario: a scope-update was queued for a trusted identity (MCP declared
+// wider scope). The user then revokes trust. The MCP reconnects → needs-pair
+// lands on the same composite key (identityHash:scopeHash). The pending-pair
+// write must replace the scope-update entry with a pair entry so the popup
+// shows the correct prompt and pair-pending is sent. Previously, neither
+// branch of the if/else-if chain fired for this case, silently dropping the
+// needs-pair record and hanging the MCP.
+
+describe('needs-pair supersedes queued scope-update at same key (finding 2)', () => {
+  it('replaces a scope-update entry with kind:pair when needs-pair lands on the same key', async () => {
+    // Build a scope-update record seeded at a known key.
+    const identityHash = 'aabbccdd' + '1'.repeat(56);
+    const mcpId = 'repro-mcp:1.0.0:0000000000000001';
+    const scopeForHash = {
+      capabilities: ['fetch'] as string[],
+      cookieKeys: [] as string[],
+      localStorageKeys: [] as string[],
+      sessionStorageKeys: [] as string[],
+      captureHeaders: [] as { urlPattern: string; headerName: string }[],
+      indexedDbScopes: [] as import('../src/lib/scope.js').Scope['indexedDbScopes'],
+      localStoragePointers: [] as import('../src/lib/scope.js').Scope['localStoragePointers'],
+      sessionStoragePointers: [] as import('../src/lib/scope.js').Scope['sessionStoragePointers'],
+    };
+    const hash = await scopeHash(scopeForHash);
+    const pendingKey = `${identityHash}:${hash}`;
+
+    // A scope-update record occupying the key (trusted identity, scope grew).
+    const scopeUpdateEntry = {
+      key: pendingKey,
+      kind: 'scope-update' as const,
+      identityHash,
+      serverName: 'repro-mcp',
+      version: '1.0.0',
+      mcpIds: [mcpId],
+      domains: ['repro.example'],
+      identityX25519Pub: 'AAAA',
+      identityEd25519Pub: 'BBBB',
+      capabilities: ['fetch', 'capture_request_header'],
+      cookieKeys: [],
+      localStorageKeys: [],
+      sessionStorageKeys: [],
+      captureHeaders: [],
+      indexedDbScopes: [],
+      localStoragePointers: [],
+      sessionStoragePointers: [],
+      previousScope: {
+        capabilities: ['fetch'],
+        cookieKeys: [],
+        localStorageKeys: [],
+        sessionStorageKeys: [],
+        captureHeaders: [],
+        indexedDbScopes: [],
+        localStoragePointers: [],
+        sessionStoragePointers: [],
+      },
+    };
+
+    // A new needs-pair PendingPairRecord for a second mcpId on the same identity.
+    const mcpId2 = 'repro-mcp:1.0.0:0000000000000002';
+    const sessionNonceB64 = 'nonce001==';
+    const pairRecord = {
+      key: pendingKey,
+      kind: 'pair' as const,
+      identityHash,
+      serverName: 'repro-mcp',
+      version: '1.0.0',
+      mcpIds: [mcpId2],
+      sessionNonces: { [mcpId2]: sessionNonceB64 },
+      domains: ['repro.example'],
+      capabilities: ['fetch'],
+      cookieKeys: [],
+      localStorageKeys: [],
+      sessionStorageKeys: [],
+      captureHeaders: [],
+      indexedDbScopes: [],
+      localStoragePointers: [],
+      sessionStoragePointers: [],
+      pairCode: 'ABC-123',
+      identityX25519Pub: 'AAAA',
+      identityEd25519Pub: 'BBBB',
+    };
+
+    // Seed the dict with the scope-update entry.
+    const existing: Record<string, typeof scopeUpdateEntry | typeof pairRecord> = {
+      [pendingKey]: scopeUpdateEntry,
+    };
+
+    // Call applyNeedsPairRecord — the function under test (exported for testing).
+    // It must replace the scope-update entry with a pair entry, carrying over
+    // mcpIds from the evicted scope-update entry.
+    applyNeedsPairRecord(
+      existing as Record<string, import('../src/background.js').AnyPendingRecord>,
+      pendingKey,
+      pairRecord,
+    );
+
+    // After the call the entry MUST be kind:pair.
+    const entry = existing[pendingKey];
+    expect(entry).toBeDefined();
+    expect(entry!.kind).toBe('pair');
+    // The new mcpId must be in the record.
+    expect((entry as typeof pairRecord).mcpIds).toContain(mcpId2);
+    // The session nonce for the new mcpId must be recorded.
+    expect((entry as typeof pairRecord).sessionNonces?.[mcpId2]).toBe(sessionNonceB64);
   });
 });
