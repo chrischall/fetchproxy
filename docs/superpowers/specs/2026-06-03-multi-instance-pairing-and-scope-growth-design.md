@@ -96,6 +96,27 @@ This change alone would have prevented the `musescore-mcp` 0.3.0 outage: the bri
 would have kept serving fetch-only with a dismissible "grant `capture_request_header`?"
 offer, instead of hanging.
 
+## Part 3 — Connection-status indicator in the trusted list
+
+The popup's `status` mode lists trusted MCPs from the persisted trust store —
+"ever-trusted," with no live state. Add a per-entry presence dot.
+
+- `background.ts` already tracks live sessions, each carrying its `mcpId` and
+  `identityHash`. Derive the set of **connected `identityHash`es** = those with
+  ≥1 live session (a multi-instance MCP shows connected if *any* instance is live).
+- The popup's `status` state gains the live set — `TrustedSummary.connected:
+  boolean` per entry. The popup requests status from `background` on open and
+  subscribes to a `connections-changed` message so the dot updates live (a
+  connect/disconnect reflects without reopening the popup).
+- `renderPopup` draws a status dot before each trusted entry: **green** when
+  `connected`, **grey/dim** when trusted-but-offline, with an `aria-label`/`title`
+  of "connected" / "not connected".
+- `popup.html` + styles: `.status-dot.connected` (green) / `.status-dot.offline`
+  (grey).
+
+Logically independent of Parts 1–2 (it reads connection state, doesn't change
+pairing), but shares the same popup + trusted-list rendering, so it ships here.
+
 ## Data-shape changes
 
 - **`pendingPair` store:** keyed by a composite `${identityHash}:${scopeHash}`
@@ -118,7 +139,12 @@ offer, instead of hanging.
   `mcpIds` set per entry, `kind`, legacy migration.
 - `packages/extension-core/src/popup/popup.ts` + `popup.html` — one entry per
   identity+scope; instance count; `[Grant]`/`[Keep as is]` for `scope-update`;
-  "update available" styling.
+  "update available" styling. **Part 3:** a per-entry `.status-dot`
+  (connected/offline), `TrustedSummary.connected`, and a `connections-changed`
+  subscription for live updates.
+- `packages/extension-core/src/background.ts` (Part 3) — derive + expose the set
+  of connected `identityHash`es from live sessions; broadcast `connections-changed`
+  on connect/disconnect.
 - `packages/extension-core/src/trust-store.ts` — unchanged record shape; add
   `growApprovedScope` helper.
 - `packages/protocol`, `packages/server` — likely unchanged; verify the replay path.
@@ -142,6 +168,10 @@ offer, instead of hanging.
 - A verb needing an un-granted capability → typed error, bridge still serves other
   verbs.
 - Legacy `pendingPair` (single-record and per-`mcpId` dict) migrates/normalises.
+- **Part 3:** `renderPopup` draws a green dot when `connected`, grey when offline;
+  `background` derives the connected-`identityHash` set from live sessions (≥1
+  session ⇒ connected; multi-instance counts as connected); the dot updates on a
+  `connections-changed` event while the popup is open.
 
 ## Risks / open decisions
 
