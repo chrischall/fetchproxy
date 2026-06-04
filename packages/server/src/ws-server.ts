@@ -1,4 +1,4 @@
-import { generateMcpId, KNOWN_CAPABILITIES, undeclaredKeys } from '@fetchproxy/protocol';
+import { generateMcpId, KNOWN_CAPABILITIES, undeclaredKeys, validateCaptureHeaderDecls } from '@fetchproxy/protocol';
 import type {
   Capability,
   CaptureHeaderDecl,
@@ -876,6 +876,21 @@ export class FetchproxyServer {
         }
       }
       capabilities = [...opts.capabilities];
+    }
+    // Validate declared captureHeaders up front (same philosophy as the
+    // capability guard above): a bad `urlPattern` — e.g. a bare host instead
+    // of a `https://host/path` match pattern — otherwise sails through here
+    // and only blows up at runtime when the bridge host runs `validateFrame`
+    // on our hello and silently closes the connection. Fail loud at boot with
+    // the protocol's actionable message instead.
+    if (opts.captureHeaders !== undefined) {
+      try {
+        validateCaptureHeaderDecls(opts.captureHeaders, 'opts.captureHeaders');
+      } catch (e) {
+        throw new Error(
+          `FetchproxyServer: invalid captureHeaders — ${e instanceof Error ? e.message : String(e)}`,
+        );
+      }
     }
     this.opts = {
       port: opts.port ?? 37149,

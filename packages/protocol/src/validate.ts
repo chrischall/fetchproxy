@@ -138,6 +138,19 @@ function assertScopeKeyArray(value: unknown, label: string): void {
   }
 }
 
+/**
+ * Public validator for a declared `captureHeaders` array. Lets the MCP-side
+ * `FetchproxyServer` fail fast at construction with an actionable error
+ * (e.g. "urlPattern must start with https://") instead of silently getting
+ * its hello rejected by the bridge host at runtime. Throws `ProtocolError`.
+ */
+export function validateCaptureHeaderDecls(
+  value: unknown,
+  label = 'captureHeaders',
+): void {
+  assertCaptureHeadersArray(value, label);
+}
+
 function assertCaptureHeadersArray(value: unknown, label: string): void {
   if (!Array.isArray(value)) {
     throw new ProtocolError(`${label}: expected array, got ${typeof value}`);
