@@ -1,7 +1,15 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { handleServerHello, connectedIdentityHashes, applyNeedsPairRecord } from '../src/background.js';
+import { handleServerHello, connectedIdentityHashes, applyNeedsPairRecord, CAPTURE_EXTRA_INFO_SPEC } from '../src/background.js';
 import { TrustStore } from '../src/trust-store.js';
 import { normalisePendingPair } from '../src/lib/pending-pair.js';
+
+describe('capture_request_header webRequest spec', () => {
+  it("includes 'extraHeaders' so the Cookie header is visible (Chrome MV3 omits Cookie/auth headers from onBeforeSendHeaders otherwise → capture would never match)", () => {
+    const spec = [...CAPTURE_EXTRA_INFO_SPEC];
+    expect(spec).toContain('requestHeaders');
+    expect(spec).toContain('extraHeaders');
+  });
+});
 import { scopeHash } from '../src/lib/scope.js';
 import {
   generateX25519,
