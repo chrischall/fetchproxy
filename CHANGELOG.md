@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.2.0](https://github.com/chrischall/fetchproxy/compare/v1.1.0...v1.2.0) (2026-06-04)
+
+
+### Features
+
+* **extension:** apply granted scope-update to live sessions (no reconnect) ([#110](https://github.com/chrischall/fetchproxy/issues/110)) ([bac59b2](https://github.com/chrischall/fetchproxy/commit/bac59b22d6a108ef1e4734a1b5f92c7ed8bae5b8))
+
+
+### Refactor
+
+* **extension:** address PR [#110](https://github.com/chrischall/fetchproxy/issues/110) review nits ([#112](https://github.com/chrischall/fetchproxy/issues/112)) ([a0c5ded](https://github.com/chrischall/fetchproxy/commit/a0c5ded0f4d7e650c5ef04cc576a17ee0e8e4577))
+
 ## [1.1.0](https://github.com/chrischall/fetchproxy/compare/v1.0.1...v1.1.0) (2026-06-04)
 
 
