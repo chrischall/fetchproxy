@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.0](https://github.com/chrischall/fetchproxy/compare/v1.0.1...v1.1.0) (2026-06-04)
+
+
+### Features
+
+* add capture_redirect capability ([#108](https://github.com/chrischall/fetchproxy/issues/108)) ([3121dc5](https://github.com/chrischall/fetchproxy/commit/3121dc5411fa4114fc05343adf5dd5319dc4cdde))
+
 ## [1.0.1](https://github.com/chrischall/fetchproxy/compare/v1.0.0...v1.0.1) (2026-06-04)
 
 
