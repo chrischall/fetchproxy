@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.1](https://github.com/chrischall/fetchproxy/compare/v1.0.0...v1.0.1) (2026-06-04)
+
+
+### Bug Fixes
+
+* **extension:** capture listener needs 'extraHeaders' (Cookie header was invisible) ([#106](https://github.com/chrischall/fetchproxy/issues/106)) ([2094255](https://github.com/chrischall/fetchproxy/commit/209425510fc136221a3ed44dcd86a82408f5c039))
+
 ## [1.0.0](https://github.com/chrischall/fetchproxy/compare/v0.13.0...v1.0.0) (2026-06-04)
 
 
