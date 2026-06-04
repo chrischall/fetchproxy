@@ -11,6 +11,38 @@ describe('FetchproxyServer (orchestrator)', () => {
     await Promise.all(servers.splice(0).map((s) => s.close()));
   });
 
+  it('throws at construction when a declared captureHeaders urlPattern is a bare host', () => {
+    // Regression guard: a misconfigured MCP that declares `urlPattern: 'host'`
+    // (instead of a valid `https://host/path` match pattern) must fail loudly
+    // at construction with an actionable message — NOT silently get its hello
+    // rejected by the bridge host at runtime ("peer WS closed before ready").
+    expect(
+      () =>
+        new FetchproxyServer({
+          port: 41999,
+          serverName: 'musescore-mcp',
+          version: '0.0.1',
+          domains: ['musescore.com'],
+          capabilities: ['fetch', 'capture_request_header'],
+          captureHeaders: [{ urlPattern: 'musescore.com', headerName: 'cookie' }],
+        }),
+    ).toThrow(/captureHeaders|https:\/\//i);
+  });
+
+  it('accepts a valid https captureHeaders match pattern at construction', () => {
+    expect(
+      () =>
+        new FetchproxyServer({
+          port: 41998,
+          serverName: 'musescore-mcp',
+          version: '0.0.1',
+          domains: ['musescore.com'],
+          capabilities: ['fetch', 'capture_request_header'],
+          captureHeaders: [{ urlPattern: 'https://musescore.com/*', headerName: 'cookie' }],
+        }),
+    ).not.toThrow();
+  });
+
   it('starts on a free port as host (after explicit connect)', async () => {
     const srv = new FetchproxyServer({
       port: 41050,
