@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.0.0](https://github.com/chrischall/fetchproxy/compare/v0.13.0...v1.0.0) (2026-06-04)
+
+
+### ⚠ BREAKING CHANGES
+
+* **protocol:** captureHeaders as {host, path?, headerName} validated against domains ([#104](https://github.com/chrischall/fetchproxy/issues/104))
+
+### Features
+
+* **protocol:** captureHeaders as {host, path?, headerName} validated against domains ([#104](https://github.com/chrischall/fetchproxy/issues/104)) ([e8407e6](https://github.com/chrischall/fetchproxy/commit/e8407e69f8256fdf190d8903ea1d02dea95121a6))
+* **server:** validate declared captureHeaders at construction ([#102](https://github.com/chrischall/fetchproxy/issues/102)) ([00b2cc1](https://github.com/chrischall/fetchproxy/commit/00b2cc1abd76c9ad5b518e3690b38267f437a6a9))
+
 ## [0.13.0](https://github.com/chrischall/fetchproxy/compare/v0.12.0...v0.13.0) (2026-06-03)
 
 
