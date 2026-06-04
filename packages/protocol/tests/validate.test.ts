@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { validateFrame, validateInnerFrame, ProtocolError } from '../src/validate.js';
+import {
+  validateFrame,
+  validateInnerFrame,
+  validateCaptureHeaderDecls,
+  ProtocolError,
+} from '../src/validate.js';
 
 describe('validateFrame', () => {
   describe('hello (server, v2)', () => {
@@ -179,7 +184,7 @@ describe('validateFrame', () => {
           localStorageKeys: ['auth', 'tokenExpiry'],
           sessionStorageKeys: ['anon-id'],
           captureHeaders: [
-            { urlPattern: 'https://api.honeybook.com/api/v2/*', headerName: 'hb-api-fingerprint' },
+            { host: 'api.ourfamilywizard.com', path: '/api/v2/*', headerName: 'fingerprint' },
           ],
         }),
       ).not.toThrow();
@@ -280,55 +285,95 @@ describe('validateFrame', () => {
       ).toThrow(/cookieKeys/);
     });
 
+    it('accepts captureHeaders with host equal to a declared domain (no path)', () => {
+      expect(() =>
+        validateFrame({
+          ...validHello,
+          captureHeaders: [{ host: 'ourfamilywizard.com', headerName: 'cookie' }],
+        }),
+      ).not.toThrow();
+    });
+
+    it('accepts captureHeaders with host as a subdomain of a declared domain', () => {
+      expect(() =>
+        validateFrame({
+          ...validHello,
+          captureHeaders: [
+            { host: 'api.ourfamilywizard.com', path: '/api/*', headerName: 'cookie' },
+          ],
+        }),
+      ).not.toThrow();
+    });
+
     it('rejects non-array captureHeaders', () => {
       expect(() =>
         validateFrame({ ...validHello, captureHeaders: {} }),
       ).toThrow(/captureHeaders/);
     });
 
-    it('rejects captureHeaders entry missing urlPattern', () => {
+    it('rejects captureHeaders entry missing host', () => {
       expect(() =>
         validateFrame({
           ...validHello,
           captureHeaders: [{ headerName: 'X-Foo' }],
         }),
-      ).toThrow(/captureHeaders.*urlPattern/);
+      ).toThrow(/captureHeaders.*host/);
     });
 
     it('rejects captureHeaders entry missing headerName', () => {
       expect(() =>
         validateFrame({
           ...validHello,
-          captureHeaders: [{ urlPattern: 'https://x.com/api/*' }],
+          captureHeaders: [{ host: 'ourfamilywizard.com' }],
         }),
       ).toThrow(/captureHeaders.*headerName/);
     });
 
-    it('rejects captureHeaders entry with non-https urlPattern', () => {
+    it('rejects captureHeaders host not in declared domains', () => {
       expect(() =>
         validateFrame({
           ...validHello,
-          captureHeaders: [{ urlPattern: 'http://x.com/api/*', headerName: 'X-Foo' }],
+          captureHeaders: [{ host: 'evil.com', headerName: 'cookie' }],
         }),
-      ).toThrow(/captureHeaders.*urlPattern/);
+      ).toThrow(/captureHeaders.*host/);
+    });
+
+    it('rejects captureHeaders entry with invalid host', () => {
+      expect(() =>
+        validateFrame({
+          ...validHello,
+          captureHeaders: [{ host: 'not a host', headerName: 'X-Foo' }],
+        }),
+      ).toThrow(/captureHeaders.*host/);
     });
 
     it('rejects captureHeaders entry with wildcard in host', () => {
       expect(() =>
         validateFrame({
           ...validHello,
-          captureHeaders: [{ urlPattern: 'https://*.x.com/api/*', headerName: 'X-Foo' }],
+          captureHeaders: [{ host: '*.ourfamilywizard.com', headerName: 'X-Foo' }],
         }),
-      ).toThrow(/captureHeaders.*urlPattern/);
+      ).toThrow(/captureHeaders.*host/);
     });
 
-    it('rejects duplicate captureHeader pair', () => {
+    it('rejects captureHeaders path without leading slash', () => {
       expect(() =>
         validateFrame({
           ...validHello,
           captureHeaders: [
-            { urlPattern: 'https://x.com/api/*', headerName: 'X-Foo' },
-            { urlPattern: 'https://x.com/api/*', headerName: 'X-Foo' },
+            { host: 'ourfamilywizard.com', path: 'api/v2', headerName: 'X-Foo' },
+          ],
+        }),
+      ).toThrow(/captureHeaders.*path/);
+    });
+
+    it('rejects duplicate captureHeader entries (omitted path ≡ /*)', () => {
+      expect(() =>
+        validateFrame({
+          ...validHello,
+          captureHeaders: [
+            { host: 'ourfamilywizard.com', headerName: 'cookie' },
+            { host: 'ourfamilywizard.com', path: '/*', headerName: 'cookie' },
           ],
         }),
       ).toThrow(/captureHeaders.*duplicate/);
@@ -338,9 +383,20 @@ describe('validateFrame', () => {
       expect(() =>
         validateFrame({
           ...validHello,
-          captureHeaders: [{ urlPattern: 'https://x.com/api/*', headerName: 'has space' }],
+          captureHeaders: [{ host: 'ourfamilywizard.com', headerName: 'has space' }],
         }),
       ).toThrow(/captureHeaders.*headerName/);
+    });
+
+    it('rejects captureHeaders entry with unexpected field', () => {
+      expect(() =>
+        validateFrame({
+          ...validHello,
+          captureHeaders: [
+            { host: 'ourfamilywizard.com', headerName: 'cookie', urlPattern: 'https://x/*' },
+          ],
+        }),
+      ).toThrow(/captureHeaders.*unexpected/);
     });
   });
 
@@ -941,7 +997,8 @@ describe('validateInnerFrame', () => {
       id: 1,
       op: 'capture_request_header' as const,
       init: {
-        urlPattern: 'https://api.honeybook.com/api/v2/*',
+        host: 'api.honeybook.com',
+        path: '/api/v2/*',
         headerName: 'hb-api-fingerprint',
       },
     };
@@ -950,13 +1007,24 @@ describe('validateInnerFrame', () => {
       expect(() => validateInnerFrame(validReq)).not.toThrow();
     });
 
+    it('accepts capture_request_header request with host only (no path)', () => {
+      expect(() =>
+        validateInnerFrame({
+          type: 'request',
+          id: 1,
+          op: 'capture_request_header',
+          init: { host: 'musescore.com', headerName: 'cookie' },
+        }),
+      ).not.toThrow();
+    });
+
     it('accepts capture_request_header request with timeoutMs', () => {
       expect(() =>
         validateInnerFrame({ ...validReq, init: { ...validReq.init, timeoutMs: 10000 } }),
       ).not.toThrow();
     });
 
-    it('rejects capture_request_header missing urlPattern', () => {
+    it('rejects capture_request_header missing host', () => {
       expect(() =>
         validateInnerFrame({
           type: 'request',
@@ -964,7 +1032,7 @@ describe('validateInnerFrame', () => {
           op: 'capture_request_header',
           init: { headerName: 'X-Foo' },
         }),
-      ).toThrow(/urlPattern/);
+      ).toThrow(/host/);
     });
 
     it('rejects capture_request_header missing headerName', () => {
@@ -973,9 +1041,20 @@ describe('validateInnerFrame', () => {
           type: 'request',
           id: 1,
           op: 'capture_request_header',
-          init: { urlPattern: 'https://x.com/api/*' },
+          init: { host: 'x.com' },
         }),
       ).toThrow(/headerName/);
+    });
+
+    it('rejects capture_request_header with urlPattern field', () => {
+      expect(() =>
+        validateInnerFrame({
+          type: 'request',
+          id: 1,
+          op: 'capture_request_header',
+          init: { urlPattern: 'https://x.com/api/*', headerName: 'X-Foo' },
+        }),
+      ).toThrow(/host|unexpected/);
     });
 
     it('rejects capture_request_header with negative timeoutMs', () => {
@@ -1423,5 +1502,97 @@ describe('validateInnerFrame (0.4.0 read_indexed_db)', () => {
         values: 'oops',
       }),
     ).toThrow(/values/);
+  });
+});
+
+describe('validateCaptureHeaderDecls', () => {
+  const domains = ['ourfamilywizard.com'];
+
+  it('accepts { host, headerName } for host equal to a declared domain', () => {
+    expect(() =>
+      validateCaptureHeaderDecls(
+        [{ host: 'ourfamilywizard.com', headerName: 'cookie' }],
+        domains,
+      ),
+    ).not.toThrow();
+  });
+
+  it('accepts { host, path, headerName } for a subdomain of a declared domain', () => {
+    expect(() =>
+      validateCaptureHeaderDecls(
+        [{ host: 'api.ourfamilywizard.com', path: '/api/*', headerName: 'cookie' }],
+        domains,
+      ),
+    ).not.toThrow();
+  });
+
+  it('accepts an empty array', () => {
+    expect(() => validateCaptureHeaderDecls([], domains)).not.toThrow();
+  });
+
+  it('rejects host not in declared domains', () => {
+    expect(() =>
+      validateCaptureHeaderDecls([{ host: 'evil.com', headerName: 'cookie' }], domains),
+    ).toThrow(/host/);
+  });
+
+  it('rejects a host that merely contains a domain as a substring', () => {
+    expect(() =>
+      validateCaptureHeaderDecls(
+        [{ host: 'notourfamilywizard.com', headerName: 'cookie' }],
+        domains,
+      ),
+    ).toThrow(/host/);
+  });
+
+  it('rejects invalid host', () => {
+    expect(() =>
+      validateCaptureHeaderDecls([{ host: 'not a host', headerName: 'cookie' }], domains),
+    ).toThrow(/host/);
+  });
+
+  it('rejects path without leading slash', () => {
+    expect(() =>
+      validateCaptureHeaderDecls(
+        [{ host: 'ourfamilywizard.com', path: 'api', headerName: 'cookie' }],
+        domains,
+      ),
+    ).toThrow(/path/);
+  });
+
+  it('rejects bad headerName', () => {
+    expect(() =>
+      validateCaptureHeaderDecls(
+        [{ host: 'ourfamilywizard.com', headerName: 'has space' }],
+        domains,
+      ),
+    ).toThrow(/headerName/);
+  });
+
+  it('rejects duplicate entries (omitted path ≡ /*)', () => {
+    expect(() =>
+      validateCaptureHeaderDecls(
+        [
+          { host: 'ourfamilywizard.com', headerName: 'cookie' },
+          { host: 'ourfamilywizard.com', path: '/*', headerName: 'cookie' },
+        ],
+        domains,
+      ),
+    ).toThrow(/duplicate/);
+  });
+
+  it('rejects unexpected fields', () => {
+    expect(() =>
+      validateCaptureHeaderDecls(
+        [{ host: 'ourfamilywizard.com', headerName: 'cookie', extra: 1 }],
+        domains,
+      ),
+    ).toThrow(/unexpected/);
+  });
+
+  it('throws ProtocolError', () => {
+    expect(() =>
+      validateCaptureHeaderDecls([{ host: 'evil.com', headerName: 'cookie' }], domains),
+    ).toThrow(ProtocolError);
   });
 });

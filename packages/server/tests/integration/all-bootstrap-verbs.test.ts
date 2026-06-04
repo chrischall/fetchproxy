@@ -63,7 +63,7 @@ describe('integration: all 0.3.0 bootstrap verbs', () => {
       localStorageKeys: ['auth', 'tokenExpiry'],
       sessionStorageKeys: ['anon-id'],
       captureHeaders: [
-        { urlPattern: 'https://api.ourfamilywizard.com/v1/*', headerName: 'x-csrf' },
+        { host: 'api.ourfamilywizard.com', path: '/v1/*', headerName: 'x-csrf' },
       ],
       identityDir: idDir,
     });
@@ -195,7 +195,7 @@ describe('integration: all 0.3.0 bootstrap verbs', () => {
     expect(helloFrame!.localStorageKeys).toEqual(['auth', 'tokenExpiry']);
     expect(helloFrame!.sessionStorageKeys).toEqual(['anon-id']);
     expect(helloFrame!.captureHeaders).toEqual([
-      { urlPattern: 'https://api.ourfamilywizard.com/v1/*', headerName: 'x-csrf' },
+      { host: 'api.ourfamilywizard.com', path: '/v1/*', headerName: 'x-csrf' },
     ]);
 
     // 1. read_cookies — new shape
@@ -215,7 +215,8 @@ describe('integration: all 0.3.0 bootstrap verbs', () => {
 
     // 4. capture_request_header
     const csrf = await server.captureRequestHeader({
-      urlPattern: 'https://api.ourfamilywizard.com/v1/*',
+      host: 'api.ourfamilywizard.com',
+      path: '/v1/*',
       headerName: 'x-csrf',
     });
     expect(csrf).toBe('csrf-fp-abc');

@@ -61,7 +61,7 @@ async function buildServerHello(
     cookieKeys: string[];
     localStorageKeys: string[];
     sessionStorageKeys: string[];
-    captureHeaders: { urlPattern: string; headerName: string }[];
+    captureHeaders: { host: string; path?: string; headerName: string }[];
   }>,
 ): Promise<HelloFrameFromServer> {
   const x = await generateX25519();
@@ -418,7 +418,7 @@ describe('handleServerHello', () => {
         {
           localStorageKeys: ['auth', 'tokenExpiry'],
           captureHeaders: [
-            { urlPattern: 'https://api.ourfamilywizard.com/v1/*', headerName: 'x-csrf' },
+            { host: 'api.ourfamilywizard.com', path: '/v1/*', headerName: 'x-csrf' },
           ],
         },
       );
@@ -428,7 +428,7 @@ describe('handleServerHello', () => {
       if (result.kind === 'needs-pair') {
         expect(result.localStorageKeys).toEqual(['auth', 'tokenExpiry']);
         expect(result.captureHeaders).toEqual([
-          { urlPattern: 'https://api.ourfamilywizard.com/v1/*', headerName: 'x-csrf' },
+          { host: 'api.ourfamilywizard.com', path: '/v1/*', headerName: 'x-csrf' },
         ]);
         expect(result.cookieKeys).toEqual([]);
         expect(result.sessionStorageKeys).toEqual([]);
@@ -479,8 +479,8 @@ describe('handleServerHello', () => {
         ['fetch', 'capture_request_header'],
         {
           captureHeaders: [
-            { urlPattern: 'https://api.honeybook.com/api/v2/*', headerName: 'hb-api-fingerprint' },
-            { urlPattern: 'https://api.honeybook.com/api/v3/*', headerName: 'hb-api-fingerprint' },
+            { host: 'api.honeybook.com', path: '/api/v2/*', headerName: 'hb-api-fingerprint' },
+            { host: 'api.honeybook.com', path: '/api/v3/*', headerName: 'hb-api-fingerprint' },
           ],
         },
       );
@@ -497,7 +497,7 @@ describe('handleServerHello', () => {
         localStorageKeys: [],
         sessionStorageKeys: [],
         captureHeaders: [
-          { urlPattern: 'https://api.honeybook.com/api/v2/*', headerName: 'hb-api-fingerprint' },
+          { host: 'api.honeybook.com', path: '/api/v2/*', headerName: 'hb-api-fingerprint' },
         ],
         identityX25519Pub: hello.identityX25519Pub,
         identityEd25519Pub: hello.identityEd25519Pub,
@@ -510,7 +510,7 @@ describe('handleServerHello', () => {
       if (result.kind === 'auto-trust') {
         // Only the approved v2 header is granted.
         expect(result.captureHeaders).toHaveLength(1);
-        expect(result.captureHeaders[0]?.urlPattern).toContain('api/v2');
+        expect(result.captureHeaders[0]?.path).toContain('api/v2');
         expect(result.pendingScopeUpdate).toBeDefined();
       }
     });
@@ -748,8 +748,8 @@ describe('request handler capability enforcement (granted ≤ approved)', () => 
       {
         localStorageKeys: ['auth', 'tokenExpiry', 'newKey'],
         captureHeaders: [
-          { urlPattern: 'https://api.ourfamilywizard.com/v1/*', headerName: 'x-csrf' },
-          { urlPattern: 'https://api.ourfamilywizard.com/v2/*', headerName: 'x-csrf' },
+          { host: 'api.ourfamilywizard.com', path: '/v1/*', headerName: 'x-csrf' },
+          { host: 'api.ourfamilywizard.com', path: '/v2/*', headerName: 'x-csrf' },
         ],
       },
     );
@@ -848,7 +848,7 @@ describe('dismiss-suppression (scope-update)', () => {
       cookieKeys: [] as string[],
       localStorageKeys: [] as string[],
       sessionStorageKeys: [] as string[],
-      captureHeaders: [] as { urlPattern: string; headerName: string }[],
+      captureHeaders: [] as { host: string; path?: string; headerName: string }[],
       indexedDbScopes: [] as import('../src/lib/scope.js').Scope['indexedDbScopes'],
       localStoragePointers: [] as import('../src/lib/scope.js').Scope['localStoragePointers'],
       sessionStoragePointers: [] as import('../src/lib/scope.js').Scope['sessionStoragePointers'],
@@ -877,7 +877,7 @@ describe('dismiss-suppression (scope-update)', () => {
       cookieKeys: [] as string[],
       localStorageKeys: [] as string[],
       sessionStorageKeys: [] as string[],
-      captureHeaders: [] as { urlPattern: string; headerName: string }[],
+      captureHeaders: [] as { host: string; path?: string; headerName: string }[],
       indexedDbScopes: [] as import('../src/lib/scope.js').Scope['indexedDbScopes'],
       localStoragePointers: [] as import('../src/lib/scope.js').Scope['localStoragePointers'],
       sessionStoragePointers: [] as import('../src/lib/scope.js').Scope['sessionStoragePointers'],
@@ -1139,7 +1139,7 @@ describe('needs-pair supersedes queued scope-update at same key (finding 2)', ()
       cookieKeys: [] as string[],
       localStorageKeys: [] as string[],
       sessionStorageKeys: [] as string[],
-      captureHeaders: [] as { urlPattern: string; headerName: string }[],
+      captureHeaders: [] as { host: string; path?: string; headerName: string }[],
       indexedDbScopes: [] as import('../src/lib/scope.js').Scope['indexedDbScopes'],
       localStoragePointers: [] as import('../src/lib/scope.js').Scope['localStoragePointers'],
       sessionStoragePointers: [] as import('../src/lib/scope.js').Scope['sessionStoragePointers'],

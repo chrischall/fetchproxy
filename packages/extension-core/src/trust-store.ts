@@ -50,8 +50,8 @@ export interface TrustRecord {
   localStorageKeys: string[];
   /** 0.3.0+: declared sessionStorage key set. */
   sessionStorageKeys: string[];
-  /** 0.3.0+: declared (urlPattern, headerName) pairs for capture_request_header. */
-  captureHeaders: { urlPattern: string; headerName: string }[];
+  /** 0.3.0+: declared (host, path?, headerName) tuples for capture_request_header. */
+  captureHeaders: { host: string; path?: string; headerName: string }[];
   /** 0.4.0+: declared IndexedDB scopes for read_indexed_db. */
   indexedDbScopes: {
     origin: string;
@@ -92,7 +92,7 @@ export interface TrustInput {
   cookieKeys?: string[];
   localStorageKeys?: string[];
   sessionStorageKeys?: string[];
-  captureHeaders?: { urlPattern: string; headerName: string }[];
+  captureHeaders?: { host: string; path?: string; headerName: string }[];
   /** 0.4.0+: declared IndexedDB scopes. */
   indexedDbScopes?: {
     origin: string;

@@ -432,8 +432,8 @@ describe('renderPopup', () => {
           domains: ['honeybook.com'],
           capabilities: ['fetch', 'capture_request_header'],
           captureHeaders: [
-            { urlPattern: 'https://api.honeybook.com/api/v2/*', headerName: 'hb-api-fingerprint' },
-            { urlPattern: 'https://api.honeybook.com/api/v3/*', headerName: 'hb-api-fingerprint' },
+            { host: 'api.honeybook.com', path: '/api/v2/*', headerName: 'hb-api-fingerprint' },
+            { host: 'api.honeybook.com', path: '/api/v3/*', headerName: 'hb-api-fingerprint' },
           ],
           pairCode: '111-222',
         },

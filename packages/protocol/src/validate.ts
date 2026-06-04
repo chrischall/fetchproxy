@@ -139,18 +139,31 @@ function assertScopeKeyArray(value: unknown, label: string): void {
 }
 
 /**
- * Public validator for a declared `captureHeaders` array. Lets the MCP-side
- * `FetchproxyServer` fail fast at construction with an actionable error
- * (e.g. "urlPattern must start with https://") instead of silently getting
- * its hello rejected by the bridge host at runtime. Throws `ProtocolError`.
+ * Permitted character set for a captureHeaders `path`: must start with
+ * `/`, allow path chars + `%`-escapes, with an optional single trailing
+ * `*` wildcard. Kept tight — no query/fragment, no embedded wildcards.
  */
-export function validateCaptureHeaderDecls(
-  value: unknown,
-  label = 'captureHeaders',
-): void {
-  assertCaptureHeadersArray(value, label);
+const CAPTURE_PATH_RE = /^\/[A-Za-z0-9._~%\-/]*\*?$/;
+
+/**
+ * Returns true iff `host` equals a declared domain OR is a subdomain of
+ * one (`*.domain`). Mirrors the host-or-subdomain rule the extension's
+ * `isUrlAllowedForDomain` uses for tab/fetch matching. Case-insensitive.
+ */
+function hostMatchesAnyDomain(host: string, domains: readonly string[]): boolean {
+  const h = host.toLowerCase();
+  for (const d of domains) {
+    const dom = d.toLowerCase();
+    if (h === dom || h.endsWith('.' + dom)) return true;
+  }
+  return false;
 }
 
+/**
+ * Structural validation of a captureHeaders array (no domain
+ * cross-check). Used by `validateCaptureHeaderDecls`, which layers the
+ * host∈domains check on top.
+ */
 function assertCaptureHeadersArray(value: unknown, label: string): void {
   if (!Array.isArray(value)) {
     throw new ProtocolError(`${label}: expected array, got ${typeof value}`);
@@ -159,16 +172,33 @@ function assertCaptureHeadersArray(value: unknown, label: string): void {
   for (let i = 0; i < value.length; i++) {
     const entry = value[i] as unknown;
     assertObject(entry, `${label}[${i}]`);
-    if (entry.urlPattern === undefined) {
-      throw new ProtocolError(`${label}[${i}].urlPattern: missing`);
+    if (entry.host === undefined) {
+      throw new ProtocolError(`${label}[${i}].host: missing`);
     }
     if (entry.headerName === undefined) {
       throw new ProtocolError(`${label}[${i}].headerName: missing`);
     }
-    if (typeof entry.urlPattern !== 'string') {
+    if (typeof entry.host !== 'string') {
       throw new ProtocolError(
-        `${label}[${i}].urlPattern: expected string, got ${typeof entry.urlPattern}`,
+        `${label}[${i}].host: expected string, got ${typeof entry.host}`,
       );
+    }
+    if (!HOSTNAME_RE.test(entry.host)) {
+      throw new ProtocolError(
+        `${label}[${i}].host: invalid hostname ${JSON.stringify(entry.host)}`,
+      );
+    }
+    if (entry.path !== undefined) {
+      if (typeof entry.path !== 'string') {
+        throw new ProtocolError(
+          `${label}[${i}].path: expected string, got ${typeof entry.path}`,
+        );
+      }
+      if (!CAPTURE_PATH_RE.test(entry.path)) {
+        throw new ProtocolError(
+          `${label}[${i}].path: must start with '/' ${JSON.stringify(entry.path)}`,
+        );
+      }
     }
     if (typeof entry.headerName !== 'string') {
       throw new ProtocolError(
@@ -180,18 +210,43 @@ function assertCaptureHeadersArray(value: unknown, label: string): void {
         `${label}[${i}].headerName: invalid name ${JSON.stringify(entry.headerName)}`,
       );
     }
-    assertCaptureUrlPattern(entry.urlPattern, `${label}[${i}].urlPattern`);
-    const key = `${entry.urlPattern}\x00${entry.headerName}`;
+    const normalizedPath = entry.path ?? '/*';
+    const key = `${entry.host}\x00${normalizedPath}\x00${entry.headerName}`;
     if (seen.has(key)) {
       throw new ProtocolError(
-        `${label}: duplicate ${JSON.stringify({ urlPattern: entry.urlPattern, headerName: entry.headerName })}`,
+        `${label}: duplicate ${JSON.stringify({ host: entry.host, path: normalizedPath, headerName: entry.headerName })}`,
       );
     }
     seen.add(key);
     for (const k of Object.keys(entry)) {
-      if (k !== 'urlPattern' && k !== 'headerName') {
+      if (k !== 'host' && k !== 'path' && k !== 'headerName') {
         throw new ProtocolError(`${label}[${i}]: unexpected field ${JSON.stringify(k)}`);
       }
+    }
+  }
+}
+
+/**
+ * Validate a captureHeaders array structurally AND cross-check each
+ * entry's `host` against the MCP's declared `domains` (host equals a
+ * declared domain or is a subdomain of one). Exported so both the
+ * `FetchproxyServer` constructor and `validateFrame`→`validateHello`
+ * enforce the same rule. Throws `ProtocolError`.
+ */
+export function validateCaptureHeaderDecls(
+  value: unknown,
+  domains: readonly string[],
+  label = 'captureHeaders',
+): void {
+  assertCaptureHeadersArray(value, label);
+  // `value` is an array (assertCaptureHeadersArray would have thrown otherwise).
+  const arr = value as Array<{ host: string }>;
+  for (let i = 0; i < arr.length; i++) {
+    const host = arr[i]!.host;
+    if (!hostMatchesAnyDomain(host, domains)) {
+      throw new ProtocolError(
+        `${label}[${i}].host: ${JSON.stringify(host)} is not a declared domain or subdomain of [${domains.join(', ')}]`,
+      );
     }
   }
 }
@@ -305,31 +360,6 @@ function assertIndexedDbScopesArray(value: unknown, label: string): void {
   }
 }
 
-function assertCaptureUrlPattern(pattern: string, label: string): void {
-  // `https://host/path/*` — host fully-qualified, no wildcards in host,
-  // wildcards only in path/query/fragment. We deliberately reject `http:`
-  // (same argument as `assertHttpsOriginOnly`).
-  if (!pattern.startsWith('https://')) {
-    throw new ProtocolError(`${label}: must start with https:// (got ${JSON.stringify(pattern)})`);
-  }
-  const afterScheme = pattern.slice('https://'.length);
-  const slash = afterScheme.indexOf('/');
-  const host = slash === -1 ? afterScheme : afterScheme.slice(0, slash);
-  if (host.length === 0) {
-    throw new ProtocolError(`${label}: missing host (got ${JSON.stringify(pattern)})`);
-  }
-  if (host.includes('*')) {
-    throw new ProtocolError(
-      `${label}: wildcards not permitted in host (got ${JSON.stringify(pattern)})`,
-    );
-  }
-  if (!HOSTNAME_RE.test(host)) {
-    throw new ProtocolError(
-      `${label}: invalid host ${JSON.stringify(host)} in ${JSON.stringify(pattern)}`,
-    );
-  }
-}
-
 /**
  * Validate a raw JSON-parsed value as a top-level fetchproxy frame.
  * Throws `ProtocolError` on any structural issue (wrong type, missing
@@ -402,7 +432,15 @@ function validateHello(raw: Record<string, unknown>): HelloFrame {
       assertScopeKeyArray(raw.sessionStorageKeys, 'hello.sessionStorageKeys');
     }
     if (raw.captureHeaders !== undefined) {
-      assertCaptureHeadersArray(raw.captureHeaders, 'hello.captureHeaders');
+      // Cross-check each capture host against the hello's declared
+      // domains (parsed + validated just above). Defense-in-depth: the
+      // bridge host rejects a peer whose capture host escapes its
+      // declared domains.
+      validateCaptureHeaderDecls(
+        raw.captureHeaders,
+        raw.domains as string[],
+        'hello.captureHeaders',
+      );
     }
     if (raw.indexedDbScopes !== undefined) {
       assertIndexedDbScopesArray(raw.indexedDbScopes, 'hello.indexedDbScopes');
@@ -622,19 +660,30 @@ function validateInnerRequest(raw: Record<string, unknown>): InnerFrame {
   }
   if (raw.op === 'capture_request_header') {
     assertObject(raw.init, 'inner.init');
-    if (raw.init.urlPattern === undefined) {
-      throw new ProtocolError('inner.init.urlPattern: missing');
+    if (raw.init.host === undefined) {
+      throw new ProtocolError('inner.init.host: missing');
     }
     if (raw.init.headerName === undefined) {
       throw new ProtocolError('inner.init.headerName: missing');
     }
-    assertString(raw.init.urlPattern, 'inner.init.urlPattern');
+    assertString(raw.init.host, 'inner.init.host');
+    if (!HOSTNAME_RE.test(raw.init.host)) {
+      throw new ProtocolError(`inner.init.host: invalid hostname ${JSON.stringify(raw.init.host)}`);
+    }
+    if (raw.init.path !== undefined) {
+      assertString(raw.init.path, 'inner.init.path');
+      if (!CAPTURE_PATH_RE.test(raw.init.path)) {
+        throw new ProtocolError(
+          `inner.init.path: must start with '/' ${JSON.stringify(raw.init.path)}`,
+        );
+      }
+    }
     assertString(raw.init.headerName, 'inner.init.headerName');
     if (raw.init.timeoutMs !== undefined) {
       assertPositiveInt(raw.init.timeoutMs, 'inner.init.timeoutMs');
     }
     for (const k of Object.keys(raw.init)) {
-      if (k !== 'urlPattern' && k !== 'headerName' && k !== 'timeoutMs') {
+      if (k !== 'host' && k !== 'path' && k !== 'headerName' && k !== 'timeoutMs') {
         throw new ProtocolError(
           `inner.init: unexpected field ${JSON.stringify(k)} on capture_request_header`,
         );

@@ -46,7 +46,7 @@ export interface PreviousScope {
   cookieKeys: string[];
   localStorageKeys: string[];
   sessionStorageKeys: string[];
-  captureHeaders: { urlPattern: string; headerName: string }[];
+  captureHeaders: { host: string; path?: string; headerName: string }[];
   indexedDbScopes: { origin: string; database: string; store: string; keys: string[] }[];
   localStoragePointers: { key: string; jsonPointer: string }[];
   sessionStoragePointers: { key: string; jsonPointer: string }[];
@@ -75,7 +75,7 @@ export interface PendingPair {
   cookieKeys?: string[];
   localStorageKeys?: string[];
   sessionStorageKeys?: string[];
-  captureHeaders?: { urlPattern: string; headerName: string }[];
+  captureHeaders?: { host: string; path?: string; headerName: string }[];
   /**
    * 0.4.0+: declared IndexedDB scopes (origin + database + store +
    * keys). Each scope is rendered on its own line so the user sees
@@ -118,7 +118,7 @@ export interface ScopeSnapshot {
   cookieKeys: string[];
   localStorageKeys: string[];
   sessionStorageKeys: string[];
-  captureHeaders: { urlPattern: string; headerName: string }[];
+  captureHeaders: { host: string; path?: string; headerName: string }[];
   indexedDbScopes: { origin: string; database: string; store: string; keys: string[] }[];
   localStoragePointers: { key: string; jsonPointer: string }[];
   sessionStoragePointers: { key: string; jsonPointer: string }[];
@@ -193,21 +193,26 @@ function appendScopeSubList(
 
 function appendCaptureHeadersSubList(
   dl: HTMLElement,
-  entries: readonly { urlPattern: string; headerName: string }[] | undefined,
+  entries: readonly { host: string; path?: string; headerName: string }[] | undefined,
 ): void {
   if (!entries || entries.length === 0) return;
   dl.appendChild(elem('dt', { class: 'cap-warn' }, 'Capture request header'));
   const dd = elem('dd', { class: 'cap-warn' });
   const ul = elem('ul', { class: 'capture-headers' });
   for (const e of entries) {
-    ul.appendChild(elem('li', {}, `"${e.headerName}" from ${e.urlPattern}`));
+    ul.appendChild(elem('li', {}, `"${e.headerName}" from ${captureHeaderTarget(e)}`));
   }
   dd.appendChild(ul);
   dl.appendChild(dd);
 }
 
-function captureHeaderKey(h: { urlPattern: string; headerName: string }): string {
-  return `${h.headerName} from ${h.urlPattern}`;
+/** Human-readable capture target `host` + `path` (omitted path ≡ `/*`). */
+function captureHeaderTarget(h: { host: string; path?: string }): string {
+  return `${h.host}${h.path ?? '/*'}`;
+}
+
+function captureHeaderKey(h: { host: string; path?: string; headerName: string }): string {
+  return `${h.headerName} from ${captureHeaderTarget(h)}`;
 }
 
 function idbScopeKey(s: {
@@ -314,7 +319,7 @@ function appendDiffSummary(
     for (const k of cookDiff.kept) appendBullet(`Cookie: ${k}`);
     for (const k of localDiff.kept) appendBullet(`localStorage: ${k}`);
     for (const k of sessDiff.kept) appendBullet(`sessionStorage: ${k}`);
-    for (const h of chDiff.kept) appendBullet(`Capture: ${h.headerName} from ${h.urlPattern}`);
+    for (const h of chDiff.kept) appendBullet(`Capture: ${h.headerName} from ${captureHeaderTarget(h)}`);
     for (const s of idbDiff.kept) appendBullet(`IndexedDB: ${s.database}/${s.store}`);
   }
 
@@ -334,7 +339,7 @@ function appendDiffSummary(
     for (const k of cookDiff.added) appendBullet(`Cookie: ${k}`);
     for (const k of localDiff.added) appendBullet(`localStorage: ${k}`);
     for (const k of sessDiff.added) appendBullet(`sessionStorage: ${k}`);
-    for (const h of chDiff.added) appendBullet(`Capture: ${h.headerName} from ${h.urlPattern}`);
+    for (const h of chDiff.added) appendBullet(`Capture: ${h.headerName} from ${captureHeaderTarget(h)}`);
     for (const s of idbDiff.added) appendBullet(`IndexedDB: ${s.database}/${s.store}`);
   }
 
@@ -356,7 +361,7 @@ function appendDiffSummary(
     for (const k of cookDiff.removed) appendBullet(`Cookie: ${k}`);
     for (const k of localDiff.removed) appendBullet(`localStorage: ${k}`);
     for (const k of sessDiff.removed) appendBullet(`sessionStorage: ${k}`);
-    for (const h of chDiff.removed) appendBullet(`Capture: ${h.headerName} from ${h.urlPattern}`);
+    for (const h of chDiff.removed) appendBullet(`Capture: ${h.headerName} from ${captureHeaderTarget(h)}`);
     for (const s of idbDiff.removed) appendBullet(`IndexedDB: ${s.database}/${s.store}`);
   }
 
@@ -603,7 +608,7 @@ interface PendingPairRecord {
   cookieKeys?: string[];
   localStorageKeys?: string[];
   sessionStorageKeys?: string[];
-  captureHeaders?: { urlPattern: string; headerName: string }[];
+  captureHeaders?: { host: string; path?: string; headerName: string }[];
   indexedDbScopes?: { origin: string; database: string; store: string; keys: string[] }[];
   localStoragePointers?: { key: string; jsonPointer: string }[];
   sessionStoragePointers?: { key: string; jsonPointer: string }[];
@@ -626,7 +631,7 @@ interface PendingScopeUpdateRecord {
   cookieKeys?: string[];
   localStorageKeys?: string[];
   sessionStorageKeys?: string[];
-  captureHeaders?: { urlPattern: string; headerName: string }[];
+  captureHeaders?: { host: string; path?: string; headerName: string }[];
   indexedDbScopes?: { origin: string; database: string; store: string; keys: string[] }[];
   localStoragePointers?: { key: string; jsonPointer: string }[];
   sessionStoragePointers?: { key: string; jsonPointer: string }[];

@@ -64,8 +64,8 @@ export interface BootstrapOpts {
    * 0.4.1+: which declared domain bootstrap's cookie / localStorage /
    * sessionStorage / indexedDb reads should target. Required when
    * `domains` has more than one entry; otherwise defaults to the only
-   * declared domain. `captureHeaders` is unaffected — the extension
-   * derives the host from each `urlPattern`.
+   * declared domain. `captureHeaders` is unaffected — each entry
+   * carries its own `host`.
    *
    * Example (HoneyBook spans `honeybook.com` for the API
    * `hb-api-fingerprint` capture and `hbportal.co` for the vendor
@@ -141,7 +141,8 @@ export interface BootstrapServer {
     pointers?: Record<string, { storageKey: string; jsonPointer: string }>;
   }): Promise<Record<string, string>>;
   captureRequestHeader(opts: {
-    urlPattern: string;
+    host: string;
+    path?: string;
     headerName: string;
   }): Promise<string>;
   readIndexedDb(opts: {
@@ -268,8 +269,8 @@ export async function bootstrap(opts: BootstrapOpts): Promise<Session> {
   });
   // 0.4.1: pre-build the storage-domain selector once. Used by every
   // per-tab read (cookies / localStorage / sessionStorage / indexedDb).
-  // captureRequestHeader is unaffected — the extension derives the
-  // host from each entry's `urlPattern`.
+  // captureRequestHeader is unaffected — each entry carries its own
+  // `host`.
   const storageDomainOpts: { domain?: string; subdomain?: string } = {};
   if (opts.storageDomain !== undefined) storageDomainOpts.domain = opts.storageDomain;
   if (opts.storageSubdomain !== undefined) storageDomainOpts.subdomain = opts.storageSubdomain;
@@ -324,17 +325,13 @@ export async function bootstrap(opts: BootstrapOpts): Promise<Session> {
       // on user action — fire onWaiting just before we hand it off to
       // the extension so the MCP can surface a hint.
       if (opts.onWaiting) {
-        try {
-          const url = new URL(h.urlPattern.replace(/\*+/g, 'placeholder'));
-          opts.onWaiting(
-            `waiting for next request to ${url.host} to capture ${h.headerName} — interact with the page in your browser`,
-          );
-        } catch {
-          opts.onWaiting(`waiting to capture ${h.headerName} — interact with the page in your browser`);
-        }
+        opts.onWaiting(
+          `waiting for next request to ${h.host} to capture ${h.headerName} — interact with the page in your browser`,
+        );
       }
       capturedHeaders[h.headerName] = await server.captureRequestHeader({
-        urlPattern: h.urlPattern,
+        host: h.host,
+        ...(h.path !== undefined ? { path: h.path } : {}),
         headerName: h.headerName,
       });
     }

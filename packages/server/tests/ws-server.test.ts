@@ -11,37 +11,9 @@ describe('FetchproxyServer (orchestrator)', () => {
     await Promise.all(servers.splice(0).map((s) => s.close()));
   });
 
-  it('throws at construction when a declared captureHeaders urlPattern is a bare host', () => {
-    // Regression guard: a misconfigured MCP that declares `urlPattern: 'host'`
-    // (instead of a valid `https://host/path` match pattern) must fail loudly
-    // at construction with an actionable message — NOT silently get its hello
-    // rejected by the bridge host at runtime ("peer WS closed before ready").
-    expect(
-      () =>
-        new FetchproxyServer({
-          port: 41999,
-          serverName: 'musescore-mcp',
-          version: '0.0.1',
-          domains: ['musescore.com'],
-          capabilities: ['fetch', 'capture_request_header'],
-          captureHeaders: [{ urlPattern: 'musescore.com', headerName: 'cookie' }],
-        }),
-    ).toThrow(/captureHeaders|https:\/\//i);
-  });
-
-  it('accepts a valid https captureHeaders match pattern at construction', () => {
-    expect(
-      () =>
-        new FetchproxyServer({
-          port: 41998,
-          serverName: 'musescore-mcp',
-          version: '0.0.1',
-          domains: ['musescore.com'],
-          capabilities: ['fetch', 'capture_request_header'],
-          captureHeaders: [{ urlPattern: 'https://musescore.com/*', headerName: 'cookie' }],
-        }),
-    ).not.toThrow();
-  });
+  // (Construct-time captureHeaders validation is covered by the
+  // {host,path?,headerName}-shape tests added further down — the old
+  // urlPattern-shape guards from #102 were superseded by that redesign.)
 
   it('starts on a free port as host (after explicit connect)', async () => {
     const srv = new FetchproxyServer({
@@ -262,6 +234,75 @@ describe('FetchproxyServer (orchestrator)', () => {
       await expect(
         srv.readIndexedDb({ database: 'resy', store: 'auth', keys: ['notDeclared'] }),
       ).rejects.toThrow(/not in declared/);
+    });
+  });
+
+  describe('captureHeaders constructor validation', () => {
+    it('throws when a capture host is not in declared domains', () => {
+      expect(
+        () =>
+          new FetchproxyServer({
+            serverName: 'musescore-mcp',
+            version: '0.1.0',
+            domains: ['musescore.com'],
+            capabilities: ['fetch', 'capture_request_header'],
+            captureHeaders: [{ host: 'evil.com', headerName: 'cookie' }],
+          }),
+      ).toThrow(/captureHeaders/);
+    });
+
+    it('the thrown error names the offending host', () => {
+      expect(
+        () =>
+          new FetchproxyServer({
+            serverName: 'musescore-mcp',
+            version: '0.1.0',
+            domains: ['musescore.com'],
+            capabilities: ['fetch', 'capture_request_header'],
+            captureHeaders: [{ host: 'evil.com', headerName: 'cookie' }],
+          }),
+      ).toThrow(/evil\.com/);
+    });
+
+    it('throws on a malformed capture host', () => {
+      expect(
+        () =>
+          new FetchproxyServer({
+            serverName: 'musescore-mcp',
+            version: '0.1.0',
+            domains: ['musescore.com'],
+            capabilities: ['fetch', 'capture_request_header'],
+            captureHeaders: [{ host: 'not a host', headerName: 'cookie' }],
+          }),
+      ).toThrow(/captureHeaders/);
+    });
+
+    it('accepts a capture host equal to a declared domain', () => {
+      expect(
+        () =>
+          new FetchproxyServer({
+            serverName: 'musescore-mcp',
+            version: '0.1.0',
+            domains: ['musescore.com'],
+            capabilities: ['fetch', 'capture_request_header'],
+            captureHeaders: [{ host: 'musescore.com', headerName: 'cookie' }],
+          }),
+      ).not.toThrow();
+    });
+
+    it('accepts a capture host that is a subdomain of a declared domain', () => {
+      expect(
+        () =>
+          new FetchproxyServer({
+            serverName: 'musescore-mcp',
+            version: '0.1.0',
+            domains: ['musescore.com'],
+            capabilities: ['fetch', 'capture_request_header'],
+            captureHeaders: [
+              { host: 'api.musescore.com', path: '/score/*', headerName: 'cookie' },
+            ],
+          }),
+      ).not.toThrow();
     });
   });
 });

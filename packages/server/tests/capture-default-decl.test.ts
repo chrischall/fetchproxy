@@ -8,15 +8,15 @@ const oneDecl = {
   domains: ['example.com'],
   capabilities: ['fetch' as const, 'capture_request_header' as const],
   captureHeaders: [
-    { urlPattern: 'https://example.com/x*', headerName: 'Authorization' },
+    { host: 'example.com', path: '/x*', headerName: 'Authorization' },
   ],
 };
 
 const twoDecls = {
   ...oneDecl,
   captureHeaders: [
-    { urlPattern: 'https://example.com/x*', headerName: 'Authorization' },
-    { urlPattern: 'https://example.com/y*', headerName: 'X-CSRF' },
+    { host: 'example.com', path: '/x*', headerName: 'Authorization' },
+    { host: 'example.com', path: '/y*', headerName: 'X-CSRF' },
   ],
 };
 
@@ -29,10 +29,9 @@ describe('captureRequestHeader() — declaration-based defaults', () => {
     const inner = harness.lastInner();
     expect(inner).not.toBeNull();
     expect(inner!.op).toBe('capture_request_header');
-    // The frame the server emitted must carry the resolved pattern/header.
-    expect((inner!.init as { urlPattern: string }).urlPattern).toBe(
-      'https://example.com/x*',
-    );
+    // The frame the server emitted must carry the resolved host/path/header.
+    expect((inner!.init as { host: string }).host).toBe('example.com');
+    expect((inner!.init as { path: string }).path).toBe('/x*');
     expect((inner!.init as { headerName: string }).headerName).toBe(
       'Authorization',
     );
@@ -52,9 +51,8 @@ describe('captureRequestHeader() — declaration-based defaults', () => {
     const pending = s.captureRequestHeader({ timeoutMs: 500 });
     await Promise.resolve();
     const inner = harness.lastInner()!;
-    expect((inner.init as { urlPattern: string }).urlPattern).toBe(
-      'https://example.com/x*',
-    );
+    expect((inner.init as { host: string }).host).toBe('example.com');
+    expect((inner.init as { path: string }).path).toBe('/x*');
     expect((inner.init as { timeoutMs: number }).timeoutMs).toBe(500);
     harness.reply({
       type: 'response',
@@ -85,11 +83,12 @@ describe('captureRequestHeader() — declaration-based defaults', () => {
     );
   });
 
-  it('still works the old way when both fields are explicitly passed (back-compat)', async () => {
+  it('still works when both fields are explicitly passed', async () => {
     const s = new FetchproxyServer(twoDecls);
     const harness = installFakeHost(s);
     const pending = s.captureRequestHeader({
-      urlPattern: 'https://example.com/y*',
+      host: 'example.com',
+      path: '/y*',
       headerName: 'X-CSRF',
     });
     await Promise.resolve();
@@ -103,11 +102,11 @@ describe('captureRequestHeader() — declaration-based defaults', () => {
     await expect(pending).resolves.toBe('csrf-tok');
   });
 
-  it('throws when only one of urlPattern/headerName is specified (force pair or neither)', async () => {
+  it('throws when only one of host/headerName is specified (force pair or neither)', async () => {
     const s = new FetchproxyServer(twoDecls);
     installFakeHost(s);
     // @ts-expect-error — exercising the runtime guard.
-    await expect(s.captureRequestHeader({ urlPattern: 'x' })).rejects.toThrow(
+    await expect(s.captureRequestHeader({ host: 'example.com' })).rejects.toThrow(
       /pass both .* or neither/i,
     );
   });

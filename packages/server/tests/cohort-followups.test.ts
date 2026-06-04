@@ -16,7 +16,7 @@ const baseOpts = {
   domains: ['example.com'],
   capabilities: ['fetch' as const, 'capture_request_header' as const],
   captureHeaders: [
-    { urlPattern: 'https://example.com/x*', headerName: 'Authorization' },
+    { host: 'example.com', path: '/x*', headerName: 'Authorization' },
   ],
 };
 
@@ -132,7 +132,7 @@ describe('request() auto-derives tabUrl from absolute URL host', () => {
   }
 
   it('absolute URL to a different subdomain: tabUrl points at the URL host, not the subdomain default', async () => {
-    const s = new TabUrlSpy({ ...baseOpts, domains: ['compass.com'] });
+    const s = new TabUrlSpy({ ...baseOpts, domains: ['compass.com'], captureHeaders: [] });
     await s.request('GET', 'https://photos.compass.com/123', {
       subdomain: 'www',
     });
@@ -142,14 +142,14 @@ describe('request() auto-derives tabUrl from absolute URL host', () => {
   });
 
   it('relative path: subdomain default still applies (back-compat)', async () => {
-    const s = new TabUrlSpy({ ...baseOpts, domains: ['compass.com'] });
+    const s = new TabUrlSpy({ ...baseOpts, domains: ['compass.com'], captureHeaders: [] });
     await s.request('GET', '/api/foo', { subdomain: 'www' });
     expect(s.lastInit!.url).toBe('https://www.compass.com/api/foo');
     expect(s.lastInit!.tabUrl).toBe('https://www.compass.com/');
   });
 
   it('absolute URL with no subdomain opt: still derives tabUrl from URL host', async () => {
-    const s = new TabUrlSpy({ ...baseOpts, domains: ['compass.com'] });
+    const s = new TabUrlSpy({ ...baseOpts, domains: ['compass.com'], captureHeaders: [] });
     await s.request('GET', 'https://photos.compass.com/123');
     expect(s.lastInit!.tabUrl).toBe('https://photos.compass.com/');
   });

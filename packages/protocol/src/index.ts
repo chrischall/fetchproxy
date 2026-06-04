@@ -1,5 +1,11 @@
 export * from './frames.js';
-export { validateFrame, validateInnerFrame, validateCaptureHeaderDecls, ProtocolError, HOSTNAME_RE } from './validate.js';
+export {
+  validateFrame,
+  validateInnerFrame,
+  validateCaptureHeaderDecls,
+  ProtocolError,
+  HOSTNAME_RE,
+} from './validate.js';
 export * from './crypto.js';
 export * from './mcp-id.js';
 export * from './pair-code.js';

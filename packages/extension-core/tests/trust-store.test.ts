@@ -213,7 +213,7 @@ describe('TrustStore (identity-hash keyed)', () => {
       localStorageKeys: [],
       sessionStorageKeys: [],
       captureHeaders: [
-        { urlPattern: 'https://api.honeybook.com/api/v2/*', headerName: 'hb-api-fingerprint' },
+        { host: 'api.honeybook.com', path: '/api/v2/*', headerName: 'hb-api-fingerprint' },
       ],
       identityX25519Pub: 'AAAA',
       identityEd25519Pub: 'BBBB',
@@ -221,7 +221,7 @@ describe('TrustStore (identity-hash keyed)', () => {
     const got = await store.get('hashh');
     expect(got).not.toBeNull();
     expect(got!.captureHeaders).toEqual([
-      { urlPattern: 'https://api.honeybook.com/api/v2/*', headerName: 'hb-api-fingerprint' },
+      { host: 'api.honeybook.com', path: '/api/v2/*', headerName: 'hb-api-fingerprint' },
     ]);
   });
 
