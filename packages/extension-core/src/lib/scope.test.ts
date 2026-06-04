@@ -32,3 +32,69 @@ describe('intersectScope / isScopeSubset', () => {
     expect(isScopeSubset({ ...base(), capabilities: ['fetch'] }, base())).toBe(true);
   });
 });
+
+describe('captureHeaders scope (host/path/headerName)', () => {
+  it('scopeHash treats omitted path as /*', async () => {
+    const omitted: Scope = {
+      ...base(),
+      captureHeaders: [{ host: 'musescore.com', headerName: 'cookie' }],
+    };
+    const explicit: Scope = {
+      ...base(),
+      captureHeaders: [{ host: 'musescore.com', path: '/*', headerName: 'cookie' }],
+    };
+    expect(await scopeHash(omitted)).toBe(await scopeHash(explicit));
+  });
+
+  it('scopeHash differs when host differs', async () => {
+    const a: Scope = {
+      ...base(),
+      captureHeaders: [{ host: 'musescore.com', headerName: 'cookie' }],
+    };
+    const b: Scope = {
+      ...base(),
+      captureHeaders: [{ host: 'api.musescore.com', headerName: 'cookie' }],
+    };
+    expect(await scopeHash(a)).not.toBe(await scopeHash(b));
+  });
+
+  it('isScopeSubset true when declared captureHeaders ⊆ approved (omitted ≡ /*)', () => {
+    const approved: Scope = {
+      ...base(),
+      captureHeaders: [{ host: 'musescore.com', path: '/*', headerName: 'cookie' }],
+    };
+    const declared: Scope = {
+      ...base(),
+      captureHeaders: [{ host: 'musescore.com', headerName: 'cookie' }],
+    };
+    expect(isScopeSubset(declared, approved)).toBe(true);
+  });
+
+  it('isScopeSubset false when declared captureHeaders host escapes approved', () => {
+    const approved: Scope = {
+      ...base(),
+      captureHeaders: [{ host: 'musescore.com', headerName: 'cookie' }],
+    };
+    const declared: Scope = {
+      ...base(),
+      captureHeaders: [{ host: 'evil.com', headerName: 'cookie' }],
+    };
+    expect(isScopeSubset(declared, approved)).toBe(false);
+  });
+
+  it('intersect drops captureHeaders not in approved', () => {
+    const approved: Scope = {
+      ...base(),
+      captureHeaders: [{ host: 'musescore.com', headerName: 'cookie' }],
+    };
+    const declared: Scope = {
+      ...base(),
+      captureHeaders: [
+        { host: 'musescore.com', headerName: 'cookie' },
+        { host: 'musescore.com', headerName: 'user-agent' },
+      ],
+    };
+    const kept = intersectScope(approved, declared).captureHeaders;
+    expect(kept).toEqual([{ host: 'musescore.com', headerName: 'cookie' }]);
+  });
+});

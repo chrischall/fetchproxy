@@ -8,7 +8,7 @@ const baseOpts = {
   domains: ['example.com'],
   capabilities: ['fetch' as const, 'capture_request_header' as const],
   captureHeaders: [
-    { urlPattern: 'https://example.com/x*', headerName: 'Authorization' },
+    { host: 'example.com', path: '/x*', headerName: 'Authorization' },
   ],
 };
 
@@ -163,7 +163,8 @@ describe('bridgeHealth()', () => {
     const s = new FetchproxyServer(baseOpts);
     const harness = installFakeHost(s);
     const pending = s.captureRequestHeader({
-      urlPattern: 'https://example.com/x*',
+      host: 'example.com',
+      path: '/x*',
       headerName: 'Authorization',
     });
     await Promise.resolve();
@@ -220,7 +221,8 @@ describe('bridgeHealth()', () => {
     const s = new FetchproxyServer({ ...baseOpts, bridgeReviveDelayMs: 1 });
     const harness = installFakeHost(s);
     const pending = s.captureRequestHeader({
-      urlPattern: 'https://example.com/x*',
+      host: 'example.com',
+      path: '/x*',
       headerName: 'Authorization',
     });
     await Promise.resolve();

@@ -53,8 +53,8 @@ export type Platform = 'chrome' | 'safari' | 'firefox';
  *                             matched tab's localStorage. Elevated.
  * `'read_session_storage'`  — same shape against sessionStorage. Elevated.
  * `'capture_request_header'`— snapshot the next outgoing request's
- *                             declared header for a declared urlPattern.
- *                             Elevated. Single-shot per call.
+ *                             declared header for a declared
+ *                             (host, path?). Elevated. Single-shot per call.
  *
  * Future additions are wire-additive: unknown capabilities are rejected
  * by the validator, so adding a new verb requires extending this union.
@@ -121,16 +121,22 @@ export interface IndexedDbScopeDecl {
 
 /**
  * Declaration entry for the `capture_request_header` capability — a
- * specific (urlPattern, headerName) pair the MCP is allowed to snapshot.
- * Pinned in the server hello and re-checked on every capture request.
+ * specific (host, path?, headerName) tuple the MCP is allowed to
+ * snapshot. Pinned in the server hello and re-checked on every capture
+ * request. The host is validated against the MCP's declared `domains`.
  */
 export interface CaptureHeaderDecl {
   /**
-   * HTTPS URL with `*` wildcards permitted in the path. Host portion
-   * must be a fully-qualified hostname (no wildcards). The extension
-   * uses this as a Chrome `webRequest` filter pattern.
+   * Fully-qualified hostname (no scheme, no wildcards). Must be a
+   * declared `domain` or a subdomain of one. The extension builds the
+   * Chrome `webRequest` filter as `https://${host}${path ?? '/*'}`.
    */
-  urlPattern: string;
+  host: string;
+  /**
+   * Optional URL path to scope the capture. Omitted ⇒ all paths
+   * (`/*`). Must start with `/`; a trailing `*` wildcard is allowed.
+   */
+  path?: string;
   /** Single HTTP header name to capture (`[A-Za-z0-9\-_]+`, ≤128 chars). */
   headerName: string;
 }
@@ -169,7 +175,7 @@ export interface HelloFrameFromServer {
   localStorageKeys?: string[];
   /** 0.3.0+: declared sessionStorage keys for `read_session_storage`. */
   sessionStorageKeys?: string[];
-  /** 0.3.0+: declared (urlPattern, headerName) pairs for `capture_request_header`. */
+  /** 0.3.0+: declared (host, path?, headerName) tuples for `capture_request_header`. */
   captureHeaders?: CaptureHeaderDecl[];
   /**
    * 0.4.0+: declared IndexedDB scopes the MCP is allowed to read via
@@ -345,10 +351,15 @@ export interface ReadIndexedDbInit {
 /** 0.3.0 `init` payload for `capture_request_header`. */
 export interface CaptureRequestHeaderInit {
   /**
-   * HTTPS URL pattern (host fully qualified; `*` in path). Must exactly
-   * match an entry in the declared `captureHeaders`.
+   * Fully-qualified hostname. Must match an entry in the declared
+   * `captureHeaders` (together with `path`).
    */
-  urlPattern: string;
+  host: string;
+  /**
+   * Optional URL path scoping. Omitted ⇒ all paths (`/*`). Must match
+   * the declared entry (normalized: omitted ≡ `/*`).
+   */
+  path?: string;
   /** Header name to capture (matches the declared entry exactly). */
   headerName: string;
   /**

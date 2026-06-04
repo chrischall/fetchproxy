@@ -19,7 +19,7 @@ interface StubCalls {
   readCookies: { keys: string[]; domain?: string; subdomain?: string }[];
   readLocalStorage: { keys: string[]; domain?: string; subdomain?: string }[];
   readSessionStorage: { keys: string[]; domain?: string; subdomain?: string }[];
-  captureRequestHeader: { urlPattern: string; headerName: string }[];
+  captureRequestHeader: { host: string; path?: string; headerName: string }[];
   readIndexedDb: {
     database: string;
     store: string;
@@ -103,9 +103,10 @@ function makeStubFactory(opts?: {
         if (opts?.throwOn === 'readSessionStorage') throw new Error('readSessionStorage failed');
         return { ...(opts?.sessionStorage ?? {}) };
       },
-      captureRequestHeader: async (callOpts: { urlPattern: string; headerName: string }) => {
+      captureRequestHeader: async (callOpts: { host: string; path?: string; headerName: string }) => {
         calls.captureRequestHeader.push({
-          urlPattern: callOpts.urlPattern,
+          host: callOpts.host,
+          ...(callOpts.path !== undefined ? { path: callOpts.path } : {}),
           headerName: callOpts.headerName,
         });
         if (opts?.throwOn === 'captureRequestHeader') throw new Error('captureRequestHeader failed');
@@ -232,8 +233,8 @@ describe('bootstrap()', () => {
         localStorage: [],
         sessionStorage: [],
         captureHeaders: [
-          { urlPattern: 'https://api.honeybook.com/api/v2/*', headerName: 'hb-api-fingerprint' },
-          { urlPattern: 'https://api.honeybook.com/api/v3/*', headerName: 'x-csrf' },
+          { host: 'api.honeybook.com', path: '/api/v2/*', headerName: 'hb-api-fingerprint' },
+          { host: 'api.honeybook.com', path: '/api/v3/*', headerName: 'x-csrf' },
         ],
       },
       _serverFactory: factory,
@@ -316,7 +317,7 @@ describe('bootstrap()', () => {
         localStorage: ['jStorage'],
         sessionStorage: [],
         captureHeaders: [
-          { urlPattern: 'https://api.honeybook.com/api/v2/*', headerName: 'hb-api-fingerprint' },
+          { host: 'api.honeybook.com', path: '/api/v2/*', headerName: 'hb-api-fingerprint' },
         ],
       },
       _serverFactory: factory,
@@ -326,7 +327,7 @@ describe('bootstrap()', () => {
     expect(ctorOpts.localStorageKeys).toEqual(['jStorage']);
     expect(ctorOpts.sessionStorageKeys).toEqual([]);
     expect(ctorOpts.captureHeaders).toEqual([
-      { urlPattern: 'https://api.honeybook.com/api/v2/*', headerName: 'hb-api-fingerprint' },
+      { host: 'api.honeybook.com', path: '/api/v2/*', headerName: 'hb-api-fingerprint' },
     ]);
     expect(ctorOpts.capabilities).toEqual(
       expect.arrayContaining(['fetch', 'read_cookies', 'read_local_storage', 'capture_request_header']),
@@ -422,8 +423,8 @@ describe('bootstrap()', () => {
           localStorage: [],
           sessionStorage: [],
           captureHeaders: [
-            { urlPattern: 'https://api.honeybook.com/api/v2/*', headerName: 'hb-api-fingerprint' },
-            { urlPattern: 'https://api.honeybook.com/api/v3/*', headerName: 'x-csrf' },
+            { host: 'api.honeybook.com', path: '/api/v2/*', headerName: 'hb-api-fingerprint' },
+            { host: 'api.honeybook.com', path: '/api/v3/*', headerName: 'x-csrf' },
           ],
         },
         onWaiting: (h) => hints.push(h),
@@ -508,7 +509,7 @@ describe('bootstrap()', () => {
           localStorage: ['token'],
           sessionStorage: ['x'],
           captureHeaders: [
-            { urlPattern: 'https://api.honeybook.com/api/v2/*', headerName: 'hb-api-fingerprint' },
+            { host: 'api.honeybook.com', path: '/api/v2/*', headerName: 'hb-api-fingerprint' },
           ],
           indexedDb: [{ origin: 'https://hbportal.co', database: 'db', store: 'store', keys: ['k'] }],
         },
@@ -520,9 +521,9 @@ describe('bootstrap()', () => {
       expect(calls.readIndexedDb).toEqual([
         { database: 'db', store: 'store', keys: ['k'], domain: 'hbportal.co' },
       ]);
-      // captureRequestHeader continues to derive host from urlPattern — no domain field.
+      // captureRequestHeader carries its own host/path — no domain field.
       expect(calls.captureRequestHeader).toEqual([
-        { urlPattern: 'https://api.honeybook.com/api/v2/*', headerName: 'hb-api-fingerprint' },
+        { host: 'api.honeybook.com', path: '/api/v2/*', headerName: 'hb-api-fingerprint' },
       ]);
     });
 

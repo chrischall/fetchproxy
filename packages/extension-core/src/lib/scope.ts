@@ -49,13 +49,13 @@ export function sameScopeArrays(a: readonly string[], b: readonly string[]): boo
 }
 
 export function sameCaptureHeaders(
-  a: readonly { urlPattern: string; headerName: string }[],
-  b: readonly { urlPattern: string; headerName: string }[],
+  a: readonly { host: string; path?: string; headerName: string }[],
+  b: readonly { host: string; path?: string; headerName: string }[],
 ): boolean {
   if (a.length !== b.length) return false;
   const norm = (
-    arr: readonly { urlPattern: string; headerName: string }[],
-  ): string[] => arr.map((d) => `${d.urlPattern}\x00${d.headerName}`).sort();
+    arr: readonly { host: string; path?: string; headerName: string }[],
+  ): string[] => arr.map((d) => `${d.host}\x00${d.path ?? '/*'}\x00${d.headerName}`).sort();
   const sa = norm(a);
   const sb = norm(b);
   for (let i = 0; i < sa.length; i++) if (sa[i] !== sb[i]) return false;
@@ -97,9 +97,9 @@ export function sameStoragePointers(
 // Scope hashing
 // ---------------------------------------------------------------------------
 
-/** Canonical string key for a captureHeaders entry. */
+/** Canonical string key for a captureHeaders entry (omitted path ≡ `/*`). */
 function normCaptureHeader(d: CaptureHeaderDecl): string {
-  return `${d.urlPattern}\x00${d.headerName}`;
+  return `${d.host}\x00${d.path ?? '/*'}\x00${d.headerName}`;
 }
 
 /** Canonical string key for an IndexedDbScopeDecl entry. */

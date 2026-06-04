@@ -84,7 +84,8 @@ export async function buildServerHello(
   }
   if (opts.captureHeaders && opts.captureHeaders.length > 0) {
     hello.captureHeaders = opts.captureHeaders.map((d) => ({
-      urlPattern: d.urlPattern,
+      host: d.host,
+      ...(d.path !== undefined ? { path: d.path } : {}),
       headerName: d.headerName,
     }));
   }

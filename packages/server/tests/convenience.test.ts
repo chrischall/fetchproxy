@@ -787,7 +787,7 @@ describe('captureRequestHeader()', () => {
     domains: ['honeybook.com'],
     capabilities: ['fetch', 'capture_request_header'] as const,
     captureHeaders: [
-      { urlPattern: 'https://api.honeybook.com/api/v2/*', headerName: 'hb-api-fingerprint' },
+      { host: 'api.honeybook.com', path: '/api/v2/*', headerName: 'hb-api-fingerprint' },
     ],
   };
 
@@ -800,29 +800,32 @@ describe('captureRequestHeader()', () => {
     installFakeHost(s);
     await expect(
       s.captureRequestHeader({
-        urlPattern: 'https://api.honeybook.com/api/v2/*',
+        host: 'api.honeybook.com',
+        path: '/api/v2/*',
         headerName: 'hb-api-fingerprint',
       }),
     ).rejects.toThrow(/capture_request_header/);
   });
 
-  it('rejects an undeclared (urlPattern, headerName) pair', async () => {
+  it('rejects an undeclared (host, path, headerName) tuple', async () => {
     const s = new FetchproxyServer(headerOpts);
     installFakeHost(s);
     await expect(
       s.captureRequestHeader({
-        urlPattern: 'https://api.honeybook.com/api/v3/*',
+        host: 'api.honeybook.com',
+        path: '/api/v3/*',
         headerName: 'hb-api-fingerprint',
       }),
     ).rejects.toThrow(/not declared/);
   });
 
-  it('rejects an undeclared headerName even when urlPattern matches', async () => {
+  it('rejects an undeclared headerName even when host/path matches', async () => {
     const s = new FetchproxyServer(headerOpts);
     installFakeHost(s);
     await expect(
       s.captureRequestHeader({
-        urlPattern: 'https://api.honeybook.com/api/v2/*',
+        host: 'api.honeybook.com',
+        path: '/api/v2/*',
         headerName: 'X-Other',
       }),
     ).rejects.toThrow(/not declared/);
@@ -832,7 +835,8 @@ describe('captureRequestHeader()', () => {
     const s = new FetchproxyServer(headerOpts);
     const fake = installFakeHost(s);
     const promise = s.captureRequestHeader({
-      urlPattern: 'https://api.honeybook.com/api/v2/*',
+      host: 'api.honeybook.com',
+      path: '/api/v2/*',
       headerName: 'hb-api-fingerprint',
     });
     await new Promise((r) => setTimeout(r, 0));
@@ -840,7 +844,8 @@ describe('captureRequestHeader()', () => {
     expect(inner).not.toBeNull();
     expect(inner!.op).toBe('capture_request_header');
     if (inner!.op === 'capture_request_header') {
-      expect(inner!.init.urlPattern).toBe('https://api.honeybook.com/api/v2/*');
+      expect(inner!.init.host).toBe('api.honeybook.com');
+      expect(inner!.init.path).toBe('/api/v2/*');
       expect(inner!.init.headerName).toBe('hb-api-fingerprint');
     }
     fake.reply({
@@ -857,7 +862,8 @@ describe('captureRequestHeader()', () => {
     const s = new FetchproxyServer(headerOpts);
     const fake = installFakeHost(s);
     const promise = s.captureRequestHeader({
-      urlPattern: 'https://api.honeybook.com/api/v2/*',
+      host: 'api.honeybook.com',
+      path: '/api/v2/*',
       headerName: 'hb-api-fingerprint',
       timeoutMs: 5000,
     });
@@ -880,7 +886,8 @@ describe('captureRequestHeader()', () => {
     const s = new FetchproxyServer(headerOpts);
     const fake = installFakeHost(s);
     const promise = s.captureRequestHeader({
-      urlPattern: 'https://api.honeybook.com/api/v2/*',
+      host: 'api.honeybook.com',
+      path: '/api/v2/*',
       headerName: 'hb-api-fingerprint',
     });
     await new Promise((r) => setTimeout(r, 0));

@@ -1,4 +1,9 @@
-import { generateMcpId, KNOWN_CAPABILITIES, undeclaredKeys, validateCaptureHeaderDecls } from '@fetchproxy/protocol';
+import {
+  generateMcpId,
+  KNOWN_CAPABILITIES,
+  undeclaredKeys,
+  validateCaptureHeaderDecls,
+} from '@fetchproxy/protocol';
 import type {
   Capability,
   CaptureHeaderDecl,
@@ -96,7 +101,7 @@ export interface FetchproxyServerOpts {
   localStorageKeys?: string[];
   /** 0.3.0+: declared sessionStorage keys for `readSessionStorage`. */
   sessionStorageKeys?: string[];
-  /** 0.3.0+: declared (urlPattern, headerName) pairs for `captureRequestHeader`. */
+  /** 0.3.0+: declared (host, path?, headerName) tuples for `captureRequestHeader`. */
   captureHeaders?: CaptureHeaderDecl[];
   /**
    * 0.4.0+: declared IndexedDB scopes for `readIndexedDb()`. Each
@@ -877,19 +882,16 @@ export class FetchproxyServer {
       }
       capabilities = [...opts.capabilities];
     }
-    // Validate declared captureHeaders up front (same philosophy as the
-    // capability guard above): a bad `urlPattern` — e.g. a bare host instead
-    // of a `https://host/path` match pattern — otherwise sails through here
-    // and only blows up at runtime when the bridge host runs `validateFrame`
-    // on our hello and silently closes the connection. Fail loud at boot with
-    // the protocol's actionable message instead.
+    // 0.13.0+ (#102 successor): validate declared captureHeaders against
+    // the declared domains at construction — fail loud at boot rather
+    // than silently at the bridge handshake. Each capture `host` must be
+    // a declared domain or a subdomain of one.
     if (opts.captureHeaders !== undefined) {
       try {
-        validateCaptureHeaderDecls(opts.captureHeaders, 'opts.captureHeaders');
-      } catch (e) {
-        throw new Error(
-          `FetchproxyServer: invalid captureHeaders — ${e instanceof Error ? e.message : String(e)}`,
-        );
+        validateCaptureHeaderDecls(opts.captureHeaders, opts.domains);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        throw new Error('FetchproxyServer: invalid captureHeaders — ' + message);
       }
     }
     this.opts = {
@@ -903,7 +905,8 @@ export class FetchproxyServer {
       localStorageKeys: [...(opts.localStorageKeys ?? [])],
       sessionStorageKeys: [...(opts.sessionStorageKeys ?? [])],
       captureHeaders: (opts.captureHeaders ?? []).map((d) => ({
-        urlPattern: d.urlPattern,
+        host: d.host,
+        ...(d.path !== undefined ? { path: d.path } : {}),
         headerName: d.headerName,
       })),
       indexedDbScopes: (opts.indexedDbScopes ?? []).map((d) => ({
@@ -1907,15 +1910,16 @@ export class FetchproxyServer {
   /**
    * 0.3.0+: snapshot the next outgoing request's named header. Single-
    * shot: the extension registers a one-time `webRequest` listener
-   * filtered on `urlPattern`, captures the named header on the first
-   * match, removes itself, and resolves with the value. Times out
-   * after `timeoutMs` (default 30s on the extension).
+   * filtered on `https://${host}${path ?? '/*'}`, captures the named
+   * header on the first match, removes itself, and resolves with the
+   * value. Times out after `timeoutMs` (default 30s on the extension).
    *
-   * `(urlPattern, headerName)` must exactly match a declared entry in
-   * `FetchproxyServerOpts.captureHeaders`.
+   * `(host, path?, headerName)` must match a declared entry in
+   * `FetchproxyServerOpts.captureHeaders` (omitted path ≡ `/*`).
    */
   async captureRequestHeader(opts?: {
-    urlPattern?: string;
+    host?: string;
+    path?: string;
     headerName?: string;
     timeoutMs?: number;
   }): Promise<string> {
@@ -1928,42 +1932,46 @@ export class FetchproxyServer {
     await this.ensureConnected();
     this.throwIfPendingPair();
     // 0.8.0+: resolve to the declared entry. If the caller supplied
-    // both urlPattern + headerName, require an exact declared match
-    // (the historical behavior). If neither is supplied, default to
-    // the sole declared entry; throw if 0 or >1 are declared so the
-    // ambiguity surfaces at the call site, not silently as the wrong
-    // capture. Supplying only one of the pair is rejected — it would
-    // otherwise silently pair against a different declared entry.
+    // both host + headerName, require a declared match (omitted path ≡
+    // `/*`). If neither is supplied, default to the sole declared
+    // entry; throw if 0 or >1 are declared so the ambiguity surfaces at
+    // the call site, not silently as the wrong capture. Supplying only
+    // one of the pair is rejected — it would otherwise silently pair
+    // against a different declared entry.
     const decls = this.opts.captureHeaders;
+    const normPath = (p: string | undefined): string => p ?? '/*';
     let resolved: CaptureHeaderDecl;
-    if (opts?.urlPattern !== undefined && opts?.headerName !== undefined) {
+    if (opts?.host !== undefined && opts?.headerName !== undefined) {
       const found = decls.find(
-        (d) => d.urlPattern === opts.urlPattern && d.headerName === opts.headerName,
+        (d) =>
+          d.host === opts.host &&
+          normPath(d.path) === normPath(opts.path) &&
+          d.headerName === opts.headerName,
       );
       if (!found) {
         throw new Error(
-          `FetchproxyServer.captureRequestHeader: (urlPattern=${JSON.stringify(opts.urlPattern)}, headerName=${JSON.stringify(opts.headerName)}) not declared in captureHeaders`,
+          `FetchproxyServer.captureRequestHeader: (host=${JSON.stringify(opts.host)}, path=${JSON.stringify(normPath(opts.path))}, headerName=${JSON.stringify(opts.headerName)}) not declared in captureHeaders`,
         );
       }
       resolved = found;
-    } else if (opts?.urlPattern === undefined && opts?.headerName === undefined) {
+    } else if (opts?.host === undefined && opts?.headerName === undefined) {
       if (decls.length === 0) {
         throw new Error(
-          'FetchproxyServer.captureRequestHeader: no captureHeaders declared on this server — declare at least one entry in FetchproxyServerOpts.captureHeaders, or pass {urlPattern, headerName} explicitly',
+          'FetchproxyServer.captureRequestHeader: no captureHeaders declared on this server — declare at least one entry in FetchproxyServerOpts.captureHeaders, or pass {host, headerName} explicitly',
         );
       }
       if (decls.length > 1) {
         const list = decls
-          .map((d) => `${JSON.stringify(d.urlPattern)}/${JSON.stringify(d.headerName)}`)
+          .map((d) => `${JSON.stringify(d.host)}${JSON.stringify(normPath(d.path))}/${JSON.stringify(d.headerName)}`)
           .join(', ');
         throw new Error(
-          `FetchproxyServer.captureRequestHeader: multiple captureHeaders declared (${decls.length}: ${list}); pass {urlPattern, headerName} to disambiguate`,
+          `FetchproxyServer.captureRequestHeader: multiple captureHeaders declared (${decls.length}: ${list}); pass {host, headerName} to disambiguate`,
         );
       }
       resolved = decls[0]!;
     } else {
       throw new Error(
-        'FetchproxyServer.captureRequestHeader: pass both urlPattern AND headerName, or neither (which defaults to the single declared entry)',
+        'FetchproxyServer.captureRequestHeader: pass both host AND headerName, or neither (which defaults to the single declared entry)',
       );
     }
     const callOpts = { ...resolved, ...(opts?.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}) };
@@ -2011,7 +2019,7 @@ export class FetchproxyServer {
             originalError: (retryErr as Error).message,
             retryAttempted: true,
             op: 'capture_request_header',
-            url: resolved.urlPattern,
+            url: `https://${resolved.host}${resolved.path ?? '/*'}`,
             role: this.role,
             port: this.opts.port,
           });
@@ -2024,7 +2032,7 @@ export class FetchproxyServer {
         originalError: (err as Error).message,
         retryAttempted: false,
         op: 'capture_request_header',
-        url: resolved.urlPattern,
+        url: `https://${resolved.host}${resolved.path ?? '/*'}`,
         role: this.role,
         port: this.opts.port,
       });
@@ -2032,7 +2040,8 @@ export class FetchproxyServer {
   }
 
   private async _captureRequestHeaderOnce(opts: {
-    urlPattern: string;
+    host: string;
+    path?: string;
     headerName: string;
     timeoutMs?: number;
   }): Promise<string> {
@@ -2042,7 +2051,8 @@ export class FetchproxyServer {
       id,
       op: 'capture_request_header',
       init: {
-        urlPattern: opts.urlPattern,
+        host: opts.host,
+        ...(opts.path !== undefined ? { path: opts.path } : {}),
         headerName: opts.headerName,
         ...(opts.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
       },

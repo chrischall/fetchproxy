@@ -16,7 +16,7 @@ interface NewRec {
   cookieKeys: string[];
   localStorageKeys: string[];
   sessionStorageKeys: string[];
-  captureHeaders: { urlPattern: string; headerName: string }[];
+  captureHeaders: { host: string; path?: string; headerName: string }[];
   indexedDbScopes: { origin: string; database: string; store: string; keys: string[] }[];
   localStoragePointers: { key: string; jsonPointer: string }[];
   sessionStoragePointers: { key: string; jsonPointer: string }[];

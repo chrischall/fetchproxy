@@ -90,7 +90,7 @@ export type HandleHelloResult =
       cookieKeys: string[];
       localStorageKeys: string[];
       sessionStorageKeys: string[];
-      captureHeaders: { urlPattern: string; headerName: string }[];
+      captureHeaders: { host: string; path?: string; headerName: string }[];
       indexedDbScopes: IndexedDbScopeDecl[];
       localStoragePointers: StoragePointerDecl[];
       sessionStoragePointers: StoragePointerDecl[];
@@ -109,7 +109,7 @@ export type HandleHelloResult =
         cookieKeys: string[];
         localStorageKeys: string[];
         sessionStorageKeys: string[];
-        captureHeaders: { urlPattern: string; headerName: string }[];
+        captureHeaders: { host: string; path?: string; headerName: string }[];
         indexedDbScopes: IndexedDbScopeDecl[];
         localStoragePointers: StoragePointerDecl[];
         sessionStoragePointers: StoragePointerDecl[];
@@ -129,7 +129,7 @@ export type HandleHelloResult =
       cookieKeys: string[];
       localStorageKeys: string[];
       sessionStorageKeys: string[];
-      captureHeaders: { urlPattern: string; headerName: string }[];
+      captureHeaders: { host: string; path?: string; headerName: string }[];
       indexedDbScopes: IndexedDbScopeDecl[];
       localStoragePointers: StoragePointerDecl[];
       sessionStoragePointers: StoragePointerDecl[];
@@ -153,7 +153,7 @@ export type HandleHelloResult =
         declaredCookieKeys: string[];
         declaredLocalStorageKeys: string[];
         declaredSessionStorageKeys: string[];
-        declaredCaptureHeaders: { urlPattern: string; headerName: string }[];
+        declaredCaptureHeaders: { host: string; path?: string; headerName: string }[];
         declaredIndexedDbScopes: IndexedDbScopeDecl[];
         declaredLocalStoragePointers: StoragePointerDecl[];
         declaredSessionStoragePointers: StoragePointerDecl[];
@@ -161,7 +161,7 @@ export type HandleHelloResult =
         approvedCookieKeys: string[];
         approvedLocalStorageKeys: string[];
         approvedSessionStorageKeys: string[];
-        approvedCaptureHeaders: { urlPattern: string; headerName: string }[];
+        approvedCaptureHeaders: { host: string; path?: string; headerName: string }[];
         approvedIndexedDbScopes: IndexedDbScopeDecl[];
         approvedLocalStoragePointers: StoragePointerDecl[];
         approvedSessionStoragePointers: StoragePointerDecl[];
@@ -196,7 +196,7 @@ interface DeclaredScope {
   cookieKeys: string[];
   localStorageKeys: string[];
   sessionStorageKeys: string[];
-  captureHeaders: { urlPattern: string; headerName: string }[];
+  captureHeaders: { host: string; path?: string; headerName: string }[];
   indexedDbScopes: IndexedDbScopeDecl[];
   localStoragePointers: StoragePointerDecl[];
   sessionStoragePointers: StoragePointerDecl[];
@@ -208,7 +208,8 @@ function declaredScope(hello: HelloFrameFromServer): DeclaredScope {
     localStorageKeys: [...(hello.localStorageKeys ?? [])],
     sessionStorageKeys: [...(hello.sessionStorageKeys ?? [])],
     captureHeaders: (hello.captureHeaders ?? []).map((d) => ({
-      urlPattern: d.urlPattern,
+      host: d.host,
+      ...(d.path !== undefined ? { path: d.path } : {}),
       headerName: d.headerName,
     })),
     indexedDbScopes: (hello.indexedDbScopes ?? []).map((d) => ({
@@ -603,7 +604,7 @@ interface PendingPairRecord extends PendingRecordBase {
   cookieKeys: string[];
   localStorageKeys: string[];
   sessionStorageKeys: string[];
-  captureHeaders: { urlPattern: string; headerName: string }[];
+  captureHeaders: { host: string; path?: string; headerName: string }[];
   /** 0.4.0+: declared IndexedDB scopes the user is being asked to approve. */
   indexedDbScopes: IndexedDbScopeDecl[];
   /** 0.4.0+: declared storage-pointer extractions. */
@@ -618,7 +619,7 @@ interface PendingPairRecord extends PendingRecordBase {
     cookieKeys: string[];
     localStorageKeys: string[];
     sessionStorageKeys: string[];
-    captureHeaders: { urlPattern: string; headerName: string }[];
+    captureHeaders: { host: string; path?: string; headerName: string }[];
     indexedDbScopes: IndexedDbScopeDecl[];
     localStoragePointers: StoragePointerDecl[];
     sessionStoragePointers: StoragePointerDecl[];
@@ -642,7 +643,7 @@ interface PendingScopeUpdateRecord extends PendingRecordBase {
   cookieKeys: string[];
   localStorageKeys: string[];
   sessionStorageKeys: string[];
-  captureHeaders: { urlPattern: string; headerName: string }[];
+  captureHeaders: { host: string; path?: string; headerName: string }[];
   indexedDbScopes: IndexedDbScopeDecl[];
   localStoragePointers: StoragePointerDecl[];
   sessionStoragePointers: StoragePointerDecl[];
@@ -652,7 +653,7 @@ interface PendingScopeUpdateRecord extends PendingRecordBase {
     cookieKeys: string[];
     localStorageKeys: string[];
     sessionStorageKeys: string[];
-    captureHeaders: { urlPattern: string; headerName: string }[];
+    captureHeaders: { host: string; path?: string; headerName: string }[];
     indexedDbScopes: IndexedDbScopeDecl[];
     localStoragePointers: StoragePointerDecl[];
     sessionStoragePointers: StoragePointerDecl[];
@@ -740,7 +741,7 @@ const mcpCapabilities = new Map<string, string[]>();
 const mcpCookieKeys = new Map<string, string[]>();
 const mcpLocalStorageKeys = new Map<string, string[]>();
 const mcpSessionStorageKeys = new Map<string, string[]>();
-const mcpCaptureHeaders = new Map<string, { urlPattern: string; headerName: string }[]>();
+const mcpCaptureHeaders = new Map<string, { host: string; path?: string; headerName: string }[]>();
 // 0.4.0+: per-mcpId declared IndexedDB scopes. The request handler
 // gates `read_indexed_db` on subset-match against this table.
 const mcpIndexedDbScopes = new Map<string, IndexedDbScopeDecl[]>();
@@ -1609,8 +1610,12 @@ async function handleCaptureRequestHeaderRequest(
   domains: string[],
 ): Promise<void> {
   const declared = mcpCaptureHeaders.get(mcpId) ?? [];
+  const reqPath = req.init.path ?? '/*';
   const declaredMatch = declared.find(
-    (d) => d.urlPattern === req.init.urlPattern && d.headerName === req.init.headerName,
+    (d) =>
+      d.host === req.init.host &&
+      (d.path ?? '/*') === reqPath &&
+      d.headerName === req.init.headerName,
   );
   if (!declaredMatch) {
     await sendInner(mcpId, {
@@ -1618,26 +1623,19 @@ async function handleCaptureRequestHeaderRequest(
       id: req.id,
       ok: false,
       op: 'capture_request_header',
-      error: `(urlPattern, headerName) not in declared captureHeaders`,
+      error: `(host, path, headerName) not in declared captureHeaders`,
     });
     return;
   }
-  // urlPattern's host must be a declared domain. The validator already
-  // canonicalised the URL shape so we can just URL-parse the prefix.
-  const host = (() => {
-    try {
-      return new URL(req.init.urlPattern.replace(/\*+/g, 'placeholder')).hostname;
-    } catch {
-      return '';
-    }
-  })();
-  if (!host || !isUrlAllowedForAnyDomain(`https://${host}/`, domains)) {
+  // The capture host must be a declared domain or a subdomain of one.
+  const host = req.init.host;
+  if (!isUrlAllowedForAnyDomain(`https://${host}/`, domains)) {
     await sendInner(mcpId, {
       type: 'response',
       id: req.id,
       ok: false,
       op: 'capture_request_header',
-      error: `urlPattern host ${host} not in domains [${domains.join(', ')}]`,
+      error: `capture host ${host} not in domains [${domains.join(', ')}]`,
     });
     return;
   }
@@ -1677,7 +1675,7 @@ async function handleCaptureRequestHeaderRequest(
   try {
     chrome.webRequest.onBeforeSendHeaders.addListener(
       listener,
-      { urls: [req.init.urlPattern] },
+      { urls: [`https://${req.init.host}${req.init.path ?? '/*'}`] },
       ['requestHeaders'],
     );
   } catch (e) {
@@ -1829,7 +1827,8 @@ async function onApproval(approved: AnyPendingRecord): Promise<void> {
     localStorageKeys: [...(approved.localStorageKeys ?? [])],
     sessionStorageKeys: [...(approved.sessionStorageKeys ?? [])],
     captureHeaders: (approved.captureHeaders ?? []).map((d) => ({
-      urlPattern: d.urlPattern,
+      host: d.host,
+      ...(d.path !== undefined ? { path: d.path } : {}),
       headerName: d.headerName,
     })),
     indexedDbScopes: (approved.indexedDbScopes ?? []).map((d) => ({
