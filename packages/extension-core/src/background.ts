@@ -1604,6 +1604,15 @@ async function handleReadStorageRequest(
   }
 }
 
+/**
+ * extraInfoSpec for the capture_request_header webRequest listener.
+ * `'extraHeaders'` is REQUIRED: Chrome MV3 strips `Cookie` (and other
+ * sensitive headers like `Authorization`) from `onBeforeSendHeaders`
+ * details unless it is present — without it, a capture for `cookie` can
+ * never match and times out. Exported so a regression test pins it.
+ */
+export const CAPTURE_EXTRA_INFO_SPEC = ['requestHeaders', 'extraHeaders'] as const;
+
 async function handleCaptureRequestHeaderRequest(
   mcpId: string,
   req: InnerRequestCaptureRequestHeader,
@@ -1676,7 +1685,7 @@ async function handleCaptureRequestHeaderRequest(
     chrome.webRequest.onBeforeSendHeaders.addListener(
       listener,
       { urls: [`https://${req.init.host}${req.init.path ?? '/*'}`] },
-      ['requestHeaders'],
+      [...CAPTURE_EXTRA_INFO_SPEC],
     );
   } catch (e) {
     await sendInner(mcpId, {
