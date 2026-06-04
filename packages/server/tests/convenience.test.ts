@@ -904,6 +904,114 @@ describe('captureRequestHeader()', () => {
   });
 });
 
+describe('captureRedirect()', () => {
+  const redirectOpts = {
+    serverName: 'musescore-mcp',
+    version: '0.1.0',
+    domains: ['musescore.com'],
+    capabilities: ['fetch', 'capture_redirect'] as const,
+  };
+
+  it('throws if "capture_redirect" was not declared', async () => {
+    const s = new FetchproxyServer({
+      serverName: 'musescore-mcp',
+      version: '0.1.0',
+      domains: ['musescore.com'],
+    });
+    installFakeHost(s);
+    await expect(
+      s.captureRedirect({ host: 'musescore.com', path: '/score/download/*' }),
+    ).rejects.toThrow(/capture_redirect/);
+  });
+
+  it('emits a capture_redirect inner request and resolves to the redirect URL', async () => {
+    const s = new FetchproxyServer(redirectOpts);
+    const fake = installFakeHost(s);
+    const promise = s.captureRedirect({
+      host: 'musescore.com',
+      path: '/score/download/*',
+    });
+    await new Promise((r) => setTimeout(r, 0));
+    const inner = fake.lastInner();
+    expect(inner).not.toBeNull();
+    expect(inner!.op).toBe('capture_redirect');
+    if (inner!.op === 'capture_redirect') {
+      expect(inner!.init.host).toBe('musescore.com');
+      expect(inner!.init.path).toBe('/score/download/*');
+    }
+    fake.reply({
+      type: 'response',
+      id: inner!.id,
+      ok: true,
+      op: 'capture_redirect',
+      value: 'https://s3.example.com/presigned?sig=abc',
+    });
+    await expect(promise).resolves.toBe('https://s3.example.com/presigned?sig=abc');
+  });
+
+  it('threads timeoutMs onto the inner request', async () => {
+    const s = new FetchproxyServer(redirectOpts);
+    const fake = installFakeHost(s);
+    const promise = s.captureRedirect({
+      host: 'musescore.com',
+      path: '/score/download/*',
+      timeoutMs: 5000,
+    });
+    await new Promise((r) => setTimeout(r, 0));
+    const inner = fake.lastInner();
+    if (inner!.op === 'capture_redirect') {
+      expect(inner!.init.timeoutMs).toBe(5000);
+    }
+    fake.reply({
+      type: 'response',
+      id: inner!.id,
+      ok: true,
+      op: 'capture_redirect',
+      value: 'https://x.example.com/',
+    });
+    await promise;
+  });
+
+  it('omits path from the inner request when not supplied', async () => {
+    const s = new FetchproxyServer(redirectOpts);
+    const fake = installFakeHost(s);
+    const promise = s.captureRedirect({ host: 'musescore.com' });
+    await new Promise((r) => setTimeout(r, 0));
+    const inner = fake.lastInner();
+    if (inner!.op === 'capture_redirect') {
+      expect(inner!.init.path).toBeUndefined();
+    }
+    fake.reply({
+      type: 'response',
+      id: inner!.id,
+      ok: true,
+      op: 'capture_redirect',
+      value: 'https://x.example.com/',
+    });
+    await promise;
+  });
+
+  it('surfaces a timeout error response as FetchproxyProtocolError', async () => {
+    const s = new FetchproxyServer(redirectOpts);
+    const fake = installFakeHost(s);
+    const promise = s.captureRedirect({
+      host: 'musescore.com',
+      path: '/score/download/*',
+    });
+    await new Promise((r) => setTimeout(r, 0));
+    const inner = fake.lastInner();
+    fake.reply({
+      type: 'response',
+      id: inner!.id,
+      ok: false,
+      op: 'capture_redirect',
+      error: 'timeout',
+    });
+    await expect(promise).rejects.toThrow(FetchproxyProtocolError);
+    await expect(promise).rejects.toThrow(/timeout/);
+  });
+});
+
 describe('URL guard (assertUrlInDomains)', () => {
   it('rejects path arg that cannot be parsed as a URL', async () => {
     // ws-server.ts:153 — `new URL(...)` throw caught and re-wrapped.

@@ -691,6 +691,35 @@ function validateInnerRequest(raw: Record<string, unknown>): InnerFrame {
     }
     return raw as unknown as InnerFrame;
   }
+  if (raw.op === 'capture_redirect') {
+    assertObject(raw.init, 'inner.init');
+    if (raw.init.host === undefined) {
+      throw new ProtocolError('inner.init.host: missing');
+    }
+    assertString(raw.init.host, 'inner.init.host');
+    if (!HOSTNAME_RE.test(raw.init.host)) {
+      throw new ProtocolError(`inner.init.host: invalid hostname ${JSON.stringify(raw.init.host)}`);
+    }
+    if (raw.init.path !== undefined) {
+      assertString(raw.init.path, 'inner.init.path');
+      if (!CAPTURE_PATH_RE.test(raw.init.path)) {
+        throw new ProtocolError(
+          `inner.init.path: must start with '/' ${JSON.stringify(raw.init.path)}`,
+        );
+      }
+    }
+    if (raw.init.timeoutMs !== undefined) {
+      assertPositiveInt(raw.init.timeoutMs, 'inner.init.timeoutMs');
+    }
+    for (const k of Object.keys(raw.init)) {
+      if (k !== 'host' && k !== 'path' && k !== 'timeoutMs') {
+        throw new ProtocolError(
+          `inner.init: unexpected field ${JSON.stringify(k)} on capture_redirect`,
+        );
+      }
+    }
+    return raw as unknown as InnerFrame;
+  }
   if (raw.op === 'read_indexed_db') {
     assertObject(raw.init, 'inner.init');
     if (raw.init.origin === undefined) throw new ProtocolError('inner.init.origin: missing');
@@ -719,7 +748,7 @@ function validateInnerRequest(raw: Record<string, unknown>): InnerFrame {
     return raw as unknown as InnerFrame;
   }
   throw new ProtocolError(
-    `inner.op: must be one of "fetch", "read_cookies", "read_local_storage", "read_session_storage", "capture_request_header", "read_indexed_db"; got ${JSON.stringify(raw.op)}`,
+    `inner.op: must be one of "fetch", "read_cookies", "read_local_storage", "read_session_storage", "capture_request_header", "capture_redirect", "read_indexed_db"; got ${JSON.stringify(raw.op)}`,
   );
 }
 
@@ -799,6 +828,13 @@ function validateInnerResponse(raw: Record<string, unknown>): InnerFrame {
     if (op === 'capture_request_header') {
       if (raw.value === undefined) {
         throw new ProtocolError('inner.value: missing on capture_request_header response');
+      }
+      assertString(raw.value, 'inner.value');
+      return raw as unknown as InnerFrame;
+    }
+    if (op === 'capture_redirect') {
+      if (raw.value === undefined) {
+        throw new ProtocolError('inner.value: missing on capture_redirect response');
       }
       assertString(raw.value, 'inner.value');
       return raw as unknown as InnerFrame;

@@ -419,7 +419,7 @@ export class FetchproxyHttpError extends Error {
 export class FetchproxyBridgeDownError extends FetchproxyProtocolError {
   readonly originalError: string;
   readonly retryAttempted: boolean;
-  readonly op: 'fetch' | 'capture_request_header';
+  readonly op: 'fetch' | 'capture_request_header' | 'capture_redirect';
   readonly url?: string;
   /** 0.8.0+: bridge role at throw time; `null` if listen() hadn't bound yet. */
   readonly role: 'host' | 'peer' | null;
@@ -430,7 +430,7 @@ export class FetchproxyBridgeDownError extends FetchproxyProtocolError {
   constructor(args: {
     originalError: string;
     retryAttempted?: boolean;
-    op?: 'fetch' | 'capture_request_header';
+    op?: 'fetch' | 'capture_request_header' | 'capture_redirect';
     url?: string;
     role?: 'host' | 'peer' | null;
     port?: number;
@@ -817,6 +817,11 @@ export class FetchproxyServer {
   >();
   // 0.3.0+: capture-header awaiters resolve a single string.
   private pendingCapture = new Map<
+    number,
+    { resolve: (v: string) => void; reject: (e: Error) => void }
+  >();
+  // capture_redirect awaiters resolve the captured redirect URL string.
+  private pendingRedirect = new Map<
     number,
     { resolve: (v: string) => void; reject: (e: Error) => void }
   >();
@@ -2069,6 +2074,115 @@ export class FetchproxyServer {
   }
 
   /**
+   * Snapshot the redirect target URL of the next request the browser
+   * makes to `(host, path?)`. Single-shot: the extension registers a
+   * one-time `chrome.webRequest.onBeforeRedirect` listener filtered on
+   * `https://${host}${path ?? '/*'}`, captures `details.redirectUrl` on
+   * the first match, removes itself, and resolves with the URL. Times out
+   * after `timeoutMs` (default 30s on the extension).
+   *
+   * Use case: a Cloudflare-walled endpoint that 302-redirects cross-origin
+   * to a presigned URL — a page-level fetch sees only an opaque redirect,
+   * but `onBeforeRedirect` exposes the target. Capture is limited to the
+   * MCP's own declared `domains`; no per-entry declared scope is required.
+   */
+  async captureRedirect(opts: {
+    host: string;
+    path?: string;
+    timeoutMs?: number;
+  }): Promise<string> {
+    if (!this.opts.capabilities.includes('capture_redirect')) {
+      throw new Error(
+        'FetchproxyServer.captureRedirect(): MCP did not declare "capture_redirect" in capabilities',
+      );
+    }
+    // 0.5.3+: lazy connect — see the doc comment on `ensureConnected`.
+    await this.ensureConnected();
+    this.throwIfPendingPair();
+    try {
+      const result = await this._captureRedirectOnce(opts);
+      this.recordSuccess();
+      return result;
+    } catch (err) {
+      const swDown =
+        err instanceof FetchproxyProtocolError &&
+        classifyFetchError(err.message) === 'content_script_unreachable';
+      if (!swDown) {
+        this.recordFailure(`capture_redirect: ${(err as Error).message ?? String(err)}`);
+        throw err;
+      }
+      // 0.10.0+ (#73): mirror fetch()'s eviction-detection stamp.
+      this.lastEvictionDetectedAt = Date.now();
+      const reviveMs = this.opts.bridgeReviveDelayMs ?? 0;
+      if (reviveMs > 0) {
+        this.lazyReviveAttempts += 1;
+        await new Promise((r) => setTimeout(r, reviveMs));
+        try {
+          const result = await this._captureRedirectOnce(opts);
+          this.lazyReviveSuccesses += 1;
+          this.recordSuccess();
+          return result;
+        } catch (retryErr) {
+          const stillDown =
+            retryErr instanceof FetchproxyProtocolError &&
+            classifyFetchError(retryErr.message) === 'content_script_unreachable';
+          if (!stillDown) {
+            this.recordFailure(
+              `capture_redirect: ${(retryErr as Error).message ?? String(retryErr)}`,
+            );
+            throw retryErr;
+          }
+          this.recordFailure(`capture_redirect bridge-down: ${(retryErr as Error).message}`);
+          throw new FetchproxyBridgeDownError({
+            originalError: (retryErr as Error).message,
+            retryAttempted: true,
+            op: 'capture_redirect',
+            url: `https://${opts.host}${opts.path ?? '/*'}`,
+            role: this.role,
+            port: this.opts.port,
+          });
+        }
+      }
+      this.recordFailure(`capture_redirect bridge-down: ${(err as Error).message}`);
+      throw new FetchproxyBridgeDownError({
+        originalError: (err as Error).message,
+        retryAttempted: false,
+        op: 'capture_redirect',
+        url: `https://${opts.host}${opts.path ?? '/*'}`,
+        role: this.role,
+        port: this.opts.port,
+      });
+    }
+  }
+
+  private async _captureRedirectOnce(opts: {
+    host: string;
+    path?: string;
+    timeoutMs?: number;
+  }): Promise<string> {
+    const id = this.nextRequestId++;
+    const inner: InnerFrame = {
+      type: 'request',
+      id,
+      op: 'capture_redirect',
+      init: {
+        host: opts.host,
+        ...(opts.path !== undefined ? { path: opts.path } : {}),
+        ...(opts.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
+      },
+    };
+    const pending = new Promise<string>((resolve, reject) => {
+      this.pendingRedirect.set(id, { resolve, reject });
+    });
+    if (this.hostHandle) {
+      await this.hostHandle.sendOwnInner(inner);
+    } else if (this.peerHandle) {
+      await this.peerHandle.sendInner(inner);
+    }
+    return pending;
+  }
+
+  /**
    * 0.4.0+: read declared IndexedDB keys from the user's signed-in
    * tab. Requires `'read_indexed_db'` in capabilities AND the
    * `(database, store, keys)` triple to subset-match a declared
@@ -2272,6 +2386,24 @@ export class FetchproxyServer {
       }
       return;
     }
+    const redirectCb = this.pendingRedirect.get(inner.id);
+    if (redirectCb) {
+      this.pendingRedirect.delete(inner.id);
+      if (inner.ok) {
+        if (inner.op === 'capture_redirect' && typeof inner.value === 'string') {
+          redirectCb.resolve(inner.value);
+        } else {
+          redirectCb.reject(
+            new FetchproxyProtocolError(
+              `unexpected ${String(inner.op)} response on capture_redirect awaiter`,
+            ),
+          );
+        }
+      } else {
+        redirectCb.reject(new FetchproxyProtocolError(inner.error));
+      }
+      return;
+    }
     const idbCb = this.pendingIdb.get(inner.id);
     if (idbCb) {
       this.pendingIdb.delete(inner.id);
@@ -2337,6 +2469,8 @@ export class FetchproxyServer {
     this.pendingStorage.clear();
     for (const { reject } of this.pendingCapture.values()) reject(err);
     this.pendingCapture.clear();
+    for (const { reject } of this.pendingRedirect.values()) reject(err);
+    this.pendingRedirect.clear();
     for (const { reject } of this.pendingIdb.values()) reject(err);
     this.pendingIdb.clear();
   }

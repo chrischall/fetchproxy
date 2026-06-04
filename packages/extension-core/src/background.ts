@@ -47,6 +47,7 @@ import {
   type InnerRequestReadLocalStorage,
   type InnerRequestReadSessionStorage,
   type InnerRequestCaptureRequestHeader,
+  type InnerRequestCaptureRedirect,
   type InnerRequestReadIndexedDb,
   type EncryptedFrame,
 } from '@fetchproxy/protocol';
@@ -442,6 +443,18 @@ declare const chrome: {
         }) => void,
         filter: { urls: string[] },
         extraInfoSpec?: string[],
+      ) => void;
+      removeListener: (cb: unknown) => void;
+    };
+    onBeforeRedirect: {
+      addListener: (
+        cb: (details: {
+          requestId: string;
+          url: string;
+          method: string;
+          redirectUrl: string;
+        }) => void,
+        filter: { urls: string[] },
       ) => void;
       removeListener: (cb: unknown) => void;
     };
@@ -1166,6 +1179,10 @@ async function handleRequest(mcpId: string, req: InnerRequest): Promise<void> {
     await handleCaptureRequestHeaderRequest(mcpId, req, domains);
     return;
   }
+  if (req.op === 'capture_redirect') {
+    await handleCaptureRedirectRequest(mcpId, req, domains);
+    return;
+  }
   if (req.op === 'read_indexed_db') {
     await handleReadIndexedDbRequest(mcpId, req, domains);
     return;
@@ -1710,6 +1727,92 @@ async function handleCaptureRequestHeaderRequest(
       id: req.id,
       ok: false,
       op: 'capture_request_header',
+      error: 'timeout',
+    });
+  }, timeoutMs);
+}
+
+/**
+ * Snapshot the redirect target URL of the next request the browser makes
+ * to `(host, path?)`, via `chrome.webRequest.onBeforeRedirect`. Single-
+ * shot, mirrors `handleCaptureRequestHeaderRequest` but lighter: there's
+ * no declared-scope plumbing — the only gate is that `host` is one of the
+ * MCP's declared `domains` (equals-or-subdomain). Unlike
+ * `onBeforeSendHeaders`, `onBeforeRedirect` needs no `extraInfoSpec`.
+ */
+async function handleCaptureRedirectRequest(
+  mcpId: string,
+  req: InnerRequestCaptureRedirect,
+  domains: string[],
+): Promise<void> {
+  // The watched host must be a declared domain or a subdomain of one.
+  const host = req.init.host;
+  if (!isUrlAllowedForAnyDomain(`https://${host}/`, domains)) {
+    await sendInner(mcpId, {
+      type: 'response',
+      id: req.id,
+      ok: false,
+      op: 'capture_redirect',
+      error: `capture host ${host} not in domains [${domains.join(', ')}]`,
+    });
+    return;
+  }
+  if (!chrome.webRequest) {
+    await sendInner(mcpId, {
+      type: 'response',
+      id: req.id,
+      ok: false,
+      op: 'capture_redirect',
+      error: 'chrome.webRequest API not available (extension missing the "webRequest" permission?)',
+    });
+    return;
+  }
+  const timeoutMs = req.init.timeoutMs ?? 30_000;
+  let resolved = false;
+  const listener = (details: { redirectUrl: string }): void => {
+    if (resolved) return;
+    if (typeof details.redirectUrl !== 'string' || details.redirectUrl.length === 0) return;
+    resolved = true;
+    try {
+      chrome.webRequest!.onBeforeRedirect.removeListener(listener);
+    } catch {
+      // ignore
+    }
+    void sendInner(mcpId, {
+      type: 'response',
+      id: req.id,
+      ok: true,
+      op: 'capture_redirect',
+      value: details.redirectUrl,
+    });
+  };
+  try {
+    chrome.webRequest.onBeforeRedirect.addListener(listener, {
+      urls: [`https://${req.init.host}${req.init.path ?? '/*'}`],
+    });
+  } catch (e) {
+    await sendInner(mcpId, {
+      type: 'response',
+      id: req.id,
+      ok: false,
+      op: 'capture_redirect',
+      error: `webRequest listener registration failed: ${String(e)}`,
+    });
+    return;
+  }
+  setTimeout(() => {
+    if (resolved) return;
+    resolved = true;
+    try {
+      chrome.webRequest!.onBeforeRedirect.removeListener(listener);
+    } catch {
+      // ignore
+    }
+    void sendInner(mcpId, {
+      type: 'response',
+      id: req.id,
+      ok: false,
+      op: 'capture_redirect',
       error: 'timeout',
     });
   }, timeoutMs);
