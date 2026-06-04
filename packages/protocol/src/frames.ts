@@ -55,6 +55,15 @@ export type Platform = 'chrome' | 'safari' | 'firefox';
  * `'capture_request_header'`— snapshot the next outgoing request's
  *                             declared header for a declared
  *                             (host, path?). Elevated. Single-shot per call.
+ * `'capture_redirect'`      — snapshot the redirect target URL of the next
+ *                             request the browser makes to a declared
+ *                             (host, path?), via
+ *                             `chrome.webRequest.onBeforeRedirect`. Lets a
+ *                             page-level fetch that sees only an opaque
+ *                             cross-origin redirect recover the redirect
+ *                             target (e.g. a presigned URL). Elevated.
+ *                             Single-shot per call. Capture is limited to
+ *                             the MCP's own declared `domains`.
  *
  * Future additions are wire-additive: unknown capabilities are rejected
  * by the validator, so adding a new verb requires extending this union.
@@ -65,6 +74,7 @@ export type Capability =
   | 'read_local_storage'
   | 'read_session_storage'
   | 'capture_request_header'
+  | 'capture_redirect'
   | 'read_indexed_db';
 
 /**
@@ -79,6 +89,7 @@ export const KNOWN_CAPABILITIES: ReadonlySet<Capability> = new Set<Capability>([
   'read_local_storage',
   'read_session_storage',
   'capture_request_header',
+  'capture_redirect',
   'read_indexed_db',
 ]);
 
@@ -370,6 +381,32 @@ export interface CaptureRequestHeaderInit {
   timeoutMs?: number;
 }
 
+/**
+ * `init` payload for `capture_redirect`. Lighter than
+ * `CaptureRequestHeaderInit` — no `headerName` (the captured value is the
+ * redirect target URL, not a header) and no declared-scope plumbing. The
+ * extension gates the watched `host` against the MCP's declared `domains`.
+ */
+export interface CaptureRedirectInit {
+  /**
+   * Fully-qualified hostname (no scheme, no wildcards). Must be a declared
+   * `domain` or a subdomain of one. The extension builds the Chrome
+   * `webRequest` filter as `https://${host}${path ?? '/*'}`.
+   */
+  host: string;
+  /**
+   * Optional URL path scoping. Omitted ⇒ all paths (`/*`). Must start with
+   * `/`; a trailing `*` wildcard is allowed.
+   */
+  path?: string;
+  /**
+   * Optional capture timeout in milliseconds. Defaults to 30000 on the
+   * extension if omitted. After the timeout, the response is
+   * `{ ok: false, op: 'capture_redirect', error: 'timeout' }`.
+   */
+  timeoutMs?: number;
+}
+
 export interface InnerRequestFetch {
   type: 'request';
   id: number;
@@ -405,6 +442,13 @@ export interface InnerRequestCaptureRequestHeader {
   init: CaptureRequestHeaderInit;
 }
 
+export interface InnerRequestCaptureRedirect {
+  type: 'request';
+  id: number;
+  op: 'capture_redirect';
+  init: CaptureRedirectInit;
+}
+
 export interface InnerRequestReadIndexedDb {
   type: 'request';
   id: number;
@@ -422,6 +466,7 @@ export type InnerRequest =
   | InnerRequestReadLocalStorage
   | InnerRequestReadSessionStorage
   | InnerRequestCaptureRequestHeader
+  | InnerRequestCaptureRedirect
   | InnerRequestReadIndexedDb;
 
 export interface InnerResponseFetchOk {
@@ -479,6 +524,15 @@ export interface InnerResponseCaptureRequestHeaderOk {
   value: string;
 }
 
+export interface InnerResponseCaptureRedirectOk {
+  type: 'response';
+  id: number;
+  ok: true;
+  op: 'capture_redirect';
+  /** Captured redirect target URL (`details.redirectUrl`). */
+  value: string;
+}
+
 export interface InnerResponseReadIndexedDbOk {
   type: 'response';
   id: number;
@@ -506,6 +560,7 @@ export type InnerResponseOk =
   | InnerResponseReadLocalStorageOk
   | InnerResponseReadSessionStorageOk
   | InnerResponseCaptureRequestHeaderOk
+  | InnerResponseCaptureRedirectOk
   | InnerResponseReadIndexedDbOk;
 
 export interface InnerResponseError {

@@ -137,6 +137,12 @@ describe('validateFrame', () => {
       ).not.toThrow();
     });
 
+    it("accepts capabilities: ['capture_redirect']", () => {
+      expect(() =>
+        validateFrame({ ...validHello, capabilities: ['capture_redirect'] }),
+      ).not.toThrow();
+    });
+
     it('accepts all five 0.3.0 capabilities together', () => {
       expect(() =>
         validateFrame({
@@ -1111,6 +1117,142 @@ describe('validateInnerFrame', () => {
           id: 1,
           ok: false,
           op: 'capture_request_header',
+          error: 'timeout',
+        }),
+      ).not.toThrow();
+    });
+  });
+
+  describe('capture_redirect', () => {
+    const validReq = {
+      type: 'request' as const,
+      id: 1,
+      op: 'capture_redirect' as const,
+      init: {
+        host: 'musescore.com',
+        path: '/score/download/*',
+      },
+    };
+
+    it('accepts a valid capture_redirect request', () => {
+      expect(() => validateInnerFrame(validReq)).not.toThrow();
+    });
+
+    it('accepts capture_redirect request with host only (no path)', () => {
+      expect(() =>
+        validateInnerFrame({
+          type: 'request',
+          id: 1,
+          op: 'capture_redirect',
+          init: { host: 'musescore.com' },
+        }),
+      ).not.toThrow();
+    });
+
+    it('accepts capture_redirect request with timeoutMs', () => {
+      expect(() =>
+        validateInnerFrame({ ...validReq, init: { ...validReq.init, timeoutMs: 10000 } }),
+      ).not.toThrow();
+    });
+
+    it('rejects capture_redirect missing host', () => {
+      expect(() =>
+        validateInnerFrame({
+          type: 'request',
+          id: 1,
+          op: 'capture_redirect',
+          init: { path: '/x' },
+        }),
+      ).toThrow(/host/);
+    });
+
+    it('rejects capture_redirect with a bad hostname', () => {
+      expect(() =>
+        validateInnerFrame({
+          type: 'request',
+          id: 1,
+          op: 'capture_redirect',
+          init: { host: 'not a host' },
+        }),
+      ).toThrow(/host/);
+    });
+
+    it('rejects capture_redirect with a bad path (no leading slash)', () => {
+      expect(() =>
+        validateInnerFrame({
+          type: 'request',
+          id: 1,
+          op: 'capture_redirect',
+          init: { host: 'musescore.com', path: 'no-slash' },
+        }),
+      ).toThrow(/path/);
+    });
+
+    it('rejects capture_redirect with an unexpected field', () => {
+      expect(() =>
+        validateInnerFrame({
+          type: 'request',
+          id: 1,
+          op: 'capture_redirect',
+          init: { host: 'musescore.com', headerName: 'cookie' },
+        }),
+      ).toThrow(/unexpected/);
+    });
+
+    it('rejects capture_redirect with negative timeoutMs', () => {
+      expect(() =>
+        validateInnerFrame({ ...validReq, init: { ...validReq.init, timeoutMs: -1 } }),
+      ).toThrow(/timeoutMs/);
+    });
+
+    it('rejects capture_redirect with non-integer timeoutMs', () => {
+      expect(() =>
+        validateInnerFrame({ ...validReq, init: { ...validReq.init, timeoutMs: 1.5 } }),
+      ).toThrow(/timeoutMs/);
+    });
+
+    it('accepts capture_redirect success response', () => {
+      expect(() =>
+        validateInnerFrame({
+          type: 'response',
+          id: 1,
+          ok: true,
+          op: 'capture_redirect',
+          value: 'https://s3.example.com/presigned?sig=abc',
+        }),
+      ).not.toThrow();
+    });
+
+    it('rejects capture_redirect response missing value', () => {
+      expect(() =>
+        validateInnerFrame({
+          type: 'response',
+          id: 1,
+          ok: true,
+          op: 'capture_redirect',
+        }),
+      ).toThrow(/value/);
+    });
+
+    it('rejects capture_redirect response with non-string value', () => {
+      expect(() =>
+        validateInnerFrame({
+          type: 'response',
+          id: 1,
+          ok: true,
+          op: 'capture_redirect',
+          value: 42,
+        }),
+      ).toThrow(/value/);
+    });
+
+    it('accepts capture_redirect timeout error response', () => {
+      expect(() =>
+        validateInnerFrame({
+          type: 'response',
+          id: 1,
+          ok: false,
+          op: 'capture_redirect',
           error: 'timeout',
         }),
       ).not.toThrow();
