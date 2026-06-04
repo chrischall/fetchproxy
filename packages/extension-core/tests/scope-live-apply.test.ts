@@ -75,6 +75,33 @@ describe('liveScopeApplications', () => {
     const rec = scopeUpdateRecord({ mcpIds: ['m-dead'] });
     expect(liveScopeApplications(rec, () => false)).toEqual([]);
   });
+
+  it('ignores non-scope-update (pair) records even when live', () => {
+    // A pair approval establishes its sessions separately (rekey + ReadyFrame),
+    // so liveScopeApplications must never target it — even if isLive is true.
+    const pair = {
+      kind: 'pair',
+      key: 'idhash:scopehash',
+      identityHash: 'idhash',
+      serverName: 'musescore-mcp',
+      version: '0.5.0',
+      mcpIds: ['m-live'],
+      domains: ['musescore.com'],
+      identityX25519Pub: 'x',
+      identityEd25519Pub: 'e',
+      sessionNonces: { 'm-live': 'nonce' },
+      capabilities: ['fetch', 'capture_redirect'],
+      cookieKeys: [],
+      localStorageKeys: [],
+      sessionStorageKeys: [],
+      captureHeaders: [],
+      indexedDbScopes: [],
+      localStoragePointers: [],
+      sessionStoragePointers: [],
+      pairCode: '1234',
+    } as unknown as AnyPendingRecord;
+    expect(liveScopeApplications(pair, () => true)).toEqual([]);
+  });
 });
 
 describe('applyGrantedScopeToSession + sessionScopeSnapshot', () => {

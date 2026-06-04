@@ -986,17 +986,12 @@ async function onServerHello(hello: HelloFrameFromServer): Promise<void> {
     return;
   }
   if (result.kind === 'auto-trust') {
-    // Store GRANTED (intersection) scope in the mcp* maps.
+    // Store GRANTED (intersection) scope in the mcp* maps. `result` carries the
+    // already-intersected scope (granted = approved ∩ declared), so applying it
+    // verbatim never escalates beyond approval.
     sessions.set(result.mcpId, result.sessionKey);
     mcpDomains.set(result.mcpId, [...result.domains]);
-    mcpCapabilities.set(result.mcpId, [...result.capabilities]);
-    mcpCookieKeys.set(result.mcpId, [...result.cookieKeys]);
-    mcpLocalStorageKeys.set(result.mcpId, [...result.localStorageKeys]);
-    mcpSessionStorageKeys.set(result.mcpId, [...result.sessionStorageKeys]);
-    mcpCaptureHeaders.set(result.mcpId, [...result.captureHeaders]);
-    mcpIndexedDbScopes.set(result.mcpId, [...result.indexedDbScopes]);
-    mcpLocalStoragePointers.set(result.mcpId, [...result.localStoragePointers]);
-    mcpSessionStoragePointers.set(result.mcpId, [...result.sessionStoragePointers]);
+    applyGrantedScopeToSession(result.mcpId, result);
     // Part 3: track identity hash per session for connected-status dot.
     mcpIdentityHash.set(result.mcpId, toHex(await sha256(fromB64(hello.identityX25519Pub))));
     broadcastConnectionsChanged();
