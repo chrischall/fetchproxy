@@ -747,8 +747,42 @@ function validateInnerRequest(raw: Record<string, unknown>): InnerFrame {
     }
     return raw as unknown as InnerFrame;
   }
+  if (raw.op === 'download') {
+    assertObject(raw.init, 'inner.init');
+    if (raw.init.url === undefined) {
+      throw new ProtocolError('inner.init.url: missing');
+    }
+    assertHttpUrl(raw.init.url, 'inner.init.url');
+    if (raw.init.filename !== undefined) {
+      assertString(raw.init.filename, 'inner.init.filename');
+      // Relative to the browser's Downloads dir — no absolute paths and no
+      // `..` traversal (chrome.downloads also rejects these, but we refuse
+      // them at the wire boundary so a bad value never reaches the API).
+      if (/^([/\\]|[A-Za-z]:)/.test(raw.init.filename)) {
+        throw new ProtocolError(
+          `inner.init.filename: must be relative ${JSON.stringify(raw.init.filename)}`,
+        );
+      }
+      if (raw.init.filename.split(/[/\\]/).includes('..')) {
+        throw new ProtocolError(
+          `inner.init.filename: must not contain '..' ${JSON.stringify(raw.init.filename)}`,
+        );
+      }
+    }
+    if (raw.init.timeoutMs !== undefined) {
+      assertPositiveInt(raw.init.timeoutMs, 'inner.init.timeoutMs');
+    }
+    for (const k of Object.keys(raw.init)) {
+      if (k !== 'url' && k !== 'filename' && k !== 'timeoutMs') {
+        throw new ProtocolError(
+          `inner.init: unexpected field ${JSON.stringify(k)} on download`,
+        );
+      }
+    }
+    return raw as unknown as InnerFrame;
+  }
   throw new ProtocolError(
-    `inner.op: must be one of "fetch", "read_cookies", "read_local_storage", "read_session_storage", "capture_request_header", "capture_redirect", "read_indexed_db"; got ${JSON.stringify(raw.op)}`,
+    `inner.op: must be one of "fetch", "read_cookies", "read_local_storage", "read_session_storage", "capture_request_header", "capture_redirect", "read_indexed_db", "download"; got ${JSON.stringify(raw.op)}`,
   );
 }
 
@@ -850,6 +884,31 @@ function validateInnerResponse(raw: Record<string, unknown>): InnerFrame {
       // outer container + prototype-pollution keys (assertObject does
       // both).
       assertObject(raw.values, 'inner.values');
+      return raw as unknown as InnerFrame;
+    }
+    if (op === 'download') {
+      assertObject(raw.value, 'inner.value');
+      assertString(raw.value.path, 'inner.value.path');
+      if (
+        typeof raw.value.bytes !== 'number' ||
+        !Number.isInteger(raw.value.bytes) ||
+        raw.value.bytes < 0
+      ) {
+        throw new ProtocolError('inner.value.bytes: expected non-negative integer');
+      }
+      if (raw.value.mime !== undefined) {
+        assertString(raw.value.mime, 'inner.value.mime');
+      }
+      if (raw.value.finalUrl !== undefined) {
+        assertString(raw.value.finalUrl, 'inner.value.finalUrl');
+      }
+      for (const k of Object.keys(raw.value)) {
+        if (k !== 'path' && k !== 'bytes' && k !== 'mime' && k !== 'finalUrl') {
+          throw new ProtocolError(
+            `inner.value: unexpected field ${JSON.stringify(k)} on download response`,
+          );
+        }
+      }
       return raw as unknown as InnerFrame;
     }
     throw new ProtocolError(

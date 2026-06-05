@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { handleServerHello, connectedIdentityHashes, applyNeedsPairRecord, CAPTURE_EXTRA_INFO_SPEC } from '../src/background.js';
+import { handleServerHello, connectedIdentityHashes, applyNeedsPairRecord, CAPTURE_EXTRA_INFO_SPEC, downloadValueFromItem } from '../src/background.js';
 import { TrustStore } from '../src/trust-store.js';
 import { normalisePendingPair } from '../src/lib/pending-pair.js';
 
@@ -8,6 +8,31 @@ describe('capture_request_header webRequest spec', () => {
     const spec = [...CAPTURE_EXTRA_INFO_SPEC];
     expect(spec).toContain('requestHeaders');
     expect(spec).toContain('extraHeaders');
+  });
+});
+
+describe('downloadValueFromItem', () => {
+  it('maps filename→path and fileSize→bytes, carrying mime + finalUrl', () => {
+    expect(
+      downloadValueFromItem({
+        filename: '/Users/me/Downloads/fetchproxy-tmp/x.pdf',
+        fileSize: 42000,
+        mime: 'application/pdf',
+        finalUrl: 'https://s3w.musescore.com/x?sig=abc',
+      }),
+    ).toEqual({
+      path: '/Users/me/Downloads/fetchproxy-tmp/x.pdf',
+      bytes: 42000,
+      mime: 'application/pdf',
+      finalUrl: 'https://s3w.musescore.com/x?sig=abc',
+    });
+  });
+
+  it('omits mime and finalUrl when absent (keeps the wire value minimal)', () => {
+    const v = downloadValueFromItem({ filename: '/tmp/x.pdf', fileSize: 0 });
+    expect(v).toEqual({ path: '/tmp/x.pdf', bytes: 0 });
+    expect('mime' in v).toBe(false);
+    expect('finalUrl' in v).toBe(false);
   });
 });
 import { scopeHash } from '../src/lib/scope.js';

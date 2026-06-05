@@ -64,6 +64,17 @@ export type Platform = 'chrome' | 'safari' | 'firefox';
  *                             target (e.g. a presigned URL). Elevated.
  *                             Single-shot per call. Capture is limited to
  *                             the MCP's own declared `domains`.
+ * `'download'`              — download a declared-domain URL via
+ *                             `chrome.downloads`, i.e. the BROWSER's own
+ *                             network stack (real cookies + TLS/JA3
+ *                             fingerprint). Clears a Cloudflare challenge
+ *                             that a page-level `fetch()` (cors mode)
+ *                             cannot, and follows the cross-origin redirect
+ *                             to the final file. Returns the saved local
+ *                             file path (the bridge is loopback-only /
+ *                             single-host, so the MCP reads it from the same
+ *                             disk). Elevated — writes a file to the user's
+ *                             machine. Limited to the MCP's declared `domains`.
  *
  * Future additions are wire-additive: unknown capabilities are rejected
  * by the validator, so adding a new verb requires extending this union.
@@ -75,7 +86,8 @@ export type Capability =
   | 'read_session_storage'
   | 'capture_request_header'
   | 'capture_redirect'
-  | 'read_indexed_db';
+  | 'read_indexed_db'
+  | 'download';
 
 /**
  * Set of capability strings that are valid on the wire. Runtime sibling
@@ -91,6 +103,7 @@ export const KNOWN_CAPABILITIES: ReadonlySet<Capability> = new Set<Capability>([
   'capture_request_header',
   'capture_redirect',
   'read_indexed_db',
+  'download',
 ]);
 
 /**
@@ -407,6 +420,30 @@ export interface CaptureRedirectInit {
   timeoutMs?: number;
 }
 
+/**
+ * `init` payload for `download`. The extension hands `url` to
+ * `chrome.downloads.download` — the BROWSER fetches it (real cookies +
+ * TLS/JA3 fingerprint), so it clears a Cloudflare challenge a page-level
+ * `fetch()` cannot, and follows the cross-origin redirect to the final
+ * file. The `url` host is gated against the MCP's declared `domains`.
+ */
+export interface DownloadInit {
+  /** Absolute `https:` URL to download. Host gated to declared `domains`. */
+  url: string;
+  /**
+   * Optional download filename, relative to the browser's default
+   * Downloads directory (e.g. `fetchproxy-tmp/abc.bin`). No absolute paths
+   * and no `..` segments. Omitted ⇒ the browser names it from the response.
+   */
+  filename?: string;
+  /**
+   * Optional timeout in milliseconds. Defaults to 120000 on the extension
+   * if omitted (downloads can be multi-MB). After the timeout, the response
+   * is `{ ok: false, op: 'download', error: 'timeout' }`.
+   */
+  timeoutMs?: number;
+}
+
 export interface InnerRequestFetch {
   type: 'request';
   id: number;
@@ -456,6 +493,13 @@ export interface InnerRequestReadIndexedDb {
   init: ReadIndexedDbInit;
 }
 
+export interface InnerRequestDownload {
+  type: 'request';
+  id: number;
+  op: 'download';
+  init: DownloadInit;
+}
+
 /**
  * Inner request frame. Discriminated by `op` so MCPs can extend the
  * verb set without breaking existing fetch traffic.
@@ -467,7 +511,8 @@ export type InnerRequest =
   | InnerRequestReadSessionStorage
   | InnerRequestCaptureRequestHeader
   | InnerRequestCaptureRedirect
-  | InnerRequestReadIndexedDb;
+  | InnerRequestReadIndexedDb
+  | InnerRequestDownload;
 
 export interface InnerResponseFetchOk {
   type: 'response';
@@ -549,6 +594,27 @@ export interface InnerResponseReadIndexedDbOk {
   values: Record<string, unknown>;
 }
 
+/** Saved-file metadata returned by a successful `download`. */
+export interface DownloadResult {
+  /** Absolute local path the browser saved the file to (`DownloadItem.filename`). */
+  path: string;
+  /** Saved file size in bytes (`DownloadItem.fileSize`). */
+  bytes: number;
+  /** Server-reported MIME type, when known (`DownloadItem.mime`). */
+  mime?: string;
+  /** Final URL after redirects, when known (`DownloadItem.finalUrl`). */
+  finalUrl?: string;
+}
+
+export interface InnerResponseDownloadOk {
+  type: 'response';
+  id: number;
+  ok: true;
+  op: 'download';
+  /** Saved local file path + metadata. The MCP reads it from the same disk. */
+  value: DownloadResult;
+}
+
 /**
  * Successful inner response, discriminated by `op`. Existing 0.1.x
  * fetch responses (with no `op`) are accepted by the validator for
@@ -561,7 +627,8 @@ export type InnerResponseOk =
   | InnerResponseReadSessionStorageOk
   | InnerResponseCaptureRequestHeaderOk
   | InnerResponseCaptureRedirectOk
-  | InnerResponseReadIndexedDbOk;
+  | InnerResponseReadIndexedDbOk
+  | InnerResponseDownloadOk;
 
 export interface InnerResponseError {
   type: 'response';

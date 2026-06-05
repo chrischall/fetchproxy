@@ -50,7 +50,8 @@
     "scripting",
     "cookies",
     "webRequest",
-    "alarms"
+    "alarms",
+    "downloads"
   ],
   "host_permissions": [
     "<all_urls>"

@@ -34,6 +34,7 @@ const CAPABILITY_DISPLAY: Record<string, CapabilityDisplay> = {
   read_session_storage: { label: 'Read sessionStorage', warn: true },
   capture_request_header: { label: 'Capture request header', warn: true },
   read_indexed_db: { label: 'Read IndexedDB', warn: true },
+  download: { label: 'Download files to your computer', warn: true },
 };
 
 /**

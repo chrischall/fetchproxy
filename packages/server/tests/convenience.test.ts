@@ -1012,6 +1012,95 @@ describe('captureRedirect()', () => {
   });
 });
 
+describe('download()', () => {
+  const downloadOpts = {
+    serverName: 'musescore-mcp',
+    version: '0.1.0',
+    domains: ['musescore.com'],
+    capabilities: ['fetch', 'download'] as const,
+  };
+  const URL = 'https://musescore.com/score/download/index?score_id=1&type=pdf&h=abc';
+
+  it('throws if "download" was not declared', async () => {
+    const s = new FetchproxyServer({
+      serverName: 'musescore-mcp',
+      version: '0.1.0',
+      domains: ['musescore.com'],
+    });
+    installFakeHost(s);
+    await expect(s.download({ url: URL })).rejects.toThrow(/download/);
+  });
+
+  it('emits a download inner request and resolves to the saved-file metadata', async () => {
+    const s = new FetchproxyServer(downloadOpts);
+    const fake = installFakeHost(s);
+    const promise = s.download({ url: URL, filename: 'fetchproxy-tmp/x.pdf' });
+    await new Promise((r) => setTimeout(r, 0));
+    const inner = fake.lastInner();
+    expect(inner).not.toBeNull();
+    expect(inner!.op).toBe('download');
+    if (inner!.op === 'download') {
+      expect(inner!.init.url).toBe(URL);
+      expect(inner!.init.filename).toBe('fetchproxy-tmp/x.pdf');
+    }
+    fake.reply({
+      type: 'response',
+      id: inner!.id,
+      ok: true,
+      op: 'download',
+      value: {
+        path: '/Users/me/Downloads/fetchproxy-tmp/x.pdf',
+        bytes: 42000,
+        mime: 'application/pdf',
+        finalUrl: 'https://s3w.musescore.com/x?sig=abc',
+      },
+    });
+    await expect(promise).resolves.toEqual({
+      path: '/Users/me/Downloads/fetchproxy-tmp/x.pdf',
+      bytes: 42000,
+      mime: 'application/pdf',
+      finalUrl: 'https://s3w.musescore.com/x?sig=abc',
+    });
+  });
+
+  it('threads timeoutMs and omits filename when not supplied', async () => {
+    const s = new FetchproxyServer(downloadOpts);
+    const fake = installFakeHost(s);
+    const promise = s.download({ url: URL, timeoutMs: 90000 });
+    await new Promise((r) => setTimeout(r, 0));
+    const inner = fake.lastInner();
+    if (inner!.op === 'download') {
+      expect(inner!.init.timeoutMs).toBe(90000);
+      expect(inner!.init.filename).toBeUndefined();
+    }
+    fake.reply({
+      type: 'response',
+      id: inner!.id,
+      ok: true,
+      op: 'download',
+      value: { path: '/tmp/x.pdf', bytes: 1 },
+    });
+    await promise;
+  });
+
+  it('surfaces a download error response as FetchproxyProtocolError', async () => {
+    const s = new FetchproxyServer(downloadOpts);
+    const fake = installFakeHost(s);
+    const promise = s.download({ url: URL });
+    await new Promise((r) => setTimeout(r, 0));
+    const inner = fake.lastInner();
+    fake.reply({
+      type: 'response',
+      id: inner!.id,
+      ok: false,
+      op: 'download',
+      error: 'download interrupted: SERVER_FORBIDDEN',
+    });
+    await expect(promise).rejects.toThrow(FetchproxyProtocolError);
+    await expect(promise).rejects.toThrow(/interrupted/);
+  });
+});
+
 describe('URL guard (assertUrlInDomains)', () => {
   it('rejects path arg that cannot be parsed as a URL', async () => {
     // ws-server.ts:153 — `new URL(...)` throw caught and re-wrapped.
