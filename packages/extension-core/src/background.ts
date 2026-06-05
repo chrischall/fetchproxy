@@ -49,6 +49,8 @@ import {
   type InnerRequestCaptureRequestHeader,
   type InnerRequestCaptureRedirect,
   type InnerRequestReadIndexedDb,
+  type InnerRequestDownload,
+  type DownloadResult,
   type EncryptedFrame,
 } from '@fetchproxy/protocol';
 import { TrustStore } from './trust-store.js';
@@ -455,6 +457,32 @@ declare const chrome: {
           redirectUrl: string;
         }) => void,
         filter: { urls: string[] },
+      ) => void;
+      removeListener: (cb: unknown) => void;
+    };
+  };
+  downloads?: {
+    download: (options: {
+      url: string;
+      filename?: string;
+      conflictAction?: 'uniquify' | 'overwrite' | 'prompt';
+      saveAs?: boolean;
+    }) => Promise<number>;
+    search: (query: { id: number }) => Promise<
+      {
+        id: number;
+        filename: string;
+        fileSize: number;
+        state: 'in_progress' | 'interrupted' | 'complete';
+        mime?: string;
+        finalUrl?: string;
+        error?: string;
+      }[]
+    >;
+    erase: (query: { id: number }) => Promise<number[]>;
+    onChanged: {
+      addListener: (
+        cb: (delta: { id: number; state?: { current: string }; error?: { current: string } }) => void,
       ) => void;
       removeListener: (cb: unknown) => void;
     };
@@ -1298,6 +1326,10 @@ async function handleRequest(mcpId: string, req: InnerRequest): Promise<void> {
     await handleReadIndexedDbRequest(mcpId, req, domains);
     return;
   }
+  if (req.op === 'download') {
+    await handleDownloadRequest(mcpId, req, domains);
+    return;
+  }
 }
 
 async function handleFetchRequest(
@@ -1927,6 +1959,154 @@ async function handleCaptureRedirectRequest(
       error: 'timeout',
     });
   }, timeoutMs);
+}
+
+/**
+ * Map a completed `chrome.downloads` item to a `download` response value.
+ * `mime` / `finalUrl` are omitted when absent so the wire stays minimal (the
+ * protocol validator treats both as optional). Exported for unit testing —
+ * the surrounding async orchestration is exercised live, like other handlers.
+ */
+export function downloadValueFromItem(item: {
+  filename: string;
+  fileSize: number;
+  mime?: string;
+  finalUrl?: string;
+}): DownloadResult {
+  return {
+    path: item.filename,
+    bytes: item.fileSize,
+    ...(item.mime ? { mime: item.mime } : {}),
+    ...(item.finalUrl ? { finalUrl: item.finalUrl } : {}),
+  };
+}
+
+/**
+ * Download `url` via `chrome.downloads` — the BROWSER fetches it with the
+ * user's real cookies + TLS/JA3 fingerprint, so it clears a Cloudflare
+ * bot-challenge a page-level `fetch()` (cors) cannot, and follows the
+ * cross-origin redirect to the final file. Resolves the saved local file
+ * path + size (the bridge is loopback-only, so the MCP reads the same disk).
+ * Only the `url` host needs to be a declared `domain`; chrome.downloads
+ * follows redirects (e.g. to a presigned subdomain) on its own.
+ */
+async function handleDownloadRequest(
+  mcpId: string,
+  req: InnerRequestDownload,
+  domains: string[],
+): Promise<void> {
+  if (!isUrlAllowedForAnyDomain(req.init.url, domains)) {
+    await sendInner(mcpId, {
+      type: 'response',
+      id: req.id,
+      ok: false,
+      op: 'download',
+      error: `download url host not in domains [${domains.join(', ')}]`,
+    });
+    return;
+  }
+  if (!chrome.downloads) {
+    await sendInner(mcpId, {
+      type: 'response',
+      id: req.id,
+      ok: false,
+      op: 'download',
+      error: 'chrome.downloads API not available (extension missing the "downloads" permission?)',
+    });
+    return;
+  }
+  const downloads = chrome.downloads;
+  const timeoutMs = req.init.timeoutMs ?? 120_000;
+  let done = false;
+  let downloadId: number | undefined;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+
+  const cleanup = (): void => {
+    try {
+      downloads.onChanged.removeListener(onChanged);
+    } catch {
+      // ignore
+    }
+    if (timer !== undefined) clearTimeout(timer);
+  };
+  const fail = (error: string): void => {
+    if (done) return;
+    done = true;
+    cleanup();
+    void sendInner(mcpId, { type: 'response', id: req.id, ok: false, op: 'download', error });
+  };
+  const succeed = async (): Promise<void> => {
+    if (done || downloadId === undefined) return;
+    let items;
+    try {
+      items = await downloads.search({ id: downloadId });
+    } catch (e) {
+      fail(`download search failed: ${String(e)}`);
+      return;
+    }
+    const item = items[0];
+    if (!item) {
+      fail('download completed but its record was not found');
+      return;
+    }
+    done = true;
+    cleanup();
+    // Erase only the download RECORD — the file stays for the MCP to move.
+    void downloads.erase({ id: downloadId }).catch(() => {
+      // best-effort record cleanup
+    });
+    void sendInner(mcpId, {
+      type: 'response',
+      id: req.id,
+      ok: true,
+      op: 'download',
+      value: downloadValueFromItem(item),
+    });
+  };
+  const onChanged = (delta: {
+    id: number;
+    state?: { current: string };
+    error?: { current: string };
+  }): void => {
+    if (downloadId === undefined || delta.id !== downloadId) return;
+    if (delta.error?.current) {
+      fail(`download interrupted: ${delta.error.current}`);
+      return;
+    }
+    if (delta.state?.current === 'complete') {
+      void succeed();
+    } else if (delta.state?.current === 'interrupted') {
+      fail('download interrupted');
+    }
+  };
+
+  // Listener BEFORE the download so a fast completion isn't missed.
+  downloads.onChanged.addListener(onChanged);
+  timer = setTimeout(() => fail('timeout'), timeoutMs);
+
+  try {
+    downloadId = await downloads.download({
+      url: req.init.url,
+      ...(req.init.filename ? { filename: req.init.filename } : {}),
+      conflictAction: 'uniquify',
+      saveAs: false,
+    });
+  } catch (e) {
+    fail(`download could not be started: ${String(e)}`);
+    return;
+  }
+  // Race guard: a tiny file may finish before `download()` even resolved, so
+  // the onChanged 'complete' delta could have fired while downloadId was unset.
+  try {
+    const [item] = await downloads.search({ id: downloadId });
+    if (item?.state === 'complete') {
+      void succeed();
+    } else if (item?.state === 'interrupted') {
+      fail(`download interrupted: ${item.error ?? 'unknown'}`);
+    }
+  } catch {
+    // onChanged will still deliver the terminal state.
+  }
 }
 
 async function handleReadIndexedDbRequest(

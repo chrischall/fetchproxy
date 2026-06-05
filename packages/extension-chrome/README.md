@@ -47,6 +47,7 @@ Each release also publishes a packaged `fetchproxy-extension-${VERSION}.zip` on 
 - `host_permissions: ["<all_urls>"]` — required because per-MCP domains are dynamic and enforced inside the extension, not statically in the manifest.
 - `content_scripts` registers both an isolated-world dispatcher (`content.js`) and a MAIN-world capture helper (`capture-logger.js`) at `<all_urls>`. Routing/allowlist enforcement happens inside the scripts themselves once the background dispatches a request.
 - `permissions: ["alarms"]` — used solely for the MV3 service-worker keepalive (`chrome.alarms` ticks every ~24s to wake the SW from idle so the WS bridge stays reachable between bursts of MCP traffic). No alarm payload, no scheduling beyond the single keepalive.
+- `permissions: ["downloads"]` — backs the `download` capability: `chrome.downloads.download` lets the BROWSER fetch a declared-domain URL with the user's real cookies + TLS/JA3 fingerprint, clearing a Cloudflare bot-challenge a page-level `fetch()` (cors) cannot. Only used when an MCP declares `download`; the extension returns the saved local file path (the bridge is loopback-only, so the MCP reads it from the same disk) and erases only the download *record*, leaving the file for the MCP to move.
 
 See the [top-level README](https://github.com/chrischall/fetchproxy#readme) for the architecture and the [protocol reference](https://github.com/chrischall/fetchproxy/blob/main/docs/PROTOCOL.md) for the wire format.
 

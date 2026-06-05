@@ -12,6 +12,7 @@ import type {
   InnerFrame,
   FetchInit,
   ReadCookiesInitV3,
+  DownloadResult,
 } from '@fetchproxy/protocol';
 import { electRole } from './election.js';
 import { startHost, type HostHandle } from './host.js';
@@ -419,7 +420,7 @@ export class FetchproxyHttpError extends Error {
 export class FetchproxyBridgeDownError extends FetchproxyProtocolError {
   readonly originalError: string;
   readonly retryAttempted: boolean;
-  readonly op: 'fetch' | 'capture_request_header' | 'capture_redirect';
+  readonly op: 'fetch' | 'capture_request_header' | 'capture_redirect' | 'download';
   readonly url?: string;
   /** 0.8.0+: bridge role at throw time; `null` if listen() hadn't bound yet. */
   readonly role: 'host' | 'peer' | null;
@@ -430,7 +431,7 @@ export class FetchproxyBridgeDownError extends FetchproxyProtocolError {
   constructor(args: {
     originalError: string;
     retryAttempted?: boolean;
-    op?: 'fetch' | 'capture_request_header' | 'capture_redirect';
+    op?: 'fetch' | 'capture_request_header' | 'capture_redirect' | 'download';
     url?: string;
     role?: 'host' | 'peer' | null;
     port?: number;
@@ -829,6 +830,11 @@ export class FetchproxyServer {
   private pendingIdb = new Map<
     number,
     { resolve: (v: Record<string, unknown>) => void; reject: (e: Error) => void }
+  >();
+  // download awaiters resolve the saved-file metadata (path + size + mime).
+  private pendingDownload = new Map<
+    number,
+    { resolve: (v: DownloadResult) => void; reject: (e: Error) => void }
   >();
   private mcpId: string | null = null;
   private identity: Identity | null = null;
@@ -2183,6 +2189,108 @@ export class FetchproxyServer {
   }
 
   /**
+   * Download `url` through the BROWSER's own network stack via
+   * `chrome.downloads` (real cookies + TLS/JA3 fingerprint). Unlike a
+   * page-level `fetch()` (cors mode), this clears a Cloudflare bot-challenge
+   * on the endpoint and follows the cross-origin redirect to the final file.
+   * Resolves the saved local file path + size; the bridge is loopback-only /
+   * single-host, so the MCP reads the bytes from the same disk. Requires
+   * `'download'` in capabilities and the `url` host to be a declared `domain`.
+   */
+  async download(opts: {
+    url: string;
+    filename?: string;
+    timeoutMs?: number;
+  }): Promise<DownloadResult> {
+    if (!this.opts.capabilities.includes('download')) {
+      throw new Error(
+        'FetchproxyServer.download(): MCP did not declare "download" in capabilities',
+      );
+    }
+    await this.ensureConnected();
+    this.throwIfPendingPair();
+    try {
+      const result = await this._downloadOnce(opts);
+      this.recordSuccess();
+      return result;
+    } catch (err) {
+      const swDown =
+        err instanceof FetchproxyProtocolError &&
+        classifyFetchError(err.message) === 'content_script_unreachable';
+      if (!swDown) {
+        this.recordFailure(`download: ${(err as Error).message ?? String(err)}`);
+        throw err;
+      }
+      // Mirror fetch()/capture_redirect's lazy-revive on SW eviction.
+      this.lastEvictionDetectedAt = Date.now();
+      const reviveMs = this.opts.bridgeReviveDelayMs ?? 0;
+      if (reviveMs > 0) {
+        this.lazyReviveAttempts += 1;
+        await new Promise((r) => setTimeout(r, reviveMs));
+        try {
+          const result = await this._downloadOnce(opts);
+          this.lazyReviveSuccesses += 1;
+          this.recordSuccess();
+          return result;
+        } catch (retryErr) {
+          const stillDown =
+            retryErr instanceof FetchproxyProtocolError &&
+            classifyFetchError(retryErr.message) === 'content_script_unreachable';
+          if (!stillDown) {
+            this.recordFailure(`download: ${(retryErr as Error).message ?? String(retryErr)}`);
+            throw retryErr;
+          }
+          this.recordFailure(`download bridge-down: ${(retryErr as Error).message}`);
+          throw new FetchproxyBridgeDownError({
+            originalError: (retryErr as Error).message,
+            retryAttempted: true,
+            op: 'download',
+            url: opts.url,
+            role: this.role,
+            port: this.opts.port,
+          });
+        }
+      }
+      this.recordFailure(`download bridge-down: ${(err as Error).message}`);
+      throw new FetchproxyBridgeDownError({
+        originalError: (err as Error).message,
+        retryAttempted: false,
+        op: 'download',
+        url: opts.url,
+        role: this.role,
+        port: this.opts.port,
+      });
+    }
+  }
+
+  private async _downloadOnce(opts: {
+    url: string;
+    filename?: string;
+    timeoutMs?: number;
+  }): Promise<DownloadResult> {
+    const id = this.nextRequestId++;
+    const inner: InnerFrame = {
+      type: 'request',
+      id,
+      op: 'download',
+      init: {
+        url: opts.url,
+        ...(opts.filename !== undefined ? { filename: opts.filename } : {}),
+        ...(opts.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
+      },
+    };
+    const pending = new Promise<DownloadResult>((resolve, reject) => {
+      this.pendingDownload.set(id, { resolve, reject });
+    });
+    if (this.hostHandle) {
+      await this.hostHandle.sendOwnInner(inner);
+    } else if (this.peerHandle) {
+      await this.peerHandle.sendInner(inner);
+    }
+    return pending;
+  }
+
+  /**
    * 0.4.0+: read declared IndexedDB keys from the user's signed-in
    * tab. Requires `'read_indexed_db'` in capabilities AND the
    * `(database, store, keys)` triple to subset-match a declared
@@ -2422,6 +2530,24 @@ export class FetchproxyServer {
       }
       return;
     }
+    const downloadCb = this.pendingDownload.get(inner.id);
+    if (downloadCb) {
+      this.pendingDownload.delete(inner.id);
+      if (inner.ok) {
+        if (inner.op === 'download' && inner.value && typeof inner.value === 'object') {
+          downloadCb.resolve({ ...inner.value });
+        } else {
+          downloadCb.reject(
+            new FetchproxyProtocolError(
+              `unexpected ${String(inner.op)} response on download awaiter`,
+            ),
+          );
+        }
+      } else {
+        downloadCb.reject(new FetchproxyProtocolError(inner.error));
+      }
+      return;
+    }
     const cookiesCb = this.pendingReadCookies.get(inner.id);
     if (cookiesCb) {
       this.pendingReadCookies.delete(inner.id);
@@ -2473,6 +2599,8 @@ export class FetchproxyServer {
     this.pendingRedirect.clear();
     for (const { reject } of this.pendingIdb.values()) reject(err);
     this.pendingIdb.clear();
+    for (const { reject } of this.pendingDownload.values()) reject(err);
+    this.pendingDownload.clear();
   }
 
   /**

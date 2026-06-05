@@ -143,6 +143,12 @@ describe('validateFrame', () => {
       ).not.toThrow();
     });
 
+    it("accepts capabilities: ['download']", () => {
+      expect(() =>
+        validateFrame({ ...validHello, capabilities: ['download'] }),
+      ).not.toThrow();
+    });
+
     it('accepts all five 0.3.0 capabilities together', () => {
       expect(() =>
         validateFrame({
@@ -1253,6 +1259,155 @@ describe('validateInnerFrame', () => {
           id: 1,
           ok: false,
           op: 'capture_redirect',
+          error: 'timeout',
+        }),
+      ).not.toThrow();
+    });
+  });
+
+  describe('download', () => {
+    const validReq = {
+      type: 'request' as const,
+      id: 1,
+      op: 'download' as const,
+      init: {
+        url: 'https://musescore.com/score/download/index?score_id=1&type=pdf&h=abc',
+      },
+    };
+
+    it('accepts a valid download request', () => {
+      expect(() => validateInnerFrame(validReq)).not.toThrow();
+    });
+
+    it('accepts a download request with filename + timeoutMs', () => {
+      expect(() =>
+        validateInnerFrame({
+          ...validReq,
+          init: { ...validReq.init, filename: 'fetchproxy-tmp/x.pdf', timeoutMs: 120000 },
+        }),
+      ).not.toThrow();
+    });
+
+    it('rejects download missing url', () => {
+      expect(() =>
+        validateInnerFrame({ type: 'request', id: 1, op: 'download', init: {} }),
+      ).toThrow(/url/);
+    });
+
+    it('rejects download with a non-http(s) url', () => {
+      expect(() =>
+        validateInnerFrame({
+          ...validReq,
+          init: { url: 'file:///etc/passwd' },
+        }),
+      ).toThrow(/http/);
+    });
+
+    it('rejects download with an absolute filename', () => {
+      expect(() =>
+        validateInnerFrame({
+          ...validReq,
+          init: { ...validReq.init, filename: '/etc/evil' },
+        }),
+      ).toThrow(/relative/);
+    });
+
+    it('rejects download with a .. traversal in filename', () => {
+      expect(() =>
+        validateInnerFrame({
+          ...validReq,
+          init: { ...validReq.init, filename: '../../etc/evil' },
+        }),
+      ).toThrow(/\.\./);
+    });
+
+    it('rejects download with an unexpected field', () => {
+      expect(() =>
+        validateInnerFrame({
+          ...validReq,
+          init: { ...validReq.init, host: 'musescore.com' },
+        }),
+      ).toThrow(/unexpected/);
+    });
+
+    it('rejects download with a non-integer timeoutMs', () => {
+      expect(() =>
+        validateInnerFrame({ ...validReq, init: { ...validReq.init, timeoutMs: 1.5 } }),
+      ).toThrow(/timeoutMs/);
+    });
+
+    it('accepts a download success response', () => {
+      expect(() =>
+        validateInnerFrame({
+          type: 'response',
+          id: 1,
+          ok: true,
+          op: 'download',
+          value: {
+            path: '/Users/me/Downloads/fetchproxy-tmp/x.pdf',
+            bytes: 42000,
+            mime: 'application/pdf',
+            finalUrl: 'https://s3w.musescore.com/x?sig=abc',
+          },
+        }),
+      ).not.toThrow();
+    });
+
+    it('accepts a download success response with only path + bytes', () => {
+      expect(() =>
+        validateInnerFrame({
+          type: 'response',
+          id: 1,
+          ok: true,
+          op: 'download',
+          value: { path: '/tmp/x.pdf', bytes: 0 },
+        }),
+      ).not.toThrow();
+    });
+
+    it('rejects a download response whose value is missing path', () => {
+      expect(() =>
+        validateInnerFrame({
+          type: 'response',
+          id: 1,
+          ok: true,
+          op: 'download',
+          value: { bytes: 1 },
+        }),
+      ).toThrow(/path/);
+    });
+
+    it('rejects a download response with a non-integer bytes', () => {
+      expect(() =>
+        validateInnerFrame({
+          type: 'response',
+          id: 1,
+          ok: true,
+          op: 'download',
+          value: { path: '/tmp/x.pdf', bytes: 1.5 },
+        }),
+      ).toThrow(/bytes/);
+    });
+
+    it('rejects a download response with an unexpected value field', () => {
+      expect(() =>
+        validateInnerFrame({
+          type: 'response',
+          id: 1,
+          ok: true,
+          op: 'download',
+          value: { path: '/tmp/x.pdf', bytes: 1, evil: 'x' },
+        }),
+      ).toThrow(/unexpected/);
+    });
+
+    it('accepts a download timeout error response', () => {
+      expect(() =>
+        validateInnerFrame({
+          type: 'response',
+          id: 1,
+          ok: false,
+          op: 'download',
           error: 'timeout',
         }),
       ).not.toThrow();
