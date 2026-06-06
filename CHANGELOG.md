@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.3.0](https://github.com/chrischall/fetchproxy/compare/v1.2.0...v1.3.0) (2026-06-06)
+
+
+### Features
+
+* **download:** browser-native download capability (clears Cloudflare via chrome.downloads) ([#113](https://github.com/chrischall/fetchproxy/issues/113)) ([2f465ca](https://github.com/chrischall/fetchproxy/commit/2f465ca00db58f6ba5ec038d378537f22d392ab2))
+
+
+### Bug Fixes
+
+* **download:** one response frame per request + fast-fail off-domain url (PR [#113](https://github.com/chrischall/fetchproxy/issues/113) nits) ([#115](https://github.com/chrischall/fetchproxy/issues/115)) ([0d22a53](https://github.com/chrischall/fetchproxy/commit/0d22a5338d4f5c1026dd780d968e63562583c8c9))
+
 ## [1.2.0](https://github.com/chrischall/fetchproxy/compare/v1.1.0...v1.2.0) (2026-06-04)
 
 
