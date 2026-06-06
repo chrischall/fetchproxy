@@ -2037,22 +2037,40 @@ async function handleDownloadRequest(
   };
   const succeed = async (): Promise<void> => {
     if (done || downloadId === undefined) return;
+    // Claim ownership BEFORE the first await: both the onChanged 'complete'
+    // path and the post-download() race-guard can call succeed() while a prior
+    // call is still awaiting search(), so set `done` synchronously to guarantee
+    // exactly one response frame per request. The error paths below send
+    // directly (fail() would no-op now that `done` is set).
+    const id = downloadId;
+    done = true;
+    cleanup();
     let items;
     try {
-      items = await downloads.search({ id: downloadId });
+      items = await downloads.search({ id });
     } catch (e) {
-      fail(`download search failed: ${String(e)}`);
+      void sendInner(mcpId, {
+        type: 'response',
+        id: req.id,
+        ok: false,
+        op: 'download',
+        error: `download search failed: ${String(e)}`,
+      });
       return;
     }
     const item = items[0];
     if (!item) {
-      fail('download completed but its record was not found');
+      void sendInner(mcpId, {
+        type: 'response',
+        id: req.id,
+        ok: false,
+        op: 'download',
+        error: 'download completed but its record was not found',
+      });
       return;
     }
-    done = true;
-    cleanup();
     // Erase only the download RECORD — the file stays for the MCP to move.
-    void downloads.erase({ id: downloadId }).catch(() => {
+    void downloads.erase({ id }).catch(() => {
       // best-effort record cleanup
     });
     void sendInner(mcpId, {
