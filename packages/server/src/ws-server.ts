@@ -2207,6 +2207,9 @@ export class FetchproxyServer {
         'FetchproxyServer.download(): MCP did not declare "download" in capabilities',
       );
     }
+    // Fail fast on an out-of-domain URL (mirrors request()) — a clean local
+    // error rather than a full bridge round-trip that the extension rejects.
+    assertUrlInDomains('download url', opts.url, this.opts.domains);
     await this.ensureConnected();
     this.throwIfPendingPair();
     try {

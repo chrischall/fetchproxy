@@ -1031,6 +1031,16 @@ describe('download()', () => {
     await expect(s.download({ url: URL })).rejects.toThrow(/download/);
   });
 
+  it('fails fast (no bridge round-trip) for a URL outside declared domains', async () => {
+    const s = new FetchproxyServer(downloadOpts);
+    const fake = installFakeHost(s);
+    await expect(
+      s.download({ url: 'https://evil.example.com/x.pdf' }),
+    ).rejects.toThrow(/outside declared domains|download url/i);
+    // Rejected locally — nothing was ever sent over the bridge.
+    expect(fake.lastInner()).toBeNull();
+  });
+
   it('emits a download inner request and resolves to the saved-file metadata', async () => {
     const s = new FetchproxyServer(downloadOpts);
     const fake = installFakeHost(s);
