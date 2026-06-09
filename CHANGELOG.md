@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.3.1](https://github.com/chrischall/fetchproxy/compare/v1.3.0...v1.3.1) (2026-06-09)
+
+
+### Bug Fixes
+
+* bound session-ready wait (no bridge-timeout hang) + scroll trusted-MCPs list ([#116](https://github.com/chrischall/fetchproxy/issues/116)) ([6b41b0c](https://github.com/chrischall/fetchproxy/commit/6b41b0cf4f921078153134f209ba698de6853264))
+* **server:** address PR [#116](https://github.com/chrischall/fetchproxy/issues/116) review nits (pairCode invariant + pending-map leak) ([#118](https://github.com/chrischall/fetchproxy/issues/118)) ([1d65ccc](https://github.com/chrischall/fetchproxy/commit/1d65cccd0e7a5a51aa08ac25e340867869c1a3ec))
+
 ## [1.3.0](https://github.com/chrischall/fetchproxy/compare/v1.2.0...v1.3.0) (2026-06-06)
 
 
