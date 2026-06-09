@@ -1352,6 +1352,36 @@ export class FetchproxyServer {
   }
 
   /**
+   * Send an inner request frame via whichever bridge handle is active. If the
+   * send throws (e.g. `FetchproxySessionNotReadyError` — the session never
+   * confirmed), the frame never reached the bridge, so no reply will arrive:
+   * drop the just-registered pending resolver for this id (it lives in exactly
+   * one of the op maps — request ids are unique) so it doesn't leak until the
+   * server closes, then rethrow.
+   */
+  private async sendInnerFrame(inner: InnerFrame): Promise<void> {
+    try {
+      if (this.hostHandle) {
+        await this.hostHandle.sendOwnInner(inner);
+      } else if (this.peerHandle) {
+        await this.peerHandle.sendInner(inner);
+      }
+    } catch (err) {
+      if ('id' in inner && typeof inner.id === 'number') {
+        const { id } = inner;
+        this.pending.delete(id);
+        this.pendingReadCookies.delete(id);
+        this.pendingStorage.delete(id);
+        this.pendingCapture.delete(id);
+        this.pendingRedirect.delete(id);
+        this.pendingDownload.delete(id);
+        this.pendingIdb.delete(id);
+      }
+      throw err;
+    }
+  }
+
+  /**
    * Single bridge round-trip, wrapped by `fetchTimeoutMs` when set.
    * On timeout returns the `{ok:false, kind:'timeout'}` envelope —
    * the throwing surface is the convenience methods.
@@ -1364,11 +1394,7 @@ export class FetchproxyServer {
     const pending = new Promise<FetchResult | FetchResultError>((resolve) => {
       this.pending.set(id, resolve);
     });
-    if (this.hostHandle) {
-      await this.hostHandle.sendOwnInner(inner);
-    } else if (this.peerHandle) {
-      await this.peerHandle.sendInner(inner);
-    }
+    await this.sendInnerFrame(inner);
     const timeoutMs = this.opts.fetchTimeoutMs;
     if (timeoutMs === undefined || timeoutMs <= 0) return pending;
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -1792,11 +1818,7 @@ export class FetchproxyServer {
     const pending = new Promise<ReadCookiesResult | ReadCookiesResultError>((resolve) => {
       this.pendingReadCookies.set(id, resolve);
     });
-    if (this.hostHandle) {
-      await this.hostHandle.sendOwnInner(inner);
-    } else if (this.peerHandle) {
-      await this.peerHandle.sendInner(inner);
-    }
+    await this.sendInnerFrame(inner);
     const result = await pending;
     if (!result.ok) {
       throw new FetchproxyProtocolError(result.error);
@@ -1910,11 +1932,7 @@ export class FetchproxyServer {
     const pending = new Promise<Record<string, string>>((resolve, reject) => {
       this.pendingStorage.set(id, { resolve, reject });
     });
-    if (this.hostHandle) {
-      await this.hostHandle.sendOwnInner(inner);
-    } else if (this.peerHandle) {
-      await this.peerHandle.sendInner(inner);
-    }
+    await this.sendInnerFrame(inner);
     return pending;
   }
 
@@ -2071,11 +2089,7 @@ export class FetchproxyServer {
     const pending = new Promise<string>((resolve, reject) => {
       this.pendingCapture.set(id, { resolve, reject });
     });
-    if (this.hostHandle) {
-      await this.hostHandle.sendOwnInner(inner);
-    } else if (this.peerHandle) {
-      await this.peerHandle.sendInner(inner);
-    }
+    await this.sendInnerFrame(inner);
     return pending;
   }
 
@@ -2180,11 +2194,7 @@ export class FetchproxyServer {
     const pending = new Promise<string>((resolve, reject) => {
       this.pendingRedirect.set(id, { resolve, reject });
     });
-    if (this.hostHandle) {
-      await this.hostHandle.sendOwnInner(inner);
-    } else if (this.peerHandle) {
-      await this.peerHandle.sendInner(inner);
-    }
+    await this.sendInnerFrame(inner);
     return pending;
   }
 
@@ -2285,11 +2295,7 @@ export class FetchproxyServer {
     const pending = new Promise<DownloadResult>((resolve, reject) => {
       this.pendingDownload.set(id, { resolve, reject });
     });
-    if (this.hostHandle) {
-      await this.hostHandle.sendOwnInner(inner);
-    } else if (this.peerHandle) {
-      await this.peerHandle.sendInner(inner);
-    }
+    await this.sendInnerFrame(inner);
     return pending;
   }
 
@@ -2352,11 +2358,7 @@ export class FetchproxyServer {
     const pending = new Promise<Record<string, unknown>>((resolve, reject) => {
       this.pendingIdb.set(id, { resolve, reject });
     });
-    if (this.hostHandle) {
-      await this.hostHandle.sendOwnInner(inner);
-    } else if (this.peerHandle) {
-      await this.peerHandle.sendInner(inner);
-    }
+    await this.sendInnerFrame(inner);
     return pending;
   }
 
