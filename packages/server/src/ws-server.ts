@@ -1429,6 +1429,59 @@ export class FetchproxyServer {
   }
 
   /**
+   * FP-B2: bound a non-`fetch` verb's reply wait by `fetchTimeoutMs`.
+   *
+   * Before this, only `fetch()` raced its `pending` reply against a timer
+   * (`_fetchOnceWithTimeout`); `readCookies`, the storage reads,
+   * `capture_request_header`, `capture_redirect`, `download`, and
+   * `read_indexed_db` awaited their `pending` promise with no race, so a
+   * wedged extension hung the tool call indefinitely.
+   *
+   * `pending` is the already-registered reply promise. `pendingMap`/`id`
+   * point at the op-specific map entry so we can drop it on expiry exactly
+   * as `_fetchOnceWithTimeout` does — otherwise a late bridge reply would
+   * resolve into a stale resolver / leak. On timeout we reject with a
+   * `FetchproxyTimeoutError` (the same throwable the convenience methods
+   * already surface for fetch timeouts). `0`/unset opts out (unbounded),
+   * matching the fetch path.
+   */
+  private async _withVerbTimeout<T>(
+    pending: Promise<T>,
+    pendingMap: Map<number, unknown>,
+    id: number,
+    url: string,
+  ): Promise<T> {
+    const timeoutMs = this.opts.fetchTimeoutMs;
+    if (timeoutMs === undefined || timeoutMs <= 0) return pending;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const start = Date.now();
+    try {
+      return await Promise.race([
+        pending,
+        new Promise<T>((_resolve, reject) => {
+          timer = setTimeout(() => {
+            // Drop the pending resolver so a late bridge response doesn't
+            // become an unhandled promise that crashes the host.
+            pendingMap.delete(id);
+            reject(
+              new FetchproxyTimeoutError({
+                url,
+                timeoutMs,
+                role: this.role,
+                port: this.opts.port,
+                elapsedMs: Date.now() - start,
+                retryAttempted: false,
+              }),
+            );
+          }, timeoutMs);
+        }),
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+
+  /**
    * Map an `ok:false` fetch result to its typed throwable. Centralizes
    * the kind-to-error-class switch so `request()` and (via the same
    * logic re-implemented inline) `captureRequestHeader()` agree on what
@@ -1819,7 +1872,12 @@ export class FetchproxyServer {
       this.pendingReadCookies.set(id, resolve);
     });
     await this.sendInnerFrame(inner);
-    const result = await pending;
+    const result = await this._withVerbTimeout(
+      pending,
+      this.pendingReadCookies,
+      id,
+      `https://${host}`,
+    );
     if (!result.ok) {
       throw new FetchproxyProtocolError(result.error);
     }
@@ -1933,7 +1991,7 @@ export class FetchproxyServer {
       this.pendingStorage.set(id, { resolve, reject });
     });
     await this.sendInnerFrame(inner);
-    return pending;
+    return this._withVerbTimeout(pending, this.pendingStorage, id, `https://${host}`);
   }
 
   /**
@@ -2090,7 +2148,12 @@ export class FetchproxyServer {
       this.pendingCapture.set(id, { resolve, reject });
     });
     await this.sendInnerFrame(inner);
-    return pending;
+    return this._withVerbTimeout(
+      pending,
+      this.pendingCapture,
+      id,
+      `https://${opts.host}${opts.path ?? '/*'}`,
+    );
   }
 
   /**
@@ -2195,7 +2258,12 @@ export class FetchproxyServer {
       this.pendingRedirect.set(id, { resolve, reject });
     });
     await this.sendInnerFrame(inner);
-    return pending;
+    return this._withVerbTimeout(
+      pending,
+      this.pendingRedirect,
+      id,
+      `https://${opts.host}${opts.path ?? '/*'}`,
+    );
   }
 
   /**
@@ -2296,7 +2364,7 @@ export class FetchproxyServer {
       this.pendingDownload.set(id, { resolve, reject });
     });
     await this.sendInnerFrame(inner);
-    return pending;
+    return this._withVerbTimeout(pending, this.pendingDownload, id, opts.url);
   }
 
   /**
@@ -2359,7 +2427,7 @@ export class FetchproxyServer {
       this.pendingIdb.set(id, { resolve, reject });
     });
     await this.sendInnerFrame(inner);
-    return pending;
+    return this._withVerbTimeout(pending, this.pendingIdb, id, origin);
   }
 
   private assertScopeSubset(

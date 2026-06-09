@@ -315,7 +315,14 @@ export async function startHost(opts: HostOpts): Promise<HostHandle> {
         resetSessionPromise();
         disconnectListeners.forEach((cb) => cb());
       }
-      if (identified === 'peer' && peerMcpId) peers.delete(peerMcpId);
+      if (identified === 'peer' && peerMcpId) {
+        // FP-B1: a peer whose WS dropped may have already re-dialed with the
+        // same mcpId, replacing this slot via `peers.set`. Only delete if the
+        // mapped slot is still THIS socket — otherwise a late, stale close
+        // would evict the live (re-registered) peer and strand it until its
+        // next reconnect.
+        if (peers.get(peerMcpId)?.ws === ws) peers.delete(peerMcpId);
+      }
     });
   });
 

@@ -346,6 +346,99 @@ describe('host (concentrator)', () => {
     peer.close();
   });
 
+  it('stale peer socket close does not evict the re-registered live slot (FP-B1)', async () => {
+    // A peer whose WS drops re-dials with the SAME mcpId. The new
+    // connection runs peers.set(X, newSlot). When the OLD socket's close
+    // finally fires it must NOT peers.delete(X) — that would strand the
+    // live (new) peer until its next reconnect. The delete is now guarded:
+    // only delete if the mapped slot's ws is still the closing socket.
+    const port = 41107;
+    const el = await electRole({ host: '127.0.0.1', port });
+    if (el.role !== 'host') throw new Error('expected host');
+    const idDir = mkdtempSync(join(tmpdir(), 'fp-host-'));
+    const ownId = await loadOrCreateIdentity('opentable-mcp', idDir);
+    const peerId = await loadOrCreateIdentity('resy-mcp', idDir);
+
+    host = await startHost({
+      httpServer: el.server,
+      ownIdentity: ownId,
+      ownMcpId: 'opentable-mcp:0.9.1:abc1234567890de1',
+      ownServerName: 'opentable-mcp',
+      ownVersion: '0.9.1',
+      ownDomains: ['opentable.com'],
+    });
+
+    // Attach the extension so peer→extension frame forwarding is live.
+    const ext = new WebSocket(`ws://127.0.0.1:${port}`);
+    await new Promise<void>((r) => ext.once('open', () => r()));
+    const extHello: HelloFrameFromExtension = {
+      type: 'hello',
+      protocolVersion: 2,
+      role: 'extension',
+      platform: 'chrome',
+      extensionId: 'fetchproxy',
+      version: '0.4.0',
+      identityX25519Pub: 'AAAA',
+      identityEd25519Pub: 'AAAA',
+      sessionNonce: 'AAAA',
+    };
+    ext.send(JSON.stringify(extHello));
+    await new Promise((r) => setTimeout(r, 30));
+
+    const peerMcpId = 'resy-mcp:0.0.1:abc1234567890de2';
+    const peerHello = await buildServerHello({
+      identity: peerId,
+      mcpId: peerMcpId,
+      serverName: 'resy-mcp',
+      version: '0.0.1',
+      domains: ['resy.com'],
+    });
+
+    // Peer connection A — the original, soon-to-be-stale socket.
+    const peerA = new WebSocket(`ws://127.0.0.1:${port}`);
+    await new Promise<void>((r) => peerA.once('open', () => r()));
+    peerA.send(JSON.stringify(peerHello));
+    await new Promise((r) => setTimeout(r, 30));
+
+    // Peer connection B — same mcpId, the live re-registration.
+    const peerB = new WebSocket(`ws://127.0.0.1:${port}`);
+    await new Promise<void>((r) => peerB.once('open', () => r()));
+    // The extension is now seeing peer hellos; capture frames routed to B.
+    const bGotFrame = new Promise<boolean>((resolve) => {
+      peerB.on('message', (data: Buffer) => {
+        const parsed = JSON.parse(data.toString());
+        if (parsed.type === 'frame' && parsed.mcpId === peerMcpId) resolve(true);
+      });
+    });
+    peerB.send(JSON.stringify(peerHello));
+    await new Promise((r) => setTimeout(r, 30));
+
+    // Now the OLD socket A closes (the late, stale close).
+    peerA.close();
+    await new Promise((r) => setTimeout(r, 50));
+
+    // The extension routes a frame for the peer's mcpId. With the race
+    // fixed it must reach B (the live slot). With the bug, slot X was
+    // deleted by A's close and the frame is dropped.
+    const extToPeerFrame = {
+      type: 'frame',
+      mcpId: peerMcpId,
+      seq: 1,
+      iv: 'AAAAAAAAAAAAAAAA',
+      ciphertext: 'AAAA',
+    };
+    ext.send(JSON.stringify(extToPeerFrame));
+
+    const delivered = await Promise.race([
+      bGotFrame,
+      new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 500)),
+    ]);
+    expect(delivered).toBe(true);
+
+    ext.close();
+    peerB.close();
+  });
+
   it('refuses a second extension connection', async () => {
     const port = 41102;
     const el = await electRole({ host: '127.0.0.1', port });
