@@ -43,7 +43,15 @@
       ul { padding-left: 20px; margin: 8px 0; }
       li { padding: 2px 0; }
       /* 0.4.2: trusted-MCPs list with inline revoke button. */
-      ul.trusted-list { list-style: none; padding-left: 0; }
+      /* Bound the height so a long registry scrolls inside the popup (which has
+         a hard ~600px max) instead of being clipped with no scrollbar. */
+      ul.trusted-list {
+        list-style: none;
+        padding-left: 0;
+        max-height: 320px;
+        overflow-y: auto;
+        overscroll-behavior: contain;
+      }
       li.trusted-entry {
         display: flex;
         align-items: center;

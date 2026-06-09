@@ -15,6 +15,7 @@ import {
 } from '@fetchproxy/protocol';
 import { buildServerHello } from './build-server-hello.js';
 import { SessionState } from './session.js';
+import { awaitSessionReady } from './session-ready.js';
 import type { Identity } from './identity.js';
 
 export interface PeerOpts {
@@ -235,7 +236,12 @@ export async function startPeer(opts: PeerOpts): Promise<InternalPeerHandle> {
       // Wait for the FIRST ready; subsequent renegotiations swap `session`
       // in place, so we read it freshly here rather than reusing the
       // promise's resolved value (which is permanently the first session).
-      await sessionPromise;
+      // Bounded so a never-confirmed session surfaces a clear
+      // FetchproxySessionNotReadyError instead of hanging indefinitely.
+      await awaitSessionReady(sessionPromise, {
+        mcpId: opts.mcpId,
+        pendingPairCode: () => pendingPairCode,
+      });
       // Invariant: `session` is non-null once `sessionPromise` has resolved
       // — the only assignment path is `session = new SessionState(...)` two
       // statements before `resolveFirstReady(session)`, and there is no

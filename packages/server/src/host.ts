@@ -22,6 +22,7 @@ import {
 } from '@fetchproxy/protocol';
 import { buildServerHello } from './build-server-hello.js';
 import { SessionState } from './session.js';
+import { awaitSessionReady } from './session-ready.js';
 import type { Identity } from './identity.js';
 
 // Reject WS upgrades from public origins (drive-by webpage defense).
@@ -344,7 +345,12 @@ export async function startHost(opts: HostOpts): Promise<HostHandle> {
     sendOwnInner: async (inner) => {
       // Wait for the extension's ready frame to land and the session key to be
       // derived — mirrors the peer's `sendInner` which awaits `sessionPromise`.
-      const session = await ownSessionReady;
+      // Bounded so a never-confirmed session (pending re-approval, signed out)
+      // surfaces a clear FetchproxySessionNotReadyError instead of hanging.
+      const session = await awaitSessionReady(ownSessionReady, {
+        mcpId: opts.ownMcpId,
+        pendingPairCode: () => ownPendingPairCode,
+      });
       if (!extensionWs) throw new Error('host: no extension connected');
       const sealed = await sealInnerFrame(
         session.sessionKey,
