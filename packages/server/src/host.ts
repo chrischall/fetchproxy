@@ -197,6 +197,48 @@ export async function startHost(opts: HostOpts): Promise<HostHandle> {
           return;
         }
         if (frame.type === 'hello' && frame.role === 'server') {
+          // FP-C: authenticate the peer hello BEFORE touching the routing
+          // table. Peer registration was unauthenticated — any local process
+          // could `peers.set` a foreign mcpId and overwrite a legit peer's
+          // routing slot (cross-server DoS / mcpId squatting). The hello
+          // already carries an Ed25519 identity + a signature over
+          // `mcpId || sessionNonce`; verify it (proves the dialer holds the
+          // private key it presents) before mapping the slot.
+          const peerEdPub = fromB64(frame.identityEd25519Pub);
+          const peerSigMsg = concatBytes(
+            enc.encode(frame.mcpId),
+            fromB64(frame.sessionNonce),
+          );
+          const peerSig = fromB64(frame.sessionSig);
+          let peerSigOk = false;
+          try {
+            peerSigOk = await ed25519Verify(peerEdPub, peerSigMsg, peerSig);
+          } catch {
+            peerSigOk = false;
+          }
+          if (!peerSigOk) {
+            console.warn(
+              '[fetchproxy] peer hello signature invalid — refusing registration (possible squatter)',
+            );
+            ws.close(1008, 'peer hello signature invalid');
+            return;
+          }
+          // Refuse a second LIVE connection that squats an already-mapped
+          // mcpId under a DIFFERENT identity. A same-identity re-dial
+          // (legitimate reconnect after a flaky drop) is allowed to take
+          // over the slot — the stale socket's late close is guarded
+          // (FP-B1) so it won't evict the live re-registration.
+          const existing = peers.get(frame.mcpId);
+          if (existing && existing.ws !== ws) {
+            const existingEdPub = existing.helloFrame.identityEd25519Pub;
+            if (existingEdPub !== frame.identityEd25519Pub) {
+              console.warn(
+                '[fetchproxy] peer mcpId already mapped to a different identity — refusing (mcpId squatting)',
+              );
+              ws.close(1008, 'mcpId already registered to another identity');
+              return;
+            }
+          }
           identified = 'peer';
           peerMcpId = frame.mcpId;
           peers.set(frame.mcpId, { ws, helloFrame: frame });
