@@ -71,4 +71,18 @@ describe('election', () => {
       electRole({ host: '0.0.0.0.0', port: 41995 }),
     ).rejects.toThrow();
   });
+
+  it('does not reject on the bind timeout once listening succeeds', async () => {
+    // Sanity: the timeout must be cleared on success so a slow-but-eventual
+    // bind isn't poisoned by a late timer firing.
+    const port = 41993;
+    const result = await electRole({ host: '127.0.0.1', port, bindTimeoutMs: 50 });
+    expect(result.role).toBe('host');
+    if (result.role === 'host') {
+      cleanup.push(result.server);
+      // Wait past the timeout window; the server must still be listening.
+      await new Promise((r) => setTimeout(r, 80));
+      expect(result.server.listening).toBe(true);
+    }
+  });
 });
