@@ -40,6 +40,16 @@ describe('awaitSessionReady', () => {
     expect(err.hint).toMatch(/sign in/i);
   });
 
+  it('normalizes an empty-string pair code to a not-ready error with null pairCode', async () => {
+    const err = await awaitSessionReady(never(), {
+      mcpId: 'm',
+      pendingPairCode: () => '',
+      timeoutMs: 10,
+    }).catch((e) => e);
+    expect(err.reason).toBe('not-ready');
+    expect(err.pairCode).toBeNull();
+  });
+
   it('propagates a genuine rejection of the ready promise unchanged', async () => {
     const boom = new Error('extension disconnected before ready');
     await expect(

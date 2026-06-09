@@ -32,7 +32,9 @@ export class FetchproxySessionNotReadyError extends Error {
     );
     this.name = 'FetchproxySessionNotReadyError';
     this.reason = pairing ? 'pair-required' : 'not-ready';
-    this.pairCode = info.pairCode;
+    // Normalize so the invariant `reason === 'not-ready' ↔ pairCode === null` holds
+    // (an empty-string code would otherwise read as truthy for `pairCode !== null`).
+    this.pairCode = pairing ? info.pairCode : null;
     this.mcpId = info.mcpId;
     this.hint = hint;
     Object.setPrototypeOf(this, new.target.prototype);
