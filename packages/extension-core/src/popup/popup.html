@@ -62,8 +62,10 @@
       }
       li.trusted-entry:last-child { border-bottom: none; }
       .trusted-label { flex: 1; }
-      /* 0.4.x: Active / Inactive section headers within the trusted list. */
-      h4.trusted-section {
+      /* 0.4.x: Active / Inactive section headers within the trusted list.
+         The Active header is an <h4>; the Inactive header is a <summary>
+         inside a <details> (collapsed by default), so style by class. */
+      .trusted-section {
         margin: 10px 0 2px;
         font-size: 11px;
         font-weight: 600;
@@ -71,6 +73,8 @@
         letter-spacing: 0.04em;
         color: #6b7280;
       }
+      summary.trusted-section { cursor: pointer; }
+      details.trusted-inactive { margin-top: 4px; }
       button[data-action="revoke"] {
         background: transparent;
         border: 1px solid #e5e7eb;

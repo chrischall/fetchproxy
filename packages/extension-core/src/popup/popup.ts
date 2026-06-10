@@ -489,8 +489,15 @@ export function renderPopup(root: HTMLElement, state: PopupState): void {
         root.appendChild(buildList(active));
       }
       if (inactive.length > 0) {
-        root.appendChild(elem('h4', { class: 'trusted-section' }, `Inactive (${inactive.length})`));
-        root.appendChild(buildList(inactive));
+        // Collapsed by default — the currently-connected (Active) MCPs are
+        // what matter day-to-day; the rest tuck behind a native <details>
+        // disclosure the user can expand. No `open` attr ⇒ starts closed.
+        const details = elem('details', { class: 'trusted-inactive' });
+        details.appendChild(
+          elem('summary', { class: 'trusted-section' }, `Inactive (${inactive.length})`),
+        );
+        details.appendChild(buildList(inactive));
+        root.appendChild(details);
       }
     } else {
       root.appendChild(buildList(sorted));
