@@ -125,6 +125,27 @@ describe('renderPopup', () => {
       expect(namesIn()).toEqual(['opentable-mcp', 'resy-mcp']);
     });
 
+    it('renders the Inactive section collapsed by default (a closed <details>); Active stays expanded', () => {
+      renderPopup(container, {
+        mode: 'status',
+        trusted: [
+          { serverName: 'opentable-mcp', domains: ['opentable.com'], connected: true },
+          { serverName: 'resy-mcp', domains: ['resy.com'], connected: false },
+        ],
+      });
+      const details = container.querySelector('details.trusted-inactive');
+      expect(details).not.toBeNull();
+      // No `open` attribute ⇒ collapsed by default.
+      expect((details as HTMLDetailsElement).open).toBe(false);
+      // The Inactive header lives in the <summary>; the inactive entry is inside.
+      expect(details!.querySelector('summary.trusted-section')?.textContent).toContain('Inactive');
+      expect(namesIn(details!)).toEqual(['resy-mcp']);
+      // Active is NOT wrapped in a <details> — it stays plainly visible.
+      const activeHeader = container.querySelector('h4.trusted-section');
+      expect(activeHeader?.textContent).toContain('Active');
+      expect(activeHeader?.closest('details')).toBeNull();
+    });
+
     it('treats a missing `connected` as inactive once any entry carries connection info', () => {
       renderPopup(container, {
         mode: 'status',
