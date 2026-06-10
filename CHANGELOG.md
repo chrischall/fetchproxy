@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.3.2](https://github.com/chrischall/fetchproxy/compare/v1.3.1...v1.3.2) (2026-06-09)
+
+
+### Bug Fixes
+
+* **server:** reconnect + per-verb timeout hardening (FP-B1/B2/B3) ([#120](https://github.com/chrischall/fetchproxy/issues/120)) ([de5aec3](https://github.com/chrischall/fetchproxy/commit/de5aec3e7aa7d042c80a903e19b770376e902a32))
+
 ## [1.3.1](https://github.com/chrischall/fetchproxy/compare/v1.3.0...v1.3.1) (2026-06-09)
 
 
