@@ -405,6 +405,48 @@ function elem<K extends keyof HTMLElementTagNameMap>(
   return e;
 }
 
+/**
+ * Build one `<li>` for the trusted-MCPs list: optional connection-status dot,
+ * the `serverName → domains` label, and (when revokable) the ✕ button.
+ * Shared by the flat list and the Active/Inactive sectioned views.
+ */
+function buildTrustedEntry(
+  t: TrustedSummary,
+  onRevoke?: (identityHash: string) => void,
+): HTMLLIElement {
+  const li = elem('li', { class: 'trusted-entry' });
+  // Connection-status dot — only when `connected` is explicitly set, so
+  // legacy callers and tests without the live-session path are unchanged.
+  if (t.connected !== undefined) {
+    li.appendChild(
+      elem('span', {
+        class: `status-dot ${t.connected ? 'connected' : 'offline'}`,
+        'aria-label': t.connected ? 'connected' : 'not connected',
+        title: t.connected ? 'Connected' : 'Not connected',
+      }),
+    );
+  }
+  li.appendChild(
+    elem('span', { class: 'trusted-label' }, `${t.serverName} → ${t.domains.join(', ')}`),
+  );
+  // Revoke button — only when both an onRevoke callback and an identityHash
+  // are available (older tests/callers get the read-only list as before).
+  if (onRevoke && t.identityHash) {
+    const btn = elem(
+      'button',
+      { 'data-action': 'revoke', 'data-identity-hash': t.identityHash, title: 'Revoke trust' },
+      '✕',
+    );
+    btn.addEventListener('click', () => {
+      // Inline confirmation — the popup is too small for a modal.
+      if (!window.confirm(`Revoke trust for ${t.serverName}?`)) return;
+      onRevoke(t.identityHash!);
+    });
+    li.appendChild(btn);
+  }
+  return li;
+}
+
 export function renderPopup(root: HTMLElement, state: PopupState): void {
   root.innerHTML = '';
 
@@ -421,45 +463,38 @@ export function renderPopup(root: HTMLElement, state: PopupState): void {
       root.appendChild(elem('p', { class: 'hint' }, 'No trusted MCPs yet.'));
       return;
     }
-    const ul = elem('ul', { class: 'trusted-list' });
-    for (const t of state.trusted) {
-      const li = elem('li', { class: 'trusted-entry' });
-      // Part 3: connection-status dot — only rendered when `connected` is
-      // explicitly set (boolean). Omitted when the field is absent so
-      // legacy callers and unit tests that don't exercise the live-session
-      // path continue to work unchanged.
-      if (t.connected !== undefined) {
-        li.appendChild(
-          elem('span', {
-            class: `status-dot ${t.connected ? 'connected' : 'offline'}`,
-            'aria-label': t.connected ? 'connected' : 'not connected',
-            title: t.connected ? 'Connected' : 'Not connected',
-          }),
-        );
+    const onRevoke = state.onRevoke;
+    // Alphabetical by serverName (case-insensitive), stable within a group.
+    const byName = (a: TrustedSummary, b: TrustedSummary): number =>
+      a.serverName.localeCompare(b.serverName, undefined, { sensitivity: 'base' });
+    const sorted = [...state.trusted].sort(byName);
+
+    const buildList = (entries: TrustedSummary[]): HTMLElement => {
+      const ul = elem('ul', { class: 'trusted-list' });
+      for (const t of entries) ul.appendChild(buildTrustedEntry(t, onRevoke));
+      return ul;
+    };
+
+    // Split into Active (currently connected) / Inactive only when the
+    // background supplied connection info (≥1 entry has `connected` set).
+    // Legacy callers / unit tests with no connection info get a single
+    // sorted list, unchanged. A header is rendered only for a non-empty
+    // section, so all-active shows just "Active" and vice versa.
+    const hasConnInfo = sorted.some((t) => t.connected !== undefined);
+    if (hasConnInfo) {
+      const active = sorted.filter((t) => t.connected === true);
+      const inactive = sorted.filter((t) => t.connected !== true);
+      if (active.length > 0) {
+        root.appendChild(elem('h4', { class: 'trusted-section' }, `Active (${active.length})`));
+        root.appendChild(buildList(active));
       }
-      li.appendChild(
-        elem('span', { class: 'trusted-label' }, `${t.serverName} → ${t.domains.join(', ')}`),
-      );
-      // 0.4.2+: revoke button. Only rendered when both an onRevoke
-      // callback and an identityHash are available — older tests and
-      // legacy callers without identityHash still get the read-only
-      // list as before.
-      if (state.onRevoke && t.identityHash) {
-        const btn = elem(
-          'button',
-          { 'data-action': 'revoke', 'data-identity-hash': t.identityHash, title: 'Revoke trust' },
-          '✕',
-        );
-        btn.addEventListener('click', () => {
-          // Inline confirmation — the popup is too small for a modal.
-          if (!window.confirm(`Revoke trust for ${t.serverName}?`)) return;
-          state.onRevoke!(t.identityHash!);
-        });
-        li.appendChild(btn);
+      if (inactive.length > 0) {
+        root.appendChild(elem('h4', { class: 'trusted-section' }, `Inactive (${inactive.length})`));
+        root.appendChild(buildList(inactive));
       }
-      ul.appendChild(li);
+    } else {
+      root.appendChild(buildList(sorted));
     }
-    root.appendChild(ul);
     return;
   }
 

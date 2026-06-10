@@ -69,6 +69,77 @@ describe('renderPopup', () => {
     });
   });
 
+  // Alphabetical sort + Active/Inactive sections.
+  describe('sorting + active/inactive sections', () => {
+    const namesIn = (scope: ParentNode = container): (string | undefined)[] =>
+      [...scope.querySelectorAll('.trusted-label')].map(
+        (e) => e.textContent?.split(' → ')[0],
+      );
+
+    it('sorts alphabetically by serverName, as a single list, when no connection info is present', () => {
+      renderPopup(container, {
+        mode: 'status',
+        trusted: [
+          { serverName: 'resy-mcp', domains: ['resy.com'] },
+          { serverName: 'compass-mcp', domains: ['compass.com'] },
+          { serverName: 'Opentable-mcp', domains: ['opentable.com'] },
+        ],
+      });
+      // Case-insensitive sort; no section headers; one list.
+      expect(namesIn()).toEqual(['compass-mcp', 'Opentable-mcp', 'resy-mcp']);
+      expect(container.querySelector('.trusted-section')).toBeNull();
+      expect(container.querySelectorAll('ul.trusted-list').length).toBe(1);
+    });
+
+    it('splits into Active and Inactive sections, each alphabetical, when connection info is present', () => {
+      renderPopup(container, {
+        mode: 'status',
+        trusted: [
+          { serverName: 'resy-mcp', domains: ['resy.com'], connected: false },
+          { serverName: 'opentable-mcp', domains: ['opentable.com'], connected: true },
+          { serverName: 'compass-mcp', domains: ['compass.com'], connected: false },
+          { serverName: 'artsonia-mcp', domains: ['artsonia.com'], connected: true },
+        ],
+      });
+      const sections = [...container.querySelectorAll('.trusted-section')].map((e) => e.textContent);
+      expect(sections.length).toBe(2);
+      expect(sections[0]).toContain('Active');
+      expect(sections[1]).toContain('Inactive');
+      const lists = container.querySelectorAll('ul.trusted-list');
+      expect(lists.length).toBe(2);
+      expect(namesIn(lists[0])).toEqual(['artsonia-mcp', 'opentable-mcp']);
+      expect(namesIn(lists[1])).toEqual(['compass-mcp', 'resy-mcp']);
+    });
+
+    it('renders only the Active section when every entry is connected', () => {
+      renderPopup(container, {
+        mode: 'status',
+        trusted: [
+          { serverName: 'resy-mcp', domains: ['resy.com'], connected: true },
+          { serverName: 'opentable-mcp', domains: ['opentable.com'], connected: true },
+        ],
+      });
+      const sections = [...container.querySelectorAll('.trusted-section')].map((e) => e.textContent);
+      expect(sections.length).toBe(1);
+      expect(sections[0]).toContain('Active');
+      expect(namesIn()).toEqual(['opentable-mcp', 'resy-mcp']);
+    });
+
+    it('treats a missing `connected` as inactive once any entry carries connection info', () => {
+      renderPopup(container, {
+        mode: 'status',
+        trusted: [
+          { serverName: 'b-mcp', domains: ['b.com'], connected: true },
+          { serverName: 'a-mcp', domains: ['a.com'] },
+        ],
+      });
+      const lists = container.querySelectorAll('ul.trusted-list');
+      expect(lists.length).toBe(2);
+      expect(namesIn(lists[0])).toEqual(['b-mcp']); // Active
+      expect(namesIn(lists[1])).toEqual(['a-mcp']); // Inactive
+    });
+  });
+
   it('renders multi-domain trusted MCP with all hosts listed', () => {
     renderPopup(container, {
       mode: 'status',
