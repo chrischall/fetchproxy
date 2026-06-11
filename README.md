@@ -3,6 +3,8 @@
 > Authenticated `fetch()` from an MCP server, proxied through the user's signed-in browser tab.
 
 [![CI](https://github.com/chrischall/fetchproxy/actions/workflows/ci.yml/badge.svg)](https://github.com/chrischall/fetchproxy/actions/workflows/ci.yml)
+[![npm](https://img.shields.io/npm/v/@fetchproxy/server)](https://www.npmjs.com/package/@fetchproxy/server)
+[![license](https://img.shields.io/npm/l/@fetchproxy/server)](LICENSE)
 
 A Node library and a browser extension. MCP servers (`opentable-mcp`, `resy-mcp`, anything similar) embed the library; the user installs the extension once. Together they route HTTP requests from the MCP server through a real, signed-in browser tab — so Akamai, Cloudflare Bot Management, and similar bot walls see a real browser, not a Node process.
 
