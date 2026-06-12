@@ -2,8 +2,7 @@ name: CI
 
 on:
   pull_request:
-    # `labeled` so arming `ready-to-merge` (or `release-ready` on a release
-    # PR) triggers the deferred run.
+    # `labeled` so arming ready-to-merge / release-ready triggers the deferred run.
     types: [opened, synchronize, reopened, labeled]
   push:
     branches: [main]
@@ -18,14 +17,17 @@ jobs:
     #     runs; the label event fires the run, and pushes to an armed PR
     #     re-run via synchronize (label still present).
     #   - release-please PRs: deferred to the `release-ready` ship signal.
-    #   - BOT-authored PRs (dependabot): immediate CI on open/synchronize —
+    #   - BOT-authored PRs (dependabot): CI on EVERY event, unconditionally —
+    #     a label event must not gate them (curtaincall review #86: the
+    #     labeled-guard would have skipped a bot PR's run on any label touch) —
     #     bots never receive auto-review, so they'd otherwise merge with CI
     #     skipped (native auto-merge treats a skipped required check as
     #     satisfied).
-    #   - non-pull_request runs (workflow_call / push) fall through unharmed.
+    #   - workflow_call and push runs (no pull_request context) fall through
+    #     unharmed.
     if: |
       github.event_name != 'pull_request' ||
-      (github.event.pull_request.user.type != 'User' && github.event.action != 'labeled') ||
+      github.event.pull_request.user.type != 'User' ||
       (
         (github.event.action != 'labeled' || github.event.label.name == 'release-ready' || github.event.label.name == 'ready-to-merge') &&
         (
