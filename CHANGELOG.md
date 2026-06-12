@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.3.3](https://github.com/chrischall/fetchproxy/compare/v1.3.2...v1.3.3) (2026-06-12)
+
+
+### Documentation
+
+* declare root license, ship LICENSE in package tarballs, add badges ([#126](https://github.com/chrischall/fetchproxy/issues/126)) ([4f87bd8](https://github.com/chrischall/fetchproxy/commit/4f87bd8776c6297ee893f273c1cbf52f1710d07b))
+
 ## [1.3.2](https://github.com/chrischall/fetchproxy/compare/v1.3.1...v1.3.2) (2026-06-09)
 
 
