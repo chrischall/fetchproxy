@@ -14,9 +14,10 @@ extension. Each MCP ↔ extension session has its own AES-256-GCM key
 derived via X25519 ECDH at handshake. Trust is identity-keyed
 (Ed25519) with a 6-digit pair code the user confirms on first contact.
 
-Current line: **0.4.x** (mutual auth + JSON-pointer storage extraction
+Current line: **1.x** (mutual auth + JSON-pointer storage extraction
 + MV3 SW keepalive + storageDomain selector + host-or-subdomain tab
-matching). All packages stay in lockstep.
+matching). All packages stay in lockstep on one version (see root
+`package.json` → `version`).
 
 ## Workspaces
 
@@ -26,18 +27,23 @@ matching). All packages stay in lockstep.
 | `@fetchproxy/server` | MCP-side WebSocket bridge. `FetchproxyServer` class with `listen()`, `request()`, `fetch()`, `readCookies()`, `readLocalStorage()`, `readSessionStorage()`, `captureRequestHeader()`, `readIndexedDb()`. Handles concentrator role-election (host vs peer), identity loading, session-key derivation. Persists per-MCP identity to `~/.fetchproxy/identity/<server-name>.json`. |
 | `@fetchproxy/bootstrap` | One-shot helper: declare scope → spin up `FetchproxyServer` → read everything in one call → close. Used by Pattern A MCPs (HoneyBook, OFW, Resy auth-refresh path) that just need a session blob then operate from Node. `storageDomain` selector for multi-domain MCPs. |
 | `@fetchproxy/extension-core` | Pure-ish business logic of the browser extension: `handleServerHello` (security-critical pair/auto-trust decision), trust-store, session-keys, popup rendering, badge logic. Designed to be testable under vitest with mocked `chrome.*` globals. |
-| `@fetchproxy/extension-chrome` | Thin Chrome-MV3 wrapper around extension-core. Just bundling, manifest, icons. Produces `packages/extension-chrome/dist/` for unpacked sideload + GitHub-release `.zip`. |
+| `@fetchproxy/extension-chrome` | Thin Chrome-MV3 wrapper around extension-core. Just bundling, manifest, icons. Produces `packages/extension-chrome/dist/` for unpacked sideload + GitHub-release `.zip`. `private` (not published). |
+| `@fetchproxy/test-helpers` | Published vitest mock helpers for consumers of `@fetchproxy/server` — a drop-in `FetchproxyServer` mock that captures constructor opts and exposes spy-able `request`/`fetch`/`captureRequestHeader`/`bridgeHealth`. Lets cohort MCPs unit-test their fetchproxy usage without a live bridge. |
+
+`extension-core` and `extension-chrome` are `private: true` (bundled into
+the extension, never published to npm); the other four publish to npm.
 
 ## Commands
 
 | | |
 |---|---|
-| `npm test` | Vitest across all workspaces — 453 tests, all mocked, no network. Must stay green. |
-| `npm run build --workspaces --if-present` | TS build for protocol → server → bootstrap → extension-core, then extension-chrome's esbuild bundle. **Order matters** — extension-chrome bundles via the workspace symlink and needs protocol/dist on disk first. |
+| `npm test` | `vitest run` across the whole monorepo (865 tests), all mocked, no network. Must stay green. `vitest.config.ts` excludes `**/.claude/**` and `**/dist/**` so stale agent worktrees don't poison discovery. |
+| `npm run build` | `npm run build --workspaces --if-present` — TS build (`tsc -b`) for protocol → server → bootstrap → extension-core → test-helpers, then extension-chrome's esbuild bundle (`tsx build.ts`). **Order matters** — downstream workspaces import `@fetchproxy/protocol` via its `exports`→`dist/`, so protocol/dist must exist first. |
+| `npm run typecheck` | `tsc -b` over protocol, server, bootstrap, extension-core, test-helpers. extension-chrome is typechecked by its esbuild build instead. |
 | `npm run build --workspace=@fetchproxy/extension-chrome` | Rebuild just the unpacked extension after a source edit. Drop into `chrome://extensions/` → fetchproxy → reload. |
 | `npm test --workspace=@fetchproxy/<pkg>` | Run just one package's tests when iterating. |
 
-There is no top-level `npm run dev`, and no watch mode wired up — vitest's `--watch` works per workspace if needed.
+No top-level `npm run dev`; for a watch loop use `npm run test:watch` (root `vitest`) or vitest `--watch` per workspace.
 
 ## Architecture
 
@@ -54,7 +60,7 @@ There is no top-level `npm run dev`, and no watch mode wired up — vitest's `--
                        └─────────────┘
 ```
 
-**Concentrator (host vs peer).** `electRole()` in `server/src/role.ts`
+**Concentrator (host vs peer).** `electRole()` in `server/src/election.ts`
 tries to bind 37149; if it succeeds, that MCP is the **host** —
 accepts the extension's WebSocket + accepts other MCPs dialing in. If
 the bind fails with `EADDRINUSE`, the MCP dials the existing host as a
@@ -80,29 +86,39 @@ the bind fails with `EADDRINUSE`, the MCP dials the existing host as a
 
 ### Versioning + releases
 
-All five published packages share **one version** kept in lockstep by
-the **Tag & Bump** workflow (`.github/workflows/tag-and-bump.yml`).
-**Main is always one version ahead of the latest tag.**
+All packages share **one version** kept in lockstep by **release-please**
+(`.github/workflows/release-please.yml`, config `release-please-config.json`,
+state `.release-please-manifest.json`). The umbrella `version` lives in the
+root `package.json`; each sub-package's `version` is propagated via the
+config's `extra-files` list (which also includes
+`packages/extension-chrome/manifest.json`).
 
-The end-to-end release cycle: GitHub Actions → **Tag & Bump** (manual
-`workflow_dispatch`) → tags current commit as `v$CURRENT` → bumps
-patch across all workspaces + the Chrome extension manifest + the
-internal `@fetchproxy/*` cross-dep ranges → commits + pushes main +
-tag → push of `v*` tag triggers **Release** (`release.yml`) → publish
-to npm + pack `.zip` for unpacked sideload + create GitHub release.
+The end-to-end release cycle (canonical release-please monorepo shape):
+release-please-action runs on every push to `main`, accumulating
+Conventional-Commit subjects into **one combined release PR**
+(`separate-pull-requests: false`). When that PR merges, the action cuts a
+single `v<NEXT>` tag (`include-component-in-tag: false`). The same workflow's
+second job (gated on `tag_name`) then checks out the tag, fixes up the
+inter-package `@fetchproxy/*` caret-range deps (release-please bumps each
+`version` but not the cross-dep ranges), publishes the non-private packages
+to npm via Trusted-Publisher OIDC, builds the Chrome-extension `.zip`, and
+attaches it to the GitHub Release.
 
-**Do not bump versions or create tags manually unless explicitly
-asked.** Tag & Bump handles all the lockstep arithmetic.
+**Do not bump versions or create tags manually unless explicitly asked.**
+release-please owns the lockstep arithmetic; manual edits to a `version`
+field create drift its diff then fights.
 
-**The Tag & Bump bump-file list must include every workspace with any
-`@fetchproxy/*` dep.** Missing one (like bootstrap was through 0.4.2)
-causes its cross-deps to lag the rest of the cohort and downstream
-consumers end up with mixed-version lockfiles. Lesson tagged in PR #7.
+**Pre-release channel.** `release-please-next.yml` is a separate manual
+(`workflow_dispatch`) flow that publishes `<base>-rc.<N>` builds under the
+npm `next` dist-tag — used so consumer cohort MCPs can validate against an
+unpublished `@fetchproxy/server` before the canonical release PR merges. It
+rewrites versions **in memory only** and never commits back; `release-please.yml`
+stays the sole writer of versions on `main`.
 
 ### npm publish via Trusted Publisher / OIDC
 
-`Release` uses `--provenance` with GitHub OIDC against each
-`@fetchproxy/*` package's Trusted Publisher trust on npm. **No
+The `release-please.yml` publish job uses `--provenance` with GitHub OIDC
+against each `@fetchproxy/*` package's Trusted Publisher trust on npm. **No
 `NPM_TOKEN` secret is configured.** The workflow strips only
 `always-auth` from `.npmrc` (deprecated in npm 11); the
 `_authToken=${NODE_AUTH_TOKEN}` line setup-node writes is kept
@@ -117,22 +133,27 @@ stripping it as the fix; that was the bug.)
 
 ### PRs + auto-merge
 
-Default workflow: branch + PR + `gh pr merge --auto --squash` (the
-repo allows squash merges only — no merge commit, no rebase). Direct
-pushes to `main` skip auto-generated release notes (the auto-merge
-workflow tags PRs into release sections); use direct push only when
+Default workflow: branch + PR. The merge itself is automated by the
+`chrischall/workflows` pipeline (see "Pull requests & releases" below) —
+don't run `gh pr merge` yourself. The repo allows **squash merges only**
+(no merge commit, no rebase). Direct pushes to `main` skip auto-generated
+release notes (only merged PRs are sectioned); use direct push only when
 the user explicitly asks.
 
-Label conventions for release notes (`.github/release.yml`):
+Label conventions for release notes (`.github/release.yml`) — apply one per PR:
 
 | Label | Section |
 |---|---|
-| `enhancement` | Features |
-| `bug` | Bug Fixes |
+| `enhancement` / `feature` | Features |
+| `bug` / `fix` | Bug Fixes |
 | `security` | Security |
 | `refactor` | Refactor |
 | `documentation` | Documentation |
+| `test` | Tests |
 | `dependencies` | Dependencies |
+| `ci` / `github_actions` | CI & Build |
+| *(any other)* | Other Changes |
+| `ignore-for-release` | excluded |
 
 ## Testing
 
@@ -152,13 +173,12 @@ MCP tool call is the integration test.
   alarm wakes the SW and re-runs `connect()` (idempotent). Without
   this, the bridge silently dies between bursts of MCP traffic. PR #2
   added the alarm; reload the extension after pulling.
-- **Tag-vs-version conflict on re-runs.** If Tag & Bump partially
-  succeeds (push main, fail to push tag), main ends up at the
-  next version but the tag never landed. Re-running T&B then tries
-  to tag the *bumped* version, which is fine — but if the original
-  tagged version was already on remote pointing elsewhere, the run
-  fails with "tag already exists." Move main forward (or
-  fast-forward the local tag) and retry.
+- **Re-publishing a tag after a failed publish.** release-please's
+  publish job is gated on `tag_name` from the merge. If the tag was
+  cut but the npm/zip publish failed (e.g. wrong Node version), fire
+  `release-please.yml` via `workflow_dispatch` with the `republish_tag`
+  input (e.g. `v1.3.3`) to re-run *only* the publish job against the
+  existing tag — no new release PR, no version bump.
 - **`chrome.action.openPopup()` is restricted.** Chrome 127+ allows
   it from background in some contexts; older Chromes throw sync or
   async. `background.ts` wraps it in try/catch; the **badge** is the
@@ -188,15 +208,16 @@ MCP tool call is the integration test.
 
 ## What to *not* do
 
-- Don't bump a workspace's version directly. Tag & Bump handles all
-  bumps; manual edits create lockstep drift.
+- Don't bump a workspace's version directly. release-please handles all
+  bumps; manual edits create lockstep drift its diff then fights.
 - Don't introduce new `chrome.*` API usage without adding the
   permission to `packages/extension-chrome/manifest.json` AND
   documenting it in `packages/extension-chrome/README.md`'s manifest
   highlights.
 - Don't add direct dependencies between workspaces using literal
-  versions (`"0.4.2"`) — always caret (`"^0.4.2"`). Tag & Bump
-  rewrites caret ranges; literals get left behind.
+  versions (`"1.3.3"`) — always caret (`"^1.3.3"`). The release publish
+  job rewrites caret ranges to the new cohort version; literals get
+  left behind.
 - Don't add `NPM_TOKEN` as a secret. The publish pipeline is OIDC.
 - Don't write to `chrome.storage.local` without going through the
   TrustStore / SessionKeys helpers — they handle the
@@ -219,4 +240,17 @@ MCP tool call is the integration test.
 
 **Default workflow: branch + PR.** This repo **squash-merges**, so the **PR title MUST be a Conventional Commit** (`fix(scope): …`, `feat(scope): …`) — it becomes the squash commit's subject line, the only thing release-please (`.github/workflows/release-please.yml`) parses to pick the version bump and changelog section. Only `feat` (minor), `fix` (patch), and `!`/`BREAKING CHANGE` (major) cut a release; `perf`/`refactor`/`docs` show in the changelog without bumping; `ci`/`test`/`build`/`chore` are recognised but hidden (`release-please-config.json` → `changelog-sections`). A title without a conventional type is invisible to release-please.
 
-**Don't run `gh pr merge` yourself.** `pr-auto-review.yml` reviews every PR and adds `ready-to-merge` on a `pass` verdict; `auto-merge.yml` then arms `gh pr merge --auto --squash`. Override a `warn`/`fail` only by adding the label yourself. Open a PR only when the change is done — it auto-merges on a passing review.
+**Don't run `gh pr merge` yourself.** Both `pr-auto-review.yml` and `auto-merge.yml` are thin stubs that call the `chrischall/workflows` reusable pipeline. Auto-review runs on every PR and arms `ready-to-merge` on a `pass` **or** `warn` verdict (`warn` = nits only, which still auto-merge); `auto-merge.yml` then arms `gh pr merge --auto --squash`. A `fail` verdict blocks until the findings are addressed on the PR. Both `warn` and `fail` also open/refresh a follow-up issue (see below). Override a `fail` only by adding `ready-to-merge` yourself. Open a PR only when the change is done — it auto-merges on a passing review.
+
+### Auto-review follow-up issues
+
+When a PR's auto-review verdict is `warn` or `fail`, the `chrischall/workflows` pipeline opens or updates a single `auto-review-followup` issue ("Auto-review follow-ups for PR #N") whose checklist captures every finding, and links it from the PR's `<!-- auto-review-verdict -->` comment (`📋 Tracking follow-ups: #N`). `warn` (nits only) still auto-merges — the issue carries the nits forward, so most nits are fixed in a *later* PR; `fail` blocks until the important findings are addressed on the PR itself.
+
+When asked to address the auto-review comments / review findings on a PR:
+
+1. Read the verdict comment, open the linked `auto-review-followup` issue, and treat its checklist as the work list (alongside any inline review comments).
+2. Resolve each item, checking off only what you've **verified** is genuinely fixed.
+3. If every item is resolved on the current PR, add `Closes #<issue>` to that PR's body so the merge closes it; if some are deferred, check off only the resolved ones and leave the issue open.
+4. For nits whose `warn` PR already auto-merged, address them in a follow-up PR that references `Closes #<issue>`.
+
+(Mirrors the fleet-wide convention in `~/.claude/CLAUDE.md`.)
