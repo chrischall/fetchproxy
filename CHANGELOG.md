@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.3.4](https://github.com/chrischall/fetchproxy/compare/v1.3.3...v1.3.4) (2026-06-15)
+
+
+### Documentation
+
+* document Conventional Commit PR-title requirement for release-please ([#133](https://github.com/chrischall/fetchproxy/issues/133)) ([fb4edff](https://github.com/chrischall/fetchproxy/commit/fb4edffb078a14f45192f8891a5a8e6ff0e2bc15))
+* refresh CLAUDE.md to current release-please + workflows pipeline ([#135](https://github.com/chrischall/fetchproxy/issues/135)) ([5949757](https://github.com/chrischall/fetchproxy/commit/5949757bf6165794a48aeb734cc408118ea9af14))
+
 ## [1.3.3](https://github.com/chrischall/fetchproxy/compare/v1.3.2...v1.3.3) (2026-06-12)
 
 
