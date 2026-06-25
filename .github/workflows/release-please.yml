@@ -69,7 +69,7 @@ jobs:
       # current.
       - name: Checkout for cross-dep sync
         if: steps.release.outputs.pr
-        uses: actions/checkout@v6.0.2
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
           token: ${{ secrets.RELEASE_PAT }}
@@ -147,7 +147,7 @@ jobs:
       contents: write
       id-token: write
     steps:
-      - uses: actions/checkout@v6.0.2
+      - uses: actions/checkout@v7
         with:
           # Prefer the release-please-emitted tag on the auto path; fall
           # back to the manually-supplied republish_tag on the dispatch
