@@ -18,6 +18,7 @@ import {
   type ReadyFrame,
 } from '@fetchproxy/protocol';
 import { FetchproxyServer } from '../../src/index.js';
+import { getEphemeralPort } from '../helpers/ephemeral-port.js';
 
 /**
  * End-to-end exercise of the `read_cookies` verb through the real WS
@@ -44,7 +45,7 @@ describe('integration: readCookies() round-trip', () => {
   });
 
   it('routes a read_cookies request through the bridge and returns the cookies', async () => {
-    const port = 41020;
+    const port = await getEphemeralPort();
     const idDir = mkdtempSync(join(tmpdir(), 'fp-int-cookies-'));
 
     server = new FetchproxyServer({
@@ -172,11 +173,10 @@ describe('integration: readCookies() round-trip', () => {
   }, 30_000);
 
   it("throws if readCookies() is called on an MCP that didn't declare the capability", async () => {
-    const port = 41021;
     const idDir = mkdtempSync(join(tmpdir(), 'fp-int-cookies-'));
 
     server = new FetchproxyServer({
-      port,
+      port: 0,
       serverName: 'opentable-mcp',
       version: '0.0.1',
       domains: ['opentable.com'],

@@ -20,6 +20,7 @@ import {
   type ReadyFrame,
 } from '@fetchproxy/protocol';
 import { FetchproxyServer } from '../../src/index.js';
+import { getEphemeralPort } from '../helpers/ephemeral-port.js';
 
 /**
  * 0.4.0 mutual-auth + read_indexed_db end-to-end. A mock extension
@@ -45,7 +46,7 @@ describe('integration: 0.4.0 mutual auth + read_indexed_db', () => {
   });
 
   it('mutual auth succeeds; read_indexed_db round-trips canned data', async () => {
-    const port = 41040;
+    const port = await getEphemeralPort();
     const idDir = mkdtempSync(join(tmpdir(), 'fp-int-mutual-'));
 
     let receivedPairCode: string | null = null;
@@ -180,7 +181,7 @@ describe('integration: 0.4.0 mutual auth + read_indexed_db', () => {
   }, 30_000);
 
   it('host closes WS with 1008 when ReadyFrame signature is invalid (MITM detection)', async () => {
-    const port = 41041;
+    const port = await getEphemeralPort();
     const idDir = mkdtempSync(join(tmpdir(), 'fp-int-mutual-bad-'));
 
     server = new FetchproxyServer({

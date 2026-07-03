@@ -1,5 +1,6 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { createServer, Server as HttpServer } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { electRole } from '../src/election.js';
 
 describe('election', () => {
@@ -14,8 +15,7 @@ describe('election', () => {
   });
 
   it('returns host when port is free', async () => {
-    const port = 41999;
-    const result = await electRole({ host: '127.0.0.1', port });
+    const result = await electRole({ host: '127.0.0.1', port: 0 });
     expect(result.role).toBe('host');
     if (result.role === 'host') {
       expect(result.server.listening).toBe(true);
@@ -24,21 +24,20 @@ describe('election', () => {
   });
 
   it('returns peer when port is taken', async () => {
-    const port = 41998;
-    const blocker = createServer().listen(port, '127.0.0.1');
+    const blocker = createServer().listen(0, '127.0.0.1');
     await new Promise<void>((r) => blocker.once('listening', () => r()));
     cleanup.push(blocker);
+    const port = (blocker.address() as AddressInfo).port;
     const result = await electRole({ host: '127.0.0.1', port });
     expect(result.role).toBe('peer');
   });
 
   it('host role can be released and re-won', async () => {
-    const port = 41997;
-    const first = await electRole({ host: '127.0.0.1', port });
+    const first = await electRole({ host: '127.0.0.1', port: 0 });
     expect(first.role).toBe('host');
-    if (first.role === 'host') {
-      await new Promise<void>((r) => first.server.close(() => r()));
-    }
+    if (first.role !== 'host') throw new Error('expected host');
+    const port = (first.server.address() as AddressInfo).port;
+    await new Promise<void>((r) => first.server.close(() => r()));
     const second = await electRole({ host: '127.0.0.1', port });
     expect(second.role).toBe('host');
     if (second.role === 'host') {
@@ -47,8 +46,7 @@ describe('election', () => {
   });
 
   it('host server binds to the requested host (127.0.0.1, not 0.0.0.0)', async () => {
-    const port = 41996;
-    const result = await electRole({ host: '127.0.0.1', port });
+    const result = await electRole({ host: '127.0.0.1', port: 0 });
     expect(result.role).toBe('host');
     if (result.role === 'host') {
       const addr = result.server.address();
@@ -66,17 +64,17 @@ describe('election', () => {
     // must surface to the caller rather than being silently treated as
     // "act as peer". Binding to a syntactically-invalid host produces
     // ENOTFOUND / EINVAL on macOS + Linux and is the simplest cross-
-    // platform way to drive the non-EADDRINUSE path.
+    // platform way to drive the non-EADDRINUSE path. The port here never
+    // actually binds (the host is rejected first), so 0 is fine.
     await expect(
-      electRole({ host: '0.0.0.0.0', port: 41995 }),
+      electRole({ host: '0.0.0.0.0', port: 0 }),
     ).rejects.toThrow();
   });
 
   it('does not reject on the bind timeout once listening succeeds', async () => {
     // Sanity: the timeout must be cleared on success so a slow-but-eventual
     // bind isn't poisoned by a late timer firing.
-    const port = 41993;
-    const result = await electRole({ host: '127.0.0.1', port, bindTimeoutMs: 50 });
+    const result = await electRole({ host: '127.0.0.1', port: 0, bindTimeoutMs: 50 });
     expect(result.role).toBe('host');
     if (result.role === 'host') {
       cleanup.push(result.server);

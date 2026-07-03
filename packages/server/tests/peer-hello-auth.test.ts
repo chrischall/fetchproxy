@@ -7,6 +7,7 @@ import {
   type HelloFrameFromExtension,
   type HelloFrameFromServer,
 } from '@fetchproxy/protocol';
+import type { AddressInfo } from 'node:net';
 import { startHost, type HostHandle } from '../src/host.js';
 import { electRole } from '../src/election.js';
 import { loadOrCreateIdentity } from '../src/identity.js';
@@ -41,9 +42,10 @@ describe('authenticated peer hello (FP-C)', () => {
     sessionNonce: 'AAAA',
   };
 
-  async function startTestHost(port: number): Promise<{ idDir: string }> {
-    const el = await electRole({ host: '127.0.0.1', port });
+  async function startTestHost(): Promise<{ idDir: string; port: number }> {
+    const el = await electRole({ host: '127.0.0.1', port: 0 });
     if (el.role !== 'host') throw new Error('expected host');
+    const port = (el.server.address() as AddressInfo).port;
     const idDir = mkdtempSync(join(tmpdir(), 'fp-host-'));
     const ownId = await loadOrCreateIdentity('opentable-mcp', idDir);
     host = await startHost({
@@ -54,7 +56,7 @@ describe('authenticated peer hello (FP-C)', () => {
       ownVersion: '0.9.1',
       ownDomains: ['opentable.com'],
     });
-    return { idDir };
+    return { idDir, port };
   }
 
   function openWs(port: number): Promise<WebSocket> {
@@ -68,8 +70,7 @@ describe('authenticated peer hello (FP-C)', () => {
   it('forwards a peer hello with a valid signature to the extension', async () => {
     // Regression guard: legitimate peers (real, correctly-signed hello) must
     // still register + be announced to the extension.
-    const port = 41200;
-    const { idDir } = await startTestHost(port);
+    const { idDir, port } = await startTestHost();
     const peerId = await loadOrCreateIdentity('resy-mcp', idDir);
     const peerMcpId = 'resy-mcp:0.0.1:abc1234567890de2';
     const peerHello = await buildServerHello({
@@ -100,8 +101,7 @@ describe('authenticated peer hello (FP-C)', () => {
   });
 
   it('refuses (closes) a peer hello whose signature does not verify', async () => {
-    const port = 41201;
-    const { idDir } = await startTestHost(port);
+    const { idDir, port } = await startTestHost();
     const peerId = await loadOrCreateIdentity('resy-mcp', idDir);
     const peerMcpId = 'resy-mcp:0.0.1:abc1234567890de2';
     const peerHello = await buildServerHello({
@@ -144,8 +144,7 @@ describe('authenticated peer hello (FP-C)', () => {
   });
 
   it('refuses a second connection squatting a mapped mcpId with a different identity', async () => {
-    const port = 41202;
-    const { idDir } = await startTestHost(port);
+    const { idDir, port } = await startTestHost();
     const peerId = await loadOrCreateIdentity('resy-mcp', idDir);
     const attackerId = await loadOrCreateIdentity('attacker-mcp', idDir);
     const peerMcpId = 'resy-mcp:0.0.1:abc1234567890de2';
@@ -188,8 +187,7 @@ describe('authenticated peer hello (FP-C)', () => {
   });
 
   it('allows a same-identity re-dial (legitimate reconnect) to take over the slot', async () => {
-    const port = 41203;
-    const { idDir } = await startTestHost(port);
+    const { idDir, port } = await startTestHost();
     const peerId = await loadOrCreateIdentity('resy-mcp', idDir);
     const peerMcpId = 'resy-mcp:0.0.1:abc1234567890de2';
 

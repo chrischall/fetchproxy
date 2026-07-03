@@ -19,6 +19,7 @@ import {
   type ReadyFrame,
 } from '@fetchproxy/protocol';
 import { FetchproxyServer } from '../../src/index.js';
+import { getEphemeralPort } from '../helpers/ephemeral-port.js';
 
 /**
  * End-to-end exercise of all four 0.3.0 bootstrap verbs through the
@@ -44,7 +45,7 @@ describe('integration: all 0.3.0 bootstrap verbs', () => {
   });
 
   it('routes every declared verb through the bridge and pins scope on the wire', async () => {
-    const port = 41030;
+    const port = await getEphemeralPort();
     const idDir = mkdtempSync(join(tmpdir(), 'fp-int-allverbs-'));
 
     server = new FetchproxyServer({

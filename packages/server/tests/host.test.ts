@@ -1,5 +1,6 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { WebSocket } from 'ws';
+import type { AddressInfo } from 'node:net';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -21,10 +22,10 @@ describe('host (concentrator)', () => {
   });
 
   it('accepts extension WS and forwards its own hello after extension says hi', async () => {
-    const port = 41100;
-    const el = await electRole({ host: '127.0.0.1', port });
+    const el = await electRole({ host: '127.0.0.1', port: 0 });
     expect(el.role).toBe('host');
     if (el.role !== 'host') throw new Error('expected host');
+    const port = (el.server.address() as AddressInfo).port;
     const idDir = mkdtempSync(join(tmpdir(), 'fp-host-'));
     const id = await loadOrCreateIdentity('opentable-mcp', idDir);
 
@@ -77,9 +78,9 @@ describe('host (concentrator)', () => {
   });
 
   it('rejects WS upgrades with public Origin header', async () => {
-    const port = 41101;
-    const el = await electRole({ host: '127.0.0.1', port });
+    const el = await electRole({ host: '127.0.0.1', port: 0 });
     if (el.role !== 'host') throw new Error('expected host');
+    const port = (el.server.address() as AddressInfo).port;
     const idDir = mkdtempSync(join(tmpdir(), 'fp-host-'));
     const id = await loadOrCreateIdentity('opentable-mcp', idDir);
 
@@ -104,9 +105,9 @@ describe('host (concentrator)', () => {
   });
 
   it('sendOwnInner rejects if the extension disconnects before sending ready', async () => {
-    const port = 41103;
-    const el = await electRole({ host: '127.0.0.1', port });
+    const el = await electRole({ host: '127.0.0.1', port: 0 });
     if (el.role !== 'host') throw new Error('expected host');
+    const port = (el.server.address() as AddressInfo).port;
     const idDir = mkdtempSync(join(tmpdir(), 'fp-host-'));
     const id = await loadOrCreateIdentity('opentable-mcp', idDir);
 
@@ -161,9 +162,9 @@ describe('host (concentrator)', () => {
       '@fetchproxy/protocol'
     );
 
-    const port = 41106;
-    const el = await electRole({ host: '127.0.0.1', port });
+    const el = await electRole({ host: '127.0.0.1', port: 0 });
     if (el.role !== 'host') throw new Error('expected host');
+    const port = (el.server.address() as AddressInfo).port;
     const idDir = mkdtempSync(join(tmpdir(), 'fp-host-'));
     const id = await loadOrCreateIdentity('opentable-mcp', idDir);
 
@@ -244,9 +245,9 @@ describe('host (concentrator)', () => {
     // host MUST tear the connection down (1002 = protocol error in the
     // RFC 6455 codes) rather than ignoring the message: a misbehaving
     // peer should not be able to occupy the slot indefinitely.
-    const port = 41104;
-    const el = await electRole({ host: '127.0.0.1', port });
+    const el = await electRole({ host: '127.0.0.1', port: 0 });
     if (el.role !== 'host') throw new Error('expected host');
+    const port = (el.server.address() as AddressInfo).port;
     const idDir = mkdtempSync(join(tmpdir(), 'fp-host-'));
     const id = await loadOrCreateIdentity('opentable-mcp', idDir);
 
@@ -278,9 +279,9 @@ describe('host (concentrator)', () => {
     // extension verbatim. This is the path that makes multi-MCP
     // setups work (peer arrives second; the host announces it to the
     // extension so it can pair the new identity).
-    const port = 41105;
-    const el = await electRole({ host: '127.0.0.1', port });
+    const el = await electRole({ host: '127.0.0.1', port: 0 });
     if (el.role !== 'host') throw new Error('expected host');
+    const port = (el.server.address() as AddressInfo).port;
     const idDir = mkdtempSync(join(tmpdir(), 'fp-host-'));
     const ownId = await loadOrCreateIdentity('opentable-mcp', idDir);
     const peerId = await loadOrCreateIdentity('resy-mcp', idDir);
@@ -352,9 +353,9 @@ describe('host (concentrator)', () => {
     // finally fires it must NOT peers.delete(X) — that would strand the
     // live (new) peer until its next reconnect. The delete is now guarded:
     // only delete if the mapped slot's ws is still the closing socket.
-    const port = 41107;
-    const el = await electRole({ host: '127.0.0.1', port });
+    const el = await electRole({ host: '127.0.0.1', port: 0 });
     if (el.role !== 'host') throw new Error('expected host');
+    const port = (el.server.address() as AddressInfo).port;
     const idDir = mkdtempSync(join(tmpdir(), 'fp-host-'));
     const ownId = await loadOrCreateIdentity('opentable-mcp', idDir);
     const peerId = await loadOrCreateIdentity('resy-mcp', idDir);
@@ -440,9 +441,9 @@ describe('host (concentrator)', () => {
   });
 
   it('refuses a second extension connection', async () => {
-    const port = 41102;
-    const el = await electRole({ host: '127.0.0.1', port });
+    const el = await electRole({ host: '127.0.0.1', port: 0 });
     if (el.role !== 'host') throw new Error('expected host');
+    const port = (el.server.address() as AddressInfo).port;
     const idDir = mkdtempSync(join(tmpdir(), 'fp-host-'));
     const id = await loadOrCreateIdentity('opentable-mcp', idDir);
 
