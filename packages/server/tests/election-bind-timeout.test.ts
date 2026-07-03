@@ -33,14 +33,14 @@ describe('election bind timeout (FP-B3)', () => {
   it('rejects with a clear error when listen() never fires', async () => {
     const { electRole } = await import('../src/election.js');
     await expect(
-      electRole({ host: '127.0.0.1', port: 41994, bindTimeoutMs: 30 }),
+      electRole({ host: '127.0.0.1', port: 0, bindTimeoutMs: 30 }),
     ).rejects.toThrow(/timed out/i);
   });
 
   it('disables the timeout when bindTimeoutMs is 0 (does not reject)', async () => {
     const { electRole } = await import('../src/election.js');
     let settled = false;
-    const p = electRole({ host: '127.0.0.1', port: 41994, bindTimeoutMs: 0 }).then(
+    const p = electRole({ host: '127.0.0.1', port: 0, bindTimeoutMs: 0 }).then(
       () => {
         settled = true;
       },

@@ -10,6 +10,7 @@ import {
 } from '@fetchproxy/protocol';
 import { startPeer, type InternalPeerHandle } from '../src/peer.js';
 import { loadOrCreateIdentity } from '../src/identity.js';
+import { listenEphemeral } from './helpers/ephemeral-port.js';
 
 describe('peer client', () => {
   let wss: WebSocketServer | null = null;
@@ -28,8 +29,8 @@ describe('peer client', () => {
     const idDir = mkdtempSync(join(tmpdir(), 'fp-peer-'));
     const identity = await loadOrCreateIdentity('opentable-mcp', idDir);
 
-    const port = 41200;
-    wss = new WebSocketServer({ port });
+    wss = new WebSocketServer({ port: 0 });
+    const port = await listenEphemeral(wss);
 
     const helloPromise = new Promise<HelloFrameFromServer>((resolve) => {
       wss!.on('connection', (ws: WebSocket) => {
@@ -87,8 +88,8 @@ describe('peer client', () => {
     const idDir = mkdtempSync(join(tmpdir(), 'fp-peer-'));
     const identity = await loadOrCreateIdentity('opentable-mcp', idDir);
 
-    const port = 41202;
-    wss = new WebSocketServer({ port });
+    wss = new WebSocketServer({ port: 0 });
+    const port = await listenEphemeral(wss);
     wss.on('connection', (ws: WebSocket) => {
       ws.once('message', () => {
         // Receive the peer's hello, then push garbage that JSON.parse
@@ -114,8 +115,8 @@ describe('peer client', () => {
     const idDir = mkdtempSync(join(tmpdir(), 'fp-peer-'));
     const identity = await loadOrCreateIdentity('opentable-mcp', idDir);
 
-    const port = 41201;
-    wss = new WebSocketServer({ port });
+    wss = new WebSocketServer({ port: 0 });
+    const port = await listenEphemeral(wss);
     // Host that takes the hello and then immediately closes — never sends ready.
     wss.on('connection', (ws: WebSocket) => {
       ws.once('message', () => ws.close());
@@ -143,8 +144,8 @@ describe('peer client', () => {
     const idDir = mkdtempSync(join(tmpdir(), 'fp-peer-'));
     const identity = await loadOrCreateIdentity('opentable-mcp', idDir);
 
-    const port = 41203;
-    wss = new WebSocketServer({ port });
+    wss = new WebSocketServer({ port: 0 });
+    const port = await listenEphemeral(wss);
     // Host accepts the hello, then closes — simulates the host dying.
     wss.on('connection', (ws: WebSocket) => {
       ws.once('message', () => ws.close());

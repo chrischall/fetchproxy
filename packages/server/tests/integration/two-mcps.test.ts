@@ -18,6 +18,7 @@ import {
   type ReadyFrame,
 } from '@fetchproxy/protocol';
 import { FetchproxyServer } from '../../src/index.js';
+import { getEphemeralPort } from '../helpers/ephemeral-port.js';
 
 describe('integration: two MCPs through one host', () => {
   let a: FetchproxyServer | null = null;
@@ -36,7 +37,7 @@ describe('integration: two MCPs through one host', () => {
   });
 
   it('routes fetches from host and peer through one extension WS, with distinct session keys', async () => {
-    const port = 41010;
+    const port = await getEphemeralPort();
     const idDir = mkdtempSync(join(tmpdir(), 'fp-int-'));
 
     // Stand up two MCPs on the same port. First wins host, second becomes peer.

@@ -3,6 +3,7 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { FetchproxyServer } from '../src/index.js';
+import { getEphemeralPort } from './helpers/ephemeral-port.js';
 
 describe('FetchproxyServer (orchestrator)', () => {
   let servers: FetchproxyServer[] = [];
@@ -17,7 +18,7 @@ describe('FetchproxyServer (orchestrator)', () => {
 
   it('starts on a free port as host (after explicit connect)', async () => {
     const srv = new FetchproxyServer({
-      port: 41050,
+      port: 0,
       serverName: 'opentable-mcp',
       version: '0.9.1',
       domains: ['opentable.com'],
@@ -34,8 +35,9 @@ describe('FetchproxyServer (orchestrator)', () => {
 
   it('two servers on the same port: first is host, second is peer (after connect)', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'fp-srv-'));
+    const port = await getEphemeralPort();
     const a = new FetchproxyServer({
-      port: 41051,
+      port,
       serverName: 'opentable-mcp',
       version: '0.9.1',
       domains: ['opentable.com'],
@@ -47,7 +49,7 @@ describe('FetchproxyServer (orchestrator)', () => {
     expect(a.role).toBe('host');
 
     const b = new FetchproxyServer({
-      port: 41051,
+      port,
       serverName: 'resy-mcp',
       version: '0.0.1',
       domains: ['resy.com'],
@@ -61,7 +63,7 @@ describe('FetchproxyServer (orchestrator)', () => {
 
   it('throws on fetch before listen', async () => {
     const srv = new FetchproxyServer({
-      port: 41052,
+      port: 0,
       serverName: 'opentable-mcp',
       version: '0.9.1',
       domains: ['opentable.com'],
@@ -78,8 +80,9 @@ describe('FetchproxyServer (orchestrator)', () => {
   });
 
   it('0.5.3+: listen() does not bind the port — connection is deferred', async () => {
+    const port = await getEphemeralPort();
     const srv = new FetchproxyServer({
-      port: 41057,
+      port,
       serverName: 'opentable-mcp',
       version: '0.9.1',
       domains: ['opentable.com'],
@@ -91,9 +94,9 @@ describe('FetchproxyServer (orchestrator)', () => {
 
     // Port should still be free — another FetchproxyServer can bind
     // it. (Pre-0.5.3 this would have failed because srv.listen() had
-    // already claimed 41057 as host.)
+    // already claimed the port as host.)
     const other = new FetchproxyServer({
-      port: 41057,
+      port,
       serverName: 'resy-mcp',
       version: '0.0.1',
       domains: ['resy.com'],
@@ -111,7 +114,7 @@ describe('FetchproxyServer (orchestrator)', () => {
 
   it('0.5.3+: concurrent first verb calls share one connection election', async () => {
     const srv = new FetchproxyServer({
-      port: 41058,
+      port: 0,
       serverName: 'opentable-mcp',
       version: '0.9.1',
       domains: ['opentable.com'],
@@ -144,7 +147,7 @@ describe('FetchproxyServer (orchestrator)', () => {
     // fields: post-close, both must be null regardless of how the
     // race resolved.
     const srv = new FetchproxyServer({
-      port: 41059,
+      port: 0,
       serverName: 'opentable-mcp',
       version: '0.9.1',
       domains: ['opentable.com'],
@@ -169,7 +172,7 @@ describe('FetchproxyServer (orchestrator)', () => {
 
   it('close() returns role to null', async () => {
     const srv = new FetchproxyServer({
-      port: 41053,
+      port: 0,
       serverName: 'opentable-mcp',
       version: '0.9.1',
       domains: ['opentable.com'],
@@ -185,7 +188,7 @@ describe('FetchproxyServer (orchestrator)', () => {
   describe('readIndexedDb()', () => {
     it("throws if the MCP didn't declare 'read_indexed_db' capability", async () => {
       const srv = new FetchproxyServer({
-        port: 41054,
+        port: 0,
         serverName: 'resy-mcp',
         version: '0.0.1',
         domains: ['resy.com'],
@@ -200,7 +203,7 @@ describe('FetchproxyServer (orchestrator)', () => {
 
     it('throws if the requested (database, store) is not declared', async () => {
       const srv = new FetchproxyServer({
-        port: 41055,
+        port: 0,
         serverName: 'resy-mcp',
         version: '0.0.1',
         domains: ['resy.com'],
@@ -219,7 +222,7 @@ describe('FetchproxyServer (orchestrator)', () => {
 
     it('throws if a requested key is outside the declared keys', async () => {
       const srv = new FetchproxyServer({
-        port: 41056,
+        port: 0,
         serverName: 'resy-mcp',
         version: '0.0.1',
         domains: ['resy.com'],

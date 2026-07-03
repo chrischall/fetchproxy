@@ -19,6 +19,7 @@ import {
   type ReadyFrame,
 } from '@fetchproxy/protocol';
 import { FetchproxyServer } from '../../src/index.js';
+import { getEphemeralPort } from '../helpers/ephemeral-port.js';
 
 const enc = new TextEncoder();
 
@@ -111,7 +112,7 @@ describe('extension reconnect (session-key renegotiation)', () => {
   });
 
   it('host accepts a new session key after extension disconnects and reconnects', async () => {
-    const port = 41060;
+    const port = await getEphemeralPort();
     const idDir = mkdtempSync(join(tmpdir(), 'fp-reconnect-'));
 
     server = new FetchproxyServer({
@@ -206,7 +207,7 @@ describe('extension reconnect (session-key renegotiation)', () => {
   }, 30_000);
 
   it('in-flight fetch rejects with "extension disconnected" when the extension drops', async () => {
-    const port = 41061;
+    const port = await getEphemeralPort();
     const idDir = mkdtempSync(join(tmpdir(), 'fp-reconnect-pending-'));
 
     server = new FetchproxyServer({
@@ -240,7 +241,7 @@ describe('extension reconnect (session-key renegotiation)', () => {
   }, 30_000);
 
   it('in-flight readLocalStorage rejects on extension disconnect', async () => {
-    const port = 41062;
+    const port = await getEphemeralPort();
     const idDir = mkdtempSync(join(tmpdir(), 'fp-reconnect-storage-'));
 
     server = new FetchproxyServer({
@@ -266,7 +267,7 @@ describe('extension reconnect (session-key renegotiation)', () => {
   }, 30_000);
 
   it('sendOwnInner works again after reconnect (not permanently rejected)', async () => {
-    const port = 41063;
+    const port = await getEphemeralPort();
     const idDir = mkdtempSync(join(tmpdir(), 'fp-reconnect-promise-'));
 
     server = new FetchproxyServer({
@@ -431,7 +432,7 @@ describe('extension reconnect (peer MCPs)', () => {
   });
 
   it('peer fetch still works after extension reconnects', async () => {
-    const port = 41080;
+    const port = await getEphemeralPort();
     const idDir = mkdtempSync(join(tmpdir(), 'fp-peer-reconnect-'));
 
     host = new FetchproxyServer({
@@ -544,7 +545,7 @@ describe('extension reconnect (peer MCPs)', () => {
   }, 30_000);
 
   it('in-flight peer fetch rejects on session renegotiation', async () => {
-    const port = 41081;
+    const port = await getEphemeralPort();
     const idDir = mkdtempSync(join(tmpdir(), 'fp-peer-inflight-'));
 
     host = new FetchproxyServer({
@@ -619,7 +620,7 @@ describe('peer re-host on host loss', () => {
   });
 
   it('a stranded peer re-elects to host on the next call after its host dies', async () => {
-    const port = 41090;
+    const port = await getEphemeralPort();
     const idDir = mkdtempSync(join(tmpdir(), 'fp-rehost-'));
 
     host = new FetchproxyServer({
@@ -659,7 +660,7 @@ describe('peer re-host on host loss', () => {
   }, 30_000);
 
   it('intentional peer.close() does not re-elect to host (closing guard)', async () => {
-    const port = 41091;
+    const port = await getEphemeralPort();
     const idDir = mkdtempSync(join(tmpdir(), 'fp-rehost-guard-'));
 
     host = new FetchproxyServer({

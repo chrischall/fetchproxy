@@ -10,6 +10,7 @@ import {
   type HelloFrameFromExtension,
 } from '@fetchproxy/protocol';
 import { FetchproxyServer, FetchproxyProtocolError } from '../../src/index.js';
+import { getEphemeralPort } from '../helpers/ephemeral-port.js';
 
 /**
  * Connect a mock extension that handshakes JUST enough to receive every
@@ -103,7 +104,7 @@ describe('pair-pending surfaces the pair code to MCP-side callers', () => {
   });
 
   it('host: fetch() returns ok:false with the pair code in the error', async () => {
-    const port = 41090;
+    const port = await getEphemeralPort();
     const idDir = mkdtempSync(join(tmpdir(), 'fp-pair-pending-host-'));
     host = new FetchproxyServer({
       port,
@@ -138,7 +139,7 @@ describe('pair-pending surfaces the pair code to MCP-side callers', () => {
   }, 15_000);
 
   it('peer: fetch() returns ok:false with the pair code in the error', async () => {
-    const port = 41091;
+    const port = await getEphemeralPort();
     const idDir = mkdtempSync(join(tmpdir(), 'fp-pair-pending-peer-'));
     host = new FetchproxyServer({
       port,
@@ -184,7 +185,7 @@ describe('pair-pending surfaces the pair code to MCP-side callers', () => {
   }, 15_000);
 
   it('host: readCookies() throws FetchproxyProtocolError with the pair code', async () => {
-    const port = 41093;
+    const port = await getEphemeralPort();
     const idDir = mkdtempSync(join(tmpdir(), 'fp-pair-pending-cookies-'));
     host = new FetchproxyServer({
       port,
@@ -211,7 +212,7 @@ describe('pair-pending surfaces the pair code to MCP-side callers', () => {
   }, 15_000);
 
   it('peer: readCookies() throws FetchproxyProtocolError with the pair code', async () => {
-    const port = 41094;
+    const port = await getEphemeralPort();
     const idDir = mkdtempSync(join(tmpdir(), 'fp-pair-pending-cookies-peer-'));
     host = new FetchproxyServer({
       port,
@@ -248,7 +249,7 @@ describe('pair-pending surfaces the pair code to MCP-side callers', () => {
   }, 15_000);
 
   it('error message is model-directive — contains instruction to display the code', async () => {
-    const port = 41095;
+    const port = await getEphemeralPort();
     const idDir = mkdtempSync(join(tmpdir(), 'fp-pair-pending-msg-'));
     host = new FetchproxyServer({
       port,
@@ -282,7 +283,7 @@ describe('pair-pending surfaces the pair code to MCP-side callers', () => {
   }, 15_000);
 
   it('onPairCode callback fires when the bridge reports pair-pending', async () => {
-    const port = 41092;
+    const port = await getEphemeralPort();
     const idDir = mkdtempSync(join(tmpdir(), 'fp-pair-pending-cb-'));
     const codes: string[] = [];
     host = new FetchproxyServer({
