@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.3.5](https://github.com/chrischall/fetchproxy/compare/v1.3.4...v1.3.5) (2026-07-03)
+
+
+### Documentation
+
+* mark extension-core as private (not published) in CLAUDE.md ([#137](https://github.com/chrischall/fetchproxy/issues/137)) ([3b88d15](https://github.com/chrischall/fetchproxy/commit/3b88d1517b7666db2b90e31da697af6e131b9144)), closes [#136](https://github.com/chrischall/fetchproxy/issues/136)
+
 ## [1.3.4](https://github.com/chrischall/fetchproxy/compare/v1.3.3...v1.3.4) (2026-06-15)
 
 
