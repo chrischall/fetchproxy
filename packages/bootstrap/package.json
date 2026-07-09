@@ -1,6 +1,6 @@
 {
   "name": "@fetchproxy/bootstrap",
-  "version": "1.3.5",
+  "version": "1.4.0",
   "description": "One-shot session-bootstrap helper for MCPs using fetchproxy: declare your scope, read it once, then operate from Node.",
   "type": "module",
   "main": "./dist/index.js",
@@ -27,7 +27,7 @@
   },
   "license": "MIT",
   "dependencies": {
-    "@fetchproxy/protocol": "^1.3.5",
-    "@fetchproxy/server": "^1.3.5"
+    "@fetchproxy/protocol": "^1.4.0",
+    "@fetchproxy/server": "^1.4.0"
   }
 }

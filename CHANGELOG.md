@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.4.0](https://github.com/chrischall/fetchproxy/compare/v1.3.5...v1.4.0) (2026-07-09)
+
+
+### Features
+
+* **read_dom:** add DOM-value read capability ([#148](https://github.com/chrischall/fetchproxy/issues/148)) ([0ce0949](https://github.com/chrischall/fetchproxy/commit/0ce0949c166b2fdbfea2fdc947b392f73d376d35))
+
 ## [1.3.5](https://github.com/chrischall/fetchproxy/compare/v1.3.4...v1.3.5) (2026-07-03)
 
 
