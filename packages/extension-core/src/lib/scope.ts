@@ -6,7 +6,12 @@
  */
 
 import { sha256, toHex } from '@fetchproxy/protocol';
-import type { CaptureHeaderDecl, IndexedDbScopeDecl, StoragePointerDecl } from '@fetchproxy/protocol';
+import type {
+  CaptureHeaderDecl,
+  DomSelectorDecl,
+  IndexedDbScopeDecl,
+  StoragePointerDecl,
+} from '@fetchproxy/protocol';
 
 // ---------------------------------------------------------------------------
 // Scope interface
@@ -19,6 +24,7 @@ export interface Scope {
   sessionStorageKeys: string[];
   captureHeaders: CaptureHeaderDecl[];
   indexedDbScopes: IndexedDbScopeDecl[];
+  domSelectors: DomSelectorDecl[];
   localStoragePointers: StoragePointerDecl[];
   sessionStoragePointers: StoragePointerDecl[];
 }
@@ -80,6 +86,19 @@ export function sameIndexedDbScopes(
   return true;
 }
 
+export function sameDomSelectors(
+  a: readonly DomSelectorDecl[],
+  b: readonly DomSelectorDecl[],
+): boolean {
+  if (a.length !== b.length) return false;
+  const norm = (arr: readonly DomSelectorDecl[]): string[] =>
+    arr.map((d) => `${d.name}\x00${d.selector}\x00${d.attribute ?? ''}`).sort();
+  const sa = norm(a);
+  const sb = norm(b);
+  for (let i = 0; i < sa.length; i++) if (sa[i] !== sb[i]) return false;
+  return true;
+}
+
 export function sameStoragePointers(
   a: readonly StoragePointerDecl[],
   b: readonly StoragePointerDecl[],
@@ -107,6 +126,11 @@ function normIndexedDbScope(d: IndexedDbScopeDecl): string {
   return `${d.origin}\x00${d.database}\x00${d.store}\x00${[...d.keys].sort().join(',')}`;
 }
 
+/** Canonical string key for a DomSelectorDecl entry. */
+function normDomSelector(d: DomSelectorDecl): string {
+  return `${d.name}\x00${d.selector}\x00${d.attribute ?? ''}`;
+}
+
 /** Canonical string key for a StoragePointerDecl entry. */
 function normStoragePointer(d: StoragePointerDecl): string {
   return `${d.key}\x00${d.jsonPointer}`;
@@ -126,6 +150,7 @@ export async function scopeHash(s: Scope): Promise<string> {
     sessionStorageKeys: [...s.sessionStorageKeys].sort(),
     captureHeaders: [...s.captureHeaders].map(normCaptureHeader).sort(),
     indexedDbScopes: [...s.indexedDbScopes].map(normIndexedDbScope).sort(),
+    domSelectors: [...s.domSelectors].map(normDomSelector).sort(),
     localStoragePointers: [...s.localStoragePointers].map(normStoragePointer).sort(),
     sessionStoragePointers: [...s.sessionStoragePointers].map(normStoragePointer).sort(),
   };
@@ -166,6 +191,12 @@ export function intersectScope(approved: Scope, declared: Scope): Scope {
     apIndexedSet.has(normIndexedDbScope(d)),
   );
 
+  // domSelectors — match on canonical key.
+  const apDomSet = new Set(approved.domSelectors.map(normDomSelector));
+  const domSelectors = declared.domSelectors.filter((d) =>
+    apDomSet.has(normDomSelector(d)),
+  );
+
   // Storage pointers — match on canonical key.
   const apLocalPtrSet = new Set(approved.localStoragePointers.map(normStoragePointer));
   const localStoragePointers = declared.localStoragePointers.filter((d) =>
@@ -184,6 +215,7 @@ export function intersectScope(approved: Scope, declared: Scope): Scope {
     sessionStorageKeys: intersectStrings(approved.sessionStorageKeys, declared.sessionStorageKeys),
     captureHeaders,
     indexedDbScopes,
+    domSelectors,
     localStoragePointers,
     sessionStoragePointers,
   };
@@ -204,6 +236,7 @@ export function isScopeSubset(declared: Scope, approved: Scope): boolean {
     sameScopeArrays(intersection.sessionStorageKeys, declared.sessionStorageKeys) &&
     sameCaptureHeaders(intersection.captureHeaders, declared.captureHeaders) &&
     sameIndexedDbScopes(intersection.indexedDbScopes, declared.indexedDbScopes) &&
+    sameDomSelectors(intersection.domSelectors, declared.domSelectors) &&
     sameStoragePointers(intersection.localStoragePointers, declared.localStoragePointers) &&
     sameStoragePointers(intersection.sessionStoragePointers, declared.sessionStoragePointers)
   );

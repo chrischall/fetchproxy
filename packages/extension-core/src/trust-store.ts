@@ -59,6 +59,8 @@ export interface TrustRecord {
     store: string;
     keys: string[];
   }[];
+  /** 1.4.0+: declared DOM selectors for read_dom. */
+  domSelectors: { name: string; selector: string; attribute?: string }[];
   /** 0.4.0+: declared JSON-pointer extractions over local/sessionStorage. */
   localStoragePointers: { key: string; jsonPointer: string }[];
   sessionStoragePointers: { key: string; jsonPointer: string }[];
@@ -100,6 +102,8 @@ export interface TrustInput {
     store: string;
     keys: string[];
   }[];
+  /** 1.4.0+: declared DOM selectors. */
+  domSelectors?: { name: string; selector: string; attribute?: string }[];
   /** 0.4.0+: declared storage-pointer extractions. */
   localStoragePointers?: { key: string; jsonPointer: string }[];
   sessionStoragePointers?: { key: string; jsonPointer: string }[];
@@ -153,6 +157,7 @@ export class TrustStore {
       sessionStorageKeys: Array.isArray(rec.sessionStorageKeys) ? rec.sessionStorageKeys : [],
       captureHeaders: Array.isArray(rec.captureHeaders) ? rec.captureHeaders : [],
       indexedDbScopes: Array.isArray(rec.indexedDbScopes) ? rec.indexedDbScopes : [],
+      domSelectors: Array.isArray(rec.domSelectors) ? rec.domSelectors : [],
       localStoragePointers: Array.isArray(rec.localStoragePointers)
         ? rec.localStoragePointers
         : [],
@@ -183,6 +188,7 @@ export class TrustStore {
     const sessionStorageKeys = input.sessionStorageKeys ?? [];
     const captureHeaders = input.captureHeaders ?? [];
     const indexedDbScopes = input.indexedDbScopes ?? [];
+    const domSelectors = input.domSelectors ?? [];
     const localStoragePointers = input.localStoragePointers ?? [];
     const sessionStoragePointers = input.sessionStoragePointers ?? [];
     stored.records[identityHash] = {
@@ -194,6 +200,7 @@ export class TrustStore {
       sessionStorageKeys,
       captureHeaders,
       indexedDbScopes,
+      domSelectors,
       localStoragePointers,
       sessionStoragePointers,
       identityX25519Pub: input.identityX25519Pub,

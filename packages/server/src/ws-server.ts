@@ -8,6 +8,7 @@ import type {
   Capability,
   CaptureHeaderDecl,
   IndexedDbScopeDecl,
+  DomSelectorDecl,
   StoragePointerDecl,
   InnerFrame,
   FetchInit,
@@ -119,6 +120,14 @@ export interface FetchproxyServerOpts {
   localStoragePointers?: StoragePointerDecl[];
   /** 0.4.0+: same shape against sessionStorage. */
   sessionStoragePointers?: StoragePointerDecl[];
+  /**
+   * 1.4.0+: declared DOM selectors for `readDom()`. Each entry is
+   * `{ name, selector, attribute? }`. Per-call requests reference these
+   * by `name` (subset-match). Reads a value from the matched tab's DOM
+   * (isolated-world `querySelector`), e.g. a Cloudflare Turnstile token
+   * a page writes into a hidden input that a POST body must carry.
+   */
+  domSelectors?: DomSelectorDecl[];
   /**
    * Override the on-disk directory that holds this MCP's long-term
    * identity keypair (`<identityDir>/<serverName>.json`, mode 0600).
@@ -722,6 +731,7 @@ interface ResolvedOpts {
   indexedDbScopes: IndexedDbScopeDecl[];
   localStoragePointers: StoragePointerDecl[];
   sessionStoragePointers: StoragePointerDecl[];
+  domSelectors: DomSelectorDecl[];
   fetchTimeoutMs?: number;
   bridgeReviveDelayMs?: number;
   keepAliveIntervalMs: number;
@@ -934,6 +944,11 @@ export class FetchproxyServer {
         key: d.key,
         jsonPointer: d.jsonPointer,
       })),
+      domSelectors: (opts.domSelectors ?? []).map((d) => ({
+        name: d.name,
+        selector: d.selector,
+        ...(d.attribute !== undefined ? { attribute: d.attribute } : {}),
+      })),
       // 0.8.0+: timer + lazy-revive default to ON. Every realty MCP
       // adapter was about to set these to the same numbers anyway; the
       // back-door is `0` (explicit opt-out) if a caller genuinely wants
@@ -1068,6 +1083,7 @@ export class FetchproxyServer {
         ownIndexedDbScopes: this.opts.indexedDbScopes,
         ownLocalStoragePointers: this.opts.localStoragePointers,
         ownSessionStoragePointers: this.opts.sessionStoragePointers,
+        ownDomSelectors: this.opts.domSelectors,
         onPairCode: this.opts.onPairCode,
       });
       this.hostHandle.onOwnInner((inner) => this.onInner(inner));
@@ -1099,6 +1115,7 @@ export class FetchproxyServer {
         indexedDbScopes: this.opts.indexedDbScopes,
         localStoragePointers: this.opts.localStoragePointers,
         sessionStoragePointers: this.opts.sessionStoragePointers,
+        domSelectors: this.opts.domSelectors,
       });
       this.peerHandle.onInner((inner) => this.onInner(inner));
       // Mirror the host's onExtensionDisconnect → rejectAllPending wiring.
@@ -2430,6 +2447,56 @@ export class FetchproxyServer {
     return this._withVerbTimeout(pending, this.pendingIdb, id, origin);
   }
 
+  /**
+   * 1.4.0+: read declared DOM values from the user's signed-in tab.
+   * Requires `'read_dom'` in capabilities AND every requested `name` to
+   * match a declared `domSelectors` entry. The extension reads each
+   * declared selector from the matched tab's DOM (isolated-world
+   * `querySelector`, value or attribute) — no page-JS execution.
+   *
+   * Returns a `Record<string, string>` of `name → value`, with names
+   * whose element (or attribute) was absent omitted. Throws
+   * `FetchproxyProtocolError` on bridge failures and a plain `Error` on
+   * developer mistakes (undeclared capability, undeclared name).
+   */
+  async readDom(opts: {
+    domain?: string;
+    subdomain?: string;
+    names: string[];
+  }): Promise<Record<string, string>> {
+    if (!this.opts.capabilities.includes('read_dom')) {
+      throw new Error(
+        'FetchproxyServer.readDom(): MCP did not declare "read_dom" in capabilities',
+      );
+    }
+    await this.ensureConnected();
+    this.throwIfPendingPair();
+    if (!Array.isArray(opts.names) || opts.names.length === 0) {
+      throw new Error('FetchproxyServer.readDom: opts.names must be a non-empty array');
+    }
+    this.assertScopeSubset(
+      opts.names,
+      this.opts.domSelectors.map((d) => d.name),
+      'domSelectors',
+    );
+    if (opts.subdomain !== undefined) assertSubdomainLabel(opts.subdomain);
+    const baseDomain = this.resolveBaseDomain(opts.domain);
+    const host = opts.subdomain ? `${opts.subdomain}.${baseDomain}` : baseDomain;
+    const origin = `https://${host}`;
+    const id = this.nextRequestId++;
+    const inner: InnerFrame = {
+      type: 'request',
+      id,
+      op: 'read_dom',
+      init: { origin, names: [...opts.names] },
+    };
+    const pending = new Promise<Record<string, string>>((resolve, reject) => {
+      this.pendingStorage.set(id, { resolve, reject });
+    });
+    await this.sendInnerFrame(inner);
+    return this._withVerbTimeout(pending, this.pendingStorage, id, origin);
+  }
+
   private assertScopeSubset(
     requested: readonly string[],
     declared: readonly string[],
@@ -2533,7 +2600,9 @@ export class FetchproxyServer {
       this.pendingStorage.delete(inner.id);
       if (inner.ok) {
         if (
-          (inner.op === 'read_local_storage' || inner.op === 'read_session_storage') &&
+          (inner.op === 'read_local_storage' ||
+            inner.op === 'read_session_storage' ||
+            inner.op === 'read_dom') &&
           inner.values
         ) {
           storageCb.resolve({ ...inner.values });

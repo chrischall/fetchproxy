@@ -4,7 +4,7 @@ import { scopeHash, intersectScope, isScopeSubset, type Scope } from './scope.js
 const base = (): Scope => ({
   capabilities: ['fetch', 'read_cookies'], cookieKeys: ['sid', 'cf'],
   localStorageKeys: [], sessionStorageKeys: [], captureHeaders: [],
-  indexedDbScopes: [], localStoragePointers: [], sessionStoragePointers: [],
+  indexedDbScopes: [], domSelectors: [], localStoragePointers: [], sessionStoragePointers: [],
 });
 
 describe('scopeHash', () => {
@@ -96,5 +96,89 @@ describe('captureHeaders scope (host/path/headerName)', () => {
     };
     const kept = intersectScope(approved, declared).captureHeaders;
     expect(kept).toEqual([{ host: 'musescore.com', headerName: 'cookie' }]);
+  });
+});
+
+describe('domSelectors scope (name/selector/attribute)', () => {
+  it('scopeHash treats omitted attribute as empty', async () => {
+    const omitted: Scope = {
+      ...base(),
+      domSelectors: [{ name: 'title', selector: 'h1.title' }],
+    };
+    const explicit: Scope = {
+      ...base(),
+      domSelectors: [{ name: 'title', selector: 'h1.title', attribute: '' }],
+    };
+    expect(await scopeHash(omitted)).toBe(await scopeHash(explicit));
+  });
+
+  it('scopeHash is order-independent for domSelectors', async () => {
+    const a: Scope = {
+      ...base(),
+      domSelectors: [
+        { name: 'title', selector: 'h1' },
+        { name: 'csrf', selector: 'meta[name=csrf]', attribute: 'content' },
+      ],
+    };
+    const b: Scope = {
+      ...base(),
+      domSelectors: [
+        { name: 'csrf', selector: 'meta[name=csrf]', attribute: 'content' },
+        { name: 'title', selector: 'h1' },
+      ],
+    };
+    expect(await scopeHash(a)).toBe(await scopeHash(b));
+  });
+
+  it('scopeHash differs when a selector differs', async () => {
+    const a: Scope = { ...base(), domSelectors: [{ name: 'title', selector: 'h1' }] };
+    const b: Scope = { ...base(), domSelectors: [{ name: 'title', selector: 'h2' }] };
+    expect(await scopeHash(a)).not.toBe(await scopeHash(b));
+  });
+
+  it('scopeHash differs when the attribute differs', async () => {
+    const a: Scope = { ...base(), domSelectors: [{ name: 'x', selector: 'a', attribute: 'href' }] };
+    const b: Scope = { ...base(), domSelectors: [{ name: 'x', selector: 'a', attribute: 'title' }] };
+    expect(await scopeHash(a)).not.toBe(await scopeHash(b));
+  });
+
+  it('isScopeSubset true when declared domSelectors ⊆ approved (omitted ≡ empty attr)', () => {
+    const approved: Scope = {
+      ...base(),
+      domSelectors: [{ name: 'title', selector: 'h1', attribute: '' }],
+    };
+    const declared: Scope = {
+      ...base(),
+      domSelectors: [{ name: 'title', selector: 'h1' }],
+    };
+    expect(isScopeSubset(declared, approved)).toBe(true);
+  });
+
+  it('isScopeSubset false when declared domSelectors escape approved', () => {
+    const approved: Scope = {
+      ...base(),
+      domSelectors: [{ name: 'title', selector: 'h1' }],
+    };
+    const declared: Scope = {
+      ...base(),
+      domSelectors: [{ name: 'title', selector: 'h1' }, { name: 'evil', selector: 'input#pw', attribute: 'value' }],
+    };
+    expect(isScopeSubset(declared, approved)).toBe(false);
+  });
+
+  it('intersect drops domSelectors not in approved', () => {
+    const approved: Scope = {
+      ...base(),
+      domSelectors: [{ name: 'title', selector: 'h1' }],
+    };
+    const declared: Scope = {
+      ...base(),
+      domSelectors: [
+        { name: 'title', selector: 'h1' },
+        { name: 'csrf', selector: 'meta', attribute: 'content' },
+      ],
+    };
+    const kept = intersectScope(approved, declared).domSelectors;
+    expect(kept).toEqual([{ name: 'title', selector: 'h1' }]);
   });
 });

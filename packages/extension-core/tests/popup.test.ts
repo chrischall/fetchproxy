@@ -515,6 +515,28 @@ describe('renderPopup', () => {
       expect(container.textContent).toContain('userId');
     });
 
+    it('renders DOM selectors when read_dom declared', () => {
+      renderPopup(container, {
+        mode: 'pending-pair',
+        pending: {
+          serverName: 'acme-mcp',
+          version: '1.4.0',
+          domains: ['acme.com'],
+          capabilities: ['fetch', 'read_dom'],
+          domSelectors: [
+            { name: 'title', selector: 'h1.title' },
+            { name: 'csrf', selector: 'meta[name=csrf]', attribute: 'content' },
+          ],
+          pairCode: '111-222',
+        },
+        onApprove: () => undefined,
+        onCancel: () => undefined,
+      });
+      expect(container.textContent).toContain('Read DOM elements');
+      expect(container.textContent).toContain('title → h1.title');
+      expect(container.textContent).toContain('csrf → meta[name=csrf] [content]');
+    });
+
     it('renders capture-header entries each on their own line', () => {
       renderPopup(container, {
         mode: 'pending-pair',
@@ -582,6 +604,7 @@ describe('renderPopup', () => {
           sessionStorageKeys: [],
           captureHeaders: [],
           indexedDbScopes: [],
+          domSelectors: [],
           localStoragePointers: [],
           sessionStoragePointers: [],
         },
@@ -618,6 +641,7 @@ describe('renderPopup', () => {
           sessionStorageKeys: [],
           captureHeaders: [],
           indexedDbScopes: [],
+          domSelectors: [],
           localStoragePointers: [],
           sessionStoragePointers: [],
         },
@@ -643,6 +667,7 @@ describe('renderPopup', () => {
             sessionStorageKeys: [],
             captureHeaders: [],
             indexedDbScopes: [],
+            domSelectors: [],
             localStoragePointers: [],
             sessionStoragePointers: [],
           },
@@ -653,6 +678,7 @@ describe('renderPopup', () => {
             sessionStorageKeys: [],
             captureHeaders: [],
             indexedDbScopes: [],
+            domSelectors: [],
             localStoragePointers: [],
             sessionStoragePointers: [],
           },
@@ -678,6 +704,7 @@ describe('renderPopup', () => {
             sessionStorageKeys: [],
             captureHeaders: [],
             indexedDbScopes: [],
+            domSelectors: [],
             localStoragePointers: [],
             sessionStoragePointers: [],
           },
@@ -688,6 +715,7 @@ describe('renderPopup', () => {
             sessionStorageKeys: [],
             captureHeaders: [],
             indexedDbScopes: [],
+            domSelectors: [],
             localStoragePointers: [],
             sessionStoragePointers: [],
           },
@@ -713,6 +741,7 @@ describe('renderPopup', () => {
             sessionStorageKeys: [],
             captureHeaders: [],
             indexedDbScopes: [],
+            domSelectors: [],
             localStoragePointers: [],
             sessionStoragePointers: [],
           },
@@ -723,6 +752,7 @@ describe('renderPopup', () => {
             sessionStorageKeys: [],
             captureHeaders: [],
             indexedDbScopes: [],
+            domSelectors: [],
             localStoragePointers: [],
             sessionStoragePointers: [],
           },
@@ -745,6 +775,7 @@ describe('renderPopup', () => {
             sessionStorageKeys: [],
             captureHeaders: [],
             indexedDbScopes: [],
+            domSelectors: [],
             localStoragePointers: [],
             sessionStoragePointers: [],
           },
@@ -755,6 +786,7 @@ describe('renderPopup', () => {
             sessionStorageKeys: [],
             captureHeaders: [],
             indexedDbScopes: [],
+            domSelectors: [],
             localStoragePointers: [],
             sessionStoragePointers: [],
           },
@@ -779,6 +811,7 @@ describe('renderPopup', () => {
             sessionStorageKeys: [],
             captureHeaders: [],
             indexedDbScopes: [],
+            domSelectors: [],
             localStoragePointers: [],
             sessionStoragePointers: [],
           },
@@ -789,6 +822,7 @@ describe('renderPopup', () => {
             sessionStorageKeys: [],
             captureHeaders: [],
             indexedDbScopes: [],
+            domSelectors: [],
             localStoragePointers: [],
             sessionStoragePointers: [],
           },

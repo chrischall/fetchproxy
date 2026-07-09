@@ -35,6 +35,7 @@ import {
   type Capability,
   type CaptureHeaderDecl,
   type IndexedDbScopeDecl,
+  type DomSelectorDecl,
   type StoragePointerDecl,
   type Frame,
   type HelloFrameFromServer,
@@ -49,6 +50,7 @@ import {
   type InnerRequestCaptureRequestHeader,
   type InnerRequestCaptureRedirect,
   type InnerRequestReadIndexedDb,
+  type InnerRequestReadDom,
   type InnerRequestDownload,
   type DownloadResult,
   type EncryptedFrame,
@@ -95,6 +97,7 @@ export type HandleHelloResult =
       sessionStorageKeys: string[];
       captureHeaders: { host: string; path?: string; headerName: string }[];
       indexedDbScopes: IndexedDbScopeDecl[];
+      domSelectors: DomSelectorDecl[];
       localStoragePointers: StoragePointerDecl[];
       sessionStoragePointers: StoragePointerDecl[];
       version: string;
@@ -114,6 +117,7 @@ export type HandleHelloResult =
         sessionStorageKeys: string[];
         captureHeaders: { host: string; path?: string; headerName: string }[];
         indexedDbScopes: IndexedDbScopeDecl[];
+        domSelectors: DomSelectorDecl[];
         localStoragePointers: StoragePointerDecl[];
         sessionStoragePointers: StoragePointerDecl[];
       };
@@ -134,6 +138,7 @@ export type HandleHelloResult =
       sessionStorageKeys: string[];
       captureHeaders: { host: string; path?: string; headerName: string }[];
       indexedDbScopes: IndexedDbScopeDecl[];
+      domSelectors: DomSelectorDecl[];
       localStoragePointers: StoragePointerDecl[];
       sessionStoragePointers: StoragePointerDecl[];
       sessionKey: Uint8Array;
@@ -158,6 +163,7 @@ export type HandleHelloResult =
         declaredSessionStorageKeys: string[];
         declaredCaptureHeaders: { host: string; path?: string; headerName: string }[];
         declaredIndexedDbScopes: IndexedDbScopeDecl[];
+        declaredDomSelectors: DomSelectorDecl[];
         declaredLocalStoragePointers: StoragePointerDecl[];
         declaredSessionStoragePointers: StoragePointerDecl[];
         approvedCapabilities: string[];
@@ -166,6 +172,7 @@ export type HandleHelloResult =
         approvedSessionStorageKeys: string[];
         approvedCaptureHeaders: { host: string; path?: string; headerName: string }[];
         approvedIndexedDbScopes: IndexedDbScopeDecl[];
+        approvedDomSelectors: DomSelectorDecl[];
         approvedLocalStoragePointers: StoragePointerDecl[];
         approvedSessionStoragePointers: StoragePointerDecl[];
       };
@@ -201,6 +208,7 @@ interface DeclaredScope {
   sessionStorageKeys: string[];
   captureHeaders: { host: string; path?: string; headerName: string }[];
   indexedDbScopes: IndexedDbScopeDecl[];
+  domSelectors: DomSelectorDecl[];
   localStoragePointers: StoragePointerDecl[];
   sessionStoragePointers: StoragePointerDecl[];
 }
@@ -221,6 +229,7 @@ function declaredScope(hello: HelloFrameFromServer): DeclaredScope {
       store: d.store,
       keys: [...d.keys],
     })),
+    domSelectors: (hello.domSelectors ?? []).map((d) => ({ ...d })),
     localStoragePointers: (hello.localStoragePointers ?? []).map((d) => ({
       key: d.key,
       jsonPointer: d.jsonPointer,
@@ -295,6 +304,7 @@ export async function handleServerHello(
           store: d.store,
           keys: [...d.keys],
         })),
+        domSelectors: (record.domSelectors ?? []).map((d) => ({ ...d })),
         localStoragePointers: (record.localStoragePointers ?? []).map((d) => ({ ...d })),
         sessionStoragePointers: (record.sessionStoragePointers ?? []).map((d) => ({ ...d })),
       };
@@ -321,6 +331,7 @@ export async function handleServerHello(
         sessionStorageKeys: [...granted.sessionStorageKeys],
         captureHeaders: [...granted.captureHeaders],
         indexedDbScopes: [...granted.indexedDbScopes],
+        domSelectors: [...granted.domSelectors],
         localStoragePointers: [...granted.localStoragePointers],
         sessionStoragePointers: [...granted.sessionStoragePointers],
         sessionKey,
@@ -341,6 +352,7 @@ export async function handleServerHello(
               store: d.store,
               keys: [...d.keys],
             })),
+            declaredDomSelectors: scope.domSelectors.map((d) => ({ ...d })),
             declaredLocalStoragePointers: scope.localStoragePointers.map((d) => ({ ...d })),
             declaredSessionStoragePointers: scope.sessionStoragePointers.map((d) => ({ ...d })),
             approvedCapabilities: [...approvedScope.capabilities],
@@ -354,6 +366,7 @@ export async function handleServerHello(
               store: d.store,
               keys: [...d.keys],
             })),
+            approvedDomSelectors: approvedScope.domSelectors.map((d) => ({ ...d })),
             approvedLocalStoragePointers: approvedScope.localStoragePointers.map((d) => ({ ...d })),
             approvedSessionStoragePointers: approvedScope.sessionStoragePointers.map((d) => ({ ...d })),
           },
@@ -648,6 +661,8 @@ interface PendingPairRecord extends PendingRecordBase {
   captureHeaders: { host: string; path?: string; headerName: string }[];
   /** 0.4.0+: declared IndexedDB scopes the user is being asked to approve. */
   indexedDbScopes: IndexedDbScopeDecl[];
+  /** 1.4.0+: declared DOM selectors the user is being asked to approve. */
+  domSelectors: DomSelectorDecl[];
   /** 0.4.0+: declared storage-pointer extractions. */
   localStoragePointers: StoragePointerDecl[];
   sessionStoragePointers: StoragePointerDecl[];
@@ -662,6 +677,7 @@ interface PendingPairRecord extends PendingRecordBase {
     sessionStorageKeys: string[];
     captureHeaders: { host: string; path?: string; headerName: string }[];
     indexedDbScopes: IndexedDbScopeDecl[];
+    domSelectors: DomSelectorDecl[];
     localStoragePointers: StoragePointerDecl[];
     sessionStoragePointers: StoragePointerDecl[];
   };
@@ -686,6 +702,7 @@ interface PendingScopeUpdateRecord extends PendingRecordBase {
   sessionStorageKeys: string[];
   captureHeaders: { host: string; path?: string; headerName: string }[];
   indexedDbScopes: IndexedDbScopeDecl[];
+  domSelectors: DomSelectorDecl[];
   localStoragePointers: StoragePointerDecl[];
   sessionStoragePointers: StoragePointerDecl[];
   /** The previously approved scope shown as the diff baseline. */
@@ -696,6 +713,7 @@ interface PendingScopeUpdateRecord extends PendingRecordBase {
     sessionStorageKeys: string[];
     captureHeaders: { host: string; path?: string; headerName: string }[];
     indexedDbScopes: IndexedDbScopeDecl[];
+    domSelectors: DomSelectorDecl[];
     localStoragePointers: StoragePointerDecl[];
     sessionStoragePointers: StoragePointerDecl[];
   };
@@ -786,6 +804,9 @@ const mcpCaptureHeaders = new Map<string, { host: string; path?: string; headerN
 // 0.4.0+: per-mcpId declared IndexedDB scopes. The request handler
 // gates `read_indexed_db` on subset-match against this table.
 const mcpIndexedDbScopes = new Map<string, IndexedDbScopeDecl[]>();
+// 1.4.0+: per-mcpId declared DOM selectors. The request handler gates
+// `read_dom` on the declared name set against this table.
+const mcpDomSelectors = new Map<string, DomSelectorDecl[]>();
 // 0.4.0+: per-mcpId declared storage pointer decls. Storage-read
 // handlers gate per-request pointer fields on these.
 const mcpLocalStoragePointers = new Map<string, { key: string; jsonPointer: string }[]>();
@@ -814,6 +835,7 @@ export interface GrantedSessionScope {
   sessionStorageKeys: string[];
   captureHeaders: { host: string; path?: string; headerName: string }[];
   indexedDbScopes: IndexedDbScopeDecl[];
+  domSelectors: DomSelectorDecl[];
   localStoragePointers: StoragePointerDecl[];
   sessionStoragePointers: StoragePointerDecl[];
 }
@@ -841,6 +863,7 @@ export function grantedScopeFromApproval(
       store: d.store,
       keys: [...d.keys],
     })),
+    domSelectors: (approved.domSelectors ?? []).map((d) => ({ ...d })),
     localStoragePointers: (approved.localStoragePointers ?? []).map((d) => ({ ...d })),
     sessionStoragePointers: (approved.sessionStoragePointers ?? []).map((d) => ({ ...d })),
   };
@@ -871,6 +894,7 @@ export function applyGrantedScopeToSession(
       keys: [...d.keys],
     })),
   );
+  mcpDomSelectors.set(mcpId, scope.domSelectors.map((d) => ({ ...d })));
   mcpLocalStoragePointers.set(mcpId, scope.localStoragePointers.map((d) => ({ ...d })));
   mcpSessionStoragePointers.set(mcpId, scope.sessionStoragePointers.map((d) => ({ ...d })));
 }
@@ -894,6 +918,7 @@ export function sessionScopeSnapshot(mcpId: string): GrantedSessionScope | undef
       store: d.store,
       keys: [...d.keys],
     })),
+    domSelectors: (mcpDomSelectors.get(mcpId) ?? []).map((d) => ({ ...d })),
     localStoragePointers: (mcpLocalStoragePointers.get(mcpId) ?? []).map((d) => ({ ...d })),
     sessionStoragePointers: (mcpSessionStoragePointers.get(mcpId) ?? []).map((d) => ({ ...d })),
   };
@@ -968,6 +993,7 @@ function connect(): void {
     mcpSessionStorageKeys.clear();
     mcpCaptureHeaders.clear();
     mcpIndexedDbScopes.clear();
+    mcpDomSelectors.clear();
     mcpLocalStoragePointers.clear();
     mcpSessionStoragePointers.clear();
     // Part 3: clear identity hash map on teardown.
@@ -1054,6 +1080,7 @@ async function onServerHello(hello: HelloFrameFromServer): Promise<void> {
         sessionStorageKeys: su.declaredSessionStorageKeys,
         captureHeaders: su.declaredCaptureHeaders,
         indexedDbScopes: su.declaredIndexedDbScopes,
+        domSelectors: su.declaredDomSelectors,
         localStoragePointers: su.declaredLocalStoragePointers,
         sessionStoragePointers: su.declaredSessionStoragePointers,
       };
@@ -1097,6 +1124,7 @@ async function onServerHello(hello: HelloFrameFromServer): Promise<void> {
               store: d.store,
               keys: [...d.keys],
             })),
+            domSelectors: su.declaredDomSelectors.map((d) => ({ ...d })),
             localStoragePointers: su.declaredLocalStoragePointers.map((d) => ({ ...d })),
             sessionStoragePointers: su.declaredSessionStoragePointers.map((d) => ({ ...d })),
             identityX25519Pub: hello.identityX25519Pub,
@@ -1113,6 +1141,7 @@ async function onServerHello(hello: HelloFrameFromServer): Promise<void> {
                 store: d.store,
                 keys: [...d.keys],
               })),
+              domSelectors: su.approvedDomSelectors.map((d) => ({ ...d })),
               localStoragePointers: su.approvedLocalStoragePointers.map((d) => ({ ...d })),
               sessionStoragePointers: su.approvedSessionStoragePointers.map((d) => ({ ...d })),
             },
@@ -1137,6 +1166,7 @@ async function onServerHello(hello: HelloFrameFromServer): Promise<void> {
     sessionStorageKeys: [...result.sessionStorageKeys],
     captureHeaders: [...result.captureHeaders],
     indexedDbScopes: [...result.indexedDbScopes],
+    domSelectors: [...result.domSelectors],
     localStoragePointers: [...result.localStoragePointers],
     sessionStoragePointers: [...result.sessionStoragePointers],
   };
@@ -1162,6 +1192,7 @@ async function onServerHello(hello: HelloFrameFromServer): Promise<void> {
     sessionStorageKeys: [...result.sessionStorageKeys],
     captureHeaders: [...result.captureHeaders],
     indexedDbScopes: [...result.indexedDbScopes],
+    domSelectors: [...result.domSelectors],
     localStoragePointers: [...result.localStoragePointers],
     sessionStoragePointers: [...result.sessionStoragePointers],
     ...(result.previousScope ? { previousScope: result.previousScope } : {}),
@@ -1324,6 +1355,10 @@ async function handleRequest(mcpId: string, req: InnerRequest): Promise<void> {
   }
   if (req.op === 'read_indexed_db') {
     await handleReadIndexedDbRequest(mcpId, req, domains);
+    return;
+  }
+  if (req.op === 'read_dom') {
+    await handleReadDomRequest(mcpId, req, domains);
     return;
   }
   if (req.op === 'download') {
@@ -2230,6 +2265,110 @@ async function handleReadIndexedDbRequest(
   }
 }
 
+/**
+ * Pure gate for a `read_dom` request. Mirrors the origin + declared-set
+ * checks inlined in `handleReadIndexedDbRequest`, but factored out so the
+ * gating logic is unit-testable without the module's live WS/session state.
+ *
+ * Returns the resolved DomSelectorDecls (in the request's `names` order) to
+ * forward to the tab, or an `error` string (origin not allowed, or names not
+ * in the declared set) to echo back to the MCP.
+ */
+export function resolveReadDomRequest(
+  req: InnerRequestReadDom,
+  declared: DomSelectorDecl[],
+  domains: string[],
+): { ok: true; selectors: DomSelectorDecl[] } | { ok: false; error: string } {
+  if (!isUrlAllowedForAnyDomain(req.init.origin, domains)) {
+    return {
+      ok: false,
+      error: `origin ${req.init.origin} not in domains [${domains.join(', ')}]`,
+    };
+  }
+  const byName = new Map(declared.map((d) => [d.name, d]));
+  const undeclared = req.init.names.filter((n) => !byName.has(n));
+  if (undeclared.length > 0) {
+    return {
+      ok: false,
+      error: `read_dom names not in declared set: ${undeclared.join(', ')}`,
+    };
+  }
+  const selectors = req.init.names.map((n) => ({ ...byName.get(n)! }));
+  return { ok: true, selectors };
+}
+
+async function handleReadDomRequest(
+  mcpId: string,
+  req: InnerRequestReadDom,
+  domains: string[],
+): Promise<void> {
+  const declared = mcpDomSelectors.get(mcpId) ?? [];
+  const gate = resolveReadDomRequest(req, declared, domains);
+  if (!gate.ok) {
+    await sendInner(mcpId, {
+      type: 'response',
+      id: req.id,
+      ok: false,
+      op: 'read_dom',
+      error: gate.error,
+    });
+    return;
+  }
+  const tabUrl = `${req.init.origin}/`;
+  // 0.5.2+: multi-tab fallback via `sendToFirstResponsiveTab` — see the
+  // helper's doc. Same rationale as the read_indexed_db path: a pre-reload
+  // tab (no content script) can shadow a fresh one, and the user shouldn't
+  // have to refresh every page after every extension update.
+  const result = await sendToFirstResponsiveTab(
+    (t) => isTabUrlMatch(t, tabUrl),
+    () => ({
+      kind: 'fetchproxy-read-dom',
+      selectors: gate.selectors.map((d) => ({ ...d })),
+    }),
+    tabUrl,
+  );
+  if (result.kind === 'no-tab') {
+    await sendInner(mcpId, {
+      type: 'response',
+      id: req.id,
+      ok: false,
+      op: 'read_dom',
+      error: result.error,
+    });
+    return;
+  }
+  if (result.kind === 'throw') {
+    await sendInner(mcpId, {
+      type: 'response',
+      id: req.id,
+      ok: false,
+      op: 'read_dom',
+      error: `tab read_dom failed: ${result.error}`,
+    });
+    return;
+  }
+  const resp = result.response as
+    | { ok: true; values: Record<string, string> }
+    | { ok: false; error: string };
+  if (resp.ok) {
+    await sendInner(mcpId, {
+      type: 'response',
+      id: req.id,
+      ok: true,
+      op: 'read_dom',
+      values: resp.values,
+    });
+  } else {
+    await sendInner(mcpId, {
+      type: 'response',
+      id: req.id,
+      ok: false,
+      op: 'read_dom',
+      error: resp.error,
+    });
+  }
+}
+
 async function onApproval(approved: AnyPendingRecord): Promise<void> {
   if (!trust || !sessions || !extIdentity || !currentExtSessionNonce) return;
   // Persist trust. Default to ['fetch'] when older popup state somehow
@@ -2258,6 +2397,7 @@ async function onApproval(approved: AnyPendingRecord): Promise<void> {
       store: d.store,
       keys: [...d.keys],
     })),
+    domSelectors: (approved.domSelectors ?? []).map((d) => ({ ...d })),
     localStoragePointers: (approved.localStoragePointers ?? []).map((d) => ({
       key: d.key,
       jsonPointer: d.jsonPointer,

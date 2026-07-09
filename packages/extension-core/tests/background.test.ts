@@ -883,6 +883,7 @@ describe('dismiss-suppression (scope-update)', () => {
       sessionStorageKeys: [] as string[],
       captureHeaders: [] as { host: string; path?: string; headerName: string }[],
       indexedDbScopes: [] as import('../src/lib/scope.js').Scope['indexedDbScopes'],
+      domSelectors: [] as import('../src/lib/scope.js').Scope['domSelectors'],
       localStoragePointers: [] as import('../src/lib/scope.js').Scope['localStoragePointers'],
       sessionStoragePointers: [] as import('../src/lib/scope.js').Scope['sessionStoragePointers'],
     };
@@ -912,6 +913,7 @@ describe('dismiss-suppression (scope-update)', () => {
       sessionStorageKeys: [] as string[],
       captureHeaders: [] as { host: string; path?: string; headerName: string }[],
       indexedDbScopes: [] as import('../src/lib/scope.js').Scope['indexedDbScopes'],
+      domSelectors: [] as import('../src/lib/scope.js').Scope['domSelectors'],
       localStoragePointers: [] as import('../src/lib/scope.js').Scope['localStoragePointers'],
       sessionStoragePointers: [] as import('../src/lib/scope.js').Scope['sessionStoragePointers'],
     };
@@ -972,6 +974,7 @@ describe('multi-instance pending-pair dedup (0.6.0+)', () => {
       sessionStorageKeys: result1.sessionStorageKeys,
       captureHeaders: result1.captureHeaders,
       indexedDbScopes: result1.indexedDbScopes,
+      domSelectors: result1.domSelectors,
       localStoragePointers: result1.localStoragePointers,
       sessionStoragePointers: result1.sessionStoragePointers,
     };
@@ -1007,6 +1010,7 @@ describe('multi-instance pending-pair dedup (0.6.0+)', () => {
       sessionStorageKeys: result1.sessionStorageKeys,
       captureHeaders: result1.captureHeaders,
       indexedDbScopes: result1.indexedDbScopes,
+      domSelectors: result1.domSelectors,
       localStoragePointers: result1.localStoragePointers,
       sessionStoragePointers: result1.sessionStoragePointers,
       identityX25519Pub: result1.identityX25519Pub,
@@ -1062,6 +1066,7 @@ describe('multi-instance pending-pair dedup (0.6.0+)', () => {
       sessionStorageKeys: r1.sessionStorageKeys,
       captureHeaders: r1.captureHeaders,
       indexedDbScopes: r1.indexedDbScopes,
+      domSelectors: r1.domSelectors,
       localStoragePointers: r1.localStoragePointers,
       sessionStoragePointers: r1.sessionStoragePointers,
     };
@@ -1174,6 +1179,7 @@ describe('needs-pair supersedes queued scope-update at same key (finding 2)', ()
       sessionStorageKeys: [] as string[],
       captureHeaders: [] as { host: string; path?: string; headerName: string }[],
       indexedDbScopes: [] as import('../src/lib/scope.js').Scope['indexedDbScopes'],
+      domSelectors: [] as import('../src/lib/scope.js').Scope['domSelectors'],
       localStoragePointers: [] as import('../src/lib/scope.js').Scope['localStoragePointers'],
       sessionStoragePointers: [] as import('../src/lib/scope.js').Scope['sessionStoragePointers'],
     };
@@ -1258,5 +1264,59 @@ describe('needs-pair supersedes queued scope-update at same key (finding 2)', ()
     expect((entry as typeof pairRecord).mcpIds).toContain(mcpId2);
     // The session nonce for the new mcpId must be recorded.
     expect((entry as typeof pairRecord).sessionNonces?.[mcpId2]).toBe(sessionNonceB64);
+  });
+});
+
+import { resolveReadDomRequest } from '../src/background.js';
+import type { InnerRequestReadDom, DomSelectorDecl } from '@fetchproxy/protocol';
+
+describe('resolveReadDomRequest (read_dom gate)', () => {
+  const declared: DomSelectorDecl[] = [
+    { name: 'title', selector: 'h1.title' },
+    { name: 'csrf', selector: 'meta[name=csrf]', attribute: 'content' },
+  ];
+  const req = (origin: string, names: string[]): InnerRequestReadDom => ({
+    type: 'request',
+    id: 7,
+    op: 'read_dom',
+    init: { origin, names },
+  });
+
+  it('happy path: resolves declared selectors in request-name order', () => {
+    const r = resolveReadDomRequest(
+      req('https://app.example.com', ['csrf', 'title']),
+      declared,
+      ['app.example.com'],
+    );
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.selectors).toEqual([
+      { name: 'csrf', selector: 'meta[name=csrf]', attribute: 'content' },
+      { name: 'title', selector: 'h1.title' },
+    ]);
+  });
+
+  it('rejects a name not in the declared set (op-echoing error)', () => {
+    const r = resolveReadDomRequest(
+      req('https://app.example.com', ['title', 'password']),
+      declared,
+      ['app.example.com'],
+    );
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error).toContain('not in declared set');
+    expect(r.error).toContain('password');
+  });
+
+  it('rejects an origin not covered by the approved domains', () => {
+    const r = resolveReadDomRequest(
+      req('https://evil.example.org', ['title']),
+      declared,
+      ['app.example.com'],
+    );
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error).toContain('not in domains');
+    expect(r.error).toContain('evil.example.org');
   });
 });

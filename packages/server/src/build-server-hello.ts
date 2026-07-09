@@ -6,6 +6,7 @@ import {
   type Capability,
   type CaptureHeaderDecl,
   type IndexedDbScopeDecl,
+  type DomSelectorDecl,
   type StoragePointerDecl,
   type HelloFrameFromServer,
 } from '@fetchproxy/protocol';
@@ -35,6 +36,8 @@ export interface BuildServerHelloOpts {
   /** 0.4.0+: declared JSON-pointer extractions over storage. */
   localStoragePointers?: StoragePointerDecl[];
   sessionStoragePointers?: StoragePointerDecl[];
+  /** 1.4.0+: declared DOM selectors for `read_dom`. */
+  domSelectors?: DomSelectorDecl[];
 }
 
 /**
@@ -107,6 +110,13 @@ export async function buildServerHello(
     hello.sessionStoragePointers = opts.sessionStoragePointers.map((d) => ({
       key: d.key,
       jsonPointer: d.jsonPointer,
+    }));
+  }
+  if (opts.domSelectors && opts.domSelectors.length > 0) {
+    hello.domSelectors = opts.domSelectors.map((d) => ({
+      name: d.name,
+      selector: d.selector,
+      ...(d.attribute !== undefined ? { attribute: d.attribute } : {}),
     }));
   }
   return hello;

@@ -10,6 +10,7 @@ import {
   type Capability,
   type CaptureHeaderDecl,
   type IndexedDbScopeDecl,
+  type DomSelectorDecl,
   type StoragePointerDecl,
   type InnerFrame,
 } from '@fetchproxy/protocol';
@@ -39,6 +40,7 @@ export interface PeerOpts {
   indexedDbScopes?: IndexedDbScopeDecl[];
   localStoragePointers?: StoragePointerDecl[];
   sessionStoragePointers?: StoragePointerDecl[];
+  domSelectors?: DomSelectorDecl[];
 }
 
 /**
@@ -121,6 +123,7 @@ export async function startPeer(opts: PeerOpts): Promise<InternalPeerHandle> {
     sessionStorageKeys: opts.sessionStorageKeys,
     captureHeaders: opts.captureHeaders,
     indexedDbScopes: opts.indexedDbScopes,
+    domSelectors: opts.domSelectors,
     localStoragePointers: opts.localStoragePointers,
     sessionStoragePointers: opts.sessionStoragePointers,
   });

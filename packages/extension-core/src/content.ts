@@ -46,6 +46,7 @@ chrome.runtime.onMessage.addListener(
       database?: string;
       store?: string;
       pointers?: Record<string, { storageKey: string; jsonPointer: string }>;
+      selectors?: { name: string; selector: string; attribute?: string }[];
     },
     _sender,
     sendResponse,
@@ -84,6 +85,20 @@ chrome.runtime.onMessage.addListener(
         sendResponse({ ok: true, values });
       } catch (e) {
         sendResponse({ ok: false, error: `sessionStorage read threw: ${(e as Error).message}` });
+      }
+      return false;
+    }
+    if (msg.kind === 'fetchproxy-read-dom' && Array.isArray(msg.selectors)) {
+      // Isolated-world DOM read: this content script already has DOM
+      // access, so no MAIN world / chrome.scripting / page-JS execution
+      // is needed. Each declared selector is resolved against the live
+      // document; missing elements / attributes are omitted (mirrors how
+      // read_local_storage omits missing keys).
+      try {
+        const values = readDomValues(msg.selectors);
+        sendResponse({ ok: true, values });
+      } catch (e) {
+        sendResponse({ ok: false, error: `DOM read threw: ${(e as Error).message}` });
       }
       return false;
     }
@@ -171,6 +186,32 @@ function readStorageWithPointers(
         // Non-serializable (e.g. circular) — skip.
       }
     }
+  }
+  return values;
+}
+
+/**
+ * Read declared DOM selectors from the live document (isolated world).
+ *
+ * For each selector: `document.querySelector(selector)`; then the value is
+ * the named attribute (`getAttribute`) when `attribute` is set, otherwise the
+ * element's `.value` (form fields) falling back to `.textContent`. The value
+ * is coerced to a string. A name is OMITTED from the result when the element
+ * is absent, the attribute is absent, or the resolved value is null/undefined
+ * — mirroring how `readStorageWithPointers` omits missing keys.
+ */
+export function readDomValues(
+  selectors: { name: string; selector: string; attribute?: string }[],
+): Record<string, string> {
+  const values: Record<string, string> = {};
+  for (const decl of selectors) {
+    const el = document.querySelector(decl.selector);
+    if (el === null) continue;
+    const raw: unknown = decl.attribute
+      ? el.getAttribute(decl.attribute)
+      : ((el as HTMLInputElement).value ?? el.textContent);
+    if (raw === null || raw === undefined) continue;
+    values[decl.name] = String(raw);
   }
   return values;
 }

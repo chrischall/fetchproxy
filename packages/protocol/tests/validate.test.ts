@@ -1893,3 +1893,159 @@ describe('validateCaptureHeaderDecls', () => {
     ).toThrow(ProtocolError);
   });
 });
+
+// 1.4.0: read_dom capability — declared DOM selectors + wire format.
+describe('validateFrame (1.4.0 read_dom domSelectors)', () => {
+  const validHello = {
+    type: 'hello',
+    protocolVersion: 2,
+    role: 'server',
+    mcpId: 'easytable-mcp:0.0.1:a3f7c91d2e8b4f56',
+    serverName: 'easytable-mcp',
+    version: '0.0.1',
+    domains: ['easytable.com'],
+    identityX25519Pub: 'AAAA',
+    identityEd25519Pub: 'AAAA',
+    sessionNonce: 'AAAA',
+    sessionSig: 'AAAA',
+  };
+
+  it('accepts read_dom capability + domSelectors', () => {
+    expect(() =>
+      validateFrame({
+        ...validHello,
+        capabilities: ['fetch', 'read_dom'],
+        domSelectors: [
+          { name: 'turnstileToken', selector: 'input[name="cf-turnstile-response"]' },
+          { name: 'csrf', selector: 'meta[name=csrf]', attribute: 'content' },
+        ],
+      }),
+    ).not.toThrow();
+  });
+
+  it('accepts empty domSelectors', () => {
+    expect(() => validateFrame({ ...validHello, domSelectors: [] })).not.toThrow();
+  });
+
+  it('rejects domSelectors entry missing name', () => {
+    expect(() =>
+      validateFrame({ ...validHello, domSelectors: [{ selector: 'input' }] }),
+    ).toThrow(/domSelectors.*name/);
+  });
+
+  it('rejects domSelectors entry missing selector', () => {
+    expect(() =>
+      validateFrame({ ...validHello, domSelectors: [{ name: 'x' }] }),
+    ).toThrow(/domSelectors.*selector/);
+  });
+
+  it('rejects a selector containing control characters', () => {
+    expect(() =>
+      validateFrame({ ...validHello, domSelectors: [{ name: 'x', selector: 'a\nb' }] }),
+    ).toThrow(/domSelectors.*selector/);
+  });
+
+  it('rejects a bad attribute name', () => {
+    expect(() =>
+      validateFrame({
+        ...validHello,
+        domSelectors: [{ name: 'x', selector: 'a', attribute: 'has space' }],
+      }),
+    ).toThrow(/domSelectors.*attribute/);
+  });
+
+  it('rejects an unexpected field on an entry', () => {
+    expect(() =>
+      validateFrame({
+        ...validHello,
+        domSelectors: [{ name: 'x', selector: 'a', bogus: 1 }],
+      }),
+    ).toThrow(/domSelectors.*unexpected/);
+  });
+
+  it('rejects duplicate names', () => {
+    expect(() =>
+      validateFrame({
+        ...validHello,
+        domSelectors: [
+          { name: 'x', selector: 'a' },
+          { name: 'x', selector: 'b' },
+        ],
+      }),
+    ).toThrow(/domSelectors.*duplicate/);
+  });
+
+  it('accepts a well-formed read_dom inner request', () => {
+    expect(() =>
+      validateInnerFrame({
+        type: 'request',
+        id: 1,
+        op: 'read_dom',
+        init: { origin: 'https://book.easytable.com', names: ['turnstileToken'] },
+      }),
+    ).not.toThrow();
+  });
+
+  it('rejects read_dom request with empty names', () => {
+    expect(() =>
+      validateInnerFrame({
+        type: 'request',
+        id: 1,
+        op: 'read_dom',
+        init: { origin: 'https://book.easytable.com', names: [] },
+      }),
+    ).toThrow(/names/);
+  });
+
+  it('rejects read_dom request with a non-https origin', () => {
+    expect(() =>
+      validateInnerFrame({
+        type: 'request',
+        id: 1,
+        op: 'read_dom',
+        init: { origin: 'http://book.easytable.com', names: ['x'] },
+      }),
+    ).toThrow(/origin/);
+  });
+
+  it('rejects read_dom request with an unexpected init field', () => {
+    expect(() =>
+      validateInnerFrame({
+        type: 'request',
+        id: 1,
+        op: 'read_dom',
+        init: { origin: 'https://book.easytable.com', names: ['x'], extra: 1 },
+      }),
+    ).toThrow(/unexpected field.*read_dom/);
+  });
+
+  it('accepts a well-formed read_dom inner response', () => {
+    expect(() =>
+      validateInnerFrame({
+        type: 'response',
+        id: 1,
+        ok: true,
+        op: 'read_dom',
+        values: { turnstileToken: '0.abcd' },
+      }),
+    ).not.toThrow();
+  });
+
+  it('rejects a read_dom response missing values', () => {
+    expect(() =>
+      validateInnerFrame({ type: 'response', id: 1, ok: true, op: 'read_dom' }),
+    ).toThrow(/values.*read_dom/);
+  });
+
+  it('rejects a read_dom response whose values are not all strings', () => {
+    expect(() =>
+      validateInnerFrame({
+        type: 'response',
+        id: 1,
+        ok: true,
+        op: 'read_dom',
+        values: { turnstileToken: 42 },
+      }),
+    ).toThrow(/values/);
+  });
+});
