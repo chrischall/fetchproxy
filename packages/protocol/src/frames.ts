@@ -75,6 +75,18 @@ export type Platform = 'chrome' | 'safari' | 'firefox';
  *                             single-host, so the MCP reads it from the same
  *                             disk). Elevated — writes a file to the user's
  *                             machine. Limited to the MCP's declared `domains`.
+ * `'read_dom'`              — read the value of a declared DOM element in the
+ *                             matched tab, selected by a pinned CSS selector
+ *                             (`domSelectors`). Runs in the content script's
+ *                             ISOLATED world — it only touches the shared DOM
+ *                             (`querySelector(...).value` / an attribute), never
+ *                             page-MAIN-world JS, never a page function call, so
+ *                             it cannot execute page code. Lets an MCP recover a
+ *                             token a page writes into a hidden input (e.g. a
+ *                             Cloudflare Turnstile `cf-turnstile-response`) that
+ *                             a POST body must carry. Elevated — surfaces the
+ *                             exact selectors in the pair popup. Scoped to the
+ *                             MCP's declared `domains`.
  *
  * Future additions are wire-additive: unknown capabilities are rejected
  * by the validator, so adding a new verb requires extending this union.
@@ -87,6 +99,7 @@ export type Capability =
   | 'capture_request_header'
   | 'capture_redirect'
   | 'read_indexed_db'
+  | 'read_dom'
   | 'download';
 
 /**
@@ -103,6 +116,7 @@ export const KNOWN_CAPABILITIES: ReadonlySet<Capability> = new Set<Capability>([
   'capture_request_header',
   'capture_redirect',
   'read_indexed_db',
+  'read_dom',
   'download',
 ]);
 
@@ -165,6 +179,38 @@ export interface CaptureHeaderDecl {
   headerName: string;
 }
 
+/**
+ * Declaration entry for the `read_dom` capability — a single named DOM
+ * read the MCP is allowed to perform. Pinned in the server hello,
+ * surfaced verbatim in the pair popup, and re-checked on every
+ * `read_dom` call (per-call `names` must each match a declared entry).
+ *
+ * The extension reads the value from the ISOLATED-world content script:
+ * `document.querySelector(selector)`, then `getAttribute(attribute)` when
+ * `attribute` is set, otherwise the element's `.value` (falling back to
+ * `.textContent`). It never enters the page MAIN world and never invokes
+ * a page function — this is a pure DOM property read.
+ */
+export interface DomSelectorDecl {
+  /**
+   * Logical handle the MCP references in a per-call `read_dom` request
+   * (via `ReadDomInit.names`). `[A-Za-z0-9_.\-]`, 1-128 chars. Unique
+   * within `domSelectors`.
+   */
+  name: string;
+  /**
+   * CSS selector passed to `document.querySelector`. 1-512 chars, no
+   * control characters. The extension reads the FIRST match only.
+   */
+  selector: string;
+  /**
+   * Optional attribute name to read via `getAttribute`. `[A-Za-z0-9\-_:]`,
+   * ≤128 chars. Omitted ⇒ read the element's `.value`, falling back to
+   * `.textContent` for non-form elements.
+   */
+  attribute?: string;
+}
+
 export interface HelloFrameFromServer {
   type: 'hello';
   protocolVersion: 2;
@@ -216,6 +262,14 @@ export interface HelloFrameFromServer {
   localStoragePointers?: StoragePointerDecl[];
   /** 0.4.0+: same shape for sessionStorage. */
   sessionStoragePointers?: StoragePointerDecl[];
+  /**
+   * 1.4.0+: declared DOM reads for `read_dom`. Each entry names a CSS
+   * selector (+ optional attribute) the MCP may read from the matched
+   * tab's DOM. Per-call `read_dom` requests reference these by `name`.
+   * Empty/absent ⇒ no DOM reads permitted even if `'read_dom'` is in
+   * `capabilities`.
+   */
+  domSelectors?: DomSelectorDecl[];
   identityX25519Pub: string;      // base64 raw 32B
   identityEd25519Pub: string;     // base64 raw 32B
   sessionNonce: string;           // base64 raw ≥16B
@@ -444,6 +498,17 @@ export interface DownloadInit {
   timeoutMs?: number;
 }
 
+/** `init` payload for `read_dom`. */
+export interface ReadDomInit {
+  /** Bare HTTPS origin of the tab whose DOM is being read. */
+  origin: string;
+  /**
+   * Subset of the MCP's declared `domSelectors` names to read. Each
+   * entry must match a declared `DomSelectorDecl.name`.
+   */
+  names: string[];
+}
+
 export interface InnerRequestFetch {
   type: 'request';
   id: number;
@@ -493,6 +558,13 @@ export interface InnerRequestReadIndexedDb {
   init: ReadIndexedDbInit;
 }
 
+export interface InnerRequestReadDom {
+  type: 'request';
+  id: number;
+  op: 'read_dom';
+  init: ReadDomInit;
+}
+
 export interface InnerRequestDownload {
   type: 'request';
   id: number;
@@ -512,6 +584,7 @@ export type InnerRequest =
   | InnerRequestCaptureRequestHeader
   | InnerRequestCaptureRedirect
   | InnerRequestReadIndexedDb
+  | InnerRequestReadDom
   | InnerRequestDownload;
 
 export interface InnerResponseFetchOk {
@@ -594,6 +667,19 @@ export interface InnerResponseReadIndexedDbOk {
   values: Record<string, unknown>;
 }
 
+export interface InnerResponseReadDomOk {
+  type: 'response';
+  id: number;
+  ok: true;
+  op: 'read_dom';
+  /**
+   * Name → value map for declared selectors whose element (and requested
+   * property/attribute) was present. Names whose selector matched nothing,
+   * or whose attribute was absent, are omitted.
+   */
+  values: Record<string, string>;
+}
+
 /** Saved-file metadata returned by a successful `download`. */
 export interface DownloadResult {
   /** Absolute local path the browser saved the file to (`DownloadItem.filename`). */
@@ -628,6 +714,7 @@ export type InnerResponseOk =
   | InnerResponseCaptureRequestHeaderOk
   | InnerResponseCaptureRedirectOk
   | InnerResponseReadIndexedDbOk
+  | InnerResponseReadDomOk
   | InnerResponseDownloadOk;
 
 export interface InnerResponseError {

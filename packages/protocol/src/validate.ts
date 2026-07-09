@@ -361,6 +361,66 @@ function assertIndexedDbScopesArray(value: unknown, label: string): void {
 }
 
 /**
+ * CSS selector char guard for `domSelectors`: 1-512 chars, no ASCII
+ * control characters (incl. newline/tab). Deliberately permissive on
+ * selector syntax (brackets, quotes, `:`, `.`, `#`, spaces are all legal
+ * CSS) but rejects control chars that have no place in a selector and
+ * would only muddy the pair popup.
+ */
+// eslint-disable-next-line no-control-regex
+const DOM_SELECTOR_RE = /^[^ -]{1,512}$/;
+/** Attribute name for a `domSelectors` entry. Same shape as an HTML attr. */
+const DOM_ATTRIBUTE_RE = /^[A-Za-z_:][A-Za-z0-9_:.\-]{0,127}$/;
+
+/**
+ * Structural validation of a `domSelectors` array. Each entry is a
+ * `{ name, selector, attribute? }` tuple; `name` is unique and matches
+ * `SCOPE_KEY_RE` (so per-call `names` can be cross-checked), `selector`
+ * is a non-control-char CSS string, `attribute` (optional) is an HTML
+ * attribute name.
+ */
+function assertDomSelectorsArray(value: unknown, label: string): void {
+  if (!Array.isArray(value)) {
+    throw new ProtocolError(`${label}: expected array, got ${typeof value}`);
+  }
+  const seen = new Set<string>();
+  for (let i = 0; i < value.length; i++) {
+    const entry = value[i] as unknown;
+    assertObject(entry, `${label}[${i}]`);
+    if (entry.name === undefined) {
+      throw new ProtocolError(`${label}[${i}].name: missing`);
+    }
+    if (entry.selector === undefined) {
+      throw new ProtocolError(`${label}[${i}].selector: missing`);
+    }
+    if (typeof entry.name !== 'string' || !SCOPE_KEY_RE.test(entry.name)) {
+      throw new ProtocolError(`${label}[${i}].name: invalid ${JSON.stringify(entry.name)}`);
+    }
+    if (typeof entry.selector !== 'string' || !DOM_SELECTOR_RE.test(entry.selector)) {
+      throw new ProtocolError(
+        `${label}[${i}].selector: invalid ${JSON.stringify(entry.selector)}`,
+      );
+    }
+    if (entry.attribute !== undefined) {
+      if (typeof entry.attribute !== 'string' || !DOM_ATTRIBUTE_RE.test(entry.attribute)) {
+        throw new ProtocolError(
+          `${label}[${i}].attribute: invalid ${JSON.stringify(entry.attribute)}`,
+        );
+      }
+    }
+    if (seen.has(entry.name)) {
+      throw new ProtocolError(`${label}: duplicate name ${JSON.stringify(entry.name)}`);
+    }
+    seen.add(entry.name);
+    for (const k of Object.keys(entry)) {
+      if (k !== 'name' && k !== 'selector' && k !== 'attribute') {
+        throw new ProtocolError(`${label}[${i}]: unexpected field ${JSON.stringify(k)}`);
+      }
+    }
+  }
+}
+
+/**
  * Validate a raw JSON-parsed value as a top-level fetchproxy frame.
  * Throws `ProtocolError` on any structural issue (wrong type, missing
  * field, bad encoding, forbidden prototype-pollution key). Used by both
@@ -458,6 +518,9 @@ function validateHello(raw: Record<string, unknown>): HelloFrame {
         'hello.sessionStoragePointers',
         raw.sessionStorageKeys as string[] | undefined,
       );
+    }
+    if (raw.domSelectors !== undefined) {
+      assertDomSelectorsArray(raw.domSelectors, 'hello.domSelectors');
     }
     assertBase64(raw.identityX25519Pub, 'hello.identityX25519Pub');
     assertBase64(raw.identityEd25519Pub, 'hello.identityEd25519Pub');
@@ -747,6 +810,21 @@ function validateInnerRequest(raw: Record<string, unknown>): InnerFrame {
     }
     return raw as unknown as InnerFrame;
   }
+  if (raw.op === 'read_dom') {
+    assertObject(raw.init, 'inner.init');
+    if (raw.init.origin === undefined) throw new ProtocolError('inner.init.origin: missing');
+    if (raw.init.names === undefined) throw new ProtocolError('inner.init.names: missing');
+    assertHttpsOriginOnly(raw.init.origin, 'inner.init.origin');
+    assertNonEmptyKeyArray(raw.init.names, 'inner.init.names');
+    for (const k of Object.keys(raw.init)) {
+      if (k !== 'origin' && k !== 'names') {
+        throw new ProtocolError(
+          `inner.init: unexpected field ${JSON.stringify(k)} on read_dom`,
+        );
+      }
+    }
+    return raw as unknown as InnerFrame;
+  }
   if (raw.op === 'download') {
     assertObject(raw.init, 'inner.init');
     if (raw.init.url === undefined) {
@@ -782,7 +860,7 @@ function validateInnerRequest(raw: Record<string, unknown>): InnerFrame {
     return raw as unknown as InnerFrame;
   }
   throw new ProtocolError(
-    `inner.op: must be one of "fetch", "read_cookies", "read_local_storage", "read_session_storage", "capture_request_header", "capture_redirect", "read_indexed_db", "download"; got ${JSON.stringify(raw.op)}`,
+    `inner.op: must be one of "fetch", "read_cookies", "read_local_storage", "read_session_storage", "capture_request_header", "capture_redirect", "read_indexed_db", "read_dom", "download"; got ${JSON.stringify(raw.op)}`,
   );
 }
 
@@ -884,6 +962,13 @@ function validateInnerResponse(raw: Record<string, unknown>): InnerFrame {
       // outer container + prototype-pollution keys (assertObject does
       // both).
       assertObject(raw.values, 'inner.values');
+      return raw as unknown as InnerFrame;
+    }
+    if (op === 'read_dom') {
+      if (raw.values === undefined) {
+        throw new ProtocolError('inner.values: missing on read_dom response');
+      }
+      assertStringMap(raw.values, 'inner.values');
       return raw as unknown as InnerFrame;
     }
     if (op === 'download') {

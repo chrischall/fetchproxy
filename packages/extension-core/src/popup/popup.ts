@@ -34,6 +34,7 @@ const CAPABILITY_DISPLAY: Record<string, CapabilityDisplay> = {
   read_session_storage: { label: 'Read sessionStorage', warn: true },
   capture_request_header: { label: 'Capture request header', warn: true },
   read_indexed_db: { label: 'Read IndexedDB', warn: true },
+  read_dom: { label: 'Read DOM elements', warn: true },
   download: { label: 'Download files to your computer', warn: true },
 };
 
@@ -49,6 +50,7 @@ export interface PreviousScope {
   sessionStorageKeys: string[];
   captureHeaders: { host: string; path?: string; headerName: string }[];
   indexedDbScopes: { origin: string; database: string; store: string; keys: string[] }[];
+  domSelectors: { name: string; selector: string; attribute?: string }[];
   localStoragePointers: { key: string; jsonPointer: string }[];
   sessionStoragePointers: { key: string; jsonPointer: string }[];
 }
@@ -88,6 +90,12 @@ export interface PendingPair {
     store: string;
     keys: string[];
   }[];
+  /**
+   * 1.4.0+: declared DOM selectors (name + CSS selector + optional
+   * attribute). Each is rendered on its own line so the user sees exactly
+   * which DOM values this MCP would read.
+   */
+  domSelectors?: { name: string; selector: string; attribute?: string }[];
   pairCode: string;
 }
 
@@ -121,6 +129,7 @@ export interface ScopeSnapshot {
   sessionStorageKeys: string[];
   captureHeaders: { host: string; path?: string; headerName: string }[];
   indexedDbScopes: { origin: string; database: string; store: string; keys: string[] }[];
+  domSelectors: { name: string; selector: string; attribute?: string }[];
   localStoragePointers: { key: string; jsonPointer: string }[];
   sessionStoragePointers: { key: string; jsonPointer: string }[];
 }
@@ -225,6 +234,15 @@ function idbScopeKey(s: {
   return `${s.database}/${s.store}: ${[...s.keys].sort().join(', ')}`;
 }
 
+function domSelectorKey(s: { name: string; selector: string; attribute?: string }): string {
+  return `${s.name}\x00${s.selector}\x00${s.attribute ?? ''}`;
+}
+
+/** Human-readable label for a DOM selector: `name → selector` (+ `[attr]`). */
+function domSelectorLabel(s: { name: string; selector: string; attribute?: string }): string {
+  return `${s.name} → ${s.selector}${s.attribute ? ` [${s.attribute}]` : ''}`;
+}
+
 function pointerKey(p: { key: string; jsonPointer: string }): string {
   return `${p.key}${p.jsonPointer}`;
 }
@@ -284,6 +302,11 @@ function appendDiffSummary(
     pending.indexedDbScopes ?? [],
     idbScopeKey,
   );
+  const domDiff = diffLists(
+    previous.domSelectors,
+    pending.domSelectors ?? [],
+    domSelectorKey,
+  );
   const lpDiff = diffLists(
     previous.localStoragePointers,
     [],
@@ -312,7 +335,8 @@ function appendDiffSummary(
     localDiff.kept.length +
     sessDiff.kept.length +
     chDiff.kept.length +
-    idbDiff.kept.length;
+    idbDiff.kept.length +
+    domDiff.kept.length;
   if (keptAny === 0) {
     appendBullet('(none)');
   } else {
@@ -322,6 +346,7 @@ function appendDiffSummary(
     for (const k of sessDiff.kept) appendBullet(`sessionStorage: ${k}`);
     for (const h of chDiff.kept) appendBullet(`Capture: ${h.headerName} from ${captureHeaderTarget(h)}`);
     for (const s of idbDiff.kept) appendBullet(`IndexedDB: ${s.database}/${s.store}`);
+    for (const s of domDiff.kept) appendBullet(`DOM: ${domSelectorLabel(s)}`);
   }
 
   // Now requesting (new).
@@ -332,7 +357,8 @@ function appendDiffSummary(
     localDiff.added.length +
     sessDiff.added.length +
     chDiff.added.length +
-    idbDiff.added.length;
+    idbDiff.added.length +
+    domDiff.added.length;
   if (addedAny === 0) {
     appendBullet('(none)');
   } else {
@@ -342,6 +368,7 @@ function appendDiffSummary(
     for (const k of sessDiff.added) appendBullet(`sessionStorage: ${k}`);
     for (const h of chDiff.added) appendBullet(`Capture: ${h.headerName} from ${captureHeaderTarget(h)}`);
     for (const s of idbDiff.added) appendBullet(`IndexedDB: ${s.database}/${s.store}`);
+    for (const s of domDiff.added) appendBullet(`DOM: ${domSelectorLabel(s)}`);
   }
 
   // No longer requested.
@@ -353,6 +380,7 @@ function appendDiffSummary(
     sessDiff.removed.length +
     chDiff.removed.length +
     idbDiff.removed.length +
+    domDiff.removed.length +
     lpDiff.removed.length +
     spDiff.removed.length;
   if (removedAny === 0) {
@@ -364,6 +392,7 @@ function appendDiffSummary(
     for (const k of sessDiff.removed) appendBullet(`sessionStorage: ${k}`);
     for (const h of chDiff.removed) appendBullet(`Capture: ${h.headerName} from ${captureHeaderTarget(h)}`);
     for (const s of idbDiff.removed) appendBullet(`IndexedDB: ${s.database}/${s.store}`);
+    for (const s of domDiff.removed) appendBullet(`DOM: ${domSelectorLabel(s)}`);
   }
 
   root.appendChild(dl);
@@ -387,6 +416,23 @@ function appendIndexedDbScopesSubList(
         `${e.database}/${e.store}: ${e.keys.join(', ')}`,
       ),
     );
+  }
+  dd.appendChild(ul);
+  dl.appendChild(dd);
+}
+
+function appendDomSelectorsSubList(
+  dl: HTMLElement,
+  entries:
+    | readonly { name: string; selector: string; attribute?: string }[]
+    | undefined,
+): void {
+  if (!entries || entries.length === 0) return;
+  dl.appendChild(elem('dt', { class: 'cap-warn' }, 'Read DOM elements'));
+  const dd = elem('dd', { class: 'cap-warn' });
+  const ul = elem('ul', { class: 'dom-selectors' });
+  for (const e of entries) {
+    ul.appendChild(elem('li', {}, domSelectorLabel(e)));
   }
   dd.appendChild(ul);
   dl.appendChild(dd);
@@ -522,6 +568,7 @@ export function renderPopup(root: HTMLElement, state: PopupState): void {
       sessionStorageKeys: pending.sessionStorageKeys,
       captureHeaders: pending.captureHeaders,
       indexedDbScopes: pending.indexedDbScopes,
+      domSelectors: pending.domSelectors,
       pairCode: '',
     }, previous);
 
@@ -596,6 +643,7 @@ export function renderPopup(root: HTMLElement, state: PopupState): void {
   appendScopeSubList(dl, 'Read sessionStorage', pending.sessionStorageKeys);
   appendCaptureHeadersSubList(dl, pending.captureHeaders);
   appendIndexedDbScopesSubList(dl, pending.indexedDbScopes);
+  appendDomSelectorsSubList(dl, pending.domSelectors);
 
   root.appendChild(dl);
 
@@ -653,6 +701,7 @@ interface PendingPairRecord {
   sessionStorageKeys?: string[];
   captureHeaders?: { host: string; path?: string; headerName: string }[];
   indexedDbScopes?: { origin: string; database: string; store: string; keys: string[] }[];
+  domSelectors?: { name: string; selector: string; attribute?: string }[];
   localStoragePointers?: { key: string; jsonPointer: string }[];
   sessionStoragePointers?: { key: string; jsonPointer: string }[];
   previousScope?: PreviousScope;
@@ -676,6 +725,7 @@ interface PendingScopeUpdateRecord {
   sessionStorageKeys?: string[];
   captureHeaders?: { host: string; path?: string; headerName: string }[];
   indexedDbScopes?: { origin: string; database: string; store: string; keys: string[] }[];
+  domSelectors?: { name: string; selector: string; attribute?: string }[];
   localStoragePointers?: { key: string; jsonPointer: string }[];
   sessionStoragePointers?: { key: string; jsonPointer: string }[];
   previousScope: PreviousScope;
@@ -771,6 +821,7 @@ async function bootstrap(): Promise<void> {
             store: d.store,
             keys: [...d.keys],
           })),
+          domSelectors: (pending.domSelectors ?? []).map((d) => ({ ...d })),
           localStoragePointers: (pending.localStoragePointers ?? []).map((d) => ({ ...d })),
           sessionStoragePointers: (pending.sessionStoragePointers ?? []).map((d) => ({ ...d })),
         },
@@ -822,6 +873,7 @@ async function bootstrap(): Promise<void> {
           store: d.store,
           keys: [...d.keys],
         })),
+        domSelectors: (pending.domSelectors ?? []).map((d) => ({ ...d })),
         pairCode: pending.pairCode,
       },
       ...(pending.previousScope ? { previous: pending.previousScope } : {}),
