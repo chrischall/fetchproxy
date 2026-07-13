@@ -1,15 +1,28 @@
 {
   "name": "@fetchproxy/cli",
-  "version": "1.4.0",
+  "version": "1.5.0",
   "description": "One-shot CLI for the fetchproxy bridge: authenticated fetches and session reads through the user's signed-in browser tab, scoped by per-service profiles.",
   "type": "module",
-  "bin": { "fpx": "./dist/index.js" },
+  "bin": {
+    "fpx": "./dist/index.js"
+  },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
-  "exports": { ".": { "import": "./dist/index.js", "types": "./dist/index.d.ts" } },
-  "files": ["dist"],
-  "scripts": { "build": "tsc -b" },
-  "publishConfig": { "access": "public" },
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -b"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/chrischall/fetchproxy.git",
