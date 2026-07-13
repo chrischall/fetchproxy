@@ -79,8 +79,8 @@ Every verb takes `-p`/`--profile <name>` (except the `profile` subcommands thems
 | `fpx pair -p <name> [--domain <apex>]` | Force a pairing round-trip against one declared domain (defaults to the only one, if there's exactly one). | `fpx pair -p opentable` |
 | `fpx health -p <name>` | Print the bridge's health snapshot (host/peer role, connection state). | `fpx health -p opentable` |
 | `fpx get <url> -p <name> [--json] [-H 'K: V']…` | GET a URL through the profile's tab. | `fpx get https://www.opentable.com/ -p opentable` |
-| `fpx post-json <url> <body\|@file> -p <name>` | POST a JSON body (literal or `@file`); sets `Content-Type: application/json` unless overridden. | `fpx post-json https://www.opentable.com/dapi/fe/gql '{"operationName":"Autocomplete"}' -p opentable` |
-| `fpx request <url> -p <name> [-X METHOD] [-H …]… [-d body\|@file]` | Arbitrary method/headers/body. | `fpx request https://www.opentable.com/x -p opentable -X DELETE` |
+| `fpx post-json <url> <body\|@file> -p <name> [--json] [-H 'K: V']…` | POST a JSON body (literal or `@file`); sets `Content-Type: application/json` unless overridden. | `fpx post-json https://www.opentable.com/dapi/fe/gql '{"operationName":"Autocomplete"}' -p opentable` |
+| `fpx request <url> -p <name> [-X METHOD] [-H 'K: V']… [-d body\|@file] [--json]` | Arbitrary method/headers/body. | `fpx request https://www.opentable.com/x -p opentable -X DELETE` |
 | `fpx cookies [keys…] -p <name>` | Read declared cookies (all declared keys if none given). | `fpx cookies -p opentable` |
 | `fpx local-storage [keys…] -p <name>` | Read declared `localStorage` keys. | `fpx local-storage authToken -p opentable` |
 | `fpx session-storage [keys…] -p <name>` | Read declared `sessionStorage` keys. | `fpx session-storage csrfToken -p opentable` |
@@ -105,6 +105,8 @@ This split means `fpx get … | jq .` or `fpx cookies -p x > cookies.json` never
 | `2` | Bridge unavailable — extension not connected, pairing still pending, or an unexpected bridge-level failure. |
 | `3` | Bot wall detected in the response (Akamai/Cloudflare-style interstitial). |
 | `4` | Upstream HTTP error — the request reached the site but got a non-2xx response. |
+
+Exit codes 3 and 4 are emitted only by the fetch verbs (`get`, `post-json`, `request`); the `pair`, `health`, `session`, and read verbs (`cookies`/`local-storage`/`session-storage`/`indexeddb`) return 0 on a successful bridge round-trip regardless of upstream status.
 
 ## `FETCHPROXY_CLI_HOME`
 
