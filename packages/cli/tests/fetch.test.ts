@@ -78,4 +78,29 @@ describe('runFetch', () => {
       .rejects.toThrow(/tripadvisor\.com/);
     expect(factory).not.toHaveBeenCalled();
   });
+
+  it('multi-domain profile: threads the matched declared domain to request()', async () => {
+    // The real server calls resolveBaseDomain(opts.domain) eagerly and throws
+    // when >1 domain is declared and no domain is passed — even for absolute
+    // URLs. This stub mimics that guard so the test would fail if runFetch
+    // omitted the domain (regression: PR #151 auto-review).
+    const io = memIo();
+    const profile = emptyProfile(['honeybook.com', 'hbportal.co']);
+    let sawDomain: string | undefined = 'UNSET';
+    const server = stubServer({
+      request: vi.fn(async (_method: string, _url: string, opts?: { domain?: string }) => {
+        if (opts?.domain === undefined) {
+          throw new Error('FetchproxyServer: this MCP declared multiple domains — pass { domain }');
+        }
+        sawDomain = opts.domain;
+        return { status: 200, body: 'OK', url: 'https://app.hbportal.co/x' };
+      }),
+    });
+    const cmd = { kind: 'fetch', profile: 'hb', method: 'GET',
+      url: 'https://app.hbportal.co/x', headers: {}, body: undefined, json: false } as const;
+    const code = await runFetch(cmd, profile, io, () => server);
+    expect(code).toBe(EXIT.OK);
+    // subdomain host resolves to its declared apex, not the first declared domain
+    expect(sawDomain).toBe('hbportal.co');
+  });
 });

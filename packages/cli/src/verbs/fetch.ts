@@ -36,20 +36,28 @@ export function pairCodePrinter(io: Io): (code: string) => void {
     io.err(`fetchproxy pair code: ${code} — approve in the Transporter extension popup`);
 }
 
-export function assertUrlOnProfile(url: string, profile: Profile): void {
+/**
+ * Assert the URL's host is on one of the profile's declared domains and return
+ * the matching declared apex. `runFetch` threads that apex to `request()` as
+ * `{ domain }`: the server calls `resolveBaseDomain(opts.domain)` eagerly (even
+ * for absolute URLs) and throws when a profile declares >1 domain and none is
+ * passed, so a multi-domain profile needs the resolved domain on every call.
+ */
+export function assertUrlOnProfile(url: string, profile: Profile): string {
   let host: string;
   try {
     host = new URL(url).host;
   } catch {
     throw new UsageError(`not a valid URL: ${JSON.stringify(url)}`);
   }
-  const ok = profile.domains.some((d) => host === d || host.endsWith(`.${d}`));
-  if (!ok) {
+  const matched = profile.domains.find((d) => host === d || host.endsWith(`.${d}`));
+  if (matched === undefined) {
     throw new UsageError(
       `${host} is not on this profile's declared domains (${profile.domains.join(', ')})`,
       'add a domain with: fpx profile add <name> --domain … (new profile) or edit profiles.json',
     );
   }
+  return matched;
 }
 
 export async function runFetch(
@@ -58,7 +66,7 @@ export async function runFetch(
   io: Io,
   makeServer: VerbServerFactory = defaultServerFactory,
 ): Promise<number> {
-  assertUrlOnProfile(cmd.url, profile);
+  const domain = assertUrlOnProfile(cmd.url, profile);
   const server = makeServer({
     ...serverOptsFor(cmd.profile, profile, VERSION),
     onPairCode: pairCodePrinter(io),
@@ -68,6 +76,7 @@ export async function runFetch(
     const res = await server.request(cmd.method, cmd.url, {
       headers: Object.keys(cmd.headers).length ? cmd.headers : undefined,
       body: cmd.body,
+      domain,
     });
     io.out(cmd.json ? fetchEnvelope(res) : res.body);
     const wall = classifyBotWall(res.body, res.status);
