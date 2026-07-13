@@ -21,6 +21,10 @@ export interface VerbServer {
   readIndexedDb(o: {
     database: string; store: string; keys: string[]; domain?: string; subdomain?: string;
   }): Promise<Record<string, unknown>>;
+  readDom(o: { names: string[]; domain?: string; subdomain?: string }): Promise<Record<string, string>>;
+  download(o: { url: string; filename?: string }): Promise<{
+    path: string; bytes: number; mime?: string; finalUrl?: string;
+  }>;
   bridgeHealth(): unknown;
 }
 

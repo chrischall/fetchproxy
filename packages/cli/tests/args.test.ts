@@ -15,7 +15,47 @@ describe('parseCliArgs', () => {
       kind: 'profile-declare', name: 'trip', cookies: ['datadome'],
       localStorage: [], sessionStorage: [],
       captureHeaders: [{ headerName: 'x-csrf-token', host: 'www.tripadvisor.com', path: '/data/*' }],
+      domSelectors: [], download: false,
     });
+  });
+
+  it('parses profile declare with --dom-selector and --allow-download', () => {
+    const cmd = parseCliArgs(['profile', 'declare', 'r',
+      '--dom-selector', 'title=h1.title', '--allow-download']);
+    expect(cmd).toEqual({
+      kind: 'profile-declare', name: 'r', cookies: [], localStorage: [], sessionStorage: [],
+      captureHeaders: [], domSelectors: [{ name: 'title', selector: 'h1.title' }], download: true,
+    });
+  });
+
+  it('--dom-selector splits at the first = only', () => {
+    const cmd = parseCliArgs(['profile', 'declare', 'r', '--dom-selector', 'q=a[href="="]']);
+    expect(cmd.kind).toBe('profile-declare');
+    expect((cmd as { domSelectors: unknown }).domSelectors).toEqual([{ name: 'q', selector: 'a[href="="]' }]);
+  });
+
+  it('--dom-selector without = throws a UsageError', () => {
+    expect(() => parseCliArgs(['profile', 'declare', 'r', '--dom-selector', 'nope']))
+      .toThrow(UsageError);
+  });
+
+  it('--dom-selector with an empty handle throws a UsageError', () => {
+    expect(() => parseCliArgs(['profile', 'declare', 'r', '--dom-selector', '=h1']))
+      .toThrow(UsageError);
+  });
+
+  it('parses dom with names and storage-domain/subdomain', () => {
+    expect(parseCliArgs(['dom', 'a', 'b', '-p', 'x', '--storage-domain', 'd.com', '--storage-subdomain', 's']))
+      .toEqual({ kind: 'dom', profile: 'x', names: ['a', 'b'], storageDomain: 'd.com', storageSubdomain: 's' });
+  });
+
+  it('parses download with url and --filename', () => {
+    expect(parseCliArgs(['download', 'https://x.com/f', '-p', 'x', '--filename', 'f']))
+      .toEqual({ kind: 'download', profile: 'x', url: 'https://x.com/f', filename: 'f' });
+  });
+
+  it('download without a URL throws a UsageError', () => {
+    expect(() => parseCliArgs(['download', '-p', 'x'])).toThrow(UsageError);
   });
 
   it('parses get with headers and --json', () => {

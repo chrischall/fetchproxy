@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import type { CaptureHeaderDecl, IndexedDbScopeDecl } from '@fetchproxy/protocol';
+import type { CaptureHeaderDecl, DomSelectorDecl, IndexedDbScopeDecl } from '@fetchproxy/protocol';
 import { UsageError } from './output.js';
 
 export interface PointerDecl {
@@ -20,6 +20,8 @@ export interface Profile {
   indexedDb: IndexedDbScopeDecl[];
   localStoragePointers: PointerDecl[];
   sessionStoragePointers: PointerDecl[];
+  domSelectors: DomSelectorDecl[];
+  download: boolean;
 }
 
 export function cliHome(env: Record<string, string | undefined> = process.env): string {
@@ -43,6 +45,8 @@ export function emptyProfile(domains: string[]): Profile {
     indexedDb: [],
     localStoragePointers: [],
     sessionStoragePointers: [],
+    domSelectors: [],
+    download: false,
   };
 }
 
@@ -63,10 +67,11 @@ function validateProfile(name: string, raw: unknown): Profile {
     if (p[k] !== undefined && !isStringArray(p[k])) fail(k);
   }
   for (const k of [
-    'captureHeaders', 'indexedDb', 'localStoragePointers', 'sessionStoragePointers',
+    'captureHeaders', 'indexedDb', 'localStoragePointers', 'sessionStoragePointers', 'domSelectors',
   ] as const) {
     if (p[k] !== undefined && !Array.isArray(p[k])) fail(k);
   }
+  if (p.download !== undefined && typeof p.download !== 'boolean') fail('download');
   return { ...emptyProfile(p.domains as string[]), ...(p as Partial<Profile>) } as Profile;
 }
 

@@ -9,7 +9,7 @@ describe('serverOptsFor', () => {
       serverName: 'fpx-trip', version: '1.4.0', domains: ['tripadvisor.com'],
       capabilities: ['fetch'], cookieKeys: [], localStorageKeys: [],
       sessionStorageKeys: [], captureHeaders: [], indexedDbScopes: [],
-      localStoragePointers: [], sessionStoragePointers: [],
+      localStoragePointers: [], sessionStoragePointers: [], domSelectors: [],
     });
   });
 
@@ -29,6 +29,43 @@ describe('serverOptsFor', () => {
     ]);
     expect(opts.localStorageKeys).toEqual(['persist:auth']);
     expect(opts.sessionStorageKeys).toEqual(['sid']);
+  });
+
+  it('domSelectors → read_dom capability (appended last, after read_indexed_db) and threads domSelectors', () => {
+    const p = {
+      ...emptyProfile(['resy.com']),
+      cookies: ['authToken'],
+      indexedDb: [{ origin: 'https://resy.com', database: 'db', store: 's', keys: ['k'] }],
+      domSelectors: [{ name: 'title', selector: 'h1' }],
+    };
+    const opts = serverOptsFor('resy', p, '1.4.0');
+    expect(opts.capabilities).toEqual([
+      'fetch', 'read_cookies', 'read_indexed_db', 'read_dom',
+    ]);
+    expect(opts.domSelectors).toEqual([{ name: 'title', selector: 'h1' }]);
+  });
+
+  it('download:true → download capability appended after read_dom', () => {
+    const p = {
+      ...emptyProfile(['resy.com']),
+      domSelectors: [{ name: 'title', selector: 'h1' }],
+      download: true,
+    };
+    const opts = serverOptsFor('resy', p, '1.4.0');
+    expect(opts.capabilities).toEqual(['fetch', 'read_dom', 'download']);
+  });
+
+  it('download:false → no download capability', () => {
+    const opts = serverOptsFor('resy', emptyProfile(['resy.com']), '1.4.0');
+    expect(opts.capabilities).toEqual(['fetch']);
+  });
+
+  it('domSelectors are defensively copied (mutating input does not affect opts)', () => {
+    const decl = { name: 'title', selector: 'h1' };
+    const p = { ...emptyProfile(['resy.com']), domSelectors: [decl] };
+    const opts = serverOptsFor('resy', p, '1.4.0');
+    decl.selector = 'h2';
+    expect(opts.domSelectors).toEqual([{ name: 'title', selector: 'h1' }]);
   });
 
   it('read_local_storage appears for raw keys with no pointers (and vice versa)', () => {

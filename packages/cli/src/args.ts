@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { parseArgs } from 'node:util';
-import type { CaptureHeaderDecl } from '@fetchproxy/protocol';
+import type { CaptureHeaderDecl, DomSelectorDecl } from '@fetchproxy/protocol';
 import { UsageError } from './output.js';
 
 export type Bucket = 'cookies' | 'localStorage' | 'sessionStorage' | 'indexedDb';
@@ -13,14 +13,18 @@ export type Command =
   | { kind: 'profile-remove'; name: string }
   | { kind: 'profile-add'; name: string; domains: string[] }
   | { kind: 'profile-declare'; name: string; cookies: string[]; localStorage: string[];
-      sessionStorage: string[]; captureHeaders: CaptureHeaderDecl[] }
+      sessionStorage: string[]; captureHeaders: CaptureHeaderDecl[];
+      domSelectors: DomSelectorDecl[]; download: boolean }
   | { kind: 'pair'; profile: string; domain?: string }
   | { kind: 'health'; profile: string }
   | { kind: 'fetch'; profile: string; method: string; url: string;
       headers: Record<string, string>; body?: string; json: boolean }
   | { kind: 'read'; profile: string; bucket: Bucket; keys: string[];
       storageDomain?: string; storageSubdomain?: string }
-  | { kind: 'session'; profile: string; storageDomain?: string; storageSubdomain?: string };
+  | { kind: 'session'; profile: string; storageDomain?: string; storageSubdomain?: string }
+  | { kind: 'dom'; profile: string; names: string[];
+      storageDomain?: string; storageSubdomain?: string }
+  | { kind: 'download'; profile: string; url: string; filename?: string };
 
 const READ_BUCKETS: Record<string, Bucket> = {
   cookies: 'cookies',
@@ -47,6 +51,14 @@ function parseCaptureHeaderFlag(raw: string): CaptureHeaderDecl {
   const slash = rest.indexOf('/');
   if (slash === -1) return { headerName, host: rest };
   return { headerName, host: rest.slice(0, slash), path: rest.slice(slash) };
+}
+
+function parseDomSelectorFlag(raw: string): DomSelectorDecl {
+  const eq = raw.indexOf('=');
+  if (eq <= 0 || eq === raw.length - 1) {
+    throw new UsageError(`--dom-selector expects 'handle=css-selector', got ${JSON.stringify(raw)}`);
+  }
+  return { name: raw.slice(0, eq), selector: raw.slice(eq + 1) };
 }
 
 function resolveBody(raw: string, readFile: (p: string) => string): string {
@@ -78,6 +90,9 @@ export function parseCliArgs(
         'local-storage': { type: 'string', multiple: true, default: [] },
         'session-storage': { type: 'string', multiple: true, default: [] },
         'capture-header': { type: 'string', multiple: true, default: [] },
+        'dom-selector': { type: 'string', multiple: true, default: [] },
+        'allow-download': { type: 'boolean', default: false },
+        filename: { type: 'string' },
         'storage-domain': { type: 'string' },
         'storage-subdomain': { type: 'string' },
         help: { type: 'boolean', short: 'h', default: false },
@@ -121,6 +136,8 @@ export function parseCliArgs(
         localStorage: values['local-storage'] ?? [],
         sessionStorage: values['session-storage'] ?? [],
         captureHeaders: (values['capture-header'] ?? []).map(parseCaptureHeaderFlag),
+        domSelectors: (values['dom-selector'] ?? []).map(parseDomSelectorFlag),
+        download: values['allow-download'] ?? false,
       };
     }
     throw new UsageError(`unknown profile subcommand ${JSON.stringify(sub)}`,
@@ -135,6 +152,20 @@ export function parseCliArgs(
     return {
       kind: 'session', profile: requireProfile(values.profile),
       storageDomain: values['storage-domain'], storageSubdomain: values['storage-subdomain'],
+    };
+  }
+  if (cmd === 'dom') {
+    return {
+      kind: 'dom', profile: requireProfile(values.profile), names: rest,
+      storageDomain: values['storage-domain'], storageSubdomain: values['storage-subdomain'],
+    };
+  }
+  if (cmd === 'download') {
+    const url = rest[0];
+    if (!url) throw new UsageError('fpx download requires a URL');
+    return {
+      kind: 'download', profile: requireProfile(values.profile), url,
+      filename: values.filename,
     };
   }
 
