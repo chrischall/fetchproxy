@@ -1,6 +1,6 @@
 {
   "name": "@fetchproxy/cli",
-  "version": "1.5.0",
+  "version": "1.5.1",
   "description": "One-shot CLI for the fetchproxy bridge: authenticated fetches and session reads through the user's signed-in browser tab, scoped by per-service profiles.",
   "type": "module",
   "bin": {
@@ -30,11 +30,11 @@
   },
   "license": "MIT",
   "dependencies": {
-    "@fetchproxy/bootstrap": "^1.5.0",
-    "@fetchproxy/protocol": "^1.5.0",
-    "@fetchproxy/server": "^1.5.0"
+    "@fetchproxy/bootstrap": "^1.5.1",
+    "@fetchproxy/protocol": "^1.5.1",
+    "@fetchproxy/server": "^1.5.1"
   },
   "devDependencies": {
-    "@fetchproxy/test-helpers": "^1.5.0"
+    "@fetchproxy/test-helpers": "^1.5.1"
   }
 }

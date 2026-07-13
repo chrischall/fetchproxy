@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.5.1](https://github.com/chrischall/fetchproxy/compare/v1.5.0...v1.5.1) (2026-07-13)
+
+
+### Bug Fixes
+
+* publish @fetchproxy/cli in the release job + sync its dep ranges ([#157](https://github.com/chrischall/fetchproxy/issues/157)) ([40a4610](https://github.com/chrischall/fetchproxy/commit/40a4610b02a33fe0bb08565e3359ec0fbdce9967))
+
 ## [1.5.0](https://github.com/chrischall/fetchproxy/compare/v1.4.0...v1.5.0) (2026-07-13)
 
 
