@@ -6,7 +6,7 @@
 [![npm](https://img.shields.io/npm/v/@fetchproxy/server)](https://www.npmjs.com/package/@fetchproxy/server)
 [![license](https://img.shields.io/npm/l/@fetchproxy/server)](LICENSE)
 
-A Node library and a browser extension. MCP servers (`opentable-mcp`, `resy-mcp`, anything similar) embed the library; the user installs the extension once. Together they route HTTP requests from the MCP server through a real, signed-in browser tab — so Akamai, Cloudflare Bot Management, and similar bot walls see a real browser, not a Node process.
+A Node library and a browser extension. MCP servers (`opentable-mcp`, `resy-mcp`, anything similar) embed the library, and the `fpx` CLI wraps it for skills and shell scripts that just need a one-shot authenticated fetch; the user installs the extension once. Together they route HTTP requests through a real, signed-in browser tab — so Akamai, Cloudflare Bot Management, and similar bot walls see a real browser, not a Node process.
 
 Tiny on purpose. The protocol exposes two verbs (`fetch`, opt-in `read_cookies`) and a handful of lifecycle frames. No DOM automation, no `eval_js`, no general storage exfiltration — that's outside scope and outside the security budget.
 
@@ -50,6 +50,7 @@ Three pieces, one repo:
 | [`@fetchproxy/server`](packages/server) | Node library MCP authors depend on. Elects host/peer, runs the handshake, exposes `fetch()` + convenience verbs (`get`, `postJson`, `readCookies`, …). | `packages/server/` |
 | [`@fetchproxy/protocol`](packages/protocol) | Wire types, validators, crypto wrappers. Shared between server and extension. | `packages/protocol/` |
 | [`@fetchproxy/test-helpers`](packages/test-helpers) | Vitest mocks for downstream MCP test suites — drop-in `FetchproxyServer` replacement that captures constructor opts and exposes spy-able verbs. | `packages/test-helpers/` |
+| [`@fetchproxy/cli`](packages/cli) | `fpx` — one-shot CLI for the bridge: per-service profiles, authenticated fetch/read/session verbs for skills and shell scripts. | `packages/cli/` |
 | `fetchproxy-extension` | Browser extension. Connects to the WS, runs `fetch(url, { credentials: 'include' })` in the page MAIN world of a matching tab, returns the response. | `packages/extension-core/` + `packages/extension-chrome/` |
 
 `extension-core/` holds the shared TypeScript; `extension-chrome/` is the per-browser MV3 manifest + esbuild bundle. Safari/Firefox targets can slot in alongside without forking the core.

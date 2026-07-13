@@ -5,6 +5,8 @@
       "release-type": "node",
       "extra-files": [
         { "type": "json", "path": "packages/bootstrap/package.json", "jsonpath": "$.version" },
+        { "type": "json", "path": "packages/cli/package.json", "jsonpath": "$.version" },
+        { "type": "generic", "path": "packages/cli/src/version.ts" },
         { "type": "json", "path": "packages/extension-chrome/package.json", "jsonpath": "$.version" },
         { "type": "json", "path": "packages/extension-chrome/manifest.json", "jsonpath": "$.version" },
         { "type": "json", "path": "packages/extension-core/package.json", "jsonpath": "$.version" },
