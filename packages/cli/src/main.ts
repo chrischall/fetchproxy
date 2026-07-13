@@ -86,7 +86,9 @@ export async function runCli(argv: string[], io: Io, deps: CliDeps = {}): Promis
           }
         }
         for (const decl of cmd.domSelectors) {
-          if (!p.domSelectors.some((d) => d.name === decl.name)) p.domSelectors.push(decl);
+          const existing = p.domSelectors.find((d) => d.name === decl.name);
+          if (existing) Object.assign(existing, decl);
+          else p.domSelectors.push(decl);
         }
         if (cmd.download) p.download = true;
         saveProfiles(all, home);

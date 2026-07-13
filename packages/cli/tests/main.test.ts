@@ -46,6 +46,24 @@ describe('runCli', () => {
     expect(io.errs.join('\n')).toMatch(/re-pair/i);
   });
 
+  it('profile declare re-declaring a --dom-selector handle updates its selector (upsert)', async () => {
+    const io = memIo();
+    await runCli(['profile', 'add', 'r', '--domain', 'resy.com'], io, { home });
+    await runCli(['profile', 'declare', 'r', '--dom-selector', 'title=h1'], io, { home });
+    expect(loadProfiles(home).r.domSelectors).toEqual([{ name: 'title', selector: 'h1' }]);
+
+    await runCli(['profile', 'declare', 'r', '--dom-selector', 'title=h1.new'], io, { home });
+    expect(loadProfiles(home).r.domSelectors).toEqual([{ name: 'title', selector: 'h1.new' }]);
+  });
+
+  it('profile declare with a repeated --dom-selector handle in one call keeps the last value', async () => {
+    const io = memIo();
+    await runCli(['profile', 'add', 'r', '--domain', 'resy.com'], io, { home });
+    await runCli(['profile', 'declare', 'r',
+      '--dom-selector', 'title=h1', '--dom-selector', 'title=h1.final'], io, { home });
+    expect(loadProfiles(home).r.domSelectors).toEqual([{ name: 'title', selector: 'h1.final' }]);
+  });
+
   it('profile remove deletes entry and identity file', async () => {
     const io = memIo();
     await runCli(['profile', 'add', 'r', '--domain', 'resy.com'], io, { home });
