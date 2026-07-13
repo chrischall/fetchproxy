@@ -194,7 +194,9 @@ jobs:
       # bootstrap → extension-core. extension-chrome's bundle is built
       # separately below (needs protocol/dist on disk first).
       - name: Build packages
-        run: npm run build --workspace=@fetchproxy/protocol --workspace=@fetchproxy/server --workspace=@fetchproxy/bootstrap --workspace=@fetchproxy/extension-core --workspace=@fetchproxy/test-helpers
+        # Root build (all workspaces) so every publishable package's dist/ is
+        # present — a hand-listed --workspace set silently skipped @fetchproxy/cli.
+        run: npm run build
 
       # Publish each non-private package at the version pinned in its
       # OWN package.json. release-please bumps packages independently,
@@ -241,6 +243,20 @@ jobs:
             exit 0
           fi
           npm publish --workspace=@fetchproxy/test-helpers --access=public --provenance
+
+      # Published last so its @fetchproxy/* runtime deps (protocol, server,
+      # bootstrap) are already live. Needs an npm Trusted Publisher configured
+      # for @fetchproxy/cli, same as the other packages, or --provenance OIDC
+      # fails ENEEDAUTH.
+      - name: Publish @fetchproxy/cli to npm
+        run: |
+          PKG_VERSION=$(node -p "require('./packages/cli/package.json').version")
+          PUBLISHED=$(npm view "@fetchproxy/cli@${PKG_VERSION}" version 2>/dev/null || true)
+          if [ "$PUBLISHED" = "$PKG_VERSION" ]; then
+            echo "npm already has @fetchproxy/cli@${PKG_VERSION} — skipping."
+            exit 0
+          fi
+          npm publish --workspace=@fetchproxy/cli --access=public --provenance
 
       # Build & zip the Chrome extension for sideload distribution
       # before the Chrome Web Store review of each release.
