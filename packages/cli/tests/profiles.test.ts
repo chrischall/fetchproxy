@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, statSync } from 'node:fs';
+import { mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -44,5 +44,16 @@ describe('profiles', () => {
   it('identityPath derives the fpx-prefixed identity file', () => {
     expect(identityPath('trip', '/id')).toBe(join('/id', 'fpx-trip.json'));
     expect(identityPath('trip')).toMatch(/\.fetchproxy[\\/]identity[\\/]fpx-trip\.json$/);
+  });
+
+  it('throws UsageError on syntactically invalid JSON', () => {
+    writeFileSync(join(home, 'profiles.json'), '{ not json');
+    expect(() => loadProfiles(home)).toThrow(UsageError);
+    expect(() => loadProfiles(home)).toThrow(/not valid JSON/);
+  });
+
+  it('throws UsageError when the root is not an object', () => {
+    writeFileSync(join(home, 'profiles.json'), '[]');
+    expect(() => loadProfiles(home)).toThrow(/must be an object/);
   });
 });
