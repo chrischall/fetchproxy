@@ -1,5 +1,7 @@
 import type { Capability } from '@fetchproxy/server';
-import type { CaptureHeaderDecl, IndexedDbScopeDecl, StoragePointerDecl } from '@fetchproxy/protocol';
+import type {
+  CaptureHeaderDecl, DomSelectorDecl, IndexedDbScopeDecl, StoragePointerDecl,
+} from '@fetchproxy/protocol';
 import type { Profile } from './profiles.js';
 
 export interface DerivedServerOpts {
@@ -14,6 +16,7 @@ export interface DerivedServerOpts {
   indexedDbScopes: IndexedDbScopeDecl[];
   localStoragePointers: StoragePointerDecl[];
   sessionStoragePointers: StoragePointerDecl[];
+  domSelectors: DomSelectorDecl[];
 }
 
 /**
@@ -28,6 +31,18 @@ export interface DerivedServerOpts {
  * the same `localStoragePointers`/`sessionStoragePointers` mapping
  * (outputKey is dropped, storageKey → `key`) so the hello — not just
  * the capability list and raw key sets — is byte-for-byte identical.
+ *
+ * NOTE: `bootstrap()` (and therefore the `session` verb, which calls it
+ * directly) has no concept of `domSelectors`/`download` — those two
+ * fields are `fpx`-only (`dom`/`download` verbs), so `runSession` never
+ * declares `read_dom`/`download` in its hello. A profile that declares
+ * either sends a wider hello on the direct verbs (`dom`, `download`,
+ * `get`, `cookies`, …, all of which route through `serverOptsFor`) than
+ * `session` does. This is the same one-time, non-blocking scope-update
+ * self-healing behavior already accepted for the pointer scopes above:
+ * alternating `fpx session` with `fpx dom`/`fpx download` on such a
+ * profile costs a one-time re-pair on first alternation, not a
+ * per-invocation prompt.
  */
 export function serverOptsFor(profileName: string, p: Profile, version: string): DerivedServerOpts {
   const capabilities: Capability[] = ['fetch'];
@@ -40,6 +55,8 @@ export function serverOptsFor(profileName: string, p: Profile, version: string):
   }
   if (p.captureHeaders.length > 0) capabilities.push('capture_request_header');
   if (p.indexedDb.length > 0) capabilities.push('read_indexed_db');
+  if (p.domSelectors.length > 0) capabilities.push('read_dom');
+  if (p.download === true) capabilities.push('download');
 
   const localStorageKeys = new Set(p.localStorage);
   for (const ptr of p.localStoragePointers) localStorageKeys.add(ptr.storageKey);
@@ -68,5 +85,6 @@ export function serverOptsFor(profileName: string, p: Profile, version: string):
       key: ptr.storageKey,
       jsonPointer: ptr.jsonPointer,
     })),
+    domSelectors: p.domSelectors.map((d) => ({ ...d })),
   };
 }

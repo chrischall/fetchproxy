@@ -8,13 +8,15 @@ import { EXIT, UsageError, printJson, type Io } from './output.js';
 import { runFetch, type VerbServerFactory } from './verbs/fetch.js';
 import { runRead } from './verbs/read.js';
 import { runSession } from './verbs/session.js';
+import { runDom } from './verbs/dom.js';
+import { runDownload } from './verbs/download.js';
 import { runHealth, runPair } from './verbs/health.js';
 import { VERSION } from './version.js';
 
 const USAGE = `fpx ${VERSION} — fetchproxy CLI: authenticated fetches through your signed-in browser tab
 
   fpx profile add <name> --domain <apex> [--domain <apex>]…
-  fpx profile declare <name> [--cookie k]… [--local-storage k]… [--session-storage k]… [--capture-header name@host[/path]]…
+  fpx profile declare <name> [--cookie k]… [--local-storage k]… [--session-storage k]… [--capture-header name@host[/path]]… [--dom-selector handle=css]… [--allow-download]
   fpx profile list | show <name> | remove <name>
   fpx pair -p <name> [--domain <apex>]
   fpx health -p <name>
@@ -23,6 +25,8 @@ const USAGE = `fpx ${VERSION} — fetchproxy CLI: authenticated fetches through 
   fpx request <url> -p <name> [-X METHOD] [-H …]… [-d body|@file] [--json]
   fpx cookies|local-storage|session-storage|indexeddb [keys…] -p <name> [--storage-domain d] [--storage-subdomain s]
   fpx session -p <name> [--storage-domain d] [--storage-subdomain s]
+  fpx dom <name…> -p <name> [--storage-domain d] [--storage-subdomain s]
+  fpx download <url> -p <name> [--filename f]
 
 Data on stdout, everything else on stderr.
 Exit codes: 0 ok · 1 usage · 2 bridge unavailable · 3 bot wall · 4 upstream HTTP error`;
@@ -81,6 +85,10 @@ export async function runCli(argv: string[], io: Io, deps: CliDeps = {}): Promis
             p.captureHeaders.push(decl);
           }
         }
+        for (const decl of cmd.domSelectors) {
+          if (!p.domSelectors.some((d) => d.name === decl.name)) p.domSelectors.push(decl);
+        }
+        if (cmd.download) p.download = true;
         saveProfiles(all, home);
         io.err(`profile "${cmd.name}" scope updated — the next connect will ask you to re-pair (scope diff)`);
         return EXIT.OK;
@@ -100,6 +108,10 @@ export async function runCli(argv: string[], io: Io, deps: CliDeps = {}): Promis
         return await runRead(cmd, getProfile(cmd.profile, home), io, deps.makeServer);
       case 'session':
         return await runSession(cmd, getProfile(cmd.profile, home), io, deps.bootstrapFn);
+      case 'dom':
+        return await runDom(cmd, getProfile(cmd.profile, home), io, deps.makeServer);
+      case 'download':
+        return await runDownload(cmd, getProfile(cmd.profile, home), io, deps.makeServer);
       case 'health':
         return await runHealth(cmd, getProfile(cmd.profile, home), io, deps.makeServer);
       case 'pair':

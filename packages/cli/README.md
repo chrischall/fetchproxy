@@ -72,7 +72,7 @@ Every verb takes `-p`/`--profile <name>` (except the `profile` subcommands thems
 | Command | What it does | Example |
 |---|---|---|
 | `fpx profile add <name> --domain <apex>…` | Create a profile with one or more declared domains. | `fpx profile add opentable --domain opentable.com` |
-| `fpx profile declare <name> [--cookie k]… [--local-storage k]… [--session-storage k]… [--capture-header name@host[/path]]…` | Widen a profile's scope. Merges with the existing declaration; forces a re-pair. | `fpx profile declare opentable --cookie oaid` |
+| `fpx profile declare <name> [--cookie k]… [--local-storage k]… [--session-storage k]… [--capture-header name@host[/path]]… [--dom-selector handle=css]… [--allow-download]` | Widen a profile's scope. Merges with the existing declaration; forces a re-pair. | `fpx profile declare opentable --cookie oaid` |
 | `fpx profile list` | List all profiles and their domains (tab-separated, one per line). | `fpx profile list` |
 | `fpx profile show <name>` | Print a profile's full JSON record. | `fpx profile show opentable` |
 | `fpx profile remove <name>` | Delete the profile and its identity file. | `fpx profile remove opentable` |
@@ -86,9 +86,13 @@ Every verb takes `-p`/`--profile <name>` (except the `profile` subcommands thems
 | `fpx session-storage [keys…] -p <name>` | Read declared `sessionStorage` keys. | `fpx session-storage csrfToken -p opentable` |
 | `fpx indexeddb -p <name>` | Read all declared IndexedDB scopes (no key arguments — scopes come from the profile). | `fpx indexeddb -p opentable` |
 | `fpx session -p <name> [--storage-domain d] [--storage-subdomain s]` | Bootstrap-parity one-shot: pair (if needed), read every declared bucket, close, print the combined session JSON. | `fpx session -p opentable` |
+| `fpx dom <name…> -p <name> [--storage-domain d] [--storage-subdomain s]` | Read declared DOM selector values (all declared selectors if no names given). Requires `--dom-selector` declarations. | `fpx dom title -p opentable` |
+| `fpx download <url> -p <name> [--filename f]` | Download a URL through the browser's own network stack (`chrome.downloads` — real cookies + TLS fingerprint); prints `{path, bytes, mime?, finalUrl?}` for the saved local file. Requires `--allow-download`. | `fpx download https://www.opentable.com/f.pdf -p opentable` |
 | `fpx --version` (or `-v`) | Print the CLI version to stdout. The version also appears in the `fpx` / `fpx --help` header. | `fpx --version` |
 
-`--storage-domain` / `--storage-subdomain` (on the storage-read verbs and `session`) select which declared domain to read from when a profile declares more than one — required only in that case, same as the underlying library.
+`--storage-domain` / `--storage-subdomain` (on the storage-read verbs, `session`, and `dom`) select which declared domain to read from when a profile declares more than one — required only in that case, same as the underlying library.
+
+`--dom-selector <handle>=<css>` (on `profile declare`) declares a named DOM read: `<handle>` is the logical name `fpx dom` references, `<css>` is the `document.querySelector` CSS selector the extension reads (first match only, no page-JS execution). `--allow-download` grants the profile the `download` capability, letting `fpx download` save a declared-domain URL through the browser's own network stack.
 
 ## Output contract
 
@@ -107,7 +111,7 @@ This split means `fpx get … | jq .` or `fpx cookies -p x > cookies.json` never
 | `3` | Bot wall detected in the response (Akamai/Cloudflare-style interstitial). |
 | `4` | Upstream HTTP error — the request reached the site but got a non-2xx response. |
 
-Exit codes 3 and 4 are emitted only by the fetch verbs (`get`, `post-json`, `request`); the `pair`, `health`, `session`, and read verbs (`cookies`/`local-storage`/`session-storage`/`indexeddb`) return 0 on a successful bridge round-trip regardless of upstream status.
+Exit codes 3 and 4 are emitted only by the fetch verbs (`get`, `post-json`, `request`); the `pair`, `health`, `session`, read verbs (`cookies`/`local-storage`/`session-storage`/`indexeddb`), `dom`, and `download` all return 0 on a successful bridge round-trip regardless of upstream status.
 
 ## `FETCHPROXY_CLI_HOME`
 
@@ -121,7 +125,9 @@ Per-service identity files are unaffected by this variable — they always live 
 
 ## Capability parity
 
-Every verb — `get`, `post-json`, `request`, `cookies`, `local-storage`, `session-storage`, `indexeddb`, `session`, even `health` and `pair` — derives its hello frame from the *full* profile record via the same `serverOptsFor()` helper, not just the fields that particular verb happens to touch. That's deliberate: the extension's trust is keyed to `(identity, domains, capabilities)`, so if `fpx get` sent a narrower hello than `fpx cookies`, alternating between the two verbs on the same profile would look like a capability change and force a re-pair every time. Sending the same hello for every verb means you can freely interleave `fpx get`, `fpx cookies`, `fpx session`, etc. against one profile and only ever pair once — a re-pair only happens when `fpx profile declare` actually changes the stored scope.
+Every verb — `get`, `post-json`, `request`, `cookies`, `local-storage`, `session-storage`, `indexeddb`, `dom`, `download`, even `health` and `pair` — derives its hello frame from the *full* profile record via the same `serverOptsFor()` helper, not just the fields that particular verb happens to touch. That's deliberate: the extension's trust is keyed to `(identity, domains, capabilities)`, so if `fpx get` sent a narrower hello than `fpx cookies`, alternating between the two verbs on the same profile would look like a capability change and force a re-pair every time. Sending the same hello for every verb means you can freely interleave `fpx get`, `fpx cookies`, `fpx dom`, etc. against one profile and only ever pair once — a re-pair only happens when `fpx profile declare` actually changes the stored scope.
+
+One exception: **`fpx session` goes through `@fetchproxy/bootstrap` directly**, not `serverOptsFor()`, and bootstrap has no concept of `domSelectors`/`download` — those two fields only exist for `fpx`'s own `dom`/`download` verbs. So a profile that declares `--dom-selector`/`--allow-download` sends a wider hello on the direct verbs than `fpx session` does. In practice this costs nothing but a one-time, non-blocking re-pair the first time you alternate between `fpx session` and `fpx dom`/`fpx download` on such a profile — the same self-healing behavior already accepted for the storage-pointer scopes.
 
 ## Skills
 
