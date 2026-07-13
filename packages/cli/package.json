@@ -1,6 +1,6 @@
 {
   "name": "@fetchproxy/cli",
-  "version": "1.5.1",
+  "version": "1.6.0",
   "description": "One-shot CLI for the fetchproxy bridge: authenticated fetches and session reads through the user's signed-in browser tab, scoped by per-service profiles.",
   "type": "module",
   "bin": {

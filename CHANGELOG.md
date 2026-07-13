@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.6.0](https://github.com/chrischall/fetchproxy/compare/v1.5.1...v1.6.0) (2026-07-13)
+
+
+### Features
+
+* **cli:** add --version/-v flag and version in help header ([#159](https://github.com/chrischall/fetchproxy/issues/159)) ([b8a15b7](https://github.com/chrischall/fetchproxy/commit/b8a15b7b031aedc7b98442d9324b39ad39617c64))
+* **cli:** add dom and download verbs ([#161](https://github.com/chrischall/fetchproxy/issues/161)) ([d6c1645](https://github.com/chrischall/fetchproxy/commit/d6c1645cd31f446c118ab114afa2eb072d64ad1b))
+
+
+### Bug Fixes
+
+* **cli:** upsert domSelectors on profile declare instead of dedup-only ([#163](https://github.com/chrischall/fetchproxy/issues/163)) ([2f2d9d3](https://github.com/chrischall/fetchproxy/commit/2f2d9d32224fd73d3bbaf232ed1f6dc819e4b3ce)), closes [#162](https://github.com/chrischall/fetchproxy/issues/162)
+* **extension-core:** match vendor subdomains on read_dom tabs ([#164](https://github.com/chrischall/fetchproxy/issues/164)) ([5db6122](https://github.com/chrischall/fetchproxy/commit/5db61226e0ad085a53746ecbc16d36669261b51e))
+
 ## [1.5.1](https://github.com/chrischall/fetchproxy/compare/v1.5.0...v1.5.1) (2026-07-13)
 
 
