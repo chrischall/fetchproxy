@@ -7,6 +7,7 @@ export type Bucket = 'cookies' | 'localStorage' | 'sessionStorage' | 'indexedDb'
 
 export type Command =
   | { kind: 'help' }
+  | { kind: 'version' }
   | { kind: 'profile-list' }
   | { kind: 'profile-show'; name: string }
   | { kind: 'profile-remove'; name: string }
@@ -80,6 +81,7 @@ export function parseCliArgs(
         'storage-domain': { type: 'string' },
         'storage-subdomain': { type: 'string' },
         help: { type: 'boolean', short: 'h', default: false },
+        version: { type: 'boolean', short: 'v', default: false },
       },
     });
   } catch (e) {
@@ -88,6 +90,7 @@ export function parseCliArgs(
     throw new UsageError((e as Error).message, 'run: fpx --help');
   }
   const { values, positionals } = parsed;
+  if (values.version) return { kind: 'version' };
   if (values.help || positionals[0] === 'help' || positionals.length === 0) return { kind: 'help' };
 
   const [cmd, ...rest] = positionals;

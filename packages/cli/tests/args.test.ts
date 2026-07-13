@@ -55,6 +55,11 @@ describe('parseCliArgs', () => {
     expect(() => parseCliArgs(['frobnicate'])).toThrow(UsageError);
   });
 
+  it('parses --version and -v to the version command', () => {
+    expect(parseCliArgs(['--version'])).toEqual({ kind: 'version' });
+    expect(parseCliArgs(['-v'])).toEqual({ kind: 'version' });
+  });
+
   it('rejects unknown flags with a UsageError, not a raw TypeError', () => {
     expect(() => parseCliArgs(['get', 'https://x.com/', '--bogus', '-p', 'x'])).toThrow(UsageError);
   });

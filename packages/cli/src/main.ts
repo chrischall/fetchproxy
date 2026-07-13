@@ -9,8 +9,9 @@ import { runFetch, type VerbServerFactory } from './verbs/fetch.js';
 import { runRead } from './verbs/read.js';
 import { runSession } from './verbs/session.js';
 import { runHealth, runPair } from './verbs/health.js';
+import { VERSION } from './version.js';
 
-const USAGE = `fpx — fetchproxy CLI: authenticated fetches through your signed-in browser tab
+const USAGE = `fpx ${VERSION} — fetchproxy CLI: authenticated fetches through your signed-in browser tab
 
   fpx profile add <name> --domain <apex> [--domain <apex>]…
   fpx profile declare <name> [--cookie k]… [--local-storage k]… [--session-storage k]… [--capture-header name@host[/path]]…
@@ -43,6 +44,9 @@ export async function runCli(argv: string[], io: Io, deps: CliDeps = {}): Promis
     switch (cmd.kind) {
       case 'help':
         io.err(USAGE);
+        return EXIT.OK;
+      case 'version':
+        io.out(VERSION);
         return EXIT.OK;
       case 'profile-list': {
         const all = loadProfiles(home);

@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { runCli } from '../src/main.js';
 import { EXIT, type Io } from '../src/output.js';
 import { loadProfiles } from '../src/profiles.js';
+import { VERSION } from '../src/version.js';
 
 function memIo(): Io & { outs: string[]; errs: string[] } {
   const outs: string[] = []; const errs: string[] = [];
@@ -84,5 +85,21 @@ describe('runCli', () => {
     expect(await runCli(['--help'], io, { home })).toBe(EXIT.OK);
     expect(io.outs).toEqual([]);
     expect(io.errs.join('\n')).toMatch(/fpx/);
+  });
+
+  it('--version / -v print the bare version to stdout, exit 0', async () => {
+    const io = memIo();
+    expect(await runCli(['--version'], io, { home })).toBe(EXIT.OK);
+    expect(io.outs).toEqual([VERSION]);
+    expect(io.errs).toEqual([]);
+    const io2 = memIo();
+    await runCli(['-v'], io2, { home });
+    expect(io2.outs).toEqual([VERSION]);
+  });
+
+  it('help header includes the version', async () => {
+    const io = memIo();
+    await runCli([], io, { home }); // no args → help
+    expect(io.errs.join('\n')).toContain(VERSION);
   });
 });

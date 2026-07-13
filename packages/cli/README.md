@@ -86,6 +86,7 @@ Every verb takes `-p`/`--profile <name>` (except the `profile` subcommands thems
 | `fpx session-storage [keys…] -p <name>` | Read declared `sessionStorage` keys. | `fpx session-storage csrfToken -p opentable` |
 | `fpx indexeddb -p <name>` | Read all declared IndexedDB scopes (no key arguments — scopes come from the profile). | `fpx indexeddb -p opentable` |
 | `fpx session -p <name> [--storage-domain d] [--storage-subdomain s]` | Bootstrap-parity one-shot: pair (if needed), read every declared bucket, close, print the combined session JSON. | `fpx session -p opentable` |
+| `fpx --version` (or `-v`) | Print the CLI version to stdout. The version also appears in the `fpx` / `fpx --help` header. | `fpx --version` |
 
 `--storage-domain` / `--storage-subdomain` (on the storage-read verbs and `session`) select which declared domain to read from when a profile declares more than one — required only in that case, same as the underlying library.
 
