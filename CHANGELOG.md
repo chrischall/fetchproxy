@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.5.0](https://github.com/chrischall/fetchproxy/compare/v1.4.0...v1.5.0) (2026-07-13)
+
+
+### Features
+
+* **cli:** @fetchproxy/cli one-shot bridge CLI (fpx) ([#151](https://github.com/chrischall/fetchproxy/issues/151)) ([e0cb846](https://github.com/chrischall/fetchproxy/commit/e0cb846a99c7aebe84fa17b856ac36a3db25eedc))
+
 ## [1.4.0](https://github.com/chrischall/fetchproxy/compare/v1.3.5...v1.4.0) (2026-07-09)
 
 
