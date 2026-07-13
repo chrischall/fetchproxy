@@ -2297,6 +2297,20 @@ export function resolveReadDomRequest(
   return { ok: true, selectors };
 }
 
+/**
+ * Tab-match predicate for a `read_dom` request. Host-or-subdomain
+ * (`isTabUrlOnOrigin`), not strict-prefix (`isTabUrlMatch`) — a declared
+ * apex origin (e.g. `https://example.com`) must still match a vendor
+ * subdomain tab (e.g. `https://app.example.com/...`), the same rationale
+ * that landed `isTabUrlOnOrigin` for the read_local_storage /
+ * read_session_storage handlers. Factored out (mirrors
+ * `resolveReadDomRequest`) so the choice of matcher is unit-testable
+ * without the module's live WS/session state.
+ */
+export function readDomTabMatcher(origin: string): (tabUrl: string) => boolean {
+  return (tabUrl: string) => isTabUrlOnOrigin(tabUrl, origin);
+}
+
 async function handleReadDomRequest(
   mcpId: string,
   req: InnerRequestReadDom,
@@ -2319,8 +2333,12 @@ async function handleReadDomRequest(
   // helper's doc. Same rationale as the read_indexed_db path: a pre-reload
   // tab (no content script) can shadow a fresh one, and the user shouldn't
   // have to refresh every page after every extension update.
+  //
+  // Host-or-subdomain match (`readDomTabMatcher`/`isTabUrlOnOrigin`), not
+  // strict-prefix (`isTabUrlMatch`) — see that helper's doc. A declared
+  // apex origin routinely has its real tab on a vendor subdomain.
   const result = await sendToFirstResponsiveTab(
-    (t) => isTabUrlMatch(t, tabUrl),
+    readDomTabMatcher(req.init.origin),
     () => ({
       kind: 'fetchproxy-read-dom',
       selectors: gate.selectors.map((d) => ({ ...d })),

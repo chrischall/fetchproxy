@@ -1267,7 +1267,7 @@ describe('needs-pair supersedes queued scope-update at same key (finding 2)', ()
   });
 });
 
-import { resolveReadDomRequest } from '../src/background.js';
+import { resolveReadDomRequest, readDomTabMatcher } from '../src/background.js';
 import type { InnerRequestReadDom, DomSelectorDecl } from '@fetchproxy/protocol';
 
 describe('resolveReadDomRequest (read_dom gate)', () => {
@@ -1318,5 +1318,36 @@ describe('resolveReadDomRequest (read_dom gate)', () => {
     if (r.ok) return;
     expect(r.error).toContain('not in domains');
     expect(r.error).toContain('evil.example.org');
+  });
+});
+
+// Auto-review follow-up for PR #148 (issue #149): handleReadDomRequest was
+// wired to isTabUrlMatch (strict-prefix), so a read_dom request for a
+// declared apex origin (e.g. `https://example.com`) never matched the tab
+// that actually holds the site's real content — vendor subdomains like
+// `https://app.example.com`. Storage reads already fixed this with
+// isTabUrlOnOrigin (host-or-subdomain); read_dom needs the same semantics.
+describe('readDomTabMatcher (read_dom tab match, host-or-subdomain)', () => {
+  it('matches a vendor subdomain tab against a declared apex origin', () => {
+    const matches = readDomTabMatcher('https://example.com');
+    expect(matches('https://app.example.com/dashboard')).toBe(true);
+  });
+
+  it('still matches the apex origin itself', () => {
+    const matches = readDomTabMatcher('https://example.com');
+    expect(matches('https://example.com/')).toBe(true);
+  });
+
+  it('does not match an unrelated domain that merely contains the apex as a suffix', () => {
+    const matches = readDomTabMatcher('https://example.com');
+    expect(matches('https://evilexample.com/')).toBe(false);
+  });
+
+  it('does NOT use strict-prefix semantics (regression guard for isTabUrlMatch)', () => {
+    // isTabUrlMatch would require the tab URL to start with the origin
+    // prefix, so a vendor subdomain tab would never match a declared apex.
+    // readDomTabMatcher must diverge from that here.
+    const matches = readDomTabMatcher('https://example.com');
+    expect(matches('https://app.example.com/x')).toBe(true);
   });
 });
