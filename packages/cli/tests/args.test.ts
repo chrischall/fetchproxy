@@ -30,9 +30,9 @@ describe('parseCliArgs', () => {
   it('post-json resolves @file bodies and sets content-type', () => {
     const cmd = parseCliArgs(['post-json', 'https://x.com/api', '@body.json', '-p', 'x'],
       (p) => { expect(p).toBe('body.json'); return '{"a":1}'; });
-    expect(cmd).toMatchObject({
-      kind: 'fetch', method: 'POST', body: '{"a":1}',
-      headers: { 'Content-Type': 'application/json' },
+    expect(cmd).toEqual({
+      kind: 'fetch', profile: 'x', method: 'POST', url: 'https://x.com/api',
+      headers: { 'Content-Type': 'application/json' }, body: '{"a":1}', json: false,
     });
   });
 

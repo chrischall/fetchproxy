@@ -135,12 +135,15 @@ export function parseCliArgs(
     };
   }
 
-  if (cmd in READ_BUCKETS) {
-    return {
-      kind: 'read', profile: requireProfile(values.profile), bucket: READ_BUCKETS[cmd],
-      keys: rest,
-      storageDomain: values['storage-domain'], storageSubdomain: values['storage-subdomain'],
-    };
+  if (typeof cmd === 'string') {
+    const bucket = READ_BUCKETS[cmd];
+    if (bucket !== undefined) {
+      return {
+        kind: 'read', profile: requireProfile(values.profile), bucket,
+        keys: rest,
+        storageDomain: values['storage-domain'], storageSubdomain: values['storage-subdomain'],
+      };
+    }
   }
 
   if (cmd === 'get' || cmd === 'post-json' || cmd === 'request') {
