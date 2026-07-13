@@ -9,6 +9,7 @@ describe('serverOptsFor', () => {
       serverName: 'fpx-trip', version: '1.4.0', domains: ['tripadvisor.com'],
       capabilities: ['fetch'], cookieKeys: [], localStorageKeys: [],
       sessionStorageKeys: [], captureHeaders: [], indexedDbScopes: [],
+      localStoragePointers: [], sessionStoragePointers: [],
     });
   });
 
@@ -34,5 +35,16 @@ describe('serverOptsFor', () => {
     const raw = serverOptsFor('a', { ...emptyProfile(['x.com']), localStorage: ['k'] }, '1.4.0');
     expect(raw.capabilities).toEqual(['fetch', 'read_local_storage']);
     expect(raw.localStorageKeys).toEqual(['k']);
+  });
+
+  it('threads localStoragePointers/sessionStoragePointers into the hello, mapped like bootstrap (outputKey → key)', () => {
+    const p = {
+      ...emptyProfile(['resy.com']),
+      localStoragePointers: [{ outputKey: 'tok', storageKey: 'persist:auth', jsonPointer: '/t' }],
+      sessionStoragePointers: [{ outputKey: 'sess', storageKey: 'sess-blob', jsonPointer: '/s/id' }],
+    };
+    const opts = serverOptsFor('resy', p, '1.4.0');
+    expect(opts.localStoragePointers).toEqual([{ key: 'persist:auth', jsonPointer: '/t' }]);
+    expect(opts.sessionStoragePointers).toEqual([{ key: 'sess-blob', jsonPointer: '/s/id' }]);
   });
 });

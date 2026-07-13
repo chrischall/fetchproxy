@@ -1,5 +1,5 @@
 import type { Capability } from '@fetchproxy/server';
-import type { CaptureHeaderDecl, IndexedDbScopeDecl } from '@fetchproxy/protocol';
+import type { CaptureHeaderDecl, IndexedDbScopeDecl, StoragePointerDecl } from '@fetchproxy/protocol';
 import type { Profile } from './profiles.js';
 
 export interface DerivedServerOpts {
@@ -12,6 +12,8 @@ export interface DerivedServerOpts {
   sessionStorageKeys: string[];
   captureHeaders: CaptureHeaderDecl[];
   indexedDbScopes: IndexedDbScopeDecl[];
+  localStoragePointers: StoragePointerDecl[];
+  sessionStoragePointers: StoragePointerDecl[];
 }
 
 /**
@@ -22,7 +24,10 @@ export interface DerivedServerOpts {
  * trust is keyed to (identity, domains, capabilities), so every fpx
  * verb — and the `session` verb, which goes through bootstrap() itself
  * — has to send an identical hello or the user gets re-pair prompts
- * when alternating verbs. Same push order, same pointer auto-add.
+ * when alternating verbs. Same push order, same pointer auto-add, and
+ * the same `localStoragePointers`/`sessionStoragePointers` mapping
+ * (outputKey is dropped, storageKey → `key`) so the hello — not just
+ * the capability list and raw key sets — is byte-for-byte identical.
  */
 export function serverOptsFor(profileName: string, p: Profile, version: string): DerivedServerOpts {
   const capabilities: Capability[] = ['fetch'];
@@ -51,5 +56,17 @@ export function serverOptsFor(profileName: string, p: Profile, version: string):
     sessionStorageKeys: [...sessionStorageKeys],
     captureHeaders: p.captureHeaders.map((d) => ({ ...d })),
     indexedDbScopes: p.indexedDb.map((d) => ({ ...d, keys: [...d.keys] })),
+    // Mirror bootstrap's mapping exactly: outputKey is bootstrap-local
+    // (it only keys the per-call `pointers` map bootstrap passes to
+    // readLocalStorage/readSessionStorage), so it's dropped here too —
+    // the hello only ever carries `key` + `jsonPointer`.
+    localStoragePointers: p.localStoragePointers.map((ptr) => ({
+      key: ptr.storageKey,
+      jsonPointer: ptr.jsonPointer,
+    })),
+    sessionStoragePointers: p.sessionStoragePointers.map((ptr) => ({
+      key: ptr.storageKey,
+      jsonPointer: ptr.jsonPointer,
+    })),
   };
 }
