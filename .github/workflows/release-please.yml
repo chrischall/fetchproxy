@@ -103,7 +103,12 @@ jobs:
           git checkout "$PR_HEAD"
           NEW_VERSION=$(node -p "require('./package.json').version")
           echo "Syncing cross-package @fetchproxy/* deps to ^${NEW_VERSION}"
-          for pkg in packages/bootstrap packages/extension-chrome packages/extension-core packages/protocol packages/server packages/test-helpers; do
+          # Glob every workspace rather than a hardcoded list: a new package
+          # (packages/cli was added in #151) must not silently miss the caret
+          # sync and publish stale cross-dep ranges. The guard skips any
+          # packages/* entry without a package.json.
+          for pkg in packages/*; do
+            [ -f "${pkg}/package.json" ] || continue
             node -e "
               const fs = require('fs');
               const file = '${pkg}/package.json';
