@@ -68,6 +68,15 @@ identity files). Schema per profile mirrors bootstrap's `Declarations`:
 }
 ```
 
+**Capability parity (hard rule).** Extension trust is keyed to (identity,
+domains, capabilities), so EVERY connect for a profile must send an identical
+hello — otherwise alternating `fpx get` and `fpx session` would re-trigger
+pairing each time. The CLI derives capabilities + scope keys from the profile
+with exactly `bootstrap()`'s algorithm (same push order, same pointer-key
+auto-add) for all direct-server verbs; the `session` verb goes through
+`bootstrap()` itself and matches by construction. Key-subset *reads* narrow
+per-call, never in the hello.
+
 Identity lands at `~/.fetchproxy/identity/fpx-<profile>.json` via existing
 server behavior. First use prints the SAS pair code to stderr and waits for
 extension approval (bounded by a pair timeout). Editing a profile's domains or
@@ -82,7 +91,8 @@ fpx profile add tripadvisor --domain tripadvisor.com [--domain otherdomain.com]
 fpx profile declare tripadvisor --cookie datadome --local-storage authToken \
     --capture-header 'x-csrf-token@https://www.tripadvisor.com/*'
 fpx profile list | show <name> | remove <name>
-fpx pair <profile>        # connect + wait for approval without running a verb
+fpx pair -p <profile> [--domain <apex>]   # connect + HEAD / probe through the tab: any HTTP
+                                          # status proves pairing + a matching signed-in tab
 ```
 
 `profile remove` deletes the profile entry and the identity file, and reminds
@@ -116,9 +126,10 @@ fpx -p <profile> health                                     # bridgeHealth() dia
 
 Data on stdout, everything else on stderr. Logging never touches stdout.
 
-- Fetch verbs: response body → stdout. `--json` wraps
-  `{status, headers, body}` (body as text; base64 + `bodyEncoding` flag if not
-  valid UTF-8). Non-2xx: status line on stderr, body still on stdout.
+- Fetch verbs: response body → stdout. `--json` wraps `{status, url, body}` —
+  the bridge protocol's `FetchResult` carries exactly those fields; response
+  headers never cross the protocol, and `body` is always a UTF-8 string (the
+  extension decodes it). Non-2xx: status line on stderr, body still on stdout.
 - Read verbs / `session`: JSON on stdout.
 - Exit codes: `0` = success (2xx for fetch verbs); `1` = usage error;
   `2` = bridge unavailable (extension not running, pairing declined/timed
