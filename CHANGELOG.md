@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.6.1](https://github.com/chrischall/fetchproxy/compare/v1.6.0...v1.6.1) (2026-07-19)
+
+
+### Documentation
+
+* replace duplicated fleet policy with a pointer ([#168](https://github.com/chrischall/fetchproxy/issues/168)) ([15a413c](https://github.com/chrischall/fetchproxy/commit/15a413c74341e373d966c7199f068e61644d5f78))
+
 ## [1.6.0](https://github.com/chrischall/fetchproxy/compare/v1.5.1...v1.6.0) (2026-07-13)
 
 
