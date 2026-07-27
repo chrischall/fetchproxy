@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.6.2](https://github.com/chrischall/fetchproxy/compare/v1.6.1...v1.6.2) (2026-07-27)
+
+
+### Bug Fixes
+
+* **cli:** validate profile array elements and name --storage-domain ([#173](https://github.com/chrischall/fetchproxy/issues/173)) ([871d87c](https://github.com/chrischall/fetchproxy/commit/871d87c248b3ac42b612a67c60b205cb86cce526))
+
 ## [1.6.1](https://github.com/chrischall/fetchproxy/compare/v1.6.0...v1.6.1) (2026-07-19)
 
 
