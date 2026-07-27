@@ -1,6 +1,7 @@
 import type { Command } from '../args.js';
 import type { Profile } from '../profiles.js';
 import { serverOptsFor } from '../server-opts.js';
+import { requireStorageDomain } from '../storage-scope.js';
 import { EXIT, UsageError, printJson, type Io } from '../output.js';
 import { mapBridgeError } from '../bridge-errors.js';
 import { defaultServerFactory, pairCodePrinter, type VerbServerFactory } from './fetch.js';
@@ -32,6 +33,7 @@ export async function runDom(
 ): Promise<number> {
   // Validate scope narrowing BEFORE connecting — usage errors must not
   // cost a bridge round-trip (and must not trigger pairing).
+  requireStorageDomain(profile, cmd.storageDomain);
   const names = narrowDomNames(cmd.names, profile.domSelectors.map((d) => d.name));
 
   const server = makeServer({

@@ -42,6 +42,27 @@ describe('runSession', () => {
     expect(io.errs.join('\n')).toMatch(/waiting: trigger a request/);
   });
 
+  it("rewrites the server's multi-domain error to name --storage-domain", async () => {
+    const io = memIo();
+    // `fpx session` can't pre-check like read/dom do: a captureHeaders-only
+    // profile never does a domain-scoped read, so a multi-domain profile with
+    // no --storage-domain is legitimate there. The server's message is what
+    // reaches the user, and it speaks to library callers.
+    const boot = vi.fn(async () => {
+      throw new Error(
+        'FetchproxyServer: this MCP declared multiple domains ["honeybook.com", "hbportal.co"]'
+        + " — pass { domain: '<one of them>' } on every per-call request",
+      );
+    });
+    const code = await runSession(
+      { kind: 'session', profile: 'hb', storageDomain: undefined, storageSubdomain: undefined },
+      { ...emptyProfile(['honeybook.com', 'hbportal.co']), cookies: ['a'] }, io, boot as never);
+    expect(code).toBe(EXIT.USAGE);
+    expect(io.errs[0]).toContain('--storage-domain');
+    expect(io.errs[0]).not.toContain('pass { domain');
+    expect(io.errs[0]).toContain('["honeybook.com", "hbportal.co"]');
+  });
+
   it('bridge failure → exit 2', async () => {
     const io = memIo();
     const boot = vi.fn(async () => { throw new Error('extension gone'); });

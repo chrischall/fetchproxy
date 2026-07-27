@@ -48,6 +48,27 @@ describe('runRead', () => {
       PROFILE, memIo(), () => stubServer())).rejects.toThrow(/profile declare/);
   });
 
+  it('multi-domain profile without --storage-domain → UsageError naming the flag', async () => {
+    const multi = { ...PROFILE, domains: ['resy.com', 'resy.io'] };
+    const server = stubServer();
+    await expect(runRead({ kind: 'read', profile: 'r', bucket: 'cookies', keys: [] },
+      multi, memIo(), () => server)).rejects.toThrow(/--storage-domain/);
+    // Refused before connecting: a usage error must not cost a bridge
+    // round-trip, and must not trigger pairing.
+    expect(server.listen).not.toHaveBeenCalled();
+  });
+
+  it('multi-domain profile WITH --storage-domain proceeds', async () => {
+    const multi = { ...PROFILE, domains: ['resy.com', 'resy.io'] };
+    const server = stubServer();
+    const code = await runRead(
+      { kind: 'read', profile: 'r', bucket: 'cookies', keys: [], storageDomain: 'resy.io' },
+      multi, memIo(), () => server);
+    expect(code).toBe(EXIT.OK);
+    expect(server.readCookies).toHaveBeenCalledWith(
+      { keys: ['a', 'b'], domain: 'resy.io', subdomain: undefined });
+  });
+
   it('empty declared bucket → UsageError with the declare flag', async () => {
     await expect(runRead({ kind: 'read', profile: 'r', bucket: 'sessionStorage', keys: [] },
       PROFILE, memIo(), () => stubServer())).rejects.toThrow(/--session-storage/);

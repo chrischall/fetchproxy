@@ -36,6 +36,50 @@ describe('profiles', () => {
     expect(() => loadProfiles(home)).toThrow(/bad.*domains/);
   });
 
+  it('rejects a malformed element inside an object array, naming its index', () => {
+    saveProfiles({
+      bad: {
+        ...emptyProfile(['x.com']),
+        indexedDb: [
+          { origin: 'https://x.com', database: 'db', store: 's', keys: ['k'] },
+          { database: 'db', store: 's', keys: ['k'] },
+        ],
+      } as never,
+    }, home);
+    expect(() => loadProfiles(home)).toThrow(UsageError);
+    // The index matters: with several scopes declared, "invalid indexedDb"
+    // alone leaves the user hunting for which entry is wrong.
+    expect(() => loadProfiles(home)).toThrow(/indexedDb\[1\]/);
+  });
+
+  it('rejects a non-object element, an empty key list, and a bad optional field', () => {
+    const cases: Array<[string, unknown]> = [
+      ['captureHeaders', ['not-an-object']],
+      ['captureHeaders', [{ host: 'x.com', headerName: 'x-tok', path: 7 }]],
+      ['indexedDb', [{ origin: 'https://x.com', database: 'db', store: 's', keys: [] }]],
+      ['localStoragePointers', [{ outputKey: 'o', storageKey: 's' }]],
+      ['sessionStoragePointers', [{ outputKey: 'o', storageKey: 's', jsonPointer: 3 }]],
+      ['domSelectors', [{ name: 'n', selector: '#a', attribute: '' }]],
+    ];
+    for (const [field, value] of cases) {
+      saveProfiles({ bad: { ...emptyProfile(['x.com']), [field]: value } as never }, home);
+      expect(() => loadProfiles(home), field).toThrow(new RegExp(`${field}\\[0\\]`));
+    }
+  });
+
+  it('accepts well-formed elements, including the optional fields', () => {
+    saveProfiles({
+      ok: {
+        ...emptyProfile(['x.com']),
+        captureHeaders: [{ host: 'x.com', headerName: 'x-tok', path: '/api/*' }],
+        indexedDb: [{ origin: 'https://x.com', database: 'db', store: 's', keys: ['k'] }],
+        localStoragePointers: [{ outputKey: 'o', storageKey: 'auth', jsonPointer: '/token' }],
+        domSelectors: [{ name: 'csrf', selector: 'meta[name=csrf]', attribute: 'content' }],
+      } as never,
+    }, home);
+    expect(loadProfiles(home).ok.domSelectors[0].attribute).toBe('content');
+  });
+
   it('getProfile throws a UsageError listing known profiles', () => {
     saveProfiles({ trip: emptyProfile(['tripadvisor.com']) }, home);
     expect(() => getProfile('nope', home)).toThrow(/known profiles: trip/);
