@@ -18,6 +18,16 @@ export function mapBridgeError(err: unknown, io: Io): number {
   }
   const kind = classifyBridgeError(err);
   const msg = err instanceof Error ? err.message : String(err);
+  // The server speaks to its library callers ("pass { domain: '<one of them>' }").
+  // A CLI user has no object to pass — name the flag instead. Verbs that can
+  // prove the gap up front (read, dom) refuse before connecting; this catches
+  // the rest, e.g. `fpx session` on a multi-domain profile.
+  if (msg.includes('declared multiple domains')) {
+    io.err(
+      `${msg.replace(/ — pass \{ domain.*$/, '')} — pick one with --storage-domain <domain>`,
+    );
+    return EXIT.USAGE;
+  }
   const hints: Record<string, string> = {
     bridge_down: 'is Chrome running with the Transporter extension installed?',
     timeout: 'is a tab open on the declared domain and signed in?',

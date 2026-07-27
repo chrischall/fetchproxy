@@ -28,6 +28,14 @@ const PROFILE = {
 };
 
 describe('runDom', () => {
+  it('multi-domain profile without --storage-domain → UsageError naming the flag', async () => {
+    const server = stubServer();
+    await expect(runDom({ kind: 'dom', profile: 'r', names: [] },
+      { ...PROFILE, domains: ['resy.com', 'resy.io'] }, memIo(), () => server))
+      .rejects.toThrow(/--storage-domain/);
+    expect(server.listen).not.toHaveBeenCalled();
+  });
+
   it('narrows to requested declared names and reads via readDom', async () => {
     const server = stubServer();
     const code = await runDom(

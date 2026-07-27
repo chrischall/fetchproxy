@@ -53,6 +53,35 @@ export function emptyProfile(domains: string[]): Profile {
 const isStringArray = (v: unknown): v is string[] =>
   Array.isArray(v) && v.every((s) => typeof s === 'string' && s.length > 0);
 
+const isRecord = (v: unknown): v is Record<string, unknown> =>
+  v !== null && typeof v === 'object' && !Array.isArray(v);
+
+const hasStrings = (e: Record<string, unknown>, keys: readonly string[]): boolean =>
+  keys.every((k) => typeof e[k] === 'string' && (e[k] as string).length > 0);
+
+const optionalString = (v: unknown): boolean =>
+  v === undefined || (typeof v === 'string' && v.length > 0);
+
+/**
+ * Per-element shape checks for the object arrays. These arrays are hand-edited
+ * into profiles.json (only --capture-header and --dom-selector have flags), so
+ * `Array.isArray` alone let a typo through here and surface much later as a
+ * ProtocolError from the extension's hello validator, mid-pair.
+ *
+ * Deliberately structural: required fields present and string-typed. The
+ * protocol's format rules (origin scheme, key/selector character sets, JSON
+ * pointer syntax) stay in @fetchproxy/protocol's validator — duplicating them
+ * here would give two definitions of valid, and they would drift.
+ */
+const ELEMENT_SHAPE: Record<string, (e: Record<string, unknown>) => boolean> = {
+  captureHeaders: (e) => hasStrings(e, ['host', 'headerName']) && optionalString(e.path),
+  indexedDb: (e) =>
+    hasStrings(e, ['origin', 'database', 'store']) && isStringArray(e.keys) && e.keys.length > 0,
+  localStoragePointers: (e) => hasStrings(e, ['outputKey', 'storageKey', 'jsonPointer']),
+  sessionStoragePointers: (e) => hasStrings(e, ['outputKey', 'storageKey', 'jsonPointer']),
+  domSelectors: (e) => hasStrings(e, ['name', 'selector']) && optionalString(e.attribute),
+};
+
 function validateProfile(name: string, raw: unknown): Profile {
   const fail = (field: string): never => {
     throw new UsageError(
@@ -69,7 +98,12 @@ function validateProfile(name: string, raw: unknown): Profile {
   for (const k of [
     'captureHeaders', 'indexedDb', 'localStoragePointers', 'sessionStoragePointers', 'domSelectors',
   ] as const) {
-    if (p[k] !== undefined && !Array.isArray(p[k])) fail(k);
+    if (p[k] === undefined) continue;
+    if (!Array.isArray(p[k])) fail(k);
+    const shapeOk = ELEMENT_SHAPE[k]!;
+    (p[k] as unknown[]).forEach((entry, i) => {
+      if (!isRecord(entry) || !shapeOk(entry)) fail(`${k}[${i}]`);
+    });
   }
   if (p.download !== undefined && typeof p.download !== 'boolean') fail('download');
   return { ...emptyProfile(p.domains as string[]), ...(p as Partial<Profile>) } as Profile;
