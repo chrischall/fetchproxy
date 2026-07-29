@@ -87,7 +87,7 @@ describe('runGraphqlQuery (isolated-world → MAIN-world relay)', () => {
       __fetchproxy: 'graphql-res',
       reqId,
       ok: false,
-      error: 'operation X not yet observed on this tab — open a restaurant page and retry',
+      error: 'operation X not yet observed on this tab — open a page on the site that triggers this GraphQL operation, then retry',
     });
 
     const res = await p;
@@ -107,11 +107,14 @@ describe('runGraphqlQuery (isolated-world → MAIN-world relay)', () => {
     const p = runGraphqlQuery({ operationName: 'X', variables: {} }, win, 1000);
     const reqId = posted[0].reqId;
 
-    dispatch({ __fetchproxy: 'graphql-res', reqId: reqId + 999, ok: true, data: 'wrong' });
-    dispatch({ __fetchproxy: 'graphql-res', reqId, ok: true, data: 'foreign' }, { not: 'the window' });
-    dispatch({ __fetchproxy: 'graphql-res', reqId, ok: true, data: 'correct' });
+    dispatch({ __fetchproxy: 'graphql-res', reqId: reqId + 999, ok: true, data: { which: 'wrong' } });
+    dispatch(
+      { __fetchproxy: 'graphql-res', reqId, ok: true, data: { which: 'foreign' } },
+      { not: 'the window' },
+    );
+    dispatch({ __fetchproxy: 'graphql-res', reqId, ok: true, data: { which: 'correct' } });
 
-    await expect(p).resolves.toEqual({ ok: true, data: 'correct' });
+    await expect(p).resolves.toEqual({ ok: true, data: { which: 'correct' } });
   });
 
   it('uses a monotonic counter for reqId (no Math.random)', async () => {
@@ -130,23 +133,31 @@ describe('runGraphqlQuery (isolated-world → MAIN-world relay)', () => {
     expect(posted).toHaveLength(0);
   });
 
-  it('rejects a spoofed ok:true response carrying null/undefined data instead of forwarding it', async () => {
+  it.each([
+    ['null', null],
+    ['undefined', undefined],
+    ['an array', [1, 2, 3]],
+    ['a string', 'x'],
+    ['a number', 42],
+    ['a boolean', true],
+  ])('rejects a spoofed ok:true response whose data is %s instead of forwarding it', async (_label, spoofedData) => {
     // The honest MAIN-world bridge (capture-logger.ts) never sends ok:true
-    // with null/undefined data, but this listener trusts any same-window
-    // postMessage matching the graphql-res shape. A page script sharing
-    // the same window's message bus could post a spoofed reply — this
-    // must be treated as ok:false, not forwarded as ok:true with no data
-    // (which would fail server-side validation and, via host.ts's
-    // catch-all, close the bridge for every MCP on the concentrator).
+    // with a non-plain-object data, but this listener trusts any
+    // same-window postMessage matching the graphql-res shape. A page
+    // script sharing the same window's message bus could post a spoofed
+    // reply with any of these shapes — every one of them would otherwise
+    // reach the server's assertObject(raw.data), which rejects null,
+    // arrays, AND non-object primitives alike, and via host.ts's
+    // catch-all, that closes the bridge for every MCP on the concentrator.
     const { win, posted, dispatch } = makeFakeWindow();
     const p = runGraphqlQuery({ operationName: 'X', variables: {} }, win, 1000);
     const reqId = posted[0].reqId;
 
-    dispatch({ __fetchproxy: 'graphql-res', reqId, ok: true, data: null });
+    dispatch({ __fetchproxy: 'graphql-res', reqId, ok: true, data: spoofedData });
 
     const res = await p;
     expect(res.ok).toBe(false);
-    expect((res as { error: string }).error).toContain('no data');
+    expect((res as { error: string }).error).toContain('non-object data');
   });
 
   it('rejects an oversized response instead of resolving with it', async () => {

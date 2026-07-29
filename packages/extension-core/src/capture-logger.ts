@@ -159,7 +159,7 @@ async function handleGraphqlRequest(
       __fetchproxy: RES_MARKER,
       reqId,
       ok: false,
-      error: `operation ${operationName} not yet observed on this tab — open a restaurant page and retry`,
+      error: `operation ${operationName} not yet observed on this tab — open a page on the site that triggers this GraphQL operation, then retry`,
     });
     return;
   }
