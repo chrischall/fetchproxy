@@ -41,9 +41,10 @@ export const moduleEntryOptions: BuildOptions = {
  *
  * `format: 'iife'` wraps each bundle in a function expression and emits
  * **no** top-level `import`/`export`, regardless of what the source
- * module exports (e.g. `content.ts` exports `readDomValues` for unit
- * tests). This is the invariant enforced by
- * `tests/content-scripts-classic.test.ts`. Do not switch these entries
+ * module exports (e.g. `content.ts` exports `readDomValues` /
+ * `runGraphqlQuery` and `capture-logger.ts` exports `installApolloBridge`
+ * / `recordDocsFromLink` for unit tests). This is the invariant enforced
+ * by `tests/content-scripts-classic.test.ts`. Do not switch these entries
  * back to `esm`.
  */
 export const contentScriptEntryOptions: BuildOptions = {

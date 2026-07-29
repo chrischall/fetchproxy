@@ -16,6 +16,7 @@ import { evalJsonPointer } from '@fetchproxy/protocol';
 
 const MAX_REQUEST_BODY_BYTES = 1 * 1024 * 1024; // 1 MB
 const MAX_RESPONSE_BODY_BYTES = 5 * 1024 * 1024; // 5 MB
+const GRAPHQL_TIMEOUT_MS = 20 * 1000; // 20 s to await the MAIN-world reply
 
 interface FetchInit {
   url: string;
@@ -24,6 +25,38 @@ interface FetchInit {
   body?: string;
   tabUrl: string;
 }
+
+/**
+ * `init` the background sends for a `graphql_query` op. The background has
+ * already resolved the declared `name` → `operationName`; we just relay the
+ * operation + variables to the MAIN-world Apollo bridge and await the reply.
+ */
+interface GraphqlQueryRelayInit {
+  operationName: string;
+  variables: Record<string, unknown>;
+  tabUrl?: string;
+}
+
+interface GraphqlQueryResponse {
+  ok: true;
+  data: unknown;
+}
+
+/**
+ * Minimal window surface the GraphQL relay touches. A fake stand-in is used
+ * in unit tests so the `postMessage` round-trip is deterministic without
+ * relying on jsdom's message-delivery semantics.
+ */
+interface GraphqlRelayWindow {
+  addEventListener: (type: string, fn: (e: MessageEvent) => void) => void;
+  removeEventListener: (type: string, fn: (e: MessageEvent) => void) => void;
+  postMessage: (message: unknown, targetOrigin?: string) => void;
+  location?: { origin?: string };
+}
+
+// Monotonic request id (NOT Math.random) so each in-flight graphql relay can
+// match its own MAIN-world reply by `reqId`.
+let graphqlReqCounter = 0;
 
 interface FetchResponse {
   ok: true;
@@ -41,7 +74,7 @@ chrome.runtime.onMessage.addListener(
   (
     msg: {
       kind?: string;
-      init?: FetchInit;
+      init?: FetchInit | GraphqlQueryRelayInit;
       keys?: string[];
       database?: string;
       store?: string;
@@ -52,7 +85,7 @@ chrome.runtime.onMessage.addListener(
     sendResponse,
   ) => {
     if (msg.kind === 'fetchproxy-fetch' && msg.init) {
-      void runFetch(msg.init)
+      void runFetch(msg.init as FetchInit)
         .then(sendResponse)
         .catch((e: unknown) =>
           sendResponse({ ok: false, error: (e as Error).message } satisfies FetchError),
@@ -115,9 +148,132 @@ chrome.runtime.onMessage.addListener(
         );
       return true; // async
     }
+    if (
+      msg.kind === 'fetchproxy-graphql-query' &&
+      msg.init &&
+      typeof (msg.init as GraphqlQueryRelayInit).operationName === 'string'
+    ) {
+      // Relay to the MAIN-world Apollo bridge (capture-logger.ts) via a
+      // window `postMessage` round-trip and await the reply. The MAIN world
+      // invokes the page's real `window.__APOLLO_CLIENT__` — the only path
+      // that carries OpenTable's Akamai link telemetry.
+      void runGraphqlQuery(msg.init as GraphqlQueryRelayInit)
+        .then(sendResponse)
+        .catch((e: unknown) =>
+          sendResponse({ ok: false, error: (e as Error).message } satisfies FetchError),
+        );
+      return true; // async
+    }
     return false;
   },
 );
+
+/**
+ * Relay a `graphql_query` to the MAIN-world Apollo bridge and await its
+ * reply. Posts a `{ __fetchproxy: 'graphql-req', reqId, operationName,
+ * variables }` envelope to `win` (the page's shared message bus, which both
+ * the isolated and MAIN content-script worlds listen on) and resolves when a
+ * matching `graphql-res` for the same `reqId` arrives. The per-request
+ * listener is always removed on settle (reply, timeout, or throw).
+ *
+ * Exported for unit tests; production callers pass the default `window`.
+ */
+export function runGraphqlQuery(
+  init: GraphqlQueryRelayInit,
+  win: GraphqlRelayWindow = window as unknown as GraphqlRelayWindow,
+  timeoutMs: number = GRAPHQL_TIMEOUT_MS,
+): Promise<GraphqlQueryResponse | FetchError> {
+  return new Promise<GraphqlQueryResponse | FetchError>((resolve) => {
+    const reqId = ++graphqlReqCounter;
+    let settled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+
+    const onMessage = (event: MessageEvent): void => {
+      try {
+        // Same-window guard: MAIN + isolated worlds share this window's
+        // message bus; a cross-origin frame would have a different source.
+        if (event.source !== (win as unknown as MessageEventSource)) return;
+        const data = event.data as
+          | { __fetchproxy?: string; reqId?: number; ok?: boolean; data?: unknown; error?: string }
+          | null
+          | undefined;
+        if (!data || typeof data !== 'object' || data.__fetchproxy !== 'graphql-res') return;
+        if (data.reqId !== reqId) return;
+        if (data.ok === true) {
+          // Mirrors runFetch's MAX_RESPONSE_BODY_BYTES guard — an
+          // unbounded GraphQL `data` blob would otherwise cross the
+          // isolated→background→server boundary with no size check.
+          let serialized: string;
+          try {
+            serialized = JSON.stringify(data.data) ?? '';
+          } catch (e) {
+            finish({ ok: false, error: `graphql response not serializable: ${(e as Error).message}` });
+            return;
+          }
+          if (serialized.length > MAX_RESPONSE_BODY_BYTES) {
+            finish({ ok: false, error: `graphql response too large: ${serialized.length} bytes` });
+            return;
+          }
+          finish({ ok: true, data: data.data });
+        } else {
+          finish({
+            ok: false,
+            error: typeof data.error === 'string' ? data.error : 'graphql bridge returned an error',
+          });
+        }
+      } catch {
+        // Never throw out of a window 'message' listener.
+      }
+    };
+
+    const finish = (r: GraphqlQueryResponse | FetchError): void => {
+      if (settled) return;
+      settled = true;
+      if (timer !== undefined) clearTimeout(timer);
+      win.removeEventListener('message', onMessage);
+      resolve(r);
+    };
+
+    const variables =
+      init.variables && typeof init.variables === 'object' ? init.variables : {};
+    // Mirrors runFetch's MAX_REQUEST_BODY_BYTES guard on the request body.
+    let serializedVars: string;
+    try {
+      serializedVars = JSON.stringify(variables) ?? '';
+    } catch (e) {
+      resolve({ ok: false, error: `graphql variables not serializable: ${(e as Error).message}` });
+      return;
+    }
+    if (serializedVars.length > MAX_REQUEST_BODY_BYTES) {
+      resolve({ ok: false, error: `graphql variables too large: ${serializedVars.length} bytes` });
+      return;
+    }
+
+    win.addEventListener('message', onMessage);
+    timer = setTimeout(
+      () =>
+        finish({
+          ok: false,
+          error: `graphql bridge timed out after ${timeoutMs}ms waiting for the MAIN-world Apollo client`,
+        }),
+      timeoutMs,
+    );
+
+    try {
+      win.postMessage(
+        {
+          __fetchproxy: 'graphql-req',
+          reqId,
+          operationName: init.operationName,
+          variables,
+        },
+        win.location?.origin ?? '*',
+      );
+    } catch (e) {
+      finish({ ok: false, error: `postMessage threw: ${(e as Error).message}` });
+    }
+  });
+}
 
 interface IdbResponse {
   ok: true;

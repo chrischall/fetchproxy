@@ -61,6 +61,8 @@ export interface TrustRecord {
   }[];
   /** 1.4.0+: declared DOM selectors for read_dom. */
   domSelectors: { name: string; selector: string; attribute?: string }[];
+  /** 1.x+: declared GraphQL operations for the graphql capability. */
+  graphqlOps: { name: string; operationName: string }[];
   /** 0.4.0+: declared JSON-pointer extractions over local/sessionStorage. */
   localStoragePointers: { key: string; jsonPointer: string }[];
   sessionStoragePointers: { key: string; jsonPointer: string }[];
@@ -104,6 +106,8 @@ export interface TrustInput {
   }[];
   /** 1.4.0+: declared DOM selectors. */
   domSelectors?: { name: string; selector: string; attribute?: string }[];
+  /** 1.x+: declared GraphQL operations. */
+  graphqlOps?: { name: string; operationName: string }[];
   /** 0.4.0+: declared storage-pointer extractions. */
   localStoragePointers?: { key: string; jsonPointer: string }[];
   sessionStoragePointers?: { key: string; jsonPointer: string }[];
@@ -158,6 +162,7 @@ export class TrustStore {
       captureHeaders: Array.isArray(rec.captureHeaders) ? rec.captureHeaders : [],
       indexedDbScopes: Array.isArray(rec.indexedDbScopes) ? rec.indexedDbScopes : [],
       domSelectors: Array.isArray(rec.domSelectors) ? rec.domSelectors : [],
+      graphqlOps: Array.isArray(rec.graphqlOps) ? rec.graphqlOps : [],
       localStoragePointers: Array.isArray(rec.localStoragePointers)
         ? rec.localStoragePointers
         : [],
@@ -189,6 +194,7 @@ export class TrustStore {
     const captureHeaders = input.captureHeaders ?? [];
     const indexedDbScopes = input.indexedDbScopes ?? [];
     const domSelectors = input.domSelectors ?? [];
+    const graphqlOps = input.graphqlOps ?? [];
     const localStoragePointers = input.localStoragePointers ?? [];
     const sessionStoragePointers = input.sessionStoragePointers ?? [];
     stored.records[identityHash] = {
@@ -201,6 +207,7 @@ export class TrustStore {
       captureHeaders,
       indexedDbScopes,
       domSelectors,
+      graphqlOps,
       localStoragePointers,
       sessionStoragePointers,
       identityX25519Pub: input.identityX25519Pub,

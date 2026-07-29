@@ -35,6 +35,7 @@ const CAPABILITY_DISPLAY: Record<string, CapabilityDisplay> = {
   capture_request_header: { label: 'Capture request header', warn: true },
   read_indexed_db: { label: 'Read IndexedDB', warn: true },
   read_dom: { label: 'Read DOM elements', warn: true },
+  graphql: { label: 'Run declared GraphQL queries', warn: true },
   download: { label: 'Download files to your computer', warn: true },
 };
 

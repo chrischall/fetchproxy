@@ -20,7 +20,7 @@ This document tracks 0.2.0. Two structural changes vs. 0.0.x / 0.1.x bear on the
 | Host MCP reading peer MCP traffic on the shared bridge | End-to-end AES-256-GCM between each MCP and the extension. Host routes by `mcpId` but never holds the session key. |
 | A webpage you visit connecting to the WS | WS binds `127.0.0.1`; the upgrade handler rejects non-extension origins; Chrome Private Network Access blocks public-origin preflights. |
 | MCP silently expanding its powers post-pair | The trust record stores the approved `domains` AND `capabilities` set. Any change → re-pair prompt. |
-| Arbitrary JS execution in your tabs | The protocol has no `eval_js`, `inject_script`, or equivalent. Closed by design. |
+| Arbitrary JS execution in your tabs | The protocol has no `eval_js`, `inject_script`, or equivalent. `graphql` is NOT this — it can only invoke a page-declared GraphQL operation through the page's own Apollo client, never arbitrary page code. See [§T-graphql-misuse](#t-graphql-misuse--graphql-capability-misuse). |
 | Storage exfiltration | `read_storage`, `read_indexeddb`, etc. don't exist. `read_cookies` is a deliberate, narrow opt-in. |
 | Multi-user machine sniffing | Out of scope. Localhost binding only. |
 
@@ -104,6 +104,23 @@ If an MCP legitimately needs more than one domain (rare), it enumerates them: `d
 4. **HTTP-only cookies are not exposed.** The browser refuses to surface them to page JS. fetchproxy doesn't have a side channel to read them either — it relies on `document.cookie`, same as any in-page script.
 
 **Residual risk:** A user who approves a pair with `read_cookies` is giving the MCP a powerful read primitive for the declared domains. The popup tries to make that visible; the trust record forces re-approval on change. There is no further defense — if you don't trust the MCP, don't approve the pair.
+
+### T-graphql-misuse — `graphql` capability misuse
+
+`graphql` invokes a **page-declared GraphQL operation through the page's OWN Apollo client** (`window.__APOLLO_CLIENT__`), in the page's MAIN world. This exists because some endpoints (OpenTable's `RestaurantsAvailability`) reject the isolated-world `fetch` path at the edge — the bot-detection sensor telemetry lives inside the page's own Apollo link chain, not on `window.fetch` — so the only way to clear it is to run the request through the exact code path the page itself uses.
+
+**What it is NOT:** general MAIN-world JS execution. There is no `page_eval`, no arbitrary function call, no way to reach any object other than the page's Apollo client, and no way to run any operation the page hasn't already defined.
+
+**Defenses:**
+
+1. **It can only run operations the page already exposes.** The extension carries NO hardcoded query text and NO persisted-query hash. It hooks `client.link.request` to capture the live `DocumentNode` the page's own Apollo client observed for a given `operationName`, then reuses that exact object via `client.query(...)`. If the page's client has never observed the operation (e.g. the user hasn't loaded the relevant page yet), the bridge returns a typed "operation not yet observed on this tab" error rather than inventing a query.
+2. **Declared-operation allowlist, approved at pair time.** The MCP declares a `graphqlOps: [{ name, operationName }]` list in its hello. Only operations in this list can ever be invoked; the popup surfaces the exact `operationName` values verbatim so the user sees precisely what will run. Widening or changing the declared set forces a re-pair with a diff, same as every other capability.
+3. **Capability-gated.** `'graphql'` must be declared in `capabilities` and approved at pair time — same opt-in mechanics as `read_cookies` / `read_dom`. The popup labels it with a warning marker.
+4. **Domain allowlist + host-or-subdomain tab match.** Same as every other verb: the tab the query runs against must be on one of the MCP's declared `domains` (or a subdomain of one).
+5. **Returns only the GraphQL response `data`.** The response is `{ ok: true, data }` where `data` is the parsed GraphQL response body — no page state, no DOM, no other globals, no ability to read anything the operation itself didn't return.
+6. **Per-call `variables` are supplied by the MCP, not the page.** The extension never inspects or mutates them — it passes the MCP's object straight to `client.query({ query, variables })`.
+
+**Residual risk:** If the operation the MCP declared genuinely returns sensitive data (e.g. a booking-availability query that also echoes account details), that's the same tradeoff as any declared `fetch` endpoint — the user is trusting the MCP with what it's declared, not with arbitrary access. The mechanism cannot be used to invoke an operation the user hasn't implicitly exposed by using the page normally.
 
 ### T-host-MITM — Host MCP reading peer traffic
 

@@ -9,6 +9,7 @@ import { sha256, toHex } from '@fetchproxy/protocol';
 import type {
   CaptureHeaderDecl,
   DomSelectorDecl,
+  GraphqlOpDeclaration,
   IndexedDbScopeDecl,
   StoragePointerDecl,
 } from '@fetchproxy/protocol';
@@ -25,6 +26,7 @@ export interface Scope {
   captureHeaders: CaptureHeaderDecl[];
   indexedDbScopes: IndexedDbScopeDecl[];
   domSelectors: DomSelectorDecl[];
+  graphqlOps: GraphqlOpDeclaration[];
   localStoragePointers: StoragePointerDecl[];
   sessionStoragePointers: StoragePointerDecl[];
 }
@@ -99,6 +101,19 @@ export function sameDomSelectors(
   return true;
 }
 
+export function sameGraphqlOps(
+  a: readonly GraphqlOpDeclaration[],
+  b: readonly GraphqlOpDeclaration[],
+): boolean {
+  if (a.length !== b.length) return false;
+  const norm = (arr: readonly GraphqlOpDeclaration[]): string[] =>
+    arr.map((d) => `${d.name}\x00${d.operationName}`).sort();
+  const sa = norm(a);
+  const sb = norm(b);
+  for (let i = 0; i < sa.length; i++) if (sa[i] !== sb[i]) return false;
+  return true;
+}
+
 export function sameStoragePointers(
   a: readonly StoragePointerDecl[],
   b: readonly StoragePointerDecl[],
@@ -131,6 +146,11 @@ function normDomSelector(d: DomSelectorDecl): string {
   return `${d.name}\x00${d.selector}\x00${d.attribute ?? ''}`;
 }
 
+/** Canonical string key for a GraphqlOpDeclaration entry. */
+function normGraphqlOp(d: GraphqlOpDeclaration): string {
+  return `${d.name}\x00${d.operationName}`;
+}
+
 /** Canonical string key for a StoragePointerDecl entry. */
 function normStoragePointer(d: StoragePointerDecl): string {
   return `${d.key}\x00${d.jsonPointer}`;
@@ -151,6 +171,7 @@ export async function scopeHash(s: Scope): Promise<string> {
     captureHeaders: [...s.captureHeaders].map(normCaptureHeader).sort(),
     indexedDbScopes: [...s.indexedDbScopes].map(normIndexedDbScope).sort(),
     domSelectors: [...s.domSelectors].map(normDomSelector).sort(),
+    graphqlOps: [...s.graphqlOps].map(normGraphqlOp).sort(),
     localStoragePointers: [...s.localStoragePointers].map(normStoragePointer).sort(),
     sessionStoragePointers: [...s.sessionStoragePointers].map(normStoragePointer).sort(),
   };
@@ -197,6 +218,12 @@ export function intersectScope(approved: Scope, declared: Scope): Scope {
     apDomSet.has(normDomSelector(d)),
   );
 
+  // graphqlOps — match on canonical key.
+  const apGraphqlSet = new Set(approved.graphqlOps.map(normGraphqlOp));
+  const graphqlOps = declared.graphqlOps.filter((d) =>
+    apGraphqlSet.has(normGraphqlOp(d)),
+  );
+
   // Storage pointers — match on canonical key.
   const apLocalPtrSet = new Set(approved.localStoragePointers.map(normStoragePointer));
   const localStoragePointers = declared.localStoragePointers.filter((d) =>
@@ -216,6 +243,7 @@ export function intersectScope(approved: Scope, declared: Scope): Scope {
     captureHeaders,
     indexedDbScopes,
     domSelectors,
+    graphqlOps,
     localStoragePointers,
     sessionStoragePointers,
   };
@@ -237,6 +265,7 @@ export function isScopeSubset(declared: Scope, approved: Scope): boolean {
     sameCaptureHeaders(intersection.captureHeaders, declared.captureHeaders) &&
     sameIndexedDbScopes(intersection.indexedDbScopes, declared.indexedDbScopes) &&
     sameDomSelectors(intersection.domSelectors, declared.domSelectors) &&
+    sameGraphqlOps(intersection.graphqlOps, declared.graphqlOps) &&
     sameStoragePointers(intersection.localStoragePointers, declared.localStoragePointers) &&
     sameStoragePointers(intersection.sessionStoragePointers, declared.sessionStoragePointers)
   );

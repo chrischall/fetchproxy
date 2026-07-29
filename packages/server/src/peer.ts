@@ -11,6 +11,7 @@ import {
   type CaptureHeaderDecl,
   type IndexedDbScopeDecl,
   type DomSelectorDecl,
+  type GraphqlOpDeclaration,
   type StoragePointerDecl,
   type InnerFrame,
 } from '@fetchproxy/protocol';
@@ -41,6 +42,7 @@ export interface PeerOpts {
   localStoragePointers?: StoragePointerDecl[];
   sessionStoragePointers?: StoragePointerDecl[];
   domSelectors?: DomSelectorDecl[];
+  graphqlOps?: GraphqlOpDeclaration[];
 }
 
 /**
@@ -126,6 +128,7 @@ export async function startPeer(opts: PeerOpts): Promise<InternalPeerHandle> {
     domSelectors: opts.domSelectors,
     localStoragePointers: opts.localStoragePointers,
     sessionStoragePointers: opts.sessionStoragePointers,
+    graphqlOps: opts.graphqlOps,
   });
   const sessionNonce = fromB64(hello.sessionNonce);
   ws.send(JSON.stringify(hello));

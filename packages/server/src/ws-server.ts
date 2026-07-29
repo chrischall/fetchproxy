@@ -9,6 +9,7 @@ import type {
   CaptureHeaderDecl,
   IndexedDbScopeDecl,
   DomSelectorDecl,
+  GraphqlOpDeclaration,
   StoragePointerDecl,
   InnerFrame,
   FetchInit,
@@ -128,6 +129,18 @@ export interface FetchproxyServerOpts {
    * a page writes into a hidden input that a POST body must carry.
    */
   domSelectors?: DomSelectorDecl[];
+  /**
+   * 1.x+: declared GraphQL operations for `graphqlQuery()`. Each entry
+   * is `{ name, operationName }`. Requires `'graphql'` in `capabilities`.
+   * Per-call `graphqlQuery` requests reference these by `name`
+   * (subset-match). The extension resolves `name` → `operationName` →
+   * the live DocumentNode the page's Apollo client already observed, then
+   * invokes `client.query(...)` in the page's MAIN world — the same path
+   * the site itself uses, so per-request bot telemetry (Akamai etc.) runs
+   * automatically. Empty/absent ⇒ no GraphQL operations permitted even if
+   * `'graphql'` is declared.
+   */
+  graphqlOps?: GraphqlOpDeclaration[];
   /**
    * Override the on-disk directory that holds this MCP's long-term
    * identity keypair (`<identityDir>/<serverName>.json`, mode 0600).
@@ -732,6 +745,7 @@ interface ResolvedOpts {
   localStoragePointers: StoragePointerDecl[];
   sessionStoragePointers: StoragePointerDecl[];
   domSelectors: DomSelectorDecl[];
+  graphqlOps: GraphqlOpDeclaration[];
   fetchTimeoutMs?: number;
   bridgeReviveDelayMs?: number;
   keepAliveIntervalMs: number;
@@ -846,6 +860,13 @@ export class FetchproxyServer {
     number,
     { resolve: (v: DownloadResult) => void; reject: (e: Error) => void }
   >();
+  // 1.x+: graphql_query awaiters resolve the GraphQL `data` object. Its
+  // shape is operation-specific, so the awaiter resolves `unknown` and the
+  // caller narrows.
+  private pendingGraphql = new Map<
+    number,
+    { resolve: (v: unknown) => void; reject: (e: Error) => void }
+  >();
   private mcpId: string | null = null;
   private identity: Identity | null = null;
   // 0.5.3+: in-flight role-election / handle-start promise. Set the
@@ -948,6 +969,10 @@ export class FetchproxyServer {
         name: d.name,
         selector: d.selector,
         ...(d.attribute !== undefined ? { attribute: d.attribute } : {}),
+      })),
+      graphqlOps: (opts.graphqlOps ?? []).map((d) => ({
+        name: d.name,
+        operationName: d.operationName,
       })),
       // 0.8.0+: timer + lazy-revive default to ON. Every realty MCP
       // adapter was about to set these to the same numbers anyway; the
@@ -1084,6 +1109,7 @@ export class FetchproxyServer {
         ownLocalStoragePointers: this.opts.localStoragePointers,
         ownSessionStoragePointers: this.opts.sessionStoragePointers,
         ownDomSelectors: this.opts.domSelectors,
+        ownGraphqlOps: this.opts.graphqlOps,
         onPairCode: this.opts.onPairCode,
       });
       this.hostHandle.onOwnInner((inner) => this.onInner(inner));
@@ -1116,6 +1142,7 @@ export class FetchproxyServer {
         localStoragePointers: this.opts.localStoragePointers,
         sessionStoragePointers: this.opts.sessionStoragePointers,
         domSelectors: this.opts.domSelectors,
+        graphqlOps: this.opts.graphqlOps,
       });
       this.peerHandle.onInner((inner) => this.onInner(inner));
       // Mirror the host's onExtensionDisconnect → rejectAllPending wiring.
@@ -1393,6 +1420,7 @@ export class FetchproxyServer {
         this.pendingRedirect.delete(id);
         this.pendingDownload.delete(id);
         this.pendingIdb.delete(id);
+        this.pendingGraphql.delete(id);
       }
       throw err;
     }
@@ -2497,6 +2525,63 @@ export class FetchproxyServer {
     return this._withVerbTimeout(pending, this.pendingStorage, id, origin);
   }
 
+  /**
+   * 1.x+: run a declared GraphQL operation through the page's own Apollo
+   * client (`window.__APOLLO_CLIENT__`) in the signed-in tab's MAIN world.
+   * Requires `'graphql'` in capabilities AND `name` to match a declared
+   * `graphqlOps` entry. The extension resolves `name` → `operationName` →
+   * the live DocumentNode the page already observed, then invokes
+   * `client.query({ query, variables })` — the site's own request path, so
+   * per-request bot telemetry (Akamai etc.) runs automatically.
+   *
+   * Returns the GraphQL `data` object on success (shape is
+   * operation-specific; the caller narrows). Throws a plain `Error` on
+   * developer mistakes (undeclared capability, undeclared name) and a
+   * descriptive `Error` on the `ok:false` bridge path — which includes the
+   * typed "operation not yet observed on this tab" case (open the site's
+   * page and retry).
+   */
+  async graphqlQuery(opts: {
+    name: string;
+    variables: Record<string, unknown>;
+    tabUrl?: string;
+  }): Promise<unknown> {
+    if (!this.opts.capabilities.includes('graphql')) {
+      throw new Error(
+        'FetchproxyServer.graphqlQuery(): MCP did not declare "graphql" in capabilities',
+      );
+    }
+    if (typeof opts.name !== 'string' || opts.name.length === 0) {
+      throw new Error('FetchproxyServer.graphqlQuery: opts.name must be a non-empty string');
+    }
+    const declaredNames = this.opts.graphqlOps.map((d) => d.name);
+    if (!declaredNames.includes(opts.name)) {
+      throw new Error(
+        `FetchproxyServer.graphqlQuery: operation ${JSON.stringify(opts.name)} not in declared graphqlOps [${declaredNames
+          .map((n) => JSON.stringify(n))
+          .join(', ')}]`,
+      );
+    }
+    await this.ensureConnected();
+    this.throwIfPendingPair();
+    const id = this.nextRequestId++;
+    const inner: InnerFrame = {
+      type: 'request',
+      id,
+      op: 'graphql_query',
+      init: {
+        name: opts.name,
+        variables: opts.variables,
+        ...(opts.tabUrl !== undefined ? { tabUrl: opts.tabUrl } : {}),
+      },
+    };
+    const pending = new Promise<unknown>((resolve, reject) => {
+      this.pendingGraphql.set(id, { resolve, reject });
+    });
+    await this.sendInnerFrame(inner);
+    return this._withVerbTimeout(pending, this.pendingGraphql, id, opts.name);
+  }
+
   private assertScopeSubset(
     requested: readonly string[],
     declared: readonly string[],
@@ -2690,6 +2775,24 @@ export class FetchproxyServer {
       }
       return;
     }
+    const graphqlCb = this.pendingGraphql.get(inner.id);
+    if (graphqlCb) {
+      this.pendingGraphql.delete(inner.id);
+      if (inner.ok) {
+        if (inner.op === 'graphql_query') {
+          graphqlCb.resolve(inner.data);
+        } else {
+          graphqlCb.reject(
+            new FetchproxyProtocolError(
+              `unexpected ${String(inner.op)} response on graphql_query awaiter`,
+            ),
+          );
+        }
+      } else {
+        graphqlCb.reject(new FetchproxyProtocolError(inner.error));
+      }
+      return;
+    }
     const cookiesCb = this.pendingReadCookies.get(inner.id);
     if (cookiesCb) {
       this.pendingReadCookies.delete(inner.id);
@@ -2743,6 +2846,8 @@ export class FetchproxyServer {
     this.pendingIdb.clear();
     for (const { reject } of this.pendingDownload.values()) reject(err);
     this.pendingDownload.clear();
+    for (const { reject } of this.pendingGraphql.values()) reject(err);
+    this.pendingGraphql.clear();
   }
 
   /**

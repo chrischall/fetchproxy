@@ -240,6 +240,42 @@ describe('FetchproxyServer (orchestrator)', () => {
     });
   });
 
+  describe('graphqlQuery()', () => {
+    it("throws if the MCP didn't declare 'graphql' capability", async () => {
+      const srv = new FetchproxyServer({
+        port: 0,
+        serverName: 'opentable-mcp',
+        version: '0.9.1',
+        domains: ['opentable.com'],
+        identityDir: mkdtempSync(join(tmpdir(), 'fp-srv-')),
+      });
+      servers.push(srv);
+      await srv.listen();
+      await expect(
+        srv.graphqlQuery({ name: 'availability', variables: {} }),
+      ).rejects.toThrow(/graphql/);
+    });
+
+    it('throws if the requested name is not among declared graphqlOps', async () => {
+      const srv = new FetchproxyServer({
+        port: 0,
+        serverName: 'opentable-mcp',
+        version: '0.9.1',
+        domains: ['opentable.com'],
+        capabilities: ['fetch', 'graphql'],
+        graphqlOps: [
+          { name: 'availability', operationName: 'RestaurantsAvailability' },
+        ],
+        identityDir: mkdtempSync(join(tmpdir(), 'fp-srv-')),
+      });
+      servers.push(srv);
+      await srv.listen();
+      await expect(
+        srv.graphqlQuery({ name: 'notDeclared', variables: {} }),
+      ).rejects.toThrow(/not in declared graphqlOps/);
+    });
+  });
+
   describe('captureHeaders constructor validation', () => {
     it('throws when a capture host is not in declared domains', () => {
       expect(

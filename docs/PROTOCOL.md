@@ -115,8 +115,24 @@ Each MCP sends one of these as the very first frame after connecting.
 
 - `"fetch"` — issue HTTP requests against the user's signed-in tab. Default; if `capabilities` is omitted, the extension treats it as `["fetch"]`.
 - `"read_cookies"` — read non-HttpOnly `document.cookie` from a matching tab. Strictly opt-in; the popup shows a visible warning so the user notices the elevated trust.
+- `"graphql"` — invoke a declared GraphQL operation through the matched tab's OWN Apollo client (`window.__APOLLO_CLIENT__`) in the page MAIN world, reusing the live `DocumentNode` the page already observed for the declared `operationName`. This runs the exact code path the page itself uses, so it carries whatever per-request bot-telemetry the page's Apollo link injects — clearing edge bot-protection (e.g. Akamai) that the isolated-world `fetch` path cannot. The MCP declares an allowlist of operations in `graphqlOps` (see below); a per-call request references one by `name` and supplies its own `variables`. Strictly opt-in; elevated; the popup shows the declared operations verbatim. It does NOT add arbitrary page-JS execution — only the declared operations, through the page's own client, are reachable.
 
 Unknown values are rejected at validation time. The trust record stores the approved capability set; if the same MCP later declares a different set (upgrade or downgrade), the extension treats it as a re-pair and prompts the user again. The check is order-insensitive — `["fetch", "read_cookies"]` and `["read_cookies", "fetch"]` are equivalent.
+
+`graphqlOps` is an optional array declared alongside `capabilities` — required (non-empty) for the `'graphql'` capability to do anything; empty/absent means no GraphQL operations are permitted even when `'graphql'` is declared:
+
+```jsonc
+"graphqlOps": [
+  { "name": "restaurantsAvailability", "operationName": "RestaurantsAvailability" }
+]
+```
+
+Each entry is `{ name, operationName }`:
+
+- `name` — the logical handle the MCP references per-call (`GraphqlQueryInit.name`). `[A-Za-z0-9_.\-]`, 1-256 chars, unique within `graphqlOps`.
+- `operationName` — the GraphQL operation name whose live `DocumentNode` the page's Apollo client already owns (standard GraphQL `Name` grammar, `[_A-Za-z][_0-9A-Za-z]*`, ≤128 chars). The extension carries no query text or hash of its own — it resolves `name` → `operationName` → the DocumentNode captured off the page's own `client.link.request`, so it auto-adapts when the site revises the query.
+
+`graphqlOps` is approved at pair time (the popup lists every declared `operationName` verbatim) and diffed on change like every other declared scope — widening or altering the set forces a re-pair.
 
 The signature lets the extension prove the connecting process holds the Ed25519 private key. Re-pair only happens on first sight of a new identity key; subsequent sessions just verify the signature against the stored `identityEd25519Pub`. The trust record also stores the approved `domains` set — a server that later widens the set (or changes `serverName`) is refused auto-trust and falls back to a re-pair prompt.
 
@@ -235,6 +251,52 @@ Semantics:
 
 - `tabUrl`: required. Same matching rules as `fetch`; must also map to one of the MCP's declared `domains` (or a subdomain of one). No other `init` fields are permitted.
 - The MCP must have declared `"read_cookies"` in its hello `capabilities` AND the user must have approved that set at pair time. Otherwise the response is `{ok: false, op: "read_cookies", error: "capability ... not granted ..."}`.
+
+##### `op: "graphql_query"`
+
+The extension invokes a declared GraphQL operation through the matched tab's OWN `window.__APOLLO_CLIENT__`, in the page MAIN world, using the live `DocumentNode` the page's client already captured for that operation.
+
+```jsonc
+{
+  "type": "request",
+  "id": 3,
+  "op": "graphql_query",
+  "init": {
+    "name": "restaurantsAvailability",       // must match a declared graphqlOps[].name
+    "variables": {                            // the MCP's full GraphQL variables object
+      "restaurantIds": ["1175428"],
+      "date": "2026-07-31",
+      "time": "17:00",
+      "partySize": 2,
+      "databaseRegion": "NA"
+    },
+    "tabUrl": "https://www.opentable.com/"   // optional; same matching as fetch/read_cookies
+  }
+}
+```
+
+Semantics:
+
+- `name`: required, non-empty string. Must match a `name` in the MCP's declared `graphqlOps`. The extension resolves `name` → `operationName` → the cached `DocumentNode`, then calls `client.query({ query, variables, fetchPolicy: 'no-cache' })`.
+- `variables`: required. A plain (non-array, non-null) object passed straight through to `client.query`; may be empty. The extension does not inspect or transform it.
+- `tabUrl`: optional. Same host-or-subdomain matching as other verbs; must map to one of the MCP's declared `domains`. Omitted ⇒ the extension picks a tab on the MCP's declared domain.
+- The MCP must have declared `"graphql"` in its hello `capabilities` AND the specific `name` must be one of the declared `graphqlOps` — both gates are checked on every call, not just at pair time.
+- If the page's Apollo client has not yet observed the declared `operationName` (its `DocumentNode` isn't cached — e.g. the user hasn't loaded the relevant page in this tab), the response is a typed failure: `{ok: false, op: "graphql_query", error: "operation not yet observed on this tab — open <hint> and retry"}` (exact wording may vary).
+
+Response:
+
+```jsonc
+// Success
+{
+  "type": "response",
+  "id": 3,
+  "ok": true,
+  "op": "graphql_query",
+  "data": { "availability": [ /* ... */ ] }   // the GraphQL response's `data` object, verbatim
+}
+```
+
+`data` is exactly the `data` field of the GraphQL response the page's own Apollo client received — no envelope, no `errors` passthrough (a GraphQL-level error surfaces as an `ok: false` protocol failure instead). The MCP reads whatever fields its declared operation returns.
 
 #### `response` (extension → server)
 
@@ -372,7 +434,7 @@ Host shutdown: peers see WS close and re-race the port. Whoever wins becomes the
 
 ## What's not in the protocol (closed by design)
 
-- `eval_js`, `inject_script` — no arbitrary JS execution in tabs.
+- `eval_js`, `inject_script` — no arbitrary JS execution in tabs. `graphql` does not add this: it can only invoke an operation the MCP declared in `graphqlOps`, through the page's own Apollo client, and only once the page's client has organically observed that operation.
 - `read_storage` (localStorage, IndexedDB) — no general exfiltration primitives. `read_cookies` is a deliberate, narrow exception: the user explicitly opts in at pair time, and only non-HttpOnly cookies are visible to page JS.
 - `click`, `navigate` — no UI automation. Use claude-in-chrome for that.
 - Wildcard MCPs — the declared `domains` set must be enumerated explicitly. No `*.com` or "any domain" wildcards.
