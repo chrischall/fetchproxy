@@ -2341,9 +2341,9 @@ describe('validateInnerFrame (graphql graphql_query)', () => {
   it('accepts a graphql_query error response — the REAL wire op string, not the "graphql" capability name', () => {
     // Regression: the extension sends op:'graphql_query' (the wire op) on
     // EVERY graphql failure path, including the documented, expected
-    // first-run "operation not yet observed on this tab — open a
-    // restaurant page and retry" error. `graphql_query` is the one op
-    // whose wire string differs from its governing capability name
+    // first-run "operation not yet observed on this tab" error.
+    // `graphql_query` is the one op whose wire string differs from its
+    // governing capability name
     // ('graphql') — see InnerResponseError.op's doc comment in frames.ts.
     // A prior version of this test asserted op:'graphql' instead, which
     // passed only because 'graphql' happens to be a KNOWN_CAPABILITIES
@@ -2357,7 +2357,7 @@ describe('validateInnerFrame (graphql graphql_query)', () => {
         id: 1,
         ok: false,
         op: 'graphql_query',
-        error: 'operation not yet observed on this tab — open a restaurant page and retry',
+        error: 'operation not yet observed on this tab — open a page on the site that triggers this GraphQL operation, then retry',
       }),
     ).not.toThrow();
   });

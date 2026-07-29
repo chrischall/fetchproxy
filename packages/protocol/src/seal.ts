@@ -37,16 +37,20 @@ export async function sealInnerFrame(
 /**
  * Decrypt an EncryptedFrame and return the validated inner frame.
  * Throws if the ciphertext is forged or the inner JSON is malformed.
+ *
+ * Implemented as a thin wrapper over {@link openEncryptedFrameDetailed} so
+ * the decrypt→parse→validate sequence exists in exactly one place; callers
+ * that don't need to distinguish "wrong key" from "malformed payload" (this
+ * function's original two consumers, `host.ts` and the extension's own
+ * request-decode path) keep the simple throw-only contract unchanged.
  */
 export async function openEncryptedFrame(
   sessionKey: Uint8Array,
   frame: EncryptedFrame,
 ): Promise<InnerFrame> {
-  const iv = fromB64(frame.iv);
-  const ct = fromB64(frame.ciphertext);
-  const pt = await aesGcmOpen(sessionKey, iv, ct);
-  const parsed: unknown = JSON.parse(dec.decode(pt));
-  return validateInnerFrame(parsed);
+  const result = await openEncryptedFrameDetailed(sessionKey, frame);
+  if (result.stage === 'ok') return result.inner;
+  throw result.error instanceof Error ? result.error : new Error(String(result.error));
 }
 
 /**
@@ -90,10 +94,16 @@ export async function openEncryptedFrameDetailed(
   sessionKey: Uint8Array,
   frame: EncryptedFrame,
 ): Promise<OpenFrameResult> {
-  const iv = fromB64(frame.iv);
-  const ct = fromB64(frame.ciphertext);
   let pt: Uint8Array;
   try {
+    // `fromB64` throws on malformed base64 (BASE64_RE doesn't enforce a
+    // length multiple of 4, so e.g. `iv: "A"` passes structural frame
+    // validation upstream but still isn't decodable) — that decode failure
+    // belongs in the SAME "can't trust anything about this frame" bucket
+    // as an AES-GCM auth failure, not a separate uncaught throw out of a
+    // function documented as never throwing.
+    const iv = fromB64(frame.iv);
+    const ct = fromB64(frame.ciphertext);
     pt = await aesGcmOpen(sessionKey, iv, ct);
   } catch (error) {
     return { stage: 'decrypt-failed', error };

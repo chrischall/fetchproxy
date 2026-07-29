@@ -106,6 +106,20 @@ describe('openEncryptedFrameDetailed', () => {
     expect(result.stage).toBe('decrypt-failed');
   });
 
+  it('returns stage "decrypt-failed" (not an uncaught throw) for an iv that is structurally-valid-but-undecodable base64', async () => {
+    // Regression: BASE64_RE (the structural frame validator) doesn't
+    // enforce a length multiple of 4, so a value like "A" passes
+    // validateFrame but atob() still throws on it. Before this fix, the
+    // two fromB64 calls sat OUTSIDE every try in
+    // openEncryptedFrameDetailed, so this threw out of a function
+    // documented as "never throws" — with no stage assigned at all.
+    const inner: InnerFrame = { type: 'ping' };
+    const sealed = await sealInnerFrame(key, mcpId, 1, inner);
+    const bad: EncryptedFrame = { ...sealed, iv: 'A' };
+    const result = await openEncryptedFrameDetailed(key, bad);
+    expect(result.stage).toBe('decrypt-failed');
+  });
+
   it('returns stage "decrypt-failed" for tampered ciphertext', async () => {
     const inner: InnerFrame = { type: 'ping' };
     const sealed = await sealInnerFrame(key, mcpId, 1, inner);
