@@ -371,6 +371,12 @@ function assertIndexedDbScopesArray(value: unknown, label: string): void {
 const DOM_SELECTOR_RE = /^[^ -]{1,512}$/;
 /** Attribute name for a `domSelectors` entry. Same shape as an HTML attr. */
 const DOM_ATTRIBUTE_RE = /^[A-Za-z_:][A-Za-z0-9_:.\-]{0,127}$/;
+/**
+ * GraphQL operation name for a `graphqlOps` entry — the standard GraphQL
+ * `Name` grammar (`[_A-Za-z][_0-9A-Za-z]*`), length-capped at 128 so the
+ * pair popup renders something sane.
+ */
+const GRAPHQL_OP_NAME_RE = /^[_A-Za-z][_0-9A-Za-z]{0,127}$/;
 
 /**
  * Structural validation of a `domSelectors` array. Each entry is a
@@ -414,6 +420,49 @@ function assertDomSelectorsArray(value: unknown, label: string): void {
     seen.add(entry.name);
     for (const k of Object.keys(entry)) {
       if (k !== 'name' && k !== 'selector' && k !== 'attribute') {
+        throw new ProtocolError(`${label}[${i}]: unexpected field ${JSON.stringify(k)}`);
+      }
+    }
+  }
+}
+
+/**
+ * Structural validation of a `graphqlOps` array. Each entry is a
+ * `{ name, operationName }` tuple; `name` is unique and matches
+ * `SCOPE_KEY_RE` (so per-call `name` can be cross-checked against the
+ * declared set), `operationName` is a standard GraphQL operation name.
+ */
+function assertGraphqlOpsArray(value: unknown, label: string): void {
+  if (!Array.isArray(value)) {
+    throw new ProtocolError(`${label}: expected array, got ${typeof value}`);
+  }
+  const seen = new Set<string>();
+  for (let i = 0; i < value.length; i++) {
+    const entry = value[i] as unknown;
+    assertObject(entry, `${label}[${i}]`);
+    if (entry.name === undefined) {
+      throw new ProtocolError(`${label}[${i}].name: missing`);
+    }
+    if (entry.operationName === undefined) {
+      throw new ProtocolError(`${label}[${i}].operationName: missing`);
+    }
+    if (typeof entry.name !== 'string' || !SCOPE_KEY_RE.test(entry.name)) {
+      throw new ProtocolError(`${label}[${i}].name: invalid ${JSON.stringify(entry.name)}`);
+    }
+    if (
+      typeof entry.operationName !== 'string' ||
+      !GRAPHQL_OP_NAME_RE.test(entry.operationName)
+    ) {
+      throw new ProtocolError(
+        `${label}[${i}].operationName: invalid ${JSON.stringify(entry.operationName)}`,
+      );
+    }
+    if (seen.has(entry.name)) {
+      throw new ProtocolError(`${label}: duplicate name ${JSON.stringify(entry.name)}`);
+    }
+    seen.add(entry.name);
+    for (const k of Object.keys(entry)) {
+      if (k !== 'name' && k !== 'operationName') {
         throw new ProtocolError(`${label}[${i}]: unexpected field ${JSON.stringify(k)}`);
       }
     }
@@ -521,6 +570,9 @@ function validateHello(raw: Record<string, unknown>): HelloFrame {
     }
     if (raw.domSelectors !== undefined) {
       assertDomSelectorsArray(raw.domSelectors, 'hello.domSelectors');
+    }
+    if (raw.graphqlOps !== undefined) {
+      assertGraphqlOpsArray(raw.graphqlOps, 'hello.graphqlOps');
     }
     assertBase64(raw.identityX25519Pub, 'hello.identityX25519Pub');
     assertBase64(raw.identityEd25519Pub, 'hello.identityEd25519Pub');
@@ -825,6 +877,32 @@ function validateInnerRequest(raw: Record<string, unknown>): InnerFrame {
     }
     return raw as unknown as InnerFrame;
   }
+  if (raw.op === 'graphql_query') {
+    assertObject(raw.init, 'inner.init');
+    if (raw.init.name === undefined) throw new ProtocolError('inner.init.name: missing');
+    if (raw.init.variables === undefined) {
+      throw new ProtocolError('inner.init.variables: missing');
+    }
+    assertString(raw.init.name, 'inner.init.name');
+    if (raw.init.name.length === 0) {
+      throw new ProtocolError('inner.init.name: must be non-empty');
+    }
+    // `variables` is the MCP's full variables object, passed straight to
+    // `client.query`. Require a plain object (assertObject rejects arrays,
+    // null, non-plain prototypes, and prototype-pollution keys). May be empty.
+    assertObject(raw.init.variables, 'inner.init.variables');
+    if (raw.init.tabUrl !== undefined) {
+      assertString(raw.init.tabUrl, 'inner.init.tabUrl');
+    }
+    for (const k of Object.keys(raw.init)) {
+      if (k !== 'name' && k !== 'variables' && k !== 'tabUrl') {
+        throw new ProtocolError(
+          `inner.init: unexpected field ${JSON.stringify(k)} on graphql_query`,
+        );
+      }
+    }
+    return raw as unknown as InnerFrame;
+  }
   if (raw.op === 'download') {
     assertObject(raw.init, 'inner.init');
     if (raw.init.url === undefined) {
@@ -860,7 +938,7 @@ function validateInnerRequest(raw: Record<string, unknown>): InnerFrame {
     return raw as unknown as InnerFrame;
   }
   throw new ProtocolError(
-    `inner.op: must be one of "fetch", "read_cookies", "read_local_storage", "read_session_storage", "capture_request_header", "capture_redirect", "read_indexed_db", "read_dom", "download"; got ${JSON.stringify(raw.op)}`,
+    `inner.op: must be one of "fetch", "read_cookies", "read_local_storage", "read_session_storage", "capture_request_header", "capture_redirect", "read_indexed_db", "read_dom", "download", "graphql_query"; got ${JSON.stringify(raw.op)}`,
   );
 }
 
@@ -894,6 +972,23 @@ function assertStringMap(value: unknown, label: string): void {
     }
   }
 }
+
+/**
+ * Op strings valid on an `ok:false` inner response's optional `op` echo.
+ * Every op string equals its governing capability name EXCEPT
+ * `graphql_query`, which is governed by the `'graphql'` capability (see
+ * `InnerResponseError.op`'s doc comment in frames.ts) — so the plain
+ * `KNOWN_CAPABILITIES` set doesn't contain the wire string the extension
+ * actually sends for a graphql_query failure. Without this, every
+ * `ok:false, op:'graphql_query'` response (including the documented,
+ * expected-on-first-run "operation not yet observed on this tab" error)
+ * fails validation here, which — via host.ts's message-handler catch-all —
+ * closes the extension WebSocket for every MCP on the concentrator.
+ */
+const KNOWN_RESPONSE_OPS: ReadonlySet<string> = new Set<string>([
+  ...KNOWN_CAPABILITIES,
+  'graphql_query',
+]);
 
 function validateInnerResponse(raw: Record<string, unknown>): InnerFrame {
   assertPositiveInt(raw.id, 'inner.id');
@@ -971,6 +1066,17 @@ function validateInnerResponse(raw: Record<string, unknown>): InnerFrame {
       assertStringMap(raw.values, 'inner.values');
       return raw as unknown as InnerFrame;
     }
+    if (op === 'graphql_query') {
+      if (raw.data === undefined) {
+        throw new ProtocolError('inner.data: missing on graphql_query response');
+      }
+      // The GraphQL `data` object is a plain object at the top level
+      // (a map of field → result). assertObject rejects arrays, null,
+      // non-plain prototypes, and prototype-pollution keys; nested values
+      // are already-parsed JSON on the receiving side.
+      assertObject(raw.data, 'inner.data');
+      return raw as unknown as InnerFrame;
+    }
     if (op === 'download') {
       assertObject(raw.value, 'inner.value');
       assertString(raw.value.path, 'inner.value.path');
@@ -1003,7 +1109,7 @@ function validateInnerResponse(raw: Record<string, unknown>): InnerFrame {
   if (raw.ok === false) {
     assertString(raw.error, 'inner.error');
     if (raw.op !== undefined) {
-      if (typeof raw.op !== 'string' || !KNOWN_CAPABILITIES.has(raw.op as Capability)) {
+      if (typeof raw.op !== 'string' || !KNOWN_RESPONSE_OPS.has(raw.op)) {
         throw new ProtocolError(
           `inner.op: unknown response op ${JSON.stringify(raw.op)}`,
         );

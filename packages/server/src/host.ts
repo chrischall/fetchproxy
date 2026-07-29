@@ -15,6 +15,7 @@ import {
   type CaptureHeaderDecl,
   type IndexedDbScopeDecl,
   type DomSelectorDecl,
+  type GraphqlOpDeclaration,
   type StoragePointerDecl,
   type Frame,
   type HelloFrameFromServer,
@@ -56,6 +57,7 @@ export interface HostOpts {
   ownLocalStoragePointers?: StoragePointerDecl[];
   ownSessionStoragePointers?: StoragePointerDecl[];
   ownDomSelectors?: DomSelectorDecl[];
+  ownGraphqlOps?: GraphqlOpDeclaration[];
   /**
    * 0.4.0+: invoked once on receipt of the extension hello with the
    * joint pair code `SHA256(mcpPub || extPub)`. The MCP can print this
@@ -119,6 +121,7 @@ export async function startHost(opts: HostOpts): Promise<HostHandle> {
     localStoragePointers: opts.ownLocalStoragePointers,
     sessionStoragePointers: opts.ownSessionStoragePointers,
     domSelectors: opts.ownDomSelectors,
+    graphqlOps: opts.ownGraphqlOps,
   });
   const ownSessionNonce = fromB64(ownHello.sessionNonce);
 

@@ -4,7 +4,8 @@ import { scopeHash, intersectScope, isScopeSubset, type Scope } from './scope.js
 const base = (): Scope => ({
   capabilities: ['fetch', 'read_cookies'], cookieKeys: ['sid', 'cf'],
   localStorageKeys: [], sessionStorageKeys: [], captureHeaders: [],
-  indexedDbScopes: [], domSelectors: [], localStoragePointers: [], sessionStoragePointers: [],
+  indexedDbScopes: [], domSelectors: [], graphqlOps: [],
+  localStoragePointers: [], sessionStoragePointers: [],
 });
 
 describe('scopeHash', () => {
@@ -180,5 +181,62 @@ describe('domSelectors scope (name/selector/attribute)', () => {
     };
     const kept = intersectScope(approved, declared).domSelectors;
     expect(kept).toEqual([{ name: 'title', selector: 'h1' }]);
+  });
+});
+
+describe('graphqlOps scope (name/operationName)', () => {
+  it('scopeHash is order-independent for graphqlOps', async () => {
+    const a: Scope = {
+      ...base(),
+      graphqlOps: [
+        { name: 'availability', operationName: 'RestaurantsAvailability' },
+        { name: 'search', operationName: 'RestaurantSearch' },
+      ],
+    };
+    const b: Scope = {
+      ...base(),
+      graphqlOps: [
+        { name: 'search', operationName: 'RestaurantSearch' },
+        { name: 'availability', operationName: 'RestaurantsAvailability' },
+      ],
+    };
+    expect(await scopeHash(a)).toBe(await scopeHash(b));
+  });
+
+  it('scopeHash differs when an operationName differs', async () => {
+    const a: Scope = { ...base(), graphqlOps: [{ name: 'x', operationName: 'OpA' }] };
+    const b: Scope = { ...base(), graphqlOps: [{ name: 'x', operationName: 'OpB' }] };
+    expect(await scopeHash(a)).not.toBe(await scopeHash(b));
+  });
+
+  it('isScopeSubset false when declared graphqlOps escape approved', () => {
+    const approved: Scope = {
+      ...base(),
+      graphqlOps: [{ name: 'availability', operationName: 'RestaurantsAvailability' }],
+    };
+    const declared: Scope = {
+      ...base(),
+      graphqlOps: [
+        { name: 'availability', operationName: 'RestaurantsAvailability' },
+        { name: 'evil', operationName: 'DrainAccount' },
+      ],
+    };
+    expect(isScopeSubset(declared, approved)).toBe(false);
+  });
+
+  it('intersect drops graphqlOps not in approved', () => {
+    const approved: Scope = {
+      ...base(),
+      graphqlOps: [{ name: 'availability', operationName: 'RestaurantsAvailability' }],
+    };
+    const declared: Scope = {
+      ...base(),
+      graphqlOps: [
+        { name: 'availability', operationName: 'RestaurantsAvailability' },
+        { name: 'search', operationName: 'RestaurantSearch' },
+      ],
+    };
+    const kept = intersectScope(approved, declared).graphqlOps;
+    expect(kept).toEqual([{ name: 'availability', operationName: 'RestaurantsAvailability' }]);
   });
 });

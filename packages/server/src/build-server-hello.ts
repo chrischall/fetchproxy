@@ -7,6 +7,7 @@ import {
   type CaptureHeaderDecl,
   type IndexedDbScopeDecl,
   type DomSelectorDecl,
+  type GraphqlOpDeclaration,
   type StoragePointerDecl,
   type HelloFrameFromServer,
 } from '@fetchproxy/protocol';
@@ -38,6 +39,8 @@ export interface BuildServerHelloOpts {
   sessionStoragePointers?: StoragePointerDecl[];
   /** 1.4.0+: declared DOM selectors for `read_dom`. */
   domSelectors?: DomSelectorDecl[];
+  /** 1.x+: declared GraphQL operations for the `graphql` capability. */
+  graphqlOps?: GraphqlOpDeclaration[];
 }
 
 /**
@@ -117,6 +120,12 @@ export async function buildServerHello(
       name: d.name,
       selector: d.selector,
       ...(d.attribute !== undefined ? { attribute: d.attribute } : {}),
+    }));
+  }
+  if (opts.graphqlOps && opts.graphqlOps.length > 0) {
+    hello.graphqlOps = opts.graphqlOps.map((d) => ({
+      name: d.name,
+      operationName: d.operationName,
     }));
   }
   return hello;

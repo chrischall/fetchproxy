@@ -20,7 +20,7 @@ This document tracks 0.2.0. Two structural changes vs. 0.0.x / 0.1.x bear on the
 | Host MCP reading peer MCP traffic on the shared bridge | End-to-end AES-256-GCM between each MCP and the extension. Host routes by `mcpId` but never holds the session key. |
 | A webpage you visit connecting to the WS | WS binds `127.0.0.1`; the upgrade handler rejects non-extension origins; Chrome Private Network Access blocks public-origin preflights. |
 | MCP silently expanding its powers post-pair | The trust record stores the approved `domains` AND `capabilities` set. Any change → re-pair prompt. |
-| Arbitrary JS execution in your tabs | The protocol has no `eval_js`, `inject_script`, or equivalent. Closed by design. |
+| Arbitrary JS execution in your tabs | The protocol has no `eval_js`, `inject_script`, or equivalent. `graphql` is NOT this — it can only invoke a page-declared GraphQL operation through the page's own Apollo client, never arbitrary page code. See [§T-graphql-misuse](#t-graphql-misuse--graphql-capability-misuse). |
 | Storage exfiltration | `read_storage`, `read_indexeddb`, etc. don't exist. `read_cookies` is a deliberate, narrow opt-in. |
 | Multi-user machine sniffing | Out of scope. Localhost binding only. |
 
@@ -105,6 +105,25 @@ If an MCP legitimately needs more than one domain (rare), it enumerates them: `d
 
 **Residual risk:** A user who approves a pair with `read_cookies` is giving the MCP a powerful read primitive for the declared domains. The popup tries to make that visible; the trust record forces re-approval on change. There is no further defense — if you don't trust the MCP, don't approve the pair.
 
+### T-graphql-misuse — `graphql` capability misuse
+
+`graphql` invokes a **page-declared GraphQL operation through the page's OWN Apollo client** (`window.__APOLLO_CLIENT__`), in the page's MAIN world. This exists because some endpoints (OpenTable's `RestaurantsAvailability`) reject the isolated-world `fetch` path at the edge — the bot-detection sensor telemetry lives inside the page's own Apollo link chain, not on `window.fetch` — so the only way to clear it is to run the request through the exact code path the page itself uses.
+
+**What it is NOT:** general MAIN-world JS execution. There is no `page_eval`, no arbitrary function call, no way to reach any object other than the page's Apollo client, and no way to run any operation the page hasn't already defined.
+
+**Defenses:**
+
+1. **It can only run operations the page already exposes.** The extension carries NO hardcoded query text and NO persisted-query hash. It hooks `client.link.request` to capture the live `DocumentNode` the page's own Apollo client observed for a given `operationName`, then reuses that exact object via `client.query(...)`. If the page's client has never observed the operation (e.g. the user hasn't loaded the relevant page yet), the bridge returns a typed "operation not yet observed on this tab" error rather than inventing a query.
+2. **Declared-operation allowlist, approved at pair time.** The MCP declares a `graphqlOps: [{ name, operationName }]` list in its hello. Only operations in this list can ever be invoked; the popup surfaces the exact `operationName` values verbatim so the user sees precisely what will run. Widening or changing the declared set forces a re-pair with a diff, same as every other capability.
+3. **Capability-gated.** `'graphql'` must be declared in `capabilities` and approved at pair time — same opt-in mechanics as `read_cookies` / `read_dom`. The popup labels it with a warning marker.
+4. **Domain allowlist + host-or-subdomain tab match.** Same as every other verb: the tab the query runs against must be on one of the MCP's declared `domains` (or a subdomain of one).
+5. **Returns only the GraphQL response `data`.** The response is `{ ok: true, data }` where `data` is the parsed GraphQL response body — no page state, no DOM, no other globals, no ability to read anything the operation itself didn't return.
+6. **Per-call `variables` are supplied by the MCP, not the page.** The extension never inspects or mutates them — it passes the MCP's object straight to `client.query({ query, variables })`.
+
+**Residual risk:** If the operation the MCP declared genuinely returns sensitive data (e.g. a booking-availability query that also echoes account details), that's the same tradeoff as any declared `fetch` endpoint — the user is trusting the MCP with what it's declared, not with arbitrary access. The mechanism cannot be used to invoke an operation the user hasn't implicitly exposed by using the page normally.
+
+**Known limitation (tracked, not yet fixed):** the MAIN-world bridge script (`capture-logger.ts`) wraps `client.link.request` on **every** page that exposes an Apollo client, regardless of whether any MCP has declared the `graphql` capability — the captured `DocumentNode`s stay in an in-process `Map` and are never exfiltrated, so this is a wider MAIN-world footprint (not a data leak) than the read-only CSRF sync this file previously did. It also polls for `window.__APOLLO_CLIENT__` every 500ms for the lifetime of any tab that never gets one, with no give-up cap. Neither is a security hole, but both are worth tightening — see the PR #178 auto-review follow-up issue.
+
 ### T-host-MITM — Host MCP reading peer traffic
 
 In the 0.2.0 concentrator model, one MCP wins the WS port and acts as the host. Other MCPs on the same machine dial it as peers and tunnel their traffic through. A backdoored host MCP could read or tamper with peer traffic, exfiltrating their fetches or rewriting responses.
@@ -127,6 +146,13 @@ where `ciphertext` is `AES-256-GCM(sessionKey, iv, JSON(innerFrame))` with a 16-
 Replay protection: receivers track the highest seen `seq` per direction per session and reject anything `<= lastInbound`. WS guarantees ordering, so we don't have to tolerate gaps.
 
 **Residual risk:** The host can drop or delay peer traffic (denial of service against peers). It cannot read or modify it. If the host crashes, peers race the port and one wins; the takeover is invisible to peers because trust + session derivation are stateless given the identity keys.
+
+**A malformed-but-legitimate response degrades gracefully, not fatally.** A peer's incoming `frame` can fail to open in two very different ways, and the code distinguishes them (`openEncryptedFrameDetailed` in `packages/protocol/src/seal.ts`):
+
+- **Decrypt failure** (AES-GCM authentication fails) — the wrong session key or genuinely tampered ciphertext. Nothing about the plaintext can be trusted; `peer.ts` drops it silently, same as before (typically a straggler frame from a session that already rotated).
+- **Validation failure** *after a successful decrypt* — the ciphertext authenticated fine under the *current* session key (so this really is the live host forwarding the live extension's bytes), but the plaintext is malformed JSON or fails the wire schema. This is a genuine protocol bug, not a stale-key symptom, so `peer.ts` logs it loudly (`console.error`) and, when the malformed response's `id` is recoverable, routes a synthetic `ok:false` through the normal id-keyed dispatch — failing just that one pending call immediately instead of leaving it to hang until its own timeout with zero diagnostic signal, and without tearing down the connection over one bad response.
+
+`host.ts` — the concentrator's single physical connection to the extension, multiplexing every MCP's traffic — still closes the whole WS on ANY validation failure (its message handler wraps everything in one try/catch; see `host.ts:344-351`). That remains a broader-blast-radius reaction than the peer path now has, but the concrete triggers found for it in this PR (the graphql errorPolicy bug, the download `bytes:-1` sentinel, the graphql_query op-echo gap) were each fixed at the SOURCE — the extension no longer produces a response that fails validation for those cases — rather than by changing what `host.ts` does when one does. A future op-specific bug could still trip the same host.ts-side "close everything" behavior; this is a known, accepted broader risk, not one this PR closes generically.
 
 ### T4 — User installs unknown MCP via Claude Code or similar
 

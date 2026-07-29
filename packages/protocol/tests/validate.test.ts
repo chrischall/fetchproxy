@@ -2049,3 +2049,328 @@ describe('validateFrame (1.4.0 read_dom domSelectors)', () => {
     ).toThrow(/values/);
   });
 });
+
+// 1.x: graphql capability — declared operation allowlist + wire format.
+describe('validateFrame (graphql graphqlOps)', () => {
+  const validHello = {
+    type: 'hello',
+    protocolVersion: 2,
+    role: 'server',
+    mcpId: 'opentable-mcp:0.0.1:a3f7c91d2e8b4f56',
+    serverName: 'opentable-mcp',
+    version: '0.0.1',
+    domains: ['opentable.com'],
+    identityX25519Pub: 'AAAA',
+    identityEd25519Pub: 'AAAA',
+    sessionNonce: 'AAAA',
+    sessionSig: 'AAAA',
+  };
+
+  it('accepts graphql capability in the capabilities list', () => {
+    expect(() =>
+      validateFrame({ ...validHello, capabilities: ['fetch', 'graphql'] }),
+    ).not.toThrow();
+  });
+
+  it('accepts graphql capability + graphqlOps', () => {
+    expect(() =>
+      validateFrame({
+        ...validHello,
+        capabilities: ['fetch', 'graphql'],
+        graphqlOps: [
+          { name: 'availability', operationName: 'RestaurantsAvailability' },
+          { name: 'search', operationName: 'RestaurantSearch' },
+        ],
+      }),
+    ).not.toThrow();
+  });
+
+  it('accepts empty graphqlOps', () => {
+    expect(() => validateFrame({ ...validHello, graphqlOps: [] })).not.toThrow();
+  });
+
+  it('rejects graphqlOps that is not an array', () => {
+    expect(() =>
+      validateFrame({ ...validHello, graphqlOps: { name: 'x', operationName: 'Y' } }),
+    ).toThrow(/graphqlOps.*expected array/);
+  });
+
+  it('rejects graphqlOps entry missing name', () => {
+    expect(() =>
+      validateFrame({
+        ...validHello,
+        graphqlOps: [{ operationName: 'RestaurantsAvailability' }],
+      }),
+    ).toThrow(/graphqlOps.*name/);
+  });
+
+  it('rejects graphqlOps entry missing operationName', () => {
+    expect(() =>
+      validateFrame({ ...validHello, graphqlOps: [{ name: 'availability' }] }),
+    ).toThrow(/graphqlOps.*operationName/);
+  });
+
+  it('rejects graphqlOps entry with an empty name', () => {
+    expect(() =>
+      validateFrame({
+        ...validHello,
+        graphqlOps: [{ name: '', operationName: 'RestaurantsAvailability' }],
+      }),
+    ).toThrow(/graphqlOps.*name/);
+  });
+
+  it('rejects graphqlOps entry with a bad name (whitespace)', () => {
+    expect(() =>
+      validateFrame({
+        ...validHello,
+        graphqlOps: [{ name: 'has space', operationName: 'RestaurantsAvailability' }],
+      }),
+    ).toThrow(/graphqlOps.*name/);
+  });
+
+  it('rejects graphqlOps entry with an empty operationName', () => {
+    expect(() =>
+      validateFrame({
+        ...validHello,
+        graphqlOps: [{ name: 'availability', operationName: '' }],
+      }),
+    ).toThrow(/graphqlOps.*operationName/);
+  });
+
+  it('rejects graphqlOps entry with a bad operationName (leading digit)', () => {
+    expect(() =>
+      validateFrame({
+        ...validHello,
+        graphqlOps: [{ name: 'availability', operationName: '1Bad' }],
+      }),
+    ).toThrow(/graphqlOps.*operationName/);
+  });
+
+  it('rejects graphqlOps entry with a non-string operationName', () => {
+    expect(() =>
+      validateFrame({
+        ...validHello,
+        graphqlOps: [{ name: 'availability', operationName: 42 }],
+      }),
+    ).toThrow(/graphqlOps.*operationName/);
+  });
+
+  it('rejects an unexpected field on a graphqlOps entry', () => {
+    expect(() =>
+      validateFrame({
+        ...validHello,
+        graphqlOps: [
+          { name: 'availability', operationName: 'RestaurantsAvailability', sha256Hash: 'x' },
+        ],
+      }),
+    ).toThrow(/graphqlOps.*unexpected/);
+  });
+
+  it('rejects duplicate graphqlOps names', () => {
+    expect(() =>
+      validateFrame({
+        ...validHello,
+        graphqlOps: [
+          { name: 'availability', operationName: 'RestaurantsAvailability' },
+          { name: 'availability', operationName: 'RestaurantSearch' },
+        ],
+      }),
+    ).toThrow(/graphqlOps.*duplicate/);
+  });
+});
+
+describe('validateInnerFrame (graphql graphql_query)', () => {
+  it('accepts a well-formed graphql_query request', () => {
+    expect(() =>
+      validateInnerFrame({
+        type: 'request',
+        id: 1,
+        op: 'graphql_query',
+        init: {
+          name: 'availability',
+          variables: { restaurantIds: [1175428], date: '2026-07-31', partySize: 2 },
+        },
+      }),
+    ).not.toThrow();
+  });
+
+  it('accepts a graphql_query request with an optional tabUrl', () => {
+    expect(() =>
+      validateInnerFrame({
+        type: 'request',
+        id: 1,
+        op: 'graphql_query',
+        init: {
+          name: 'availability',
+          variables: {},
+          tabUrl: 'https://www.opentable.com/r/la-belle-helene',
+        },
+      }),
+    ).not.toThrow();
+  });
+
+  it('rejects a graphql_query request missing name', () => {
+    expect(() =>
+      validateInnerFrame({
+        type: 'request',
+        id: 1,
+        op: 'graphql_query',
+        init: { variables: {} },
+      }),
+    ).toThrow(/inner\.init\.name/);
+  });
+
+  it('rejects a graphql_query request with an empty name', () => {
+    expect(() =>
+      validateInnerFrame({
+        type: 'request',
+        id: 1,
+        op: 'graphql_query',
+        init: { name: '', variables: {} },
+      }),
+    ).toThrow(/inner\.init\.name/);
+  });
+
+  it('rejects a graphql_query request with a non-string name', () => {
+    expect(() =>
+      validateInnerFrame({
+        type: 'request',
+        id: 1,
+        op: 'graphql_query',
+        init: { name: 42, variables: {} },
+      }),
+    ).toThrow(/inner\.init\.name/);
+  });
+
+  it('rejects a graphql_query request missing variables', () => {
+    expect(() =>
+      validateInnerFrame({
+        type: 'request',
+        id: 1,
+        op: 'graphql_query',
+        init: { name: 'availability' },
+      }),
+    ).toThrow(/inner\.init\.variables/);
+  });
+
+  it('rejects a graphql_query request whose variables is an array', () => {
+    expect(() =>
+      validateInnerFrame({
+        type: 'request',
+        id: 1,
+        op: 'graphql_query',
+        init: { name: 'availability', variables: [] },
+      }),
+    ).toThrow(/inner\.init\.variables/);
+  });
+
+  it('rejects a graphql_query request whose variables is null', () => {
+    expect(() =>
+      validateInnerFrame({
+        type: 'request',
+        id: 1,
+        op: 'graphql_query',
+        init: { name: 'availability', variables: null },
+      }),
+    ).toThrow(/inner\.init\.variables/);
+  });
+
+  it('rejects a graphql_query request whose variables carries a forbidden key', () => {
+    expect(() =>
+      validateInnerFrame({
+        type: 'request',
+        id: 1,
+        op: 'graphql_query',
+        init: { name: 'availability', variables: { __proto__: { polluted: true } } },
+      }),
+    ).toThrow(/variables/);
+  });
+
+  it('rejects a graphql_query request with a non-string tabUrl', () => {
+    expect(() =>
+      validateInnerFrame({
+        type: 'request',
+        id: 1,
+        op: 'graphql_query',
+        init: { name: 'availability', variables: {}, tabUrl: 42 },
+      }),
+    ).toThrow(/inner\.init\.tabUrl/);
+  });
+
+  it('rejects a graphql_query request with an unexpected init field', () => {
+    expect(() =>
+      validateInnerFrame({
+        type: 'request',
+        id: 1,
+        op: 'graphql_query',
+        init: { name: 'availability', variables: {}, operationName: 'Sneaky' },
+      }),
+    ).toThrow(/unexpected field.*graphql_query/);
+  });
+
+  it('accepts a well-formed graphql_query success response', () => {
+    expect(() =>
+      validateInnerFrame({
+        type: 'response',
+        id: 1,
+        ok: true,
+        op: 'graphql_query',
+        data: { availability: [{ time: '17:00' }] },
+      }),
+    ).not.toThrow();
+  });
+
+  it('rejects a graphql_query success response missing data', () => {
+    expect(() =>
+      validateInnerFrame({ type: 'response', id: 1, ok: true, op: 'graphql_query' }),
+    ).toThrow(/inner\.data/);
+  });
+
+  it('rejects a graphql_query success response whose data is an array', () => {
+    expect(() =>
+      validateInnerFrame({
+        type: 'response',
+        id: 1,
+        ok: true,
+        op: 'graphql_query',
+        data: [1, 2, 3],
+      }),
+    ).toThrow(/inner\.data/);
+  });
+
+  it('accepts a graphql_query error response — the REAL wire op string, not the "graphql" capability name', () => {
+    // Regression: the extension sends op:'graphql_query' (the wire op) on
+    // EVERY graphql failure path, including the documented, expected
+    // first-run "operation not yet observed on this tab — open a
+    // restaurant page and retry" error. `graphql_query` is the one op
+    // whose wire string differs from its governing capability name
+    // ('graphql') — see InnerResponseError.op's doc comment in frames.ts.
+    // A prior version of this test asserted op:'graphql' instead, which
+    // passed only because 'graphql' happens to be a KNOWN_CAPABILITIES
+    // entry — it never exercised the real shape, so it didn't catch the
+    // validator gating raw.op on KNOWN_CAPABILITIES alone (missing the
+    // graphql_query special case) and rejecting every real graphql
+    // failure response.
+    expect(() =>
+      validateInnerFrame({
+        type: 'response',
+        id: 1,
+        ok: false,
+        op: 'graphql_query',
+        error: 'operation not yet observed on this tab — open a restaurant page and retry',
+      }),
+    ).not.toThrow();
+  });
+
+  it('still rejects a genuinely unknown response op echo', () => {
+    expect(() =>
+      validateInnerFrame({
+        type: 'response',
+        id: 1,
+        ok: false,
+        op: 'not_a_real_op',
+        error: 'x',
+      }),
+    ).toThrow(/inner\.op/);
+  });
+});

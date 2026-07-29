@@ -17,7 +17,9 @@ import { contentScriptEntryOptions, moduleEntryOptions } from '../build.js';
  * every entry as `format: 'esm'`, so `content.js` ended in
  * `export { readDomValues };` and stopped injecting. `capture-logger.js`
  * (no exports) kept injecting, which is why storage/CSRF capture still
- * worked while every `fetch()` died.
+ * worked while every `fetch()` died. The graphql-capability work then added
+ * top-level exports to `capture-logger.ts` too (`installApolloBridge`,
+ * `recordDocsFromLink`), so both worlds are inert without the iife split.
  *
  * The invariant: the content-script entries must build to import/export-free
  * output (`format: 'iife'`), no matter what their source modules export.

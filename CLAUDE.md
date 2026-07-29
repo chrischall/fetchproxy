@@ -6,17 +6,20 @@ Guidance for Claude working in this repo.
 
 Browser-relay bridge that lets a Node-side MCP make authenticated
 HTTP fetches through the user's signed-in browser tab, plus read
-declared cookie / localStorage / sessionStorage / IndexedDB scopes and
-capture per-request headers. Concentrator architecture: the first MCP
-to boot binds `127.0.0.1:37149`, subsequent MCPs dial in as peers, the
-host multiplexes all of them through one WebSocket to one browser
+declared cookie / localStorage / sessionStorage / IndexedDB scopes,
+capture per-request headers, and invoke a declared, page-owned
+GraphQL operation through the tab's own Apollo client (`graphql`
+capability). Concentrator architecture: the first MCP to boot binds
+`127.0.0.1:37149`, subsequent MCPs dial in as peers, the host
+multiplexes all of them through one WebSocket to one browser
 extension. Each MCP ↔ extension session has its own AES-256-GCM key
 derived via X25519 ECDH at handshake. Trust is identity-keyed
 (Ed25519) with a 6-digit pair code the user confirms on first contact.
 
 Current line: **1.x** (mutual auth + JSON-pointer storage extraction
 + MV3 SW keepalive + storageDomain selector + host-or-subdomain tab
-matching). All packages stay in lockstep on one version (see root
+matching + `graphql` capability for MAIN-world Apollo-client
+invocation). All packages stay in lockstep on one version (see root
 `package.json` → `version`).
 
 ## Workspaces
@@ -24,7 +27,7 @@ matching). All packages stay in lockstep on one version (see root
 | Package | What it does |
 |---|---|
 | `@fetchproxy/protocol` | Wire format: frame validators, crypto wrappers (X25519, Ed25519, HKDF, AES-GCM, SHA-256), mcp-id parsing, pair-code derivation, JSON-pointer evaluator. Pure functions, no I/O. Smallest dep surface — every other workspace depends on it. |
-| `@fetchproxy/server` | MCP-side WebSocket bridge. `FetchproxyServer` class with `listen()`, `request()`, `fetch()`, `readCookies()`, `readLocalStorage()`, `readSessionStorage()`, `captureRequestHeader()`, `readIndexedDb()`. Handles concentrator role-election (host vs peer), identity loading, session-key derivation. Persists per-MCP identity to `~/.fetchproxy/identity/<server-name>.json`. |
+| `@fetchproxy/server` | MCP-side WebSocket bridge. `FetchproxyServer` class with `listen()`, `request()`, `fetch()`, `readCookies()`, `readLocalStorage()`, `readSessionStorage()`, `captureRequestHeader()`, `readIndexedDb()`, `graphqlQuery()`. Handles concentrator role-election (host vs peer), identity loading, session-key derivation. Persists per-MCP identity to `~/.fetchproxy/identity/<server-name>.json`. |
 | `@fetchproxy/bootstrap` | One-shot helper: declare scope → spin up `FetchproxyServer` → read everything in one call → close. Used by Pattern A MCPs (HoneyBook, OFW, Resy auth-refresh path) that just need a session blob then operate from Node. `storageDomain` selector for multi-domain MCPs. |
 | `@fetchproxy/extension-core` | Pure-ish business logic of the browser extension: `handleServerHello` (security-critical pair/auto-trust decision), trust-store, session-keys, popup rendering, badge logic. Designed to be testable under vitest with mocked `chrome.*` globals. `private` (not published). |
 | `@fetchproxy/extension-chrome` | Thin Chrome-MV3 wrapper around extension-core. Just bundling, manifest, icons. Produces `packages/extension-chrome/dist/` for unpacked sideload + GitHub-release `.zip`. `private` (not published). |
@@ -77,7 +80,13 @@ the bind fails with `EADDRINUSE`, the MCP dials the existing host as a
    pose as the extension to a real MCP (or vice versa). 0.4.0+.
 4. **Capabilities** declared in hello frame, approved at pair time,
    stored in the trust record. Tightening (or widening) the
-   capability set forces a re-pair with diff UI.
+   capability set forces a re-pair with diff UI. `graphql` is one
+   such capability — it invokes a page-declared GraphQL operation
+   through the tab's own Apollo client (MAIN world), gated by an
+   `graphqlOps: [{ name, operationName }]` allowlist approved at pair
+   time. It does NOT add arbitrary page-JS execution — only
+   operations the page already exposes are reachable. See
+   `docs/SECURITY.md` §T-graphql-misuse.
 5. **Domain allowlist** — per-MCP `domains: string[]`. Every fetch
    URL, cookie origin, captureHeader URL, storage tab match has
    to be on a declared domain (or subdomain of one).

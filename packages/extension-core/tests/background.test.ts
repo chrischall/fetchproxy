@@ -34,6 +34,17 @@ describe('downloadValueFromItem', () => {
     expect('mime' in v).toBe(false);
     expect('finalUrl' in v).toBe(false);
   });
+
+  it("clamps Chrome's -1 (\"size unknown\") sentinel to 0 instead of forwarding a negative byte count", () => {
+    // Regression: the download response validator requires bytes >= 0 and
+    // throws otherwise. That throw is caught by host.ts's single
+    // message-handler try/catch and closes the WHOLE extension WebSocket —
+    // every MCP on the concentrator, not just this download — the same
+    // failure class as the graphql errorPolicy:'all' bug fixed in this PR.
+    const v = downloadValueFromItem({ filename: '/tmp/streamed.bin', fileSize: -1 });
+    expect(v.bytes).toBe(0);
+    expect(v.bytes).toBeGreaterThanOrEqual(0);
+  });
 });
 import { scopeHash } from '../src/lib/scope.js';
 import {
@@ -884,6 +895,7 @@ describe('dismiss-suppression (scope-update)', () => {
       captureHeaders: [] as { host: string; path?: string; headerName: string }[],
       indexedDbScopes: [] as import('../src/lib/scope.js').Scope['indexedDbScopes'],
       domSelectors: [] as import('../src/lib/scope.js').Scope['domSelectors'],
+      graphqlOps: [] as import('../src/lib/scope.js').Scope['graphqlOps'],
       localStoragePointers: [] as import('../src/lib/scope.js').Scope['localStoragePointers'],
       sessionStoragePointers: [] as import('../src/lib/scope.js').Scope['sessionStoragePointers'],
     };
@@ -914,6 +926,7 @@ describe('dismiss-suppression (scope-update)', () => {
       captureHeaders: [] as { host: string; path?: string; headerName: string }[],
       indexedDbScopes: [] as import('../src/lib/scope.js').Scope['indexedDbScopes'],
       domSelectors: [] as import('../src/lib/scope.js').Scope['domSelectors'],
+      graphqlOps: [] as import('../src/lib/scope.js').Scope['graphqlOps'],
       localStoragePointers: [] as import('../src/lib/scope.js').Scope['localStoragePointers'],
       sessionStoragePointers: [] as import('../src/lib/scope.js').Scope['sessionStoragePointers'],
     };
@@ -975,6 +988,7 @@ describe('multi-instance pending-pair dedup (0.6.0+)', () => {
       captureHeaders: result1.captureHeaders,
       indexedDbScopes: result1.indexedDbScopes,
       domSelectors: result1.domSelectors,
+      graphqlOps: result1.graphqlOps,
       localStoragePointers: result1.localStoragePointers,
       sessionStoragePointers: result1.sessionStoragePointers,
     };
@@ -1011,6 +1025,7 @@ describe('multi-instance pending-pair dedup (0.6.0+)', () => {
       captureHeaders: result1.captureHeaders,
       indexedDbScopes: result1.indexedDbScopes,
       domSelectors: result1.domSelectors,
+      graphqlOps: result1.graphqlOps,
       localStoragePointers: result1.localStoragePointers,
       sessionStoragePointers: result1.sessionStoragePointers,
       identityX25519Pub: result1.identityX25519Pub,
@@ -1067,6 +1082,7 @@ describe('multi-instance pending-pair dedup (0.6.0+)', () => {
       captureHeaders: r1.captureHeaders,
       indexedDbScopes: r1.indexedDbScopes,
       domSelectors: r1.domSelectors,
+      graphqlOps: r1.graphqlOps,
       localStoragePointers: r1.localStoragePointers,
       sessionStoragePointers: r1.sessionStoragePointers,
     };
@@ -1180,6 +1196,7 @@ describe('needs-pair supersedes queued scope-update at same key (finding 2)', ()
       captureHeaders: [] as { host: string; path?: string; headerName: string }[],
       indexedDbScopes: [] as import('../src/lib/scope.js').Scope['indexedDbScopes'],
       domSelectors: [] as import('../src/lib/scope.js').Scope['domSelectors'],
+      graphqlOps: [] as import('../src/lib/scope.js').Scope['graphqlOps'],
       localStoragePointers: [] as import('../src/lib/scope.js').Scope['localStoragePointers'],
       sessionStoragePointers: [] as import('../src/lib/scope.js').Scope['sessionStoragePointers'],
     };
@@ -1349,5 +1366,106 @@ describe('readDomTabMatcher (read_dom tab match, host-or-subdomain)', () => {
     // readDomTabMatcher must diverge from that here.
     const matches = readDomTabMatcher('https://example.com');
     expect(matches('https://app.example.com/x')).toBe(true);
+  });
+});
+
+import { resolveGraphqlQueryRequest, graphqlTabMatcher } from '../src/background.js';
+import type { InnerRequestGraphqlQuery, GraphqlOpDeclaration } from '@fetchproxy/protocol';
+
+describe('resolveGraphqlQueryRequest (graphql gate)', () => {
+  const declared: GraphqlOpDeclaration[] = [
+    { name: 'availability', operationName: 'RestaurantsAvailability' },
+    { name: 'search', operationName: 'RestaurantSearch' },
+  ];
+  const req = (
+    name: string,
+    variables: Record<string, unknown> = {},
+    tabUrl?: string,
+  ): InnerRequestGraphqlQuery => ({
+    type: 'request',
+    id: 9,
+    op: 'graphql_query',
+    init: { name, variables, ...(tabUrl !== undefined ? { tabUrl } : {}) },
+  });
+
+  it('happy path: capability + declared name + allowed tabUrl → resolves operationName', () => {
+    const r = resolveGraphqlQueryRequest(
+      req('availability', { rid: 1175428 }, 'https://www.opentable.com/'),
+      ['fetch', 'graphql'],
+      declared,
+      ['opentable.com'],
+    );
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.operationName).toBe('RestaurantsAvailability');
+  });
+
+  it('happy path: tabUrl omitted → domain restriction deferred to the tab matcher', () => {
+    const r = resolveGraphqlQueryRequest(
+      req('search'),
+      ['fetch', 'graphql'],
+      declared,
+      ['opentable.com'],
+    );
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.operationName).toBe('RestaurantSearch');
+  });
+
+  it('rejects a name not in the declared graphqlOps (op-echoing error)', () => {
+    const r = resolveGraphqlQueryRequest(
+      req('bookings'),
+      ['fetch', 'graphql'],
+      declared,
+      ['opentable.com'],
+    );
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error).toContain('not in declared graphqlOps');
+    expect(r.error).toContain('bookings');
+  });
+
+  it('rejects when the graphql capability was not granted', () => {
+    const r = resolveGraphqlQueryRequest(
+      req('availability', {}, 'https://www.opentable.com/'),
+      ['fetch'],
+      declared,
+      ['opentable.com'],
+    );
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error).toContain('capability "graphql" not granted');
+  });
+
+  it('rejects a tabUrl not covered by the approved domains', () => {
+    const r = resolveGraphqlQueryRequest(
+      req('availability', {}, 'https://evil.example.org/'),
+      ['fetch', 'graphql'],
+      declared,
+      ['opentable.com'],
+    );
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error).toContain('not in domains');
+    expect(r.error).toContain('evil.example.org');
+  });
+});
+
+describe('graphqlTabMatcher (graphql tab match, host-or-subdomain)', () => {
+  it('matches a subdomain tab against the supplied tabUrl host', () => {
+    const matches = graphqlTabMatcher('https://www.opentable.com/', ['opentable.com']);
+    expect(matches('https://www.opentable.com/r/la-belle-helene')).toBe(true);
+  });
+
+  it('does not match a tab off the supplied tabUrl host', () => {
+    const matches = graphqlTabMatcher('https://www.opentable.com/', ['opentable.com']);
+    expect(matches('https://evil.example.org/')).toBe(false);
+  });
+
+  it('falls back to any declared-domain tab when tabUrl is omitted', () => {
+    const matches = graphqlTabMatcher(undefined, ['opentable.com']);
+    expect(matches('https://www.opentable.com/')).toBe(true);
+    expect(matches('https://app.opentable.com/x')).toBe(true);
+    expect(matches('https://evilexample.com/')).toBe(false);
   });
 });

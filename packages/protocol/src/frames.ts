@@ -87,6 +87,22 @@ export type Platform = 'chrome' | 'safari' | 'firefox';
  *                             a POST body must carry. Elevated — surfaces the
  *                             exact selectors in the pair popup. Scoped to the
  *                             MCP's declared `domains`.
+ * `'graphql'`               — run a declared GraphQL operation through the
+ *                             matched tab's OWN Apollo client
+ *                             (`window.__APOLLO_CLIENT__`) in the page MAIN
+ *                             world, reusing the DocumentNode the page already
+ *                             owns for the declared `operationName`. This is
+ *                             the organic request path, so it carries whatever
+ *                             per-request bot-telemetry the page's Apollo link
+ *                             injects — clearing edge bot-protection (e.g.
+ *                             Akamai) that the isolated-world `fetch` path
+ *                             cannot. The MCP declares an allowlist of
+ *                             operations in `graphqlOps` (approved at pair
+ *                             time, diffed on change); per-call requests
+ *                             reference one by `name` and supply their own
+ *                             `variables`. Elevated — surfaces the declared
+ *                             operations in the pair popup. Scoped to the
+ *                             MCP's declared `domains`.
  *
  * Future additions are wire-additive: unknown capabilities are rejected
  * by the validator, so adding a new verb requires extending this union.
@@ -100,7 +116,8 @@ export type Capability =
   | 'capture_redirect'
   | 'read_indexed_db'
   | 'read_dom'
-  | 'download';
+  | 'download'
+  | 'graphql';
 
 /**
  * Set of capability strings that are valid on the wire. Runtime sibling
@@ -118,6 +135,7 @@ export const KNOWN_CAPABILITIES: ReadonlySet<Capability> = new Set<Capability>([
   'read_indexed_db',
   'read_dom',
   'download',
+  'graphql',
 ]);
 
 /**
@@ -211,6 +229,34 @@ export interface DomSelectorDecl {
   attribute?: string;
 }
 
+/**
+ * Declaration entry for the `graphql` capability — a single named GraphQL
+ * operation the MCP is allowed to invoke through the page's own Apollo
+ * client. Pinned in the server hello, surfaced verbatim in the pair popup,
+ * and re-checked on every `graphql_query` call (per-call `name` must match
+ * a declared entry).
+ *
+ * The extension carries NO query text and NO persisted-query hash: it
+ * resolves `name` → `operationName` → the live `DocumentNode` the page's
+ * Apollo client already observed for that operation, then invokes
+ * `client.query(...)` in the MAIN world. This auto-adapts when the site
+ * revises the query.
+ */
+export interface GraphqlOpDeclaration {
+  /**
+   * Logical handle the MCP references in a per-call `graphql_query` request
+   * (via `GraphqlQueryInit.name`). `[A-Za-z0-9_.\-]`, 1-256 chars. Unique
+   * within `graphqlOps`.
+   */
+  name: string;
+  /**
+   * GraphQL operation name whose DocumentNode the page owns — e.g.
+   * `'RestaurantsAvailability'`. Standard GraphQL name shape
+   * (`[_A-Za-z][_0-9A-Za-z]*`).
+   */
+  operationName: string;
+}
+
 export interface HelloFrameFromServer {
   type: 'hello';
   protocolVersion: 2;
@@ -270,6 +316,15 @@ export interface HelloFrameFromServer {
    * `capabilities`.
    */
   domSelectors?: DomSelectorDecl[];
+  /**
+   * 1.x+: declared GraphQL operations for the `graphql` capability. Each
+   * entry maps a logical `name` the MCP references per-call to the
+   * `operationName` whose DocumentNode the page's Apollo client owns.
+   * Per-call `graphql_query` requests reference these by `name`.
+   * Empty/absent ⇒ no GraphQL operations permitted even if `'graphql'` is
+   * in `capabilities`.
+   */
+  graphqlOps?: GraphqlOpDeclaration[];
   identityX25519Pub: string;      // base64 raw 32B
   identityEd25519Pub: string;     // base64 raw 32B
   sessionNonce: string;           // base64 raw ≥16B
@@ -509,6 +564,28 @@ export interface ReadDomInit {
   names: string[];
 }
 
+/** `init` payload for `graphql_query`. */
+export interface GraphqlQueryInit {
+  /**
+   * Logical handle of the operation to invoke. Must match a declared
+   * `graphqlOps[].name`. The extension resolves it to the corresponding
+   * `operationName` → cached DocumentNode.
+   */
+  name: string;
+  /**
+   * The MCP's full GraphQL variables object, passed straight through to
+   * `client.query({ query, variables })`. A plain (non-array, non-null)
+   * object; may be empty.
+   */
+  variables: Record<string, unknown>;
+  /**
+   * Optional coarse tab hint the extension uses to pick the matched tab,
+   * same semantics as `FetchInit.tabUrl`. Omitted ⇒ the extension picks a
+   * tab on the MCP's declared domain.
+   */
+  tabUrl?: string;
+}
+
 export interface InnerRequestFetch {
   type: 'request';
   id: number;
@@ -572,6 +649,13 @@ export interface InnerRequestDownload {
   init: DownloadInit;
 }
 
+export interface InnerRequestGraphqlQuery {
+  type: 'request';
+  id: number;
+  op: 'graphql_query';
+  init: GraphqlQueryInit;
+}
+
 /**
  * Inner request frame. Discriminated by `op` so MCPs can extend the
  * verb set without breaking existing fetch traffic.
@@ -585,7 +669,8 @@ export type InnerRequest =
   | InnerRequestCaptureRedirect
   | InnerRequestReadIndexedDb
   | InnerRequestReadDom
-  | InnerRequestDownload;
+  | InnerRequestDownload
+  | InnerRequestGraphqlQuery;
 
 export interface InnerResponseFetchOk {
   type: 'response';
@@ -684,7 +769,12 @@ export interface InnerResponseReadDomOk {
 export interface DownloadResult {
   /** Absolute local path the browser saved the file to (`DownloadItem.filename`). */
   path: string;
-  /** Saved file size in bytes (`DownloadItem.fileSize`). */
+  /**
+   * Saved file size in bytes (`DownloadItem.fileSize`). Always a
+   * non-negative integer on the wire — Chrome's own `-1` ("size unknown")
+   * sentinel is clamped to `0` by the extension before sending, since this
+   * field is required and validated strictly.
+   */
   bytes: number;
   /** Server-reported MIME type, when known (`DownloadItem.mime`). */
   mime?: string;
@@ -701,6 +791,21 @@ export interface InnerResponseDownloadOk {
   value: DownloadResult;
 }
 
+export interface InnerResponseGraphqlQueryOk {
+  type: 'response';
+  id: number;
+  ok: true;
+  op: 'graphql_query';
+  /**
+   * The GraphQL `data` object returned by the page's Apollo client
+   * (e.g. `{ availability: [...] }`). A plain object; the MCP reads its
+   * declared fields from here. The `ok: false` path (including the typed
+   * "operation not yet observed on this tab" case) uses the shared
+   * `InnerResponseError`.
+   */
+  data: unknown;
+}
+
 /**
  * Successful inner response, discriminated by `op`. Existing 0.1.x
  * fetch responses (with no `op`) are accepted by the validator for
@@ -715,7 +820,8 @@ export type InnerResponseOk =
   | InnerResponseCaptureRedirectOk
   | InnerResponseReadIndexedDbOk
   | InnerResponseReadDomOk
-  | InnerResponseDownloadOk;
+  | InnerResponseDownloadOk
+  | InnerResponseGraphqlQueryOk;
 
 export interface InnerResponseError {
   type: 'response';
@@ -724,9 +830,11 @@ export interface InnerResponseError {
   /**
    * Optional op echo. Set by the extension when the failure is op-specific
    * (e.g. capability denied). Absent for transport-level failures (no tab,
-   * fetch threw) since those predate the discriminator.
+   * fetch threw) since those predate the discriminator. Every op string
+   * equals its capability name except `graphql_query` (governed by the
+   * `'graphql'` capability), which is included explicitly here.
    */
-  op?: Capability;
+  op?: Capability | 'graphql_query';
   error: string;
 }
 export type InnerFrame =

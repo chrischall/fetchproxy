@@ -537,6 +537,26 @@ describe('renderPopup', () => {
       expect(container.textContent).toContain('csrf → meta[name=csrf] [content]');
     });
 
+    it('renders declared GraphQL operations verbatim when graphql declared', () => {
+      renderPopup(container, {
+        mode: 'pending-pair',
+        pending: {
+          serverName: 'opentable-mcp',
+          version: '1.0.0',
+          domains: ['opentable.com'],
+          capabilities: ['fetch', 'graphql'],
+          graphqlOps: [
+            { name: 'restaurantsAvailability', operationName: 'RestaurantsAvailability' },
+          ],
+          pairCode: '111-222',
+        },
+        onApprove: () => undefined,
+        onCancel: () => undefined,
+      });
+      expect(container.textContent).toContain('Run declared GraphQL queries');
+      expect(container.textContent).toContain('restaurantsAvailability → RestaurantsAvailability');
+    });
+
     it('renders capture-header entries each on their own line', () => {
       renderPopup(container, {
         mode: 'pending-pair',
@@ -583,6 +603,7 @@ describe('renderPopup', () => {
       expect(container.textContent).not.toContain('Read localStorage');
       expect(container.textContent).not.toContain('Read sessionStorage');
       expect(container.textContent).not.toContain('Capture request header');
+      expect(container.textContent).not.toContain('Run declared GraphQL queries');
     });
 
     it('renders re-pair diff: heading "UPDATE", added/removed/kept lists, "Approve update" button', () => {
@@ -605,6 +626,7 @@ describe('renderPopup', () => {
           captureHeaders: [],
           indexedDbScopes: [],
           domSelectors: [],
+          graphqlOps: [],
           localStoragePointers: [],
           sessionStoragePointers: [],
         },
@@ -642,6 +664,7 @@ describe('renderPopup', () => {
           captureHeaders: [],
           indexedDbScopes: [],
           domSelectors: [],
+          graphqlOps: [],
           localStoragePointers: [],
           sessionStoragePointers: [],
         },
@@ -668,6 +691,7 @@ describe('renderPopup', () => {
             captureHeaders: [],
             indexedDbScopes: [],
             domSelectors: [],
+            graphqlOps: [],
             localStoragePointers: [],
             sessionStoragePointers: [],
           },
@@ -679,6 +703,7 @@ describe('renderPopup', () => {
             captureHeaders: [],
             indexedDbScopes: [],
             domSelectors: [],
+            graphqlOps: [],
             localStoragePointers: [],
             sessionStoragePointers: [],
           },
@@ -693,6 +718,48 @@ describe('renderPopup', () => {
         expect(container.textContent).toContain('Capability: fetch');
       });
 
+      it('shows an added graphqlOps entry in the diff, not an empty "(none)" section', () => {
+        // Regression: a scope-update whose ONLY change is a new declared
+        // GraphQL operation must not render an unreviewable empty diff —
+        // scopeHash/isScopeSubset already gate on graphqlOps (lib/scope.ts),
+        // so this MUST surface in "Now requesting (new)".
+        renderPopup(container, {
+          mode: 'scope-update',
+          serverName: 'opentable-mcp',
+          pending: {
+            capabilities: ['fetch', 'graphql'],
+            cookieKeys: [],
+            localStorageKeys: [],
+            sessionStorageKeys: [],
+            captureHeaders: [],
+            indexedDbScopes: [],
+            domSelectors: [],
+            graphqlOps: [
+              { name: 'restaurantsAvailability', operationName: 'RestaurantsAvailability' },
+            ],
+            localStoragePointers: [],
+            sessionStoragePointers: [],
+          },
+          previous: {
+            capabilities: ['fetch', 'graphql'],
+            cookieKeys: [],
+            localStorageKeys: [],
+            sessionStorageKeys: [],
+            captureHeaders: [],
+            indexedDbScopes: [],
+            domSelectors: [],
+            graphqlOps: [],
+            localStoragePointers: [],
+            sessionStoragePointers: [],
+          },
+          onGrant: () => undefined,
+          onKeepAsIs: () => undefined,
+        });
+        expect(container.textContent).toContain(
+          'GraphQL: restaurantsAvailability → RestaurantsAvailability',
+        );
+      });
+
       it('renders [Grant] and [Keep as is] buttons, NOT Approve/Cancel', () => {
         renderPopup(container, {
           mode: 'scope-update',
@@ -705,6 +772,7 @@ describe('renderPopup', () => {
             captureHeaders: [],
             indexedDbScopes: [],
             domSelectors: [],
+            graphqlOps: [],
             localStoragePointers: [],
             sessionStoragePointers: [],
           },
@@ -716,6 +784,7 @@ describe('renderPopup', () => {
             captureHeaders: [],
             indexedDbScopes: [],
             domSelectors: [],
+            graphqlOps: [],
             localStoragePointers: [],
             sessionStoragePointers: [],
           },
@@ -742,6 +811,7 @@ describe('renderPopup', () => {
             captureHeaders: [],
             indexedDbScopes: [],
             domSelectors: [],
+            graphqlOps: [],
             localStoragePointers: [],
             sessionStoragePointers: [],
           },
@@ -753,6 +823,7 @@ describe('renderPopup', () => {
             captureHeaders: [],
             indexedDbScopes: [],
             domSelectors: [],
+            graphqlOps: [],
             localStoragePointers: [],
             sessionStoragePointers: [],
           },
@@ -776,6 +847,7 @@ describe('renderPopup', () => {
             captureHeaders: [],
             indexedDbScopes: [],
             domSelectors: [],
+            graphqlOps: [],
             localStoragePointers: [],
             sessionStoragePointers: [],
           },
@@ -787,6 +859,7 @@ describe('renderPopup', () => {
             captureHeaders: [],
             indexedDbScopes: [],
             domSelectors: [],
+            graphqlOps: [],
             localStoragePointers: [],
             sessionStoragePointers: [],
           },
@@ -812,6 +885,7 @@ describe('renderPopup', () => {
             captureHeaders: [],
             indexedDbScopes: [],
             domSelectors: [],
+            graphqlOps: [],
             localStoragePointers: [],
             sessionStoragePointers: [],
           },
@@ -823,6 +897,7 @@ describe('renderPopup', () => {
             captureHeaders: [],
             indexedDbScopes: [],
             domSelectors: [],
+            graphqlOps: [],
             localStoragePointers: [],
             sessionStoragePointers: [],
           },
