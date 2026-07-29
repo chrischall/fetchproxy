@@ -147,6 +147,13 @@ Replay protection: receivers track the highest seen `seq` per direction per sess
 
 **Residual risk:** The host can drop or delay peer traffic (denial of service against peers). It cannot read or modify it. If the host crashes, peers race the port and one wins; the takeover is invisible to peers because trust + session derivation are stateless given the identity keys.
 
+**A malformed-but-legitimate response degrades gracefully, not fatally.** A peer's incoming `frame` can fail to open in two very different ways, and the code distinguishes them (`openEncryptedFrameDetailed` in `packages/protocol/src/seal.ts`):
+
+- **Decrypt failure** (AES-GCM authentication fails) — the wrong session key or genuinely tampered ciphertext. Nothing about the plaintext can be trusted; `peer.ts` drops it silently, same as before (typically a straggler frame from a session that already rotated).
+- **Validation failure** *after a successful decrypt* — the ciphertext authenticated fine under the *current* session key (so this really is the live host forwarding the live extension's bytes), but the plaintext is malformed JSON or fails the wire schema. This is a genuine protocol bug, not a stale-key symptom, so `peer.ts` logs it loudly (`console.error`) and, when the malformed response's `id` is recoverable, routes a synthetic `ok:false` through the normal id-keyed dispatch — failing just that one pending call immediately instead of leaving it to hang until its own timeout with zero diagnostic signal, and without tearing down the connection over one bad response.
+
+`host.ts` — the concentrator's single physical connection to the extension, multiplexing every MCP's traffic — still closes the whole WS on ANY validation failure (its message handler wraps everything in one try/catch; see `host.ts:344-351`). That remains a broader-blast-radius reaction than the peer path now has, but the concrete triggers found for it in this PR (the graphql errorPolicy bug, the download `bytes:-1` sentinel, the graphql_query op-echo gap) were each fixed at the SOURCE — the extension no longer produces a response that fails validation for those cases — rather than by changing what `host.ts` does when one does. A future op-specific bug could still trip the same host.ts-side "close everything" behavior; this is a known, accepted broader risk, not one this PR closes generically.
+
 ### T4 — User installs unknown MCP via Claude Code or similar
 
 A user runs `npx some-mcp-server` from a random GitHub. It registers with fetchproxy declaring `domains: ["yourbank.com"]` and possibly `capabilities: ["fetch", "read_cookies"]`.

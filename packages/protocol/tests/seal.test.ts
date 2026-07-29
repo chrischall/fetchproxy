@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { sealInnerFrame, openEncryptedFrame } from '../src/seal.js';
+import { sealInnerFrame, openEncryptedFrame, openEncryptedFrameDetailed } from '../src/seal.js';
 import type { InnerFrame, EncryptedFrame } from '../src/frames.js';
 
 describe('seal/open', () => {
@@ -70,5 +70,88 @@ describe('seal/open', () => {
     const sealed = await sealInnerFrame(key, mcpId, 1, inner);
     const ivBytes = Buffer.from(sealed.iv, 'base64');
     expect(ivBytes.length).toBe(12);
+  });
+});
+
+describe('openEncryptedFrameDetailed', () => {
+  const key = new Uint8Array(32).fill(7);
+  const mcpId = 'opentable-mcp:0.9.1:a3f7c91d2e8b4f56';
+
+  // Encrypts an ARBITRARY plaintext value (bypassing sealInnerFrame's
+  // InnerFrame typing) so tests can produce ciphertext that decrypts fine
+  // but whose plaintext is malformed JSON or fails schema validation —
+  // exactly the "decrypted OK, but the payload is bad" case this function
+  // exists to distinguish from a genuine decrypt failure.
+  async function sealArbitrary(plaintext: string): Promise<EncryptedFrame> {
+    const { aesGcmSeal } = await import('../src/crypto.js');
+    const enc = new TextEncoder();
+    const iv = new Uint8Array(12).fill(3);
+    const ct = await aesGcmSeal(key, iv, enc.encode(plaintext));
+    const { toB64 } = await import('../src/encoding.js');
+    return { type: 'frame', mcpId, seq: 1, iv: toB64(iv), ciphertext: toB64(ct) };
+  }
+
+  it('returns stage "ok" for a valid frame', async () => {
+    const inner: InnerFrame = { type: 'ping' };
+    const sealed = await sealInnerFrame(key, mcpId, 1, inner);
+    const result = await openEncryptedFrameDetailed(key, sealed);
+    expect(result).toEqual({ stage: 'ok', inner });
+  });
+
+  it('returns stage "decrypt-failed" for the wrong session key — no recoveredId possible', async () => {
+    const inner: InnerFrame = { type: 'ping' };
+    const sealed = await sealInnerFrame(key, mcpId, 1, inner);
+    const wrongKey = new Uint8Array(32).fill(8);
+    const result = await openEncryptedFrameDetailed(wrongKey, sealed);
+    expect(result.stage).toBe('decrypt-failed');
+  });
+
+  it('returns stage "decrypt-failed" for tampered ciphertext', async () => {
+    const inner: InnerFrame = { type: 'ping' };
+    const sealed = await sealInnerFrame(key, mcpId, 1, inner);
+    const bytes = Buffer.from(sealed.ciphertext, 'base64');
+    bytes[0] = (bytes[0] ?? 0) ^ 1;
+    const bad: EncryptedFrame = { ...sealed, ciphertext: bytes.toString('base64') };
+    const result = await openEncryptedFrameDetailed(key, bad);
+    expect(result.stage).toBe('decrypt-failed');
+  });
+
+  it('returns stage "validation-failed" with a recovered id for a schema violation (e.g. download bytes:-1)', async () => {
+    // Decrypts fine (real key, untampered) — this is the "current, live
+    // peer sent something that fails validation" case, distinct from a
+    // stale-key symptom. The response's `id` must still be recoverable so
+    // the caller can fail just that one pending call.
+    const malformed = JSON.stringify({
+      type: 'response',
+      id: 42,
+      ok: true,
+      op: 'download',
+      value: { path: '/tmp/streamed.bin', bytes: -1 },
+    });
+    const sealed = await sealArbitrary(malformed);
+    const result = await openEncryptedFrameDetailed(key, sealed);
+    expect(result.stage).toBe('validation-failed');
+    expect((result as { recoveredId?: number }).recoveredId).toBe(42);
+  });
+
+  it('returns stage "validation-failed" with recoveredId undefined when the JSON has no numeric id', async () => {
+    const sealed = await sealArbitrary(JSON.stringify({ type: 'response', ok: true }));
+    const result = await openEncryptedFrameDetailed(key, sealed);
+    expect(result.stage).toBe('validation-failed');
+    expect((result as { recoveredId?: number }).recoveredId).toBeUndefined();
+  });
+
+  it('returns stage "validation-failed" with recoveredId undefined when the plaintext is not even valid JSON', async () => {
+    const sealed = await sealArbitrary('not json at all {{{');
+    const result = await openEncryptedFrameDetailed(key, sealed);
+    expect(result.stage).toBe('validation-failed');
+    expect((result as { recoveredId?: number }).recoveredId).toBeUndefined();
+  });
+
+  it('returns stage "validation-failed" with recoveredId undefined when the JSON top level is an array', async () => {
+    const sealed = await sealArbitrary(JSON.stringify([{ id: 1 }]));
+    const result = await openEncryptedFrameDetailed(key, sealed);
+    expect(result.stage).toBe('validation-failed');
+    expect((result as { recoveredId?: number }).recoveredId).toBeUndefined();
   });
 });

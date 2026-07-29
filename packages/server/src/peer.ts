@@ -4,7 +4,7 @@ import {
   fromB64,
   hkdfSha256,
   HKDF_SESSION_INFO,
-  openEncryptedFrame,
+  openEncryptedFrameDetailed,
   sealInnerFrame,
   validateFrame,
   type Capability,
@@ -204,13 +204,43 @@ export async function startPeer(opts: PeerOpts): Promise<InternalPeerHandle> {
       if (frame.type === 'frame' && frame.mcpId === opts.mcpId) {
         if (!session) return; // ignore encrypted frames before handshake
         if (!session.acceptInboundSeq(frame.seq)) return;
-        try {
-          const inner = await openEncryptedFrame(session.sessionKey, frame);
-          innerListeners.forEach((cb) => cb(inner));
-        } catch {
-          // Decryption failure typically means a straggler frame from a
-          // previous session (extension reconnected mid-flight). Drop it
-          // silently — the next legitimate frame on the new key will land.
+        const result = await openEncryptedFrameDetailed(session.sessionKey, frame);
+        if (result.stage === 'ok') {
+          innerListeners.forEach((cb) => cb(result.inner));
+        } else if (result.stage === 'decrypt-failed') {
+          // AES-GCM authentication failed — typically a straggler frame
+          // from a previous session (extension reconnected mid-flight).
+          // Nothing about the plaintext can be trusted; drop it silently,
+          // as before — the next legitimate frame on the new key will land.
+        } else {
+          // 'validation-failed': decryption SUCCEEDED — this frame really
+          // is from the current, live host — but the plaintext is
+          // malformed JSON or fails schema validation. That's a genuine
+          // protocol bug, not a stale-key symptom, so (unlike a decrypt
+          // failure) it must not be swallowed silently: previously this
+          // branch was indistinguishable from decrypt-failed, so a real
+          // validation bug (e.g. the "download bytes:-1" class of issue)
+          // would leave whichever pending call is awaiting this frame's
+          // `id` to hang until its own timeout with zero diagnostic
+          // signal. Log loudly, and when the id was recoverable, route a
+          // synthetic ok:false response through the normal id-keyed
+          // dispatch so that ONE call fails fast — without tearing down
+          // the connection, which decryption just proved is legitimate.
+          // eslint-disable-next-line no-console
+          console.error(
+            '[fetchproxy] peer: received a frame that decrypted OK but failed validation:',
+            result.error,
+          );
+          if (result.recoveredId !== undefined) {
+            innerListeners.forEach((cb) =>
+              cb({
+                type: 'response',
+                id: result.recoveredId!,
+                ok: false,
+                error: `malformed response failed protocol validation: ${String(result.error)}`,
+              }),
+            );
+          }
         }
       }
     } catch (e) {
