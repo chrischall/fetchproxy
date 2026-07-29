@@ -84,7 +84,7 @@ interface ApolloClientLike {
     variables: unknown;
     fetchPolicy: string;
     errorPolicy: string;
-  }) => Promise<{ data?: unknown } | undefined>;
+  }) => Promise<{ data?: unknown; errors?: readonly unknown[] } | undefined>;
 }
 
 /**
@@ -174,7 +174,37 @@ async function handleGraphqlRequest(
       fetchPolicy: 'no-cache',
       errorPolicy: 'all',
     });
-    post(win, { __fetchproxy: RES_MARKER, reqId, ok: true, data: res?.data });
+    // `errorPolicy: 'all'` is precisely the policy under which Apollo does
+    // NOT throw on a GraphQL-level error — client.query resolves with
+    // `{ data: null | undefined, errors: [...] }` instead (e.g. an expired
+    // session, or an error on a non-nullable root field). That must surface
+    // as an `ok: false` protocol failure here, where `res.errors` is still
+    // in hand — letting `data: null` through as `ok: true` fails
+    // `assertObject` in validateInnerResponse and, via host.ts's catch-all,
+    // tears down the extension WebSocket for every MCP on the concentrator.
+    const errors = Array.isArray(res?.errors) ? res.errors : undefined;
+    if (errors && errors.length > 0) {
+      const messages = errors.map((e) =>
+        e && typeof e === 'object' && 'message' in e ? String((e as { message: unknown }).message) : String(e),
+      );
+      post(win, {
+        __fetchproxy: RES_MARKER,
+        reqId,
+        ok: false,
+        error: `graphql errors: ${messages.join('; ')}`,
+      });
+      return;
+    }
+    if (res?.data === null || res?.data === undefined) {
+      post(win, {
+        __fetchproxy: RES_MARKER,
+        reqId,
+        ok: false,
+        error: 'graphql query resolved with no data and no errors',
+      });
+      return;
+    }
+    post(win, { __fetchproxy: RES_MARKER, reqId, ok: true, data: res.data });
   } catch (e) {
     post(win, {
       __fetchproxy: RES_MARKER,

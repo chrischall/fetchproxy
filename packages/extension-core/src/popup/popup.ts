@@ -52,6 +52,7 @@ export interface PreviousScope {
   captureHeaders: { host: string; path?: string; headerName: string }[];
   indexedDbScopes: { origin: string; database: string; store: string; keys: string[] }[];
   domSelectors: { name: string; selector: string; attribute?: string }[];
+  graphqlOps: { name: string; operationName: string }[];
   localStoragePointers: { key: string; jsonPointer: string }[];
   sessionStoragePointers: { key: string; jsonPointer: string }[];
 }
@@ -97,6 +98,12 @@ export interface PendingPair {
    * which DOM values this MCP would read.
    */
   domSelectors?: { name: string; selector: string; attribute?: string }[];
+  /**
+   * 1.x+: declared GraphQL operations (name + operationName). Each is
+   * rendered on its own line so the user sees exactly which operations
+   * this MCP would invoke through the tab's own Apollo client.
+   */
+  graphqlOps?: { name: string; operationName: string }[];
   pairCode: string;
 }
 
@@ -131,6 +138,7 @@ export interface ScopeSnapshot {
   captureHeaders: { host: string; path?: string; headerName: string }[];
   indexedDbScopes: { origin: string; database: string; store: string; keys: string[] }[];
   domSelectors: { name: string; selector: string; attribute?: string }[];
+  graphqlOps: { name: string; operationName: string }[];
   localStoragePointers: { key: string; jsonPointer: string }[];
   sessionStoragePointers: { key: string; jsonPointer: string }[];
 }
@@ -248,6 +256,15 @@ function pointerKey(p: { key: string; jsonPointer: string }): string {
   return `${p.key}${p.jsonPointer}`;
 }
 
+function graphqlOpKey(g: { name: string; operationName: string }): string {
+  return `${g.name}\x00${g.operationName}`;
+}
+
+/** Human-readable label for a declared GraphQL op: `name → operationName`. */
+function graphqlOpLabel(g: { name: string; operationName: string }): string {
+  return `${g.name} → ${g.operationName}`;
+}
+
 function diffLists<T>(
   prev: readonly T[],
   curr: readonly T[],
@@ -308,6 +325,11 @@ function appendDiffSummary(
     pending.domSelectors ?? [],
     domSelectorKey,
   );
+  const graphDiff = diffLists(
+    previous.graphqlOps,
+    pending.graphqlOps ?? [],
+    graphqlOpKey,
+  );
   const lpDiff = diffLists(
     previous.localStoragePointers,
     [],
@@ -337,7 +359,8 @@ function appendDiffSummary(
     sessDiff.kept.length +
     chDiff.kept.length +
     idbDiff.kept.length +
-    domDiff.kept.length;
+    domDiff.kept.length +
+    graphDiff.kept.length;
   if (keptAny === 0) {
     appendBullet('(none)');
   } else {
@@ -348,6 +371,7 @@ function appendDiffSummary(
     for (const h of chDiff.kept) appendBullet(`Capture: ${h.headerName} from ${captureHeaderTarget(h)}`);
     for (const s of idbDiff.kept) appendBullet(`IndexedDB: ${s.database}/${s.store}`);
     for (const s of domDiff.kept) appendBullet(`DOM: ${domSelectorLabel(s)}`);
+    for (const g of graphDiff.kept) appendBullet(`GraphQL: ${graphqlOpLabel(g)}`);
   }
 
   // Now requesting (new).
@@ -359,7 +383,8 @@ function appendDiffSummary(
     sessDiff.added.length +
     chDiff.added.length +
     idbDiff.added.length +
-    domDiff.added.length;
+    domDiff.added.length +
+    graphDiff.added.length;
   if (addedAny === 0) {
     appendBullet('(none)');
   } else {
@@ -370,6 +395,7 @@ function appendDiffSummary(
     for (const h of chDiff.added) appendBullet(`Capture: ${h.headerName} from ${captureHeaderTarget(h)}`);
     for (const s of idbDiff.added) appendBullet(`IndexedDB: ${s.database}/${s.store}`);
     for (const s of domDiff.added) appendBullet(`DOM: ${domSelectorLabel(s)}`);
+    for (const g of graphDiff.added) appendBullet(`GraphQL: ${graphqlOpLabel(g)}`);
   }
 
   // No longer requested.
@@ -382,6 +408,7 @@ function appendDiffSummary(
     chDiff.removed.length +
     idbDiff.removed.length +
     domDiff.removed.length +
+    graphDiff.removed.length +
     lpDiff.removed.length +
     spDiff.removed.length;
   if (removedAny === 0) {
@@ -394,6 +421,7 @@ function appendDiffSummary(
     for (const h of chDiff.removed) appendBullet(`Capture: ${h.headerName} from ${captureHeaderTarget(h)}`);
     for (const s of idbDiff.removed) appendBullet(`IndexedDB: ${s.database}/${s.store}`);
     for (const s of domDiff.removed) appendBullet(`DOM: ${domSelectorLabel(s)}`);
+    for (const g of graphDiff.removed) appendBullet(`GraphQL: ${graphqlOpLabel(g)}`);
   }
 
   root.appendChild(dl);
@@ -434,6 +462,21 @@ function appendDomSelectorsSubList(
   const ul = elem('ul', { class: 'dom-selectors' });
   for (const e of entries) {
     ul.appendChild(elem('li', {}, domSelectorLabel(e)));
+  }
+  dd.appendChild(ul);
+  dl.appendChild(dd);
+}
+
+function appendGraphqlOpsSubList(
+  dl: HTMLElement,
+  entries: readonly { name: string; operationName: string }[] | undefined,
+): void {
+  if (!entries || entries.length === 0) return;
+  dl.appendChild(elem('dt', { class: 'cap-warn' }, 'Run declared GraphQL queries'));
+  const dd = elem('dd', { class: 'cap-warn' });
+  const ul = elem('ul', { class: 'graphql-ops' });
+  for (const e of entries) {
+    ul.appendChild(elem('li', {}, graphqlOpLabel(e)));
   }
   dd.appendChild(ul);
   dl.appendChild(dd);
@@ -570,6 +613,7 @@ export function renderPopup(root: HTMLElement, state: PopupState): void {
       captureHeaders: pending.captureHeaders,
       indexedDbScopes: pending.indexedDbScopes,
       domSelectors: pending.domSelectors,
+      graphqlOps: pending.graphqlOps,
       pairCode: '',
     }, previous);
 
@@ -645,6 +689,7 @@ export function renderPopup(root: HTMLElement, state: PopupState): void {
   appendCaptureHeadersSubList(dl, pending.captureHeaders);
   appendIndexedDbScopesSubList(dl, pending.indexedDbScopes);
   appendDomSelectorsSubList(dl, pending.domSelectors);
+  appendGraphqlOpsSubList(dl, pending.graphqlOps);
 
   root.appendChild(dl);
 
@@ -703,6 +748,7 @@ interface PendingPairRecord {
   captureHeaders?: { host: string; path?: string; headerName: string }[];
   indexedDbScopes?: { origin: string; database: string; store: string; keys: string[] }[];
   domSelectors?: { name: string; selector: string; attribute?: string }[];
+  graphqlOps?: { name: string; operationName: string }[];
   localStoragePointers?: { key: string; jsonPointer: string }[];
   sessionStoragePointers?: { key: string; jsonPointer: string }[];
   previousScope?: PreviousScope;
@@ -727,6 +773,7 @@ interface PendingScopeUpdateRecord {
   captureHeaders?: { host: string; path?: string; headerName: string }[];
   indexedDbScopes?: { origin: string; database: string; store: string; keys: string[] }[];
   domSelectors?: { name: string; selector: string; attribute?: string }[];
+  graphqlOps?: { name: string; operationName: string }[];
   localStoragePointers?: { key: string; jsonPointer: string }[];
   sessionStoragePointers?: { key: string; jsonPointer: string }[];
   previousScope: PreviousScope;
@@ -823,6 +870,7 @@ async function bootstrap(): Promise<void> {
             keys: [...d.keys],
           })),
           domSelectors: (pending.domSelectors ?? []).map((d) => ({ ...d })),
+          graphqlOps: (pending.graphqlOps ?? []).map((d) => ({ ...d })),
           localStoragePointers: (pending.localStoragePointers ?? []).map((d) => ({ ...d })),
           sessionStoragePointers: (pending.sessionStoragePointers ?? []).map((d) => ({ ...d })),
         },
@@ -875,6 +923,7 @@ async function bootstrap(): Promise<void> {
           keys: [...d.keys],
         })),
         domSelectors: (pending.domSelectors ?? []).map((d) => ({ ...d })),
+        graphqlOps: (pending.graphqlOps ?? []).map((d) => ({ ...d })),
         pairCode: pending.pairCode,
       },
       ...(pending.previousScope ? { previous: pending.previousScope } : {}),

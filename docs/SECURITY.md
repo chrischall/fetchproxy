@@ -122,6 +122,8 @@ If an MCP legitimately needs more than one domain (rare), it enumerates them: `d
 
 **Residual risk:** If the operation the MCP declared genuinely returns sensitive data (e.g. a booking-availability query that also echoes account details), that's the same tradeoff as any declared `fetch` endpoint — the user is trusting the MCP with what it's declared, not with arbitrary access. The mechanism cannot be used to invoke an operation the user hasn't implicitly exposed by using the page normally.
 
+**Known limitation (tracked, not yet fixed):** the MAIN-world bridge script (`capture-logger.ts`) wraps `client.link.request` on **every** page that exposes an Apollo client, regardless of whether any MCP has declared the `graphql` capability — the captured `DocumentNode`s stay in an in-process `Map` and are never exfiltrated, so this is a wider MAIN-world footprint (not a data leak) than the read-only CSRF sync this file previously did. It also polls for `window.__APOLLO_CLIENT__` every 500ms for the lifetime of any tab that never gets one, with no give-up cap. Neither is a security hole, but both are worth tightening — see the PR #178 auto-review follow-up issue.
+
 ### T-host-MITM — Host MCP reading peer traffic
 
 In the 0.2.0 concentrator model, one MCP wins the WS port and acts as the host. Other MCPs on the same machine dial it as peers and tunnel their traffic through. A backdoored host MCP could read or tamper with peer traffic, exfiltrating their fetches or rewriting responses.

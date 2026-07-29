@@ -138,6 +138,52 @@ describe('installApolloBridge (MAIN-world Apollo bridge)', () => {
     expect(posted).toContainEqual({ __fetchproxy: 'graphql-res', reqId: 9, ok: false, error: 'boom' });
   });
 
+  it('treats a RESOLVED {data:null, errors} as ok:false, not ok:true with null data', async () => {
+    // errorPolicy: 'all' is precisely the policy under which Apollo does NOT
+    // throw on a GraphQL-level error (expired session, error on a
+    // non-nullable field, ...) — client.query resolves instead. Regression
+    // for the bug where `data: null` was posted as `ok: true`, which fails
+    // protocol validation server-side and tears down the whole WS bridge.
+    const { win, posted, dispatch } = makeFakeWindow();
+    const client: FakeClient = {
+      link: { request: vi.fn(() => 'ORIGINAL_LINK_RESULT') },
+      query: vi.fn(async () => ({ data: null, errors: [{ message: 'session expired' }] })),
+    };
+    win.__APOLLO_CLIENT__ = client;
+
+    installApolloBridge(win);
+    client.link.request({ operationName: 'RestaurantsAvailability', query: DOC });
+
+    dispatch({ __fetchproxy: 'graphql-req', reqId: 11, operationName: 'RestaurantsAvailability', variables: {} });
+    await flush();
+
+    expect(posted).toHaveLength(1);
+    const res = posted[0] as { reqId: number; ok: boolean; error?: string };
+    expect(res.reqId).toBe(11);
+    expect(res.ok).toBe(false);
+    expect(res.error).toContain('session expired');
+  });
+
+  it('treats a resolved {data:undefined} with no errors as ok:false, not ok:true', async () => {
+    const { win, posted, dispatch } = makeFakeWindow();
+    const client: FakeClient = {
+      link: { request: vi.fn(() => 'ORIGINAL_LINK_RESULT') },
+      query: vi.fn(async () => ({ data: undefined })),
+    };
+    win.__APOLLO_CLIENT__ = client;
+
+    installApolloBridge(win);
+    client.link.request({ operationName: 'RestaurantsAvailability', query: DOC });
+
+    dispatch({ __fetchproxy: 'graphql-req', reqId: 12, operationName: 'RestaurantsAvailability', variables: {} });
+    await flush();
+
+    expect(posted).toHaveLength(1);
+    const res = posted[0] as { reqId: number; ok: boolean };
+    expect(res.reqId).toBe(12);
+    expect(res.ok).toBe(false);
+  });
+
   it('ignores messages whose source is not the window', async () => {
     const { win, posted, dispatch } = makeFakeWindow();
     const client = makeClient({ availability: [1] });
