@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.7.0](https://github.com/chrischall/fetchproxy/compare/v1.6.2...v1.7.0) (2026-07-29)
+
+
+### Features
+
+* **graphql:** route declared GraphQL ops through the tab's own Apollo client ([#178](https://github.com/chrischall/fetchproxy/issues/178)) ([0c3fdf4](https://github.com/chrischall/fetchproxy/commit/0c3fdf4e9d690c9f4250ea355729d494c1de8e8c))
+
+
+### Bug Fixes
+
+* **extension-chrome:** build content scripts as classic IIFE so Chrome injects them ([#175](https://github.com/chrischall/fetchproxy/issues/175)) ([f4a3728](https://github.com/chrischall/fetchproxy/commit/f4a37280094081465997aa62d7bf431f3fc94c6d))
+* **graphql:** address all four tracked nits from PR [#178](https://github.com/chrischall/fetchproxy/issues/178)'s auto-review ([#180](https://github.com/chrischall/fetchproxy/issues/180)) ([9d88ac9](https://github.com/chrischall/fetchproxy/commit/9d88ac9adce4945c46ed82737c4464ae0ad427ca))
+
 ## [1.6.2](https://github.com/chrischall/fetchproxy/compare/v1.6.1...v1.6.2) (2026-07-27)
 
 
