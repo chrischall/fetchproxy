@@ -34,6 +34,17 @@ describe('downloadValueFromItem', () => {
     expect('mime' in v).toBe(false);
     expect('finalUrl' in v).toBe(false);
   });
+
+  it("clamps Chrome's -1 (\"size unknown\") sentinel to 0 instead of forwarding a negative byte count", () => {
+    // Regression: the download response validator requires bytes >= 0 and
+    // throws otherwise. That throw is caught by host.ts's single
+    // message-handler try/catch and closes the WHOLE extension WebSocket —
+    // every MCP on the concentrator, not just this download — the same
+    // failure class as the graphql errorPolicy:'all' bug fixed in this PR.
+    const v = downloadValueFromItem({ filename: '/tmp/streamed.bin', fileSize: -1 });
+    expect(v.bytes).toBe(0);
+    expect(v.bytes).toBeGreaterThanOrEqual(0);
+  });
 });
 import { scopeHash } from '../src/lib/scope.js';
 import {

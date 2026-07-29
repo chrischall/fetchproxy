@@ -2053,7 +2053,15 @@ export function downloadValueFromItem(item: {
 }): DownloadResult {
   return {
     path: item.filename,
-    bytes: item.fileSize,
+    // Chrome's `DownloadItem.fileSize` is documented to be `-1` when the
+    // size is unknown (e.g. the server never sent Content-Length). The
+    // `download` response validator requires a non-negative integer — an
+    // unclamped -1 would throw `ProtocolError` server-side, and since that
+    // throw happens inside host.ts's single message-handler try/catch, it
+    // closes the WHOLE extension WebSocket (every MCP on the concentrator),
+    // not just this request. Clamp instead of failing the whole download:
+    // the file genuinely saved, only its size is unreported.
+    bytes: item.fileSize < 0 ? 0 : item.fileSize,
     ...(item.mime ? { mime: item.mime } : {}),
     ...(item.finalUrl ? { finalUrl: item.finalUrl } : {}),
   };

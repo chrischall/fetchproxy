@@ -769,7 +769,12 @@ export interface InnerResponseReadDomOk {
 export interface DownloadResult {
   /** Absolute local path the browser saved the file to (`DownloadItem.filename`). */
   path: string;
-  /** Saved file size in bytes (`DownloadItem.fileSize`). */
+  /**
+   * Saved file size in bytes (`DownloadItem.fileSize`). Always a
+   * non-negative integer on the wire — Chrome's own `-1` ("size unknown")
+   * sentinel is clamped to `0` by the extension before sending, since this
+   * field is required and validated strictly.
+   */
   bytes: number;
   /** Server-reported MIME type, when known (`DownloadItem.mime`). */
   mime?: string;
