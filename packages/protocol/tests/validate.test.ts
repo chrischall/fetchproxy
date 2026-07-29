@@ -2338,15 +2338,39 @@ describe('validateInnerFrame (graphql graphql_query)', () => {
     ).toThrow(/inner\.data/);
   });
 
-  it('accepts a graphql error response (ok:false, op graphql)', () => {
+  it('accepts a graphql_query error response — the REAL wire op string, not the "graphql" capability name', () => {
+    // Regression: the extension sends op:'graphql_query' (the wire op) on
+    // EVERY graphql failure path, including the documented, expected
+    // first-run "operation not yet observed on this tab — open a
+    // restaurant page and retry" error. `graphql_query` is the one op
+    // whose wire string differs from its governing capability name
+    // ('graphql') — see InnerResponseError.op's doc comment in frames.ts.
+    // A prior version of this test asserted op:'graphql' instead, which
+    // passed only because 'graphql' happens to be a KNOWN_CAPABILITIES
+    // entry — it never exercised the real shape, so it didn't catch the
+    // validator gating raw.op on KNOWN_CAPABILITIES alone (missing the
+    // graphql_query special case) and rejecting every real graphql
+    // failure response.
     expect(() =>
       validateInnerFrame({
         type: 'response',
         id: 1,
         ok: false,
-        op: 'graphql',
-        error: 'operation not yet observed on this tab',
+        op: 'graphql_query',
+        error: 'operation not yet observed on this tab — open a restaurant page and retry',
       }),
     ).not.toThrow();
+  });
+
+  it('still rejects a genuinely unknown response op echo', () => {
+    expect(() =>
+      validateInnerFrame({
+        type: 'response',
+        id: 1,
+        ok: false,
+        op: 'not_a_real_op',
+        error: 'x',
+      }),
+    ).toThrow(/inner\.op/);
   });
 });

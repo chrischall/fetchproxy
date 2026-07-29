@@ -200,6 +200,20 @@ export function runGraphqlQuery(
         if (!data || typeof data !== 'object' || data.__fetchproxy !== 'graphql-res') return;
         if (data.reqId !== reqId) return;
         if (data.ok === true) {
+          // capture-logger.ts (the honest MAIN-world bridge) never sends
+          // ok:true with null/undefined data — but this listener trusts
+          // ANY same-window postMessage matching this shape, and MAIN +
+          // isolated worlds share one message bus. A page script (same
+          // origin, so it already has direct __APOLLO_CLIENT__ access —
+          // no privilege gain, but worth not trusting blindly here either)
+          // could post a spoofed graphql-res with ok:true, data:null. That
+          // would otherwise reach the server's assertObject(raw.data),
+          // which rejects null — and via host.ts's catch-all, that closes
+          // the extension WebSocket for every MCP on the concentrator.
+          if (data.data === null || data.data === undefined) {
+            finish({ ok: false, error: 'graphql bridge returned ok:true with no data' });
+            return;
+          }
           // Mirrors runFetch's MAX_RESPONSE_BODY_BYTES guard — an
           // unbounded GraphQL `data` blob would otherwise cross the
           // isolated→background→server boundary with no size check.

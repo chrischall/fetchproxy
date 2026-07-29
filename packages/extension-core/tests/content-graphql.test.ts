@@ -130,6 +130,25 @@ describe('runGraphqlQuery (isolated-world → MAIN-world relay)', () => {
     expect(posted).toHaveLength(0);
   });
 
+  it('rejects a spoofed ok:true response carrying null/undefined data instead of forwarding it', async () => {
+    // The honest MAIN-world bridge (capture-logger.ts) never sends ok:true
+    // with null/undefined data, but this listener trusts any same-window
+    // postMessage matching the graphql-res shape. A page script sharing
+    // the same window's message bus could post a spoofed reply — this
+    // must be treated as ok:false, not forwarded as ok:true with no data
+    // (which would fail server-side validation and, via host.ts's
+    // catch-all, close the bridge for every MCP on the concentrator).
+    const { win, posted, dispatch } = makeFakeWindow();
+    const p = runGraphqlQuery({ operationName: 'X', variables: {} }, win, 1000);
+    const reqId = posted[0].reqId;
+
+    dispatch({ __fetchproxy: 'graphql-res', reqId, ok: true, data: null });
+
+    const res = await p;
+    expect(res.ok).toBe(false);
+    expect((res as { error: string }).error).toContain('no data');
+  });
+
   it('rejects an oversized response instead of resolving with it', async () => {
     const { win, posted, dispatch } = makeFakeWindow();
     const p = runGraphqlQuery({ operationName: 'X', variables: {} }, win, 1000);

@@ -973,6 +973,23 @@ function assertStringMap(value: unknown, label: string): void {
   }
 }
 
+/**
+ * Op strings valid on an `ok:false` inner response's optional `op` echo.
+ * Every op string equals its governing capability name EXCEPT
+ * `graphql_query`, which is governed by the `'graphql'` capability (see
+ * `InnerResponseError.op`'s doc comment in frames.ts) — so the plain
+ * `KNOWN_CAPABILITIES` set doesn't contain the wire string the extension
+ * actually sends for a graphql_query failure. Without this, every
+ * `ok:false, op:'graphql_query'` response (including the documented,
+ * expected-on-first-run "operation not yet observed on this tab" error)
+ * fails validation here, which — via host.ts's message-handler catch-all —
+ * closes the extension WebSocket for every MCP on the concentrator.
+ */
+const KNOWN_RESPONSE_OPS: ReadonlySet<string> = new Set<string>([
+  ...KNOWN_CAPABILITIES,
+  'graphql_query',
+]);
+
 function validateInnerResponse(raw: Record<string, unknown>): InnerFrame {
   assertPositiveInt(raw.id, 'inner.id');
   if (raw.ok === true) {
@@ -1092,7 +1109,7 @@ function validateInnerResponse(raw: Record<string, unknown>): InnerFrame {
   if (raw.ok === false) {
     assertString(raw.error, 'inner.error');
     if (raw.op !== undefined) {
-      if (typeof raw.op !== 'string' || !KNOWN_CAPABILITIES.has(raw.op as Capability)) {
+      if (typeof raw.op !== 'string' || !KNOWN_RESPONSE_OPS.has(raw.op)) {
         throw new ProtocolError(
           `inner.op: unknown response op ${JSON.stringify(raw.op)}`,
         );
