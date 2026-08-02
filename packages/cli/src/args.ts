@@ -15,7 +15,7 @@ export type Command =
   | { kind: 'profile-declare'; name: string; cookies: string[]; localStorage: string[];
       sessionStorage: string[]; captureHeaders: CaptureHeaderDecl[];
       domSelectors: DomSelectorDecl[]; download: boolean }
-  | { kind: 'pair'; profile: string; domain?: string }
+  | { kind: 'pair'; profile: string; domain?: string; subdomain?: string }
   | { kind: 'health'; profile: string }
   | { kind: 'fetch'; profile: string; method: string; url: string;
       headers: Record<string, string>; body?: string; json: boolean }
@@ -95,6 +95,7 @@ export function parseCliArgs(
         filename: { type: 'string' },
         'storage-domain': { type: 'string' },
         'storage-subdomain': { type: 'string' },
+        subdomain: { type: 'string' },
         help: { type: 'boolean', short: 'h', default: false },
         version: { type: 'boolean', short: 'v', default: false },
       },
@@ -145,7 +146,12 @@ export function parseCliArgs(
   }
 
   if (cmd === 'pair') {
-    return { kind: 'pair', profile: requireProfile(values.profile), domain: values.domain?.[0] };
+    return {
+      kind: 'pair',
+      profile: requireProfile(values.profile),
+      domain: values.domain?.[0],
+      subdomain: values.subdomain,
+    };
   }
   if (cmd === 'health') return { kind: 'health', profile: requireProfile(values.profile) };
   if (cmd === 'session') {

@@ -51,10 +51,27 @@ export async function runPair(
     // HEAD / through the tab: any HttpResponse — any status — proves the
     // extension is paired and a matching tab answered. Bridge-level
     // failures throw and map to EXIT.BRIDGE instead.
-    const res = await server.request('HEAD', '/', { domain });
-    io.err(`paired ✓ (${cmd.profile} → ${domain}, HTTP ${res.status})`);
+    //
+    // The fetch tab-matcher is strict-prefix by design (a fetch inherits the
+    // tab's origin context), so a profile declaring the apex will NOT match a
+    // `www.` tab. `--subdomain` lets the user aim at the host they actually
+    // have open instead of being told, unhelpfully, that no tab matches.
+    const host = cmd.subdomain ? `${cmd.subdomain}.${domain}` : domain;
+    const res = await server.request('HEAD', '/', {
+      domain,
+      ...(cmd.subdomain !== undefined ? { subdomain: cmd.subdomain } : {}),
+    });
+    io.err(`paired ✓ (${cmd.profile} → ${host}, HTTP ${res.status})`);
     return EXIT.OK;
   } catch (err) {
+    // The bridge's "no tab matching <apex>" is accurate but leaves the user
+    // stuck when their tab is on a subdomain — name the escape hatch.
+    if (err instanceof Error && /^no tab matching /.test(err.message) && !cmd.subdomain) {
+      io.err(
+        `no tab open on ${domain} — if your signed-in tab is on a subdomain ` +
+          `(e.g. www.${domain}), retry with --subdomain www`,
+      );
+    }
     return mapBridgeError(err, io);
   } finally {
     await server.close().catch(() => {});

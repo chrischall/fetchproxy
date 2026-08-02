@@ -43,6 +43,44 @@ describe('health & pair', () => {
       .rejects.toThrow(/--domain/);
   });
 
+  // `pair` proves the bridge by fetching HEAD / through a matching tab, and
+  // the fetch tab-matcher is strict-prefix BY DESIGN (a fetch inherits the
+  // tab's origin context, so loosening it would route requests through a
+  // different-origin tab). A profile declaring the apex therefore cannot pair
+  // against a `www.` tab — which is the common case for sites that only ever
+  // serve `www`. `--subdomain` targets the host the user actually has open.
+  it('pair targets a subdomain when --subdomain is given', async () => {
+    const io = memIo();
+    const server = stubServer();
+    const code = await runPair(
+      { kind: 'pair', profile: 'x', domain: undefined, subdomain: 'www' },
+      emptyProfile(['x.com']), io, () => server);
+    expect(code).toBe(EXIT.OK);
+    expect(server.request).toHaveBeenCalledWith('HEAD', '/', {
+      domain: 'x.com',
+      subdomain: 'www',
+    });
+    expect(io.errs.join('\n')).toMatch(/www\.x\.com/);
+  });
+
+  it('pair omits subdomain from the request when not given', async () => {
+    const server = stubServer();
+    await runPair({ kind: 'pair', profile: 'x', domain: undefined },
+      emptyProfile(['x.com']), memIo(), () => server);
+    expect(server.request).toHaveBeenCalledWith('HEAD', '/', { domain: 'x.com' });
+  });
+
+  it('a no-tab failure suggests --subdomain', async () => {
+    const io = memIo();
+    const server = stubServer({
+      request: vi.fn(async () => { throw new Error('no tab matching https://x.com/'); }),
+    });
+    const code = await runPair({ kind: 'pair', profile: 'x', domain: undefined },
+      emptyProfile(['x.com']), io, () => server);
+    expect(code).toBe(EXIT.BRIDGE);
+    expect(io.errs.join('\n')).toMatch(/--subdomain/);
+  });
+
   it('pair maps bridge failure to exit 2', async () => {
     const io = memIo();
     const server = stubServer({ request: vi.fn(async () => { throw new Error('down'); }) });

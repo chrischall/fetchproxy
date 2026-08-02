@@ -151,6 +151,7 @@ describe('bootstrap()', () => {
       sessionStorage: {},
       capturedHeaders: {},
       indexedDb: {},
+      missing: { cookies: [], localStorage: [], sessionStorage: [] },
     });
     // Should still listen + close, and should not have called any read.
     expect(calls.listen).toBe(1);
@@ -565,5 +566,94 @@ describe('bootstrap()', () => {
       // No domain key on the call — server uses the only declared domain.
       expect(calls.readLocalStorage).toEqual([{ keys: ['k'] }]);
     });
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────────────
+// Partial lifts must not look like clean successes
+// ────────────────────────────────────────────────────────────────────────────
+//
+// Real incident (signupgenius-mcp): the MCP declared
+// ['accessToken','cfid','cftoken'] and read at the APEX host, where only
+// `accessToken` exists — `cfid`/`cftoken` live on `www`. bootstrap() returned
+// a cookies map holding just `accessToken` and signalled nothing, so the MCP
+// built a plausible-looking session that failed much later with an unrelated
+// message ("You are no longer logged in"). Missing declared keys were simply
+// absent from the map, and nothing pointed at the real cause. `missing` lets
+// a caller fail loudly — "declared 3, got 1" — at the point of the lift.
+describe('bootstrap — missing declared keys', () => {
+  it('reports declared cookies the browser did not return', async () => {
+    const { factory } = makeStubFactory({ cookies: { accessToken: 'jwt' } });
+    const session = await bootstrap({
+      serverName: 'signupgenius-mcp',
+      version: '1.2.2',
+      domains: ['signupgenius.com'],
+      declare: {
+        cookies: ['accessToken', 'cfid', 'cftoken'],
+        localStorage: [],
+        sessionStorage: [],
+        captureHeaders: [],
+      },
+      _serverFactory: factory,
+    });
+    expect(session.cookies).toEqual({ accessToken: 'jwt' });
+    expect(session.missing.cookies).toEqual(['cfid', 'cftoken']);
+  });
+
+  it('reports an empty list when every declared cookie came back', async () => {
+    const { factory } = makeStubFactory({ cookies: { a: '1', b: '2' } });
+    const session = await bootstrap({
+      serverName: 'x',
+      version: '1',
+      domains: ['x.com'],
+      declare: { cookies: ['a', 'b'], localStorage: [], sessionStorage: [], captureHeaders: [] },
+      _serverFactory: factory,
+    });
+    expect(session.missing.cookies).toEqual([]);
+  });
+
+  it('reports every declared cookie when the jar is empty', async () => {
+    const { factory } = makeStubFactory({ cookies: {} });
+    const session = await bootstrap({
+      serverName: 'x',
+      version: '1',
+      domains: ['x.com'],
+      declare: { cookies: ['a', 'b'], localStorage: [], sessionStorage: [], captureHeaders: [] },
+      _serverFactory: factory,
+    });
+    expect(session.missing.cookies).toEqual(['a', 'b']);
+  });
+
+  it('applies the same reporting to localStorage and sessionStorage', async () => {
+    const { factory } = makeStubFactory({
+      localStorage: { auth: 'tok' },
+      sessionStorage: {},
+    });
+    const session = await bootstrap({
+      serverName: 'x',
+      version: '1',
+      domains: ['x.com'],
+      declare: {
+        cookies: [],
+        localStorage: ['auth', 'profile'],
+        sessionStorage: ['sid'],
+        captureHeaders: [],
+      },
+      _serverFactory: factory,
+    });
+    expect(session.missing.localStorage).toEqual(['profile']);
+    expect(session.missing.sessionStorage).toEqual(['sid']);
+  });
+
+  it('reports nothing missing when nothing was declared', async () => {
+    const { factory } = makeStubFactory();
+    const session = await bootstrap({
+      serverName: 'x',
+      version: '1',
+      domains: ['x.com'],
+      declare: { cookies: [], localStorage: [], sessionStorage: [], captureHeaders: [] },
+      _serverFactory: factory,
+    });
+    expect(session.missing).toEqual({ cookies: [], localStorage: [], sessionStorage: [] });
   });
 });

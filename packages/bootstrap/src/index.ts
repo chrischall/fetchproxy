@@ -168,6 +168,30 @@ export interface Session {
    * JSON-deserialized value.
    */
   indexedDb: Record<string, Record<string, unknown>>;
+  /**
+   * 1.8.0+: declared keys the browser did NOT return, per bucket.
+   *
+   * A partial lift is the most dangerous failure this helper can produce: the
+   * call succeeds, the maps look populated, and the MCP builds a session that
+   * fails much later somewhere unrelated. That is not hypothetical — an MCP
+   * declaring `['accessToken','cfid','cftoken']` while reading at an apex host
+   * that only carries `accessToken` got a "successful" bootstrap and then a
+   * baffling "you are no longer logged in" from a completely different
+   * endpoint. Reading the wrong host is easy (`storageSubdomain`), and nothing
+   * used to point at it.
+   *
+   * Empty arrays mean everything declared came back. Callers that need all of
+   * their declared keys should check this and fail loudly, naming the misses.
+   *
+   * Note these are *declared* keys, not pointer output names: localStorage
+   * pointers are resolved from the raw storage keys, which are what is
+   * reported here.
+   */
+  missing: {
+    cookies: string[];
+    localStorage: string[];
+    sessionStorage: string[];
+  };
 }
 
 const defaultFactory: BootstrapServerFactory = (opts) => new FetchproxyServer(opts);
@@ -345,12 +369,22 @@ export async function bootstrap(opts: BootstrapOpts): Promise<Session> {
       });
       indexedDbBucket[`${d.database}/${d.store}`] = values;
     }
+    // Declared-but-absent keys, computed against what actually came back.
+    // See `Session.missing` for why a silent partial lift is worth surfacing.
+    const absent = (declared: readonly string[], got: Record<string, unknown>): string[] =>
+      declared.filter((k) => !(k in got));
+
     return {
       cookies,
       localStorage,
       sessionStorage,
       capturedHeaders,
       indexedDb: indexedDbBucket,
+      missing: {
+        cookies: absent(opts.declare.cookies, cookies),
+        localStorage: absent(opts.declare.localStorage, localStorage),
+        sessionStorage: absent(opts.declare.sessionStorage, sessionStorage),
+      },
     };
   } finally {
     // Best-effort cleanup. If close() throws, swallow it — the original
