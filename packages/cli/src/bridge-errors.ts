@@ -33,7 +33,13 @@ export function mapBridgeError(err: unknown, io: Io): number {
   // branch it inherited the blanket "version mismatch — update both" hint
   // below and sent people chasing a version problem that does not exist. The
   // actual remedy is a re-pair, and the message should say so.
-  if (/\b(cookie|localStorage|sessionStorage) keys not in declared set:/.test(msg)) {
+  //
+  // Match on "not in declared" rather than enumerating buckets: gate #2 has
+  // eight distinct wordings (cookie / {local,session}Storage keys / storage
+  // pointer / IndexedDB keys / read_dom names / captureHeaders / indexedDbScopes
+  // / graphqlOps), and every one of them means the same thing. Enumerating them
+  // is how the first cut of this fix missed five.
+  if (/not in declared/.test(msg)) {
     io.err(
       `bridge error (${kind}): ${msg} — the declared scope changed since you paired. ` +
         'Revoke this MCP in the Transporter extension popup, then re-run to re-approve ' +
