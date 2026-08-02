@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.8.0](https://github.com/chrischall/fetchproxy/compare/v1.7.0...v1.8.0) (2026-08-02)
+
+
+### Features
+
+* **bootstrap,cli:** surface partial lifts and clarify bridge errors ([#184](https://github.com/chrischall/fetchproxy/issues/184)) ([d1042a1](https://github.com/chrischall/fetchproxy/commit/d1042a19b1f3dbe52211ea01884726581f6ea824))
+
 ## [1.7.0](https://github.com/chrischall/fetchproxy/compare/v1.6.2...v1.7.0) (2026-07-29)
 
 
