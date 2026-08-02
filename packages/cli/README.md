@@ -76,7 +76,7 @@ Every verb takes `-p`/`--profile <name>` (except the `profile` subcommands thems
 | `fpx profile list` | List all profiles and their domains (tab-separated, one per line). | `fpx profile list` |
 | `fpx profile show <name>` | Print a profile's full JSON record. | `fpx profile show opentable` |
 | `fpx profile remove <name>` | Delete the profile and its identity file. | `fpx profile remove opentable` |
-| `fpx pair -p <name> [--domain <apex>]` | Force a pairing round-trip against one declared domain (defaults to the only one, if there's exactly one). | `fpx pair -p opentable` |
+| `fpx pair -p <name> [--domain <apex>] [--subdomain <label>]` | Force a pairing round-trip against one declared domain (defaults to the only one, if there's exactly one). `--subdomain` aims at the host your signed-in tab is actually on — the fetch tab-matcher is strict-prefix, so an apex-only profile won't match a `www.` tab. | `fpx pair -p opentable --subdomain www` |
 | `fpx health -p <name>` | Print the bridge's health snapshot (host/peer role, connection state). | `fpx health -p opentable` |
 | `fpx get <url> -p <name> [--json] [-H 'K: V']…` | GET a URL through the profile's tab. | `fpx get https://www.opentable.com/ -p opentable` |
 | `fpx post-json <url> <body\|@file> -p <name> [--json] [-H 'K: V']…` | POST a JSON body (literal or `@file`); sets `Content-Type: application/json` unless overridden. | `fpx post-json https://www.opentable.com/dapi/fe/gql '{"operationName":"Autocomplete"}' -p opentable` |

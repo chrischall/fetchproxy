@@ -34,16 +34,28 @@ describe('mapBridgeError — scope-diff errors are not version mismatches', () =
     expect(io.errs.join('\n')).toMatch(/Transporter/);
   });
 
-  it('covers the localStorage/sessionStorage wording too', () => {
-    for (const msg of [
-      'localStorage keys not in declared set: token',
-      'sessionStorage keys not in declared set: sid',
-    ]) {
-      const io = memIo();
-      mapBridgeError(new FetchproxyProtocolError(msg), io);
-      expect(io.errs.join('\n')).not.toMatch(/version mismatch/i);
-      expect(io.errs.join('\n')).toMatch(/re-approve|revoke/i);
-    }
+  // Gate #2 rejects a widened scope in EIGHT different wordings, one per
+  // declarable bucket. The first cut of this fix only matched the cookie and
+  // {local,session}Storage forms, so IndexedDB / DOM / captureHeaders /
+  // graphqlOps / storage-pointer rejections still inherited the misleading
+  // version-mismatch hint despite being the same re-pair situation.
+  it.each([
+    'cookie keys not in declared set: refreshToken',
+    'localStorage keys not in declared set: token',
+    'sessionStorage keys not in declared set: sid',
+    'IndexedDB keys not in declared set: order-42',
+    'read_dom names not in declared set: priceLabel',
+    'localStorage pointer (auth, /token) not in declared set [outputKey=jwt]',
+    '(host, path, headerName) not in declared captureHeaders',
+    '(origin, database, store) not in declared indexedDbScopes',
+    'graphql_query name not in declared graphqlOps: Autocomplete',
+  ])('treats %j as a re-pair, not a version mismatch', (msg) => {
+    const io = memIo();
+    mapBridgeError(new FetchproxyProtocolError(msg), io);
+    const out = io.errs.join('\n');
+    expect(out).not.toMatch(/version mismatch/i);
+    expect(out).toMatch(/re-approve|revoke/i);
+    expect(out).toMatch(/Transporter/);
   });
 
   it('still reports a genuine protocol error as a version mismatch', () => {
