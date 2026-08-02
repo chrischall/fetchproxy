@@ -196,8 +196,94 @@ export interface Session {
 
 const defaultFactory: BootstrapServerFactory = (opts) => new FetchproxyServer(opts);
 
+
 /**
- * Bootstrap one MCP's session blob.
+ * A repeatable browser-session lift.
+ *
+ * Calling it opens the bridge, reads every declared bucket, closes the bridge,
+ * and resolves with the captured {@link Session} — the same work `bootstrap()`
+ * does, except you hold the *ability* to do it rather than one result of
+ * having done it.
+ */
+export type SessionLifter = () => Promise<Session>;
+
+/**
+ * Build a repeatable lift for one MCP's declared scope.
+ *
+ * Prefer this over {@link bootstrap} whenever the session can expire.
+ *
+ * ## Why this exists
+ *
+ * `bootstrap()` returns a *value*, so consumers naturally capture a session
+ * once at process start and hand it to their client. That is the API's grain,
+ * not a consumer mistake — and it produces a bug that stays invisible until
+ * the site's credential lifetime is short enough to notice:
+ *
+ *   * **The expiry dead end.** A browser-backed account has no password, so
+ *     when the captured credential lapses there is nothing to re-login with.
+ *     The MCP is unauthenticated for the life of the process even though the
+ *     browser still holds a live session the whole time.
+ *   * **The sticky startup failure.** A lift that failed at boot (user not
+ *     signed in yet) gets cached just as permanently, so signing in afterwards
+ *     changes nothing.
+ *
+ * A fleet audit behind this API found four MCPs carrying the one-shot capture
+ * and four that had independently hand-rolled the renewable shape. Making
+ * renewable the default is the point.
+ *
+ * ## Usage
+ *
+ * Construction touches nothing — no server, no `listen()`, no pair prompt.
+ * Wire the lifter into whatever your client uses to mint a session, so expiry
+ * re-reads the browser instead of dead-ending:
+ *
+ * ```ts
+ * const lift = createSessionLifter({ serverName, version, domains, declare });
+ * const manager = new CookieSessionManager({ login: lift, isExpired });
+ * ```
+ *
+ * ## What it deliberately does NOT do
+ *
+ * No TTL tracking, no caching of the result. Expiry semantics are
+ * app-specific — some sites need the lifted token exchanged before it is
+ * usable, others go stale on an idle timer the library cannot see — so the
+ * caller's session manager owns *when* to re-lift. The lifter only owns *how*.
+ *
+ * Post-processing composes in userland rather than needing a hook:
+ *
+ * ```ts
+ * const raw = createSessionLifter(opts);
+ * const lift = async () => exchangeIfStale(await raw());
+ * ```
+ *
+ * Concurrent calls are single-flighted: two simultaneous expiries share one
+ * bridge round-trip rather than racing two. Once a lift settles the next call
+ * starts a fresh one — this is de-duplication, not caching.
+ */
+export function createSessionLifter(opts: BootstrapOpts): SessionLifter {
+  let inFlight: Promise<Session> | null = null;
+  return () => {
+    if (inFlight) return inFlight;
+    const p = runOneLift(opts).finally(() => {
+      // Clear before the caller's `.then` runs so a lift started from within
+      // a continuation is not deduped against the one that just settled.
+      if (inFlight === p) inFlight = null;
+    });
+    inFlight = p;
+    return p;
+  };
+}
+
+/**
+ * Bootstrap one MCP's session blob — a single lift, run immediately.
+ *
+ * Equivalent to `createSessionLifter(opts)()`. Kept as a first-class export
+ * because plenty of callers genuinely only need one read: the tool-invoked
+ * capture pattern (a `capture_session` tool the user runs on demand, which
+ * then persists the token) is legitimately one-shot.
+ *
+ * If the session it returns can expire underneath you, reach for
+ * {@link createSessionLifter} instead.
  *
  * Workflow:
  *   1. Construct a `FetchproxyServer` with the declared scope mapped
@@ -213,6 +299,11 @@ const defaultFactory: BootstrapServerFactory = (opts) => new FetchproxyServer(op
  * and sign in, then retry").
  */
 export async function bootstrap(opts: BootstrapOpts): Promise<Session> {
+  return runOneLift(opts);
+}
+
+/** Internal: one open→read→close cycle. See `bootstrap` / `createSessionLifter`. */
+async function runOneLift(opts: BootstrapOpts): Promise<Session> {
   // 0.4.0: an MCP can opt out of fetchproxy entirely by setting
   // ${SERVER_NAME}_DISABLE_FETCHPROXY=1 in the environment. This is
   // the well-known "don't run the bridge, I'll handle auth myself"
