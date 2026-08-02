@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.9.0](https://github.com/chrischall/fetchproxy/compare/v1.8.0...v1.9.0) (2026-08-02)
+
+
+### Features
+
+* **bootstrap:** add createSessionLifter for renewable session lifts ([#191](https://github.com/chrischall/fetchproxy/issues/191)) ([b2c7049](https://github.com/chrischall/fetchproxy/commit/b2c7049ac7441f063522c5c1d62cc358e3bde631))
+
+
+### Bug Fixes
+
+* **cli:** catch every gate-[#2](https://github.com/chrischall/fetchproxy/issues/2) scope rejection, not just three ([#187](https://github.com/chrischall/fetchproxy/issues/187)) ([b2ecced](https://github.com/chrischall/fetchproxy/commit/b2ecced564969cef0576d27e1fe5475b0eed7529)), closes [#185](https://github.com/chrischall/fetchproxy/issues/185)
+
 ## [1.8.0](https://github.com/chrischall/fetchproxy/compare/v1.7.0...v1.8.0) (2026-08-02)
 
 
