@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { build } from 'esbuild';
+import { readFile } from 'node:fs/promises';
 import { contentScriptEntryOptions, moduleEntryOptions } from '../build.js';
 
 /**
@@ -62,11 +63,44 @@ describe('content scripts build as classic (injectable) scripts', () => {
 });
 
 describe('module entries (background, popup) remain ES modules', () => {
-  it('background is loaded as a module service worker', async () => {
-    // Not asserting on export/import here — background is declared
-    // `"type": "module"` in the manifest and popup via
-    // `<script type="module">`, so ESM output is correct for them.
-    expect(moduleEntryOptions.format).toBe('esm');
+  // The previous version of this test asserted `moduleEntryOptions.format ===
+  // 'esm'` — re-stating the config object to itself, which cannot fail for any
+  // reason a reader would care about. The invariant actually worth guarding
+  // spans TWO artifacts that are edited independently: manifest.json declares
+  // `background.type`, and build.ts decides the format the service worker is
+  // compiled to. Chrome refuses to start the worker when those disagree
+  // ("type": "module" + an IIFE bundle, or a bare worker fed ESM), and nothing
+  // else in the build would catch the drift.
+  it('the built service worker matches the type manifest.json declares', async () => {
+    const manifest = JSON.parse(
+      await readFile(new URL('../manifest.json', import.meta.url), 'utf8'),
+    ) as { background: { service_worker: string; type?: string } };
+
+    const files = await bundleText(moduleEntryOptions);
+    const worker = files.find((f) =>
+      f.path.endsWith('/' + manifest.background.service_worker),
+    );
+    // Guard against the build silently emitting nothing under this name.
+    expect(worker, `no build output named ${manifest.background.service_worker}`)
+      .toBeDefined();
+    expect(worker!.text.length).toBeGreaterThan(0);
+
+    // esbuild wraps `format: 'iife'` output in an invoked function expression
+    // and leaves `format: 'esm'` output at the top level. That difference is
+    // observable in the emitted text, so it holds the build honest rather than
+    // trusting the options object.
+    const isIife = /^\s*\(\s*\(\s*\)\s*=>\s*\{/m.test(worker!.text);
+    if (manifest.background.type === 'module') {
+      expect(isIife, 'manifest says type:module but the worker built as IIFE').toBe(false);
+    } else {
+      expect(isIife, 'manifest omits type:module but the worker built as ESM').toBe(true);
+    }
+  });
+
+  it('content scripts build to the opposite format from the service worker', async () => {
+    // The pair matters more than either value alone: MV3 has no module content
+    // scripts, so these two entries must never converge on one format.
+    expect(moduleEntryOptions.format).not.toBe(contentScriptEntryOptions.format);
     expect(contentScriptEntryOptions.format).toBe('iife');
   });
 });
