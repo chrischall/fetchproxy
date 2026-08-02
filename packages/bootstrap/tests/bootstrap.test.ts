@@ -1,6 +1,7 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import {
   bootstrap,
+  createSessionLifter,
   BootstrapDisabledError,
   type Session,
   type BootstrapServerFactory,
@@ -655,5 +656,160 @@ describe('bootstrap — missing declared keys', () => {
       _serverFactory: factory,
     });
     expect(session.missing).toEqual({ cookies: [], localStorage: [], sessionStorage: [] });
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────────────
+// createSessionLifter — renewable lifts (#183)
+// ────────────────────────────────────────────────────────────────────────────
+//
+// `bootstrap()` returns a VALUE, so consumers naturally capture a session once
+// and never renew it. That is the API's grain, not a consumer mistake, and it
+// produces a bug that only surfaces on sites with short-lived credentials:
+// the MCP works for one credential lifetime, then dies with no way back
+// (a browser-backed account has no password to re-login with).
+//
+// A fleet audit found four repos with the one-shot capture and four that had
+// hand-rolled the renewable shape. This makes renewable the default.
+describe('createSessionLifter', () => {
+  it('does not touch the bridge until the lifter is called', async () => {
+    const { factory, calls } = makeStubFactory({ cookies: { a: '1' } });
+    const lift = createSessionLifter({
+      serverName: 'x',
+      version: '1',
+      domains: ['x.com'],
+      declare: { cookies: ['a'], localStorage: [], sessionStorage: [], captureHeaders: [] },
+      _serverFactory: factory,
+    });
+    // Construction is pure — no server, no listen, no pair prompt.
+    expect(calls.constructorOpts).toHaveLength(0);
+    expect(calls.listen).toBe(0);
+
+    const session = await lift();
+    expect(session.cookies).toEqual({ a: '1' });
+    expect(calls.listen).toBe(1);
+  });
+
+  it('can be called repeatedly, opening and closing a bridge each time', async () => {
+    const { factory, calls } = makeStubFactory({ cookies: { a: '1' } });
+    const lift = createSessionLifter({
+      serverName: 'x',
+      version: '1',
+      domains: ['x.com'],
+      declare: { cookies: ['a'], localStorage: [], sessionStorage: [], captureHeaders: [] },
+      _serverFactory: factory,
+    });
+    await lift();
+    await lift();
+    await lift();
+    expect(calls.listen).toBe(3);
+    expect(calls.close).toBe(3);
+  });
+
+  it('reflects fresh browser state on each call', async () => {
+    // The whole point: a renewal must re-read the browser, not replay a
+    // captured value.
+    let n = 0;
+    const factory: BootstrapServerFactory = () => ({
+      listen: async () => {},
+      close: async () => {},
+      readCookies: async () => `tok=v${++n}`,
+      readLocalStorage: async () => ({}),
+      readSessionStorage: async () => ({}),
+      captureRequestHeader: async () => '',
+      readIndexedDb: async () => ({}),
+    }) as never;
+    const lift = createSessionLifter({
+      serverName: 'x',
+      version: '1',
+      domains: ['x.com'],
+      declare: { cookies: ['tok'], localStorage: [], sessionStorage: [], captureHeaders: [] },
+      _serverFactory: factory,
+    });
+    expect((await lift()).cookies.tok).toBe('v1');
+    expect((await lift()).cookies.tok).toBe('v2');
+  });
+
+  it('surfaces a failed lift and stays usable for the next attempt', async () => {
+    // A lift that fails because the user is signed out must not poison the
+    // lifter — signing in and retrying has to work. This is the other half of
+    // the one-shot bug: a startup failure used to be cached for the life of
+    // the process.
+    let attempt = 0;
+    const factory: BootstrapServerFactory = () => ({
+      listen: async () => {},
+      close: async () => {},
+      readCookies: async () => {
+        attempt++;
+        if (attempt === 1) throw new Error('no tab open');
+        return 'tok=recovered';
+      },
+      readLocalStorage: async () => ({}),
+      readSessionStorage: async () => ({}),
+      captureRequestHeader: async () => '',
+      readIndexedDb: async () => ({}),
+    }) as never;
+    const lift = createSessionLifter({
+      serverName: 'x',
+      version: '1',
+      domains: ['x.com'],
+      declare: { cookies: ['tok'], localStorage: [], sessionStorage: [], captureHeaders: [] },
+      _serverFactory: factory,
+    });
+    await expect(lift()).rejects.toThrow(/no tab open/);
+    expect((await lift()).cookies.tok).toBe('recovered');
+  });
+
+  it('single-flights concurrent lifts', async () => {
+    // Two simultaneous expiries must not open two bridges for the same MCP.
+    // Consumers' session managers usually single-flight their login, but the
+    // lifter should not depend on that.
+    const { factory, calls } = makeStubFactory({ cookies: { a: '1' } });
+    const lift = createSessionLifter({
+      serverName: 'x',
+      version: '1',
+      domains: ['x.com'],
+      declare: { cookies: ['a'], localStorage: [], sessionStorage: [], captureHeaders: [] },
+      _serverFactory: factory,
+    });
+    const [s1, s2] = await Promise.all([lift(), lift()]);
+    expect(calls.listen).toBe(1);
+    expect(s1).toBe(s2);
+    // ...and the next call after settling starts a fresh lift.
+    await lift();
+    expect(calls.listen).toBe(2);
+  });
+
+  it('honors BootstrapDisabledError the same way bootstrap() does', async () => {
+    process.env['X_DISABLE_FETCHPROXY'] = '1';
+    try {
+      const lift = createSessionLifter({
+        serverName: 'x',
+        version: '1',
+        domains: ['x.com'],
+        declare: { cookies: ['a'], localStorage: [], sessionStorage: [], captureHeaders: [] },
+      });
+      await expect(lift()).rejects.toBeInstanceOf(BootstrapDisabledError);
+    } finally {
+      delete process.env['X_DISABLE_FETCHPROXY'];
+    }
+  });
+
+  it('bootstrap() is exactly one invocation of a lifter', async () => {
+    // Keeping bootstrap() is deliberate: the tool-invoked capture pattern
+    // (vibo, honeybook) is legitimately one-shot. It must not drift from the
+    // lifter, so it is implemented in terms of it.
+    const { factory, calls } = makeStubFactory({ cookies: { a: '1' } });
+    const opts = {
+      serverName: 'x',
+      version: '1',
+      domains: ['x.com'],
+      declare: { cookies: ['a'], localStorage: [], sessionStorage: [], captureHeaders: [] },
+      _serverFactory: factory,
+    };
+    const direct = await bootstrap(opts);
+    const viaLifter = await createSessionLifter(opts)();
+    expect(direct).toEqual(viaLifter);
+    expect(calls.listen).toBe(2);
   });
 });
