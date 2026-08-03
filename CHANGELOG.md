@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.11.0](https://github.com/chrischall/fetchproxy/compare/v1.10.0...v1.11.0) (2026-08-03)
+
+
+### Features
+
+* **protocol:** read path-scoped cookies via an explicit cookie path ([#199](https://github.com/chrischall/fetchproxy/issues/199)) ([143944e](https://github.com/chrischall/fetchproxy/commit/143944ec70f9c5a41803ed86fa5e559d45f55050))
+
 ## [1.10.0](https://github.com/chrischall/fetchproxy/compare/v1.9.1...v1.10.0) (2026-08-03)
 
 
