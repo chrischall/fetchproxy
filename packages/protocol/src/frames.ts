@@ -439,6 +439,21 @@ export interface ReadCookiesInitV3 {
   /** Bare HTTPS origin (no path). E.g. `https://www.honeybook.com`. */
   origin: string;
   /**
+   * 1.11.0+: optional cookie path, e.g. `/campus`.
+   *
+   * `chrome.cookies.get({ url, name })` matches the cookie's `Path` attribute
+   * against the URL's path, so a cookie set with `Path=/campus` is invisible
+   * to a read aimed at the origin root — the read silently returns nothing and
+   * looks exactly like "the user is signed out". Tomcat scopes `JSESSIONID` to
+   * the servlet context by default, so this is common, not exotic.
+   *
+   * Carried as its own validated field rather than folded into `origin`:
+   * `origin` is deliberately constrained to a bare origin (see
+   * `assertHttpsOriginOnly`) so a path cannot be smuggled past the domain gate,
+   * and that invariant is worth keeping.
+   */
+  path?: string;
+  /**
    * Subset of the MCP's declared `cookieKeys` to read. Extension reads
    * via `chrome.cookies.get` so HttpOnly cookies ARE visible. Each entry
    * must appear in the trust record's `cookieKeys`.

@@ -17,7 +17,7 @@ import {
 interface StubCalls {
   listen: number;
   close: number;
-  readCookies: { keys: string[]; domain?: string; subdomain?: string }[];
+  readCookies: { keys: string[]; domain?: string; subdomain?: string; path?: string }[];
   readLocalStorage: { keys: string[]; domain?: string; subdomain?: string }[];
   readSessionStorage: { keys: string[]; domain?: string; subdomain?: string }[];
   captureRequestHeader: { host: string; path?: string; headerName: string }[];
@@ -65,11 +65,17 @@ function makeStubFactory(opts?: {
       close: async () => {
         calls.close++;
       },
-      readCookies: async (callOpts: { keys: string[]; domain?: string; subdomain?: string }) => {
+      readCookies: async (callOpts: {
+        keys: string[];
+        domain?: string;
+        subdomain?: string;
+        path?: string;
+      }) => {
         calls.readCookies.push({
           keys: [...callOpts.keys],
           ...(callOpts.domain !== undefined ? { domain: callOpts.domain } : {}),
           ...(callOpts.subdomain !== undefined ? { subdomain: callOpts.subdomain } : {}),
+          ...(callOpts.path !== undefined ? { path: callOpts.path } : {}),
         });
         if (opts?.throwOn === 'readCookies') throw new Error('readCookies failed');
         // Stub returns the joined cookies form; bootstrap parses it.
@@ -811,5 +817,58 @@ describe('createSessionLifter', () => {
     const viaLifter = await createSessionLifter(opts)();
     expect(direct).toEqual(viaLifter);
     expect(calls.listen).toBe(2);
+  });
+});
+
+describe('storagePath — path-scoped cookies (#198)', () => {
+  it('passes the declared path through to readCookies', async () => {
+    const { factory, calls } = makeStubFactory({ cookies: { JSESSIONID: 's' } });
+    await bootstrap({
+      serverName: 'infinitecampus-mcp',
+      version: '2.4.3',
+      domains: ['600.ncsis.gov'],
+      storagePath: '/campus',
+      declare: {
+        cookies: ['JSESSIONID'],
+        localStorage: [],
+        sessionStorage: [],
+        captureHeaders: [],
+      },
+      _serverFactory: factory,
+    });
+    expect(calls.readCookies[0]).toMatchObject({ path: '/campus' });
+  });
+
+  it('omits path when not declared, leaving existing consumers untouched', async () => {
+    const { factory, calls } = makeStubFactory({ cookies: { a: '1' } });
+    await bootstrap({
+      serverName: 'x',
+      version: '1',
+      domains: ['x.com'],
+      declare: { cookies: ['a'], localStorage: [], sessionStorage: [], captureHeaders: [] },
+      _serverFactory: factory,
+    });
+    expect(calls.readCookies[0]).not.toHaveProperty('path');
+  });
+
+  it('is available on the repeatable lifter too', async () => {
+    const { factory, calls } = makeStubFactory({ cookies: { JSESSIONID: 's' } });
+    const lift = createSessionLifter({
+      serverName: 'infinitecampus-mcp',
+      version: '2.4.3',
+      domains: ['600.ncsis.gov'],
+      storagePath: '/campus',
+      declare: {
+        cookies: ['JSESSIONID'],
+        localStorage: [],
+        sessionStorage: [],
+        captureHeaders: [],
+      },
+      _serverFactory: factory,
+    });
+    await lift();
+    await lift();
+    expect(calls.readCookies).toHaveLength(2);
+    expect(calls.readCookies[1]).toMatchObject({ path: '/campus' });
   });
 });

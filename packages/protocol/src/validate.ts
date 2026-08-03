@@ -97,6 +97,24 @@ function assertHttpUrl(x: unknown, label: string): asserts x is string {
   }
 }
 
+/**
+ * A cookie path: absolute, and nothing but a path.
+ *
+ * Kept strict for the same reason `origin` is origin-only — this field feeds
+ * the URL handed to `chrome.cookies.get`, so anything that could re-point that
+ * URL at another host (a scheme, an authority, a protocol-relative reference)
+ * has to be refused here rather than trusted from the MCP side.
+ */
+function assertCookiePath(x: unknown, label: string): asserts x is string {
+  assertString(x, label);
+  if (!x.startsWith('/') || x.startsWith('//')) {
+    throw new ProtocolError(`${label}: must be an absolute path like "/campus"`);
+  }
+  if (x.includes('?') || x.includes('#') || x.includes('\\')) {
+    throw new ProtocolError(`${label}: must not contain a query, fragment, or backslash`);
+  }
+}
+
 function assertHttpsOriginOnly(x: unknown, label: string): asserts x is string {
   // Storage reads happen against the credentials of a tab on `origin`. We
   // refuse http:// origins to keep this from being usable on plaintext
@@ -704,8 +722,9 @@ function validateInnerRequest(raw: Record<string, unknown>): InnerFrame {
     }
     assertHttpsOriginOnly(raw.init.origin, 'inner.init.origin');
     assertNonEmptyKeyArray(raw.init.keys, 'inner.init.keys');
+    if (raw.init.path !== undefined) assertCookiePath(raw.init.path, 'inner.init.path');
     for (const k of Object.keys(raw.init)) {
-      if (k !== 'origin' && k !== 'keys') {
+      if (k !== 'origin' && k !== 'keys' && k !== 'path') {
         throw new ProtocolError(`inner.init: unexpected field ${JSON.stringify(k)} on read_cookies`);
       }
     }

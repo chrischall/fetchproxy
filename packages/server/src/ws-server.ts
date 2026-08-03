@@ -752,6 +752,27 @@ export interface BridgeProbeResult {
 /** Single DNS label or dot-separated labels (no scheme, no path). */
 const SUBDOMAIN_LABEL_RE = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$/i;
 
+/**
+ * Normalize an optional cookie path for the `read_cookies` frame.
+ *
+ * `chrome.cookies.get({ url, name })` matches the cookie's `Path` attribute
+ * against the URL's path, so a cookie set with `Path=/campus` is invisible to a
+ * read aimed at the origin root. Sites that scope their session cookie to an
+ * app context — Tomcat does this by default — were unreadable, and the miss was
+ * indistinguishable from "user is signed out". (#198)
+ */
+function normalizeCookiePath(path?: string): string | undefined {
+  if (path === undefined || path === '') return undefined;
+  if (/^[a-z][a-z0-9+.-]*:/i.test(path) || path.startsWith('//')) {
+    throw new Error(
+      `FetchproxyServer: path must be a path like "/campus", not a URL or protocol-relative reference (got ${JSON.stringify(path)})`,
+    );
+  }
+  const withSlash = path.startsWith('/') ? path : `/${path}`;
+  // A trailing slash narrows the match for no benefit.
+  return withSlash.endsWith('/') && withSlash !== '/' ? withSlash.slice(0, -1) : withSlash;
+}
+
 function assertSubdomainLabel(label: string): void {
   if (!SUBDOMAIN_LABEL_RE.test(label)) {
     throw new Error(
@@ -1940,7 +1961,7 @@ export class FetchproxyServer {
    * the request (no signed-in tab, extension offline, etc.).
    */
   async readCookies(
-    opts: { domain?: string; subdomain?: string; keys?: string[] } = {},
+    opts: { domain?: string; subdomain?: string; keys?: string[]; path?: string } = {},
   ): Promise<string> {
     if (!this.opts.capabilities.includes('read_cookies')) {
       throw new Error(
@@ -1960,9 +1981,14 @@ export class FetchproxyServer {
       // cookieKeys at the call site (gate #1). Extension re-checks on
       // its end (gate #2).
       this.assertScopeSubset(opts.keys, this.opts.cookieKeys, 'cookieKeys');
+      const cookiePath = normalizeCookiePath(opts.path);
       const initV3: ReadCookiesInitV3 = {
+        // Origin stays BARE. The path travels as its own validated field —
+        // `assertHttpsOriginOnly` deliberately refuses a path here so one
+        // cannot be used to re-point the read past the domain gate.
         origin: `https://${host}`,
         keys: [...opts.keys],
+        ...(cookiePath !== undefined ? { path: cookiePath } : {}),
       };
       inner = { type: 'request', id, op: 'read_cookies', init: initV3 };
     } else {

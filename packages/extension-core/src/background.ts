@@ -1592,6 +1592,7 @@ async function handleReadCookiesRequest(
     req.init.keys,
     domains,
     cookieKeys,
+    req.init.path,
   );
 }
 
@@ -1667,8 +1668,11 @@ async function handleReadCookiesV3(
   keys: string[],
   domains: string[],
   declaredCookieKeys: string[],
+  path?: string,
 ): Promise<void> {
-  // Origin must be in declared domain set.
+  // Origin must be in declared domain set. Checked on the BARE origin, before
+  // any path is appended — the gate is about which host we may read, and a
+  // path must never be able to influence that decision.
   if (!isUrlAllowedForAnyDomain(origin, domains)) {
     await sendInner(mcpId, {
       type: 'response',
@@ -1711,7 +1715,10 @@ async function handleReadCookiesV3(
   const values: Record<string, string> = {};
   for (const key of keys) {
     try {
-      const got = await chrome.cookies.get({ url: origin, name: key });
+      // Path matters: chrome matches the cookie's Path against this URL's
+      // path, so a `Path=/campus` cookie is invisible at the origin root.
+      const url = path ? `${origin}${path}` : origin;
+      const got = await chrome.cookies.get({ url, name: key });
       if (got && typeof got.value === 'string') {
         values[key] = got.value;
       }
