@@ -1,18 +1,28 @@
 /**
- * @fetchproxy/bootstrap — one-shot session-capture helper for MCPs that
- * follow Pattern A.
+ * @fetchproxy/bootstrap — session-capture helper for MCPs that follow
+ * Pattern A.
  *
- * Most MCPs need to authenticate once via the user's signed-in browser
- * tab, then operate from Node directly with `fetch()`. They don't need
- * a long-lived browser bridge; they need the cookies, localStorage
- * values, and request-header captures that prove the user is signed
- * in, copied into the MCP process once at startup.
+ * Most MCPs authenticate via the user's signed-in browser tab, then operate
+ * from Node directly with `fetch()`. They don't need a long-lived browser
+ * bridge; they need the cookies, localStorage values, and request-header
+ * captures that prove the user is signed in, copied into the MCP process.
  *
- * `bootstrap()` wraps that lifecycle: spin up a `FetchproxyServer`,
- * declare the scope, read each declared bucket, close. The caller
- * gets a single `Session` blob back. ~30 lines plus types.
+ * Both entry points wrap the same lifecycle — spin up a `FetchproxyServer`,
+ * declare the scope, read each declared bucket, close — and hand back a
+ * `Session`. They differ in what you hold onto:
  *
- * The MCP imports just `bootstrap` and `Session` — it never sees
+ *   * {@link createSessionLifter} returns a **repeatable** lift. Prefer it
+ *     whenever the captured session can expire: wire it into whatever your
+ *     client uses to mint a session and every expiry re-reads the browser.
+ *     Capturing a value once instead is the single most common way to build
+ *     an MCP that works for one credential lifetime and then dies with no
+ *     way back — a browser-backed account has no password to re-login with.
+ *
+ *   * {@link bootstrap} performs exactly one lift, immediately. Right for
+ *     genuinely one-shot callers — typically a user-invoked `capture_session`
+ *     tool that persists the token itself.
+ *
+ * The MCP imports just those and `Session` — it never sees
  * `FetchproxyServer`.
  */
 import { FetchproxyServer, type FetchproxyServerOpts } from '@fetchproxy/server';
