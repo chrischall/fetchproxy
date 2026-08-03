@@ -1,4 +1,8 @@
-import { classifyBridgeError, FetchproxySessionNotReadyError } from '@fetchproxy/server';
+import {
+  classifyBridgeError,
+  FetchproxyScopeError,
+  FetchproxySessionNotReadyError,
+} from '@fetchproxy/server';
 import { EXIT, UsageError, type Io } from './output.js';
 
 /**
@@ -29,22 +33,15 @@ export function mapBridgeError(err: unknown, io: Io): number {
     return EXIT.USAGE;
   }
   // A widened declared scope is rejected by the extension's gate #2 until the
-  // user re-approves it. That arrives as a `protocol` error, so without this
-  // branch it inherited the blanket "version mismatch — update both" hint
-  // below and sent people chasing a version problem that does not exist. The
-  // actual remedy is a re-pair, and the message should say so.
+  // user re-approves. That arrives as a `protocol` error, so without this it
+  // inherits the blanket "version mismatch — update both" hint below and sends
+  // people chasing a version problem that does not exist.
   //
-  // Match on "not in declared" rather than enumerating buckets: gate #2 has
-  // eight distinct wordings (cookie / {local,session}Storage keys / storage
-  // pointer / IndexedDB keys / read_dom names / captureHeaders / indexedDbScopes
-  // / graphqlOps), and every one of them means the same thing. Enumerating them
-  // is how the first cut of this fix missed five.
-  if (/not in declared/.test(msg)) {
-    io.err(
-      `bridge error (${kind}): ${msg} — the declared scope changed since you paired. ` +
-        'Revoke this MCP in the Transporter extension popup, then re-run to re-approve ' +
-        'the new scope.',
-    );
+  // The wording knowledge now lives on the error itself (FetchproxyScopeError,
+  // server 1.10+) rather than in a regex here — the CLI is not the only
+  // consumer that needs it, and a second copy would drift from the first.
+  if (err instanceof FetchproxyScopeError) {
+    io.err(`bridge error (${kind}): ${err.originalError} — ${err.hint}`);
     return EXIT.BRIDGE;
   }
   const hints: Record<string, string> = {
