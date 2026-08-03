@@ -15,6 +15,8 @@ export {
   FetchproxyProtocolError,
   FetchproxyHttpError,
   FetchproxyBridgeDownError,
+  FetchproxyScopeError,
+  protocolErrorFrom,
   FetchproxyTimeoutError,
 } from './ws-server.js';
 export { FetchproxySessionNotReadyError, SESSION_READY_TIMEOUT_MS } from './session-ready.js';

@@ -491,6 +491,65 @@ export class FetchproxyBridgeDownError extends FetchproxyProtocolError {
 }
 
 /**
+ * 1.10.0+: the extension rejected a request because its declared scope no
+ * longer covers what was asked for (gate #2).
+ *
+ * The extension gates on the scope approved at pair time, so any MCP that
+ * widens its declarations — adding a cookie key, a DOM selector, a GraphQL op
+ * — is refused until the user re-approves. That is a routine event, not a
+ * fault, and it has exactly one remedy.
+ *
+ * Typed with a `.hint` because the remedy used to be unreachable in practice.
+ * The CLI knew how to explain it, but MCPs consume the bridge through
+ * `@fetchproxy/bootstrap`, catch failures, and re-wrap them in their own
+ * message — so users saw a bare "cookie keys not in declared set: X" bolted
+ * onto unrelated auth-config copy, with no mention of re-pairing. Putting the
+ * guidance on the error itself means every consumer can surface it the way
+ * they already surface {@link FetchproxyBridgeDownError.hint}.
+ */
+export class FetchproxyScopeError extends FetchproxyProtocolError {
+  /** The extension's raw rejection, unmodified. */
+  readonly originalError: string;
+  readonly hint: string;
+
+  constructor(originalError: string) {
+    const hint =
+      'the declared scope changed since you paired, so the extension is ' +
+      'refusing the request. Revoke this MCP in the Transporter extension ' +
+      'popup, then re-run — you will be asked to approve the new scope. ' +
+      'This is not a version problem and does not need an update.';
+    super(`${originalError} — ${hint}`);
+    this.name = 'FetchproxyScopeError';
+    this.originalError = originalError;
+    this.hint = hint;
+  }
+}
+
+/**
+ * Every gate-#2 rejection wording, in one place.
+ *
+ * Matching on "not in declared" rather than enumerating buckets is deliberate:
+ * there are nine distinct phrasings (cookie / {local,session}Storage keys /
+ * storage pointer / IndexedDB keys / read_dom names / captureHeaders /
+ * indexedDbScopes / graphqlOps), and enumerating them is precisely how the
+ * first cut of the CLI fix missed five of them.
+ */
+const SCOPE_REJECTION = /not in declared/;
+
+/**
+ * Build the right error for an extension rejection.
+ *
+ * Use this instead of `new FetchproxyProtocolError(err)` at every site that
+ * turns an `ok:false` response into a throw, so scope rejections cannot
+ * silently lose their guidance again at one forgotten call site.
+ */
+export function protocolErrorFrom(error: string): FetchproxyProtocolError {
+  return SCOPE_REJECTION.test(error)
+    ? new FetchproxyScopeError(error)
+    : new FetchproxyProtocolError(error);
+}
+
+/**
  * 0.8.0+: thrown by convenience methods when `fetchTimeoutMs` fires.
  * The lower-level `fetch()` returns `{ ok: false, kind: 'timeout' }`
  * instead (back-compat with its result-envelope shape). Subclass of
@@ -1558,7 +1617,7 @@ export class FetchproxyServer {
         port: this.opts.port,
       });
     }
-    return new FetchproxyProtocolError(result.error);
+    return protocolErrorFrom(result.error);
   }
 
   /**
@@ -1924,7 +1983,7 @@ export class FetchproxyServer {
       `https://${host}`,
     );
     if (!result.ok) {
-      throw new FetchproxyProtocolError(result.error);
+      throw protocolErrorFrom(result.error);
     }
     return result.cookies;
   }
@@ -2699,7 +2758,7 @@ export class FetchproxyServer {
           );
         }
       } else {
-        storageCb.reject(new FetchproxyProtocolError(inner.error));
+        storageCb.reject(protocolErrorFrom(inner.error));
       }
       return;
     }
@@ -2717,7 +2776,7 @@ export class FetchproxyServer {
           );
         }
       } else {
-        captureCb.reject(new FetchproxyProtocolError(inner.error));
+        captureCb.reject(protocolErrorFrom(inner.error));
       }
       return;
     }
@@ -2735,7 +2794,7 @@ export class FetchproxyServer {
           );
         }
       } else {
-        redirectCb.reject(new FetchproxyProtocolError(inner.error));
+        redirectCb.reject(protocolErrorFrom(inner.error));
       }
       return;
     }
@@ -2753,7 +2812,7 @@ export class FetchproxyServer {
           );
         }
       } else {
-        idbCb.reject(new FetchproxyProtocolError(inner.error));
+        idbCb.reject(protocolErrorFrom(inner.error));
       }
       return;
     }
@@ -2771,7 +2830,7 @@ export class FetchproxyServer {
           );
         }
       } else {
-        downloadCb.reject(new FetchproxyProtocolError(inner.error));
+        downloadCb.reject(protocolErrorFrom(inner.error));
       }
       return;
     }
@@ -2789,7 +2848,7 @@ export class FetchproxyServer {
           );
         }
       } else {
-        graphqlCb.reject(new FetchproxyProtocolError(inner.error));
+        graphqlCb.reject(protocolErrorFrom(inner.error));
       }
       return;
     }

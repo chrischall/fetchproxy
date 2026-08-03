@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { FetchproxyProtocolError } from '@fetchproxy/server';
+import { FetchproxyProtocolError, protocolErrorFrom } from '@fetchproxy/server';
 import { mapBridgeError } from '../src/bridge-errors.js';
 import { EXIT, type Io } from '../src/output.js';
 
@@ -18,7 +18,7 @@ describe('mapBridgeError — scope-diff errors are not version mismatches', () =
   it('tells the user to re-approve, not to update, on an undeclared-key error', () => {
     const io = memIo();
     const code = mapBridgeError(
-      new FetchproxyProtocolError('cookie keys not in declared set: refreshToken'),
+      protocolErrorFrom('cookie keys not in declared set: refreshToken'),
       io,
     );
     expect(code).toBe(EXIT.BRIDGE);
@@ -30,7 +30,7 @@ describe('mapBridgeError — scope-diff errors are not version mismatches', () =
 
   it('names the profile flag so the user knows what to revoke', () => {
     const io = memIo();
-    mapBridgeError(new FetchproxyProtocolError('cookie keys not in declared set: a, b'), io);
+    mapBridgeError(protocolErrorFrom('cookie keys not in declared set: a, b'), io);
     expect(io.errs.join('\n')).toMatch(/Transporter/);
   });
 
@@ -51,7 +51,7 @@ describe('mapBridgeError — scope-diff errors are not version mismatches', () =
     'graphql_query name not in declared graphqlOps: Autocomplete',
   ])('treats %j as a re-pair, not a version mismatch', (msg) => {
     const io = memIo();
-    mapBridgeError(new FetchproxyProtocolError(msg), io);
+    mapBridgeError(protocolErrorFrom(msg), io);
     const out = io.errs.join('\n');
     expect(out).not.toMatch(/version mismatch/i);
     expect(out).toMatch(/re-approve|revoke/i);
