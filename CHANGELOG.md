@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.10.0](https://github.com/chrischall/fetchproxy/compare/v1.9.1...v1.10.0) (2026-08-03)
+
+
+### Features
+
+* **server:** carry re-pair guidance on a typed scope error ([#196](https://github.com/chrischall/fetchproxy/issues/196)) ([63cbc2e](https://github.com/chrischall/fetchproxy/commit/63cbc2e9c851962fcbf11fa522f8cd72981ad56c))
+
 ## [1.9.1](https://github.com/chrischall/fetchproxy/compare/v1.9.0...v1.9.1) (2026-08-03)
 
 
