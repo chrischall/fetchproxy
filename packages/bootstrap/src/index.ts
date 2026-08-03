@@ -96,6 +96,19 @@ export interface BootstrapOpts {
    */
   storageSubdomain?: string;
   /**
+   * 1.11.0+: optional path the cookie read should target, e.g. `/campus`.
+   *
+   * `chrome.cookies.get({ url, name })` matches the cookie's `Path` attribute
+   * against the URL's path, so a cookie set with `Path=/campus` is invisible
+   * to a read aimed at the origin root. Sites that scope their session cookie
+   * to an app context — Tomcat does this by default — were therefore
+   * unreadable, and the miss was indistinguishable from "user is signed out".
+   *
+   * Only affects the cookie read; localStorage / sessionStorage / IndexedDB
+   * are origin-scoped and unaffected by path.
+   */
+  storagePath?: string;
+  /**
    * 0.4.0+: invoked once on receipt of the extension hello with the
    * joint pair code. Used by MCPs that need to surface the code on
    * stderr or via a chat notification for the user to verify against
@@ -137,7 +150,12 @@ export interface BootstrapOpts {
 export interface BootstrapServer {
   listen(): Promise<void>;
   close(): Promise<void>;
-  readCookies(opts: { keys: string[]; domain?: string; subdomain?: string }): Promise<string>;
+  readCookies(opts: {
+    keys: string[];
+    domain?: string;
+    subdomain?: string;
+    path?: string;
+  }): Promise<string>;
   readLocalStorage(opts: {
     keys: string[];
     domain?: string;
@@ -407,6 +425,8 @@ async function runOneLift(opts: BootstrapOpts): Promise<Session> {
       const joined = await server.readCookies({
         keys: opts.declare.cookies,
         ...storageDomainOpts,
+        // Cookie-only: the other buckets are origin-scoped and ignore path.
+        ...(opts.storagePath !== undefined ? { path: opts.storagePath } : {}),
       });
       for (const piece of joined.split('; ')) {
         if (!piece) continue;

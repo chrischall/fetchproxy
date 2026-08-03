@@ -1,5 +1,6 @@
 export * from './frames.js';
 export {
+  assertCookiePath,
   validateFrame,
   validateInnerFrame,
   validateCaptureHeaderDecls,

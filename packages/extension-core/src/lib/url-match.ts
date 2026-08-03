@@ -78,3 +78,16 @@ export function isTabUrlOnOrigin(tabUrl: string, targetOrigin: string): boolean 
   if (!targetHost) return false;
   return isUrlAllowedForDomain(tabUrl, targetHost);
 }
+
+/**
+ * Build the URL handed to `chrome.cookies.get`.
+ *
+ * Chrome matches the cookie's `Path` attribute against this URL's path, so a
+ * cookie set with `Path=/campus` is invisible when the URL is the bare origin.
+ *
+ * Exported for testing: the handler around it needs the whole `chrome.*`
+ * surface mocked, and the URL is the part with actual logic in it.
+ */
+export function cookieUrlFor(origin: string, path?: string): string {
+  return path ? `${origin}${path}` : origin;
+}
