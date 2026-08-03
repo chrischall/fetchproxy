@@ -60,7 +60,12 @@ import {
 import { TrustStore } from './trust-store.js';
 import { SessionKeys } from './session-keys.js';
 import { ensureDomainTab } from './ensure-domain-tab.js';
-import { isUrlAllowedForAnyDomain, isTabUrlMatch, isTabUrlOnOrigin } from './lib/url-match.js';
+import {
+  isUrlAllowedForAnyDomain,
+  isTabUrlMatch,
+  isTabUrlOnOrigin,
+  cookieUrlFor,
+} from './lib/url-match.js';
 import { normalisePendingPair } from './lib/pending-pair.js';
 import {
   scopeHash,
@@ -1715,10 +1720,7 @@ async function handleReadCookiesV3(
   const values: Record<string, string> = {};
   for (const key of keys) {
     try {
-      // Path matters: chrome matches the cookie's Path against this URL's
-      // path, so a `Path=/campus` cookie is invisible at the origin root.
-      const url = path ? `${origin}${path}` : origin;
-      const got = await chrome.cookies.get({ url, name: key });
+      const got = await chrome.cookies.get({ url: cookieUrlFor(origin, path), name: key });
       if (got && typeof got.value === 'string') {
         values[key] = got.value;
       }

@@ -3,6 +3,7 @@ import {
   KNOWN_CAPABILITIES,
   undeclaredKeys,
   validateCaptureHeaderDecls,
+  assertCookiePath,
 } from '@fetchproxy/protocol';
 import type {
   Capability,
@@ -763,14 +764,25 @@ const SUBDOMAIN_LABEL_RE = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*
  */
 function normalizeCookiePath(path?: string): string | undefined {
   if (path === undefined || path === '') return undefined;
-  if (/^[a-z][a-z0-9+.-]*:/i.test(path) || path.startsWith('//')) {
+  // Deliberately NO auto-prepending of a leading slash. An earlier draft did
+  // that as a convenience and it opened a hole: `https://evil.example.com/`
+  // became `/https://evil.example.com`, which then satisfies the guard and
+  // would be appended to a URL. Requiring an absolute path means there is ONE
+  // rule, shared with the wire, and nothing to disagree about.
+  //
+  // Running the wire guard rather than a copy also matters for the failure
+  // mode: anything the server lets through that `validateInnerFrame` refuses
+  // is dropped by the extension without a reply, so the caller waits out a 30s
+  // timeout instead of seeing an error naming the bad input.
+  const trimmed = path.endsWith('/') && path !== '/' ? path.slice(0, -1) : path;
+  try {
+    assertCookiePath(trimmed, 'path');
+  } catch (e) {
     throw new Error(
-      `FetchproxyServer: path must be a path like "/campus", not a URL or protocol-relative reference (got ${JSON.stringify(path)})`,
+      `FetchproxyServer: ${e instanceof Error ? e.message : String(e)} (got ${JSON.stringify(path)})`,
     );
   }
-  const withSlash = path.startsWith('/') ? path : `/${path}`;
-  // A trailing slash narrows the match for no benefit.
-  return withSlash.endsWith('/') && withSlash !== '/' ? withSlash.slice(0, -1) : withSlash;
+  return trimmed;
 }
 
 function assertSubdomainLabel(label: string): void {

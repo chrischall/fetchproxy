@@ -105,7 +105,7 @@ function assertHttpUrl(x: unknown, label: string): asserts x is string {
  * URL at another host (a scheme, an authority, a protocol-relative reference)
  * has to be refused here rather than trusted from the MCP side.
  */
-function assertCookiePath(x: unknown, label: string): asserts x is string {
+export function assertCookiePath(x: unknown, label: string): asserts x is string {
   assertString(x, label);
   if (!x.startsWith('/') || x.startsWith('//')) {
     throw new ProtocolError(`${label}: must be an absolute path like "/campus"`);

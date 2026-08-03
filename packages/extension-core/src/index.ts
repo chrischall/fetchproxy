@@ -6,6 +6,7 @@
 export {
   isUrlAllowedForDomain,
   isUrlAllowedForAnyDomain,
+  cookieUrlFor,
   isTabUrlMatch,
   isTabUrlOnOrigin,
 } from './lib/url-match.js';

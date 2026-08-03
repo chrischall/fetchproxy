@@ -64,18 +64,41 @@ describe('readCookies — storage path', () => {
     expect(initOf(sent[0]).path).toBeUndefined();
   });
 
-  it('normalizes a path given without a leading slash', async () => {
+  it('requires an absolute path rather than silently fixing one up', async () => {
+    // An earlier draft prepended the missing slash. That convenience turned
+    // `https://evil.example.com/` into `/https://evil.example.com`, which then
+    // passes the guard — so the fixup itself was the hole. Rejecting is both
+    // safer and leaves exactly one rule to reason about.
+    const { server } = captureInit();
+    await expect(
+      server.readCookies({ keys: ['JSESSIONID'], path: 'campus' }),
+    ).rejects.toThrow(/absolute path/);
+  });
+
+  it('trims a trailing slash, which would only narrow the match', async () => {
     const { server, sent } = captureInit();
-    void server.readCookies({ keys: ['JSESSIONID'], path: 'campus' });
+    void server.readCookies({ keys: ['JSESSIONID'], path: '/campus/' });
     await new Promise((r) => setTimeout(r, 0));
-    expect(initOf(sent[0]).origin).toBe('https://ncsis.gov');
     expect(initOf(sent[0]).path).toBe('/campus');
   });
 
-  it('rejects a path that is not a path', async () => {
+  // The server guard must reject exactly what the wire guard rejects. Anything
+  // it lets through that `validateInnerFrame` refuses is dropped by the
+  // extension WITHOUT a reply, so the caller waits out a 30s timeout instead of
+  // seeing an error that names the bad input. Both now run the same
+  // `assertCookiePath`, so they cannot disagree.
+  it.each([
+    ['query', '/campus?x=1'],
+    ['fragment', '/campus#f'],
+    ['backslash', '/campus\\..\\x'],
+    ['absolute URL', 'https://evil.example.com/'],
+    ['protocol-relative', '//evil.example.com/'],
+  ])('fails fast on a %s path instead of hanging', async (_label, path) => {
     const { server } = captureInit();
-    await expect(
-      server.readCookies({ keys: ['JSESSIONID'], path: 'https://evil.example.com/' }),
-    ).rejects.toThrow(/path/i);
+    await expect(server.readCookies({ keys: ['JSESSIONID'], path })).rejects.toThrow(
+      /FetchproxyServer/,
+    );
   });
+
+
 });
