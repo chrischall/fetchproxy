@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.9.1](https://github.com/chrischall/fetchproxy/compare/v1.9.0...v1.9.1) (2026-08-03)
+
+
+### Documentation
+
+* **bootstrap:** point the module header at createSessionLifter ([#193](https://github.com/chrischall/fetchproxy/issues/193)) ([81334fa](https://github.com/chrischall/fetchproxy/commit/81334fa0dc27a23847f2e84b8dc11fa68c44595e)), closes [#192](https://github.com/chrischall/fetchproxy/issues/192)
+
 ## [1.9.0](https://github.com/chrischall/fetchproxy/compare/v1.8.0...v1.9.0) (2026-08-02)
 
 
