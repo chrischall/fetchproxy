@@ -1009,3 +1009,49 @@ describe('connections-changed live update', () => {
     expect(renderCount).toBe(2);
   });
 });
+
+describe('pair popup — cookie names when write_cookies is granted', () => {
+  let container: HTMLElement;
+
+  beforeEach(() => {
+    document.body.innerHTML = '<div id="root"></div>';
+    container = document.getElementById('root')!;
+  });
+
+  const pending = (capabilities: string[]) => ({
+    mode: 'pending-pair' as const,
+    pending: {
+      serverName: 'creditkarma-mcp',
+      version: '2.4.0',
+      domains: ['creditkarma.com'],
+      capabilities,
+      cookieKeys: ['CKAT', 'CKTRKID'],
+      pairCode: '881-231',
+    },
+    onApprove: () => undefined,
+    onCancel: () => undefined,
+  });
+
+  it('heads the list as read-only when only read_cookies is asked for', () => {
+    renderPopup(container, pending(['fetch', 'read_cookies']) as never);
+
+    expect(container.textContent).toContain('Read cookies');
+    expect(container.textContent).toContain('CKAT');
+    expect(container.textContent).not.toMatch(/overwrite/i);
+  });
+
+  it('says the names are writable when write_cookies is asked for', () => {
+    // This sub-list is the ONLY place the cookie names appear. Heading it
+    // "Read cookies" while granting a write understates the request at the
+    // exact moment the user decides — the capability line above it says
+    // "Overwrite", so the two would contradict each other.
+    renderPopup(container, pending(['fetch', 'read_cookies', 'write_cookies']) as never);
+
+    const dt = [...container.querySelectorAll('dt')].map((n) => n.textContent ?? '');
+    const heading = dt.find((t) => /cookies/i.test(t) && !/localStorage|sessionStorage/i.test(t));
+
+    expect(heading).toMatch(/overwrite/i);
+    expect(container.textContent).toContain('CKAT');
+    expect(container.textContent).toContain('CKTRKID');
+  });
+});

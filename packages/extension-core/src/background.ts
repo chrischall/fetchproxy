@@ -1856,6 +1856,20 @@ export function cookieSetDetailsFor(
 }
 
 /**
+ * Error text for a batch that failed partway through.
+ *
+ * Names what landed, because "the write failed" and "the write failed after
+ * rotating two of your three cookies" call for different recovery, and the
+ * caller cannot tell them apart from a bare message.
+ */
+function partialWriteError(name: string, cause: string, written: string[]): string {
+  const base = `failed to write cookie ${name}: ${cause}`;
+  return written.length === 0
+    ? `${base} (no cookies were changed)`
+    : `${base} (already written: ${written.join(', ')} — the jar is partially updated)`;
+}
+
+/**
  * 1.12.0+: overwrite the value of cookies the MCP is already trusted to read.
  *
  * The only write path in the bridge. It exists because sites that ROTATE a
@@ -1889,20 +1903,6 @@ export function cookieSetDetailsFor(
  * this verb exists to prevent. `hostOnly` decides whether `domain` may be sent
  * at all: Chrome rejects `domain` on a host-only cookie.
  */
-/**
- * Error text for a batch that failed partway through.
- *
- * Names what landed, because "the write failed" and "the write failed after
- * rotating two of your three cookies" call for different recovery, and the
- * caller cannot tell them apart from a bare message.
- */
-function partialWriteError(name: string, cause: string, written: string[]): string {
-  const base = `failed to write cookie ${name}: ${cause}`;
-  return written.length === 0
-    ? `${base} (no cookies were changed)`
-    : `${base} (already written: ${written.join(', ')} — the jar is partially updated)`;
-}
-
 async function handleWriteCookiesRequest(
   mcpId: string,
   req: InnerRequestWriteCookies,

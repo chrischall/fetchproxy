@@ -690,7 +690,17 @@ export function renderPopup(root: HTMLElement, state: PopupState): void {
   // 0.3.0+: itemise each non-empty scope array. The user approves the
   // exact set of names, not just "this MCP can read storage" — so the
   // pair popup MUST show them.
-  appendScopeSubList(dl, 'Read cookies', pending.cookieKeys);
+  //
+  // 1.12.0+: `cookieKeys` is also the writable set when `write_cookies` is
+  // granted, and this sub-list is the only place those names appear. Heading
+  // it "Read cookies" there would understate the request at the moment the
+  // user decides — and contradict the capability line above, which says
+  // "Overwrite …".
+  appendScopeSubList(
+    dl,
+    pending.capabilities.includes('write_cookies') ? 'Read and overwrite cookies' : 'Read cookies',
+    pending.cookieKeys,
+  );
   appendScopeSubList(dl, 'Read localStorage', pending.localStorageKeys);
   appendScopeSubList(dl, 'Read sessionStorage', pending.sessionStorageKeys);
   appendCaptureHeadersSubList(dl, pending.captureHeaders);
