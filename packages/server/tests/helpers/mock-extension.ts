@@ -60,13 +60,18 @@ export async function connectMockExtension(
   });
 
   const serverHellos = new Map<string, { sessionNonce: string }>();
-  const helloWaiters: ((mcpId: string) => void)[] = [];
+  // Keyed by mcpId, because a concentrator announces every MCP on one socket.
+  // Draining a flat list on each hello woke waiters for OTHER ids and dropped
+  // them, so a caller waiting on two MCPs only ever settled by timing out —
+  // harmless with today's single-id callers, and a trap for the next one.
+  const helloWaiters = new Map<string, (() => void)[]>();
   ws.on('message', (data) => {
     try {
       const frame = validateFrame(JSON.parse(data.toString()));
       if (frame.type === 'hello' && frame.role === 'server') {
         serverHellos.set(frame.mcpId, { sessionNonce: frame.sessionNonce });
-        for (const w of helloWaiters.splice(0)) w(frame.mcpId);
+        for (const wake of helloWaiters.get(frame.mcpId) ?? []) wake();
+        helloWaiters.delete(frame.mcpId);
       }
     } catch {
       /* ignore */
@@ -78,11 +83,12 @@ export async function connectMockExtension(
     if (seen) return seen;
     await new Promise<void>((resolve, reject) => {
       const timer = setTimeout(() => reject(new Error(`no server hello for ${mcpId}`)), 5_000);
-      helloWaiters.push(() => {
-        if (!serverHellos.has(mcpId)) return;
+      const waiting = helloWaiters.get(mcpId) ?? [];
+      waiting.push(() => {
         clearTimeout(timer);
         resolve();
       });
+      helloWaiters.set(mcpId, waiting);
     });
     return serverHellos.get(mcpId)!;
   };

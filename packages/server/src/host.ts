@@ -223,7 +223,7 @@ export async function startHost(opts: HostOpts): Promise<HostHandle> {
             // An unreadable pin is the one state where carrying on would
             // quietly mean "trust anybody".
             console.error(`[fetchproxy] ${String(e)}`);
-            extensionClaim = null;
+            if (extensionClaim === ws) extensionClaim = null;
             ws.close(1008, 'extension pin unreadable');
             return;
           }
@@ -236,7 +236,7 @@ export async function startHost(opts: HostOpts): Promise<HostHandle> {
           });
           if (outcome.decision === 'refused') {
             console.warn(outcome.message);
-            extensionClaim = null;
+            if (extensionClaim === ws) extensionClaim = null;
             ws.close(1008, 'extension identity is not the pinned one');
             return;
           }
@@ -248,7 +248,12 @@ export async function startHost(opts: HostOpts): Promise<HostHandle> {
           // extension would be refused "already connected" until the process
           // restarts. Check liveness, not just identity.
           if (closed || ws.readyState !== WebSocket.OPEN) {
-            extensionClaim = null;
+            // Only OUR claim. The close handler may already have released it
+            // and a newer connection may hold it by now: clearing
+            // unconditionally would drop that one, letting two sockets past
+            // the guard and both reach `extensionWs` — the interleaving this
+            // claim exists to prevent, reintroduced by its own cleanup.
+            if (extensionClaim === ws) extensionClaim = null;
             return;
           }
           // Pin on first use, or replace a pin the operator chose to drop —
