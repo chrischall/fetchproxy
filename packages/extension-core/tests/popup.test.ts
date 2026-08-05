@@ -1055,3 +1055,38 @@ describe('pair popup — cookie names when write_cookies is granted', () => {
     expect(container.textContent).toContain('CKTRKID');
   });
 });
+
+describe('pair popup — renders when capabilities is absent', () => {
+  let container: HTMLElement;
+
+  beforeEach(() => {
+    document.body.innerHTML = '<div id="root"></div>';
+    container = document.getElementById('root')!;
+  });
+
+  it('falls back rather than throwing when capabilities is omitted', () => {
+    // `caps` exists precisely because callers may omit `capabilities`. Reading
+    // `pending.capabilities` directly for the cookie heading reintroduced the
+    // crash that guard was written to prevent — and it fails in the pair
+    // popup, the one UI the user depends on to see what they are approving.
+    // A popup that throws renders nothing, which is worse than a wrong label.
+    const state = {
+      mode: 'pending-pair' as const,
+      pending: {
+        serverName: 'creditkarma-mcp',
+        version: '2.4.0',
+        domains: ['creditkarma.com'],
+        cookieKeys: ['CKAT'],
+        pairCode: '881-231',
+      },
+      onApprove: () => undefined,
+      onCancel: () => undefined,
+    };
+
+    expect(() => renderPopup(container, state as never)).not.toThrow();
+    // And it still shows the names, headed as a read — the fallback is
+    // ['fetch'], which grants no cookie access at all.
+    expect(container.textContent).toContain('CKAT');
+    expect(container.textContent).toContain('Read cookies');
+  });
+});
