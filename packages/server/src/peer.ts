@@ -1,6 +1,8 @@
 import { WebSocket } from 'ws';
 import {
+  concatBytes,
   ecdhX25519,
+  ed25519Verify,
   fromB64,
   hkdfSha256,
   HKDF_SESSION_INFO,
@@ -13,12 +15,18 @@ import {
   type DomSelectorDecl,
   type GraphqlOpDeclaration,
   type StoragePointerDecl,
+  type HelloFrameFromExtension,
   type InnerFrame,
 } from '@fetchproxy/protocol';
 import { buildServerHello } from './build-server-hello.js';
 import { SessionState } from './session.js';
 import { awaitSessionReady } from './session-ready.js';
 import type { Identity } from './identity.js';
+import {
+  decideExtensionTrust,
+  type ExtensionPin,
+  type ExtensionTrustPort,
+} from './extension-trust.js';
 
 export interface PeerOpts {
   host: string;
@@ -43,6 +51,25 @@ export interface PeerOpts {
   sessionStoragePointers?: StoragePointerDecl[];
   domSelectors?: DomSelectorDecl[];
   graphqlOps?: GraphqlOpDeclaration[];
+  /**
+   * 1.12.0+ (#208): this MCP's pin on the extension's identity. Same store the
+   * host path uses — a peer that becomes the host after an election must
+   * recognise the same browser it recognised as a peer.
+   */
+  extensionTrust: ExtensionTrustPort;
+  /**
+   * 1.12.0+ (#208): refuse to derive a session when the host forwards no
+   * extension hello, instead of proceeding with a warning.
+   *
+   * A peer can only authenticate the extension from material the host relays,
+   * and hosts before 1.12.0 relay none. Since whichever MCP wins the port
+   * election is arbitrary, a strict default would break a mixed-version local
+   * fleet at random — so the default warns. Deployments where the concentrator
+   * is not a peer process on the same laptop should set this.
+   *
+   * @default false
+   */
+  requireExtensionIdentity?: boolean;
 }
 
 /**
@@ -160,11 +187,133 @@ export async function startPeer(opts: PeerOpts): Promise<InternalPeerHandle> {
     rejectFirstReady = reject;
   });
 
+  // 1.12.0 (#208): the extension hello, once the host has relayed it. Null
+  // means "this host does not relay it" — an older concentrator.
+  let extensionHello: HelloFrameFromExtension | null = null;
+  let warnedUnverifiable = false;
+  // `undefined` = not read yet; `null` = read, nothing pinned. See the note in
+  // `authenticateExtension` for why this is cached rather than re-read.
+  let cachedPin: ExtensionPin | null | undefined = undefined;
+
+  /**
+   * Decide whether the extension behind this host may open a session with us:
+   * its signature over `(ourHelloNonce || itsHelloNonce)` must verify, and its
+   * identity must be the one we pinned (or the first we have seen). Pins on
+   * success, since the signature is what makes committing meaningful.
+   */
+  const authenticateExtension = async (sessionSig: string): Promise<boolean> => {
+    if (!extensionHello) {
+      if (opts.requireExtensionIdentity) {
+        console.error(
+          `[fetchproxy] ${opts.serverName}: the concentrator does not forward the extension's ` +
+            `identity, so this session cannot be verified — refusing. Upgrade the MCP holding ` +
+            `the bridge port to 1.12.0 or later.`,
+        );
+        return false;
+      }
+      if (!warnedUnverifiable) {
+        warnedUnverifiable = true;
+        console.warn(
+          `[fetchproxy] ${opts.serverName}: the concentrator does not forward the extension's ` +
+            `identity (pre-1.12.0), so this peer cannot verify which browser it is talking to. ` +
+            `Upgrade the MCP holding the bridge port to close this.`,
+        );
+      }
+      return true;
+    }
+
+    const payload = concatBytes(sessionNonce, fromB64(extensionHello.sessionNonce));
+    let sigOk = false;
+    try {
+      sigOk = await ed25519Verify(
+        fromB64(extensionHello.identityEd25519Pub),
+        payload,
+        fromB64(sessionSig),
+      );
+    } catch {
+      sigOk = false;
+    }
+    if (!sigOk) {
+      console.warn(
+        `[fetchproxy] ${opts.serverName}: extension session signature invalid — refusing ` +
+          `(the concentrator may be answering in the browser's place)`,
+      );
+      return false;
+    }
+
+    // Read the pin ONCE per peer, not once per ready. The extension
+    // renegotiates on every MV3 eviction, and a disk read on that path widens
+    // the window between "the extension is back" and "this peer's session key
+    // has caught up" — during which a call is sealed with the stale key and
+    // then rejected by the renegotiation. Nothing else writes this file while
+    // we hold it, and a pin deleted underneath a live process should not
+    // silently downgrade it mid-session anyway.
+    if (cachedPin === undefined) {
+      try {
+        cachedPin = await opts.extensionTrust.read();
+      } catch (e) {
+        console.error(`[fetchproxy] ${String(e)}`);
+        return false;
+      }
+    }
+    const pin = cachedPin;
+    const outcome = decideExtensionTrust({
+      pin,
+      hello: extensionHello,
+      allowNew: opts.extensionTrust.allowNew,
+      serverName: opts.serverName,
+      location: opts.extensionTrust.location,
+    });
+    if (outcome.decision === 'refused') {
+      console.warn(outcome.message);
+      return false;
+    }
+    if (outcome.decision === 'replace') console.warn(outcome.message);
+    if (outcome.decision !== 'pinned') {
+      try {
+        const written = {
+          identityX25519Pub: extensionHello.identityX25519Pub,
+          identityEd25519Pub: extensionHello.identityEd25519Pub,
+          pinnedAt: Date.now(),
+        };
+        await opts.extensionTrust.write(written);
+        cachedPin = written;
+      } catch (e) {
+        console.error(`[fetchproxy] could not persist the extension pin: ${String(e)}`);
+      }
+    }
+    return true;
+  };
+
   const onMessage = async (data: WebSocket.RawData): Promise<void> => {
     try {
       const raw = JSON.parse(data.toString());
       const frame = validateFrame(raw);
+      // 1.12.0 (#208): the host relays the extension's hello so a peer can
+      // authenticate the far end of its own session. Before 1.12.0 no host
+      // sent this, which is why its absence is handled rather than assumed.
+      if (frame.type === 'hello' && frame.role === 'extension') {
+        extensionHello = frame;
+        return;
+      }
       if (frame.type === 'ready' && frame.mcpId === opts.mcpId) {
+        // #208: authenticate the extension BEFORE deriving anything from a
+        // key it supplied. Without this, anything that could reach us could BE
+        // the extension with no key material at all.
+        //
+        // It does not make the session private against something already in
+        // the middle: the signature covers the two nonces and NOT
+        // `extensionSessionPub`, so a concentrator relaying a genuine hello
+        // and a genuine signature can still substitute its own ephemeral key
+        // and derive the same secret we do. See docs/SECURITY.md
+        // §T-host-MITM, and the residual pinned by
+        // `extension-pin-peer.test.ts`.
+        const authorised = await authenticateExtension(frame.sessionSig);
+        if (!authorised) {
+          ws.close(1008, 'extension identity refused');
+          rejectFirstReady(new Error('peer: extension identity refused'));
+          return;
+        }
         // Derive a fresh sessionKey from this ready's ephemeral pub.
         const extPub = fromB64(frame.extensionSessionPub);
         const shared = await ecdhX25519(opts.identity.x25519Priv, extPub);

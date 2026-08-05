@@ -33,16 +33,12 @@ export function defaultIdentityDir(): string {
 }
 
 /**
- * Read the identity for `serverName` from `dir`, generating + persisting
- * a fresh X25519/Ed25519 keypair if no file exists. The file is written
- * with mode 0o600 (single-user only). Callers must use a safe
- * `serverName` — scoped packages like `@fetchproxy/example-mcp` are OK
- * and get their `/` translated to `_` for the filename.
+ * The filename stem for `serverName`, rejecting anything that could escape the
+ * identity directory. Scoped packages (`@fetchproxy/example-mcp`) are legal and
+ * get their `/` translated to `_` — which means the stem is NOT a round-trip of
+ * the server name, so callers that hold a stem must not feed it back in here.
  */
-export async function loadOrCreateIdentity(
-  serverName: string,
-  dir: string = defaultIdentityDir(),
-): Promise<Identity> {
+export function safeIdentityFileBase(serverName: string): string {
   // Reject empty, path-traversal, and disallowed characters.
   if (
     !serverName ||
@@ -53,7 +49,21 @@ export async function loadOrCreateIdentity(
     throw new Error(`unsafe serverName for identity file: ${JSON.stringify(serverName)}`);
   }
   // Allow scoped packages (@scope/name) by translating / to _.
-  const safeFile = serverName.replace(/\//g, '_');
+  return serverName.replace(/\//g, '_');
+}
+
+/**
+ * Read the identity for `serverName` from `dir`, generating + persisting
+ * a fresh X25519/Ed25519 keypair if no file exists. The file is written
+ * with mode 0o600 (single-user only). Callers must use a safe
+ * `serverName` — scoped packages like `@fetchproxy/example-mcp` are OK
+ * and get their `/` translated to `_` for the filename.
+ */
+export async function loadOrCreateIdentity(
+  serverName: string,
+  dir: string = defaultIdentityDir(),
+): Promise<Identity> {
+  const safeFile = safeIdentityFileBase(serverName);
   const path = join(dir, `${safeFile}.json`);
   await mkdir(dir, { recursive: true, mode: 0o700 });
   try {

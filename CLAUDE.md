@@ -78,6 +78,20 @@ the bind fails with `EADDRINUSE`, the MCP dials the existing host as a
 3. **Pair code** = `SHA256(mcpPub || extPub)[0..3] mod 1_000_000`
    formatted as `XXX-XXX`. Binds both identities so a relay can't
    pose as the extension to a real MCP (or vice versa). 0.4.0+.
+3b. **The MCP pins the extension too** (1.12.0+, #208) —
+   `~/.fetchproxy/identity/<server-name>.extension-trust.json`, TOFU,
+   written only after the ready signature verifies, refused with 1008
+   on a mismatch. The mirror of `trustedMcps`. Ways out:
+   `fpx trust list|clear <server>`, or
+   `FETCHPROXY_TRUST_NEW_EXTENSION=1` for an MCP you don't own.
+   The same change makes PEERS verify the ready signature — until
+   1.12.0 they verified nothing at all. The host now relays the
+   extension hello to peers so they CAN check; a peer behind a
+   pre-1.12.0 host warns and proceeds unless `requireExtensionIdentity`
+   is set. NOTE the signature covers `(mcpNonce || extNonce)` and NOT
+   `extensionSessionPub`, so a relay forwarding genuine frames can still
+   swap the ephemeral pub and MITM the session — `T-host-MITM` is
+   narrowed, not closed. Fixing it is a wire change on both sides.
 4. **Capabilities** declared in hello frame, approved at pair time,
    stored in the trust record. Tightening (or widening) the
    capability set forces a re-pair with diff UI. `graphql` is one

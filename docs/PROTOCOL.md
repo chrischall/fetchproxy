@@ -153,7 +153,15 @@ The extension's hello carries no crypto material — its identity is "the only W
 
 **Only one extension is active at a time.** A second extension that connects is closed with `1008 "extension already connected"`.
 
+**1.12.0+: the host relays this frame to every peer**, and to a peer that joins later. A peer has to authenticate the extension behind the concentrator before deriving a session key from a `ready` the concentrator handed it (see below), and the identity + nonce in this hello are the only material that lets it. Peers before 1.12.0 ignore the frame; hosts before 1.12.0 never send it, so a 1.12.0 peer behind an older host warns and proceeds unless `requireExtensionIdentity` is set.
+
+**1.12.0+: the MCP pins this identity.** The first extension to complete a handshake is recorded at `~/.fetchproxy/identity/<server-name>.extension-trust.json`, and a later hello carrying a different `identityX25519Pub`/`identityEd25519Pub` is refused with `1008` before any session exists — the mirror of the extension's own `trustedMcps`. The pin is written only after the `ready` signature verifies, so claiming an identity is never enough to become the pinned one. `fpx trust list` / `fpx trust clear <server-name>` and `FETCHPROXY_TRUST_NEW_EXTENSION=1` are the deliberate ways out; see `docs/SECURITY.md` §T-fake-extension.
+
 #### `ready` (extension → host → server)
+
+The signature binds both endpoints' nonces, and **both the host and (1.12.0+) peers verify it** before deriving a session key. That proves the extension on the other end is the one whose hello arrived — it cannot be produced without the extension's Ed25519 private key.
+
+**It does not bind `extensionSessionPub`.** A relay that forwards the genuine hellos and the genuine signature can still substitute its own ephemeral public key here and derive the same shared secret as the receiving MCP. Verifying the signature does not make the session private against something already positioned in the middle; see `docs/SECURITY.md` §T-host-MITM.
 
 After the user approves a new pair (or auto-trust hits for a known identity), the extension generates an ephemeral X25519 keypair, computes the session key, and sends:
 
@@ -423,6 +431,8 @@ Frame routing rule (executed inside the host):
 | extension | yes  | decrypt locally, dispatch inner |
 | extension | no   | forward verbatim to `peers.get(mcpId).ws` |
 | peer      | always | forward verbatim to the extension |
+
+1.12.0+ adds one non-`mcpId`-keyed relay: the extension's own `hello` goes to every peer (on extension connect, and on peer registration when an extension is already attached). It carries no secret — identity pubs and a nonce — and without it a peer cannot tell which browser it is talking to.
 
 Host shutdown: peers see WS close and re-race the port. Whoever wins becomes the new host; others reconnect as peers. There is a brief blip (~100 ms) but no state loss because trust + session derivation are stateless given the identity keys.
 

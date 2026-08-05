@@ -1,12 +1,18 @@
 /**
  * Long-term identity keypair for the fetchproxy browser extension.
  *
- * 0.4.0+ mutual-auth design: the MCP server's trust record stores the
- * extension's identity pubs (X25519 + Ed25519). On each subsequent
- * connection, the MCP-side host verifies the extension hello's
- * `sessionSig` against the stored Ed25519 pub. A fake-extension process
- * dialing the WS port can't forge a matching signature, so the MCP
- * tears the WS down before any inner traffic flows.
+ * 0.4.0+ mutual-auth design: the MCP verifies the `ready` frame's
+ * `sessionSig` against the Ed25519 pub in this identity, so a
+ * fake-extension process dialing the WS port can't forge a matching
+ * signature and the MCP tears the WS down before any inner traffic flows.
+ *
+ * This docblock used to say the MCP "stores" those pubs and checks each
+ * connection against the stored ones. It didn't — until 1.12.0 (#208) the
+ * check was against the identity presented in the same connection, which is
+ * freshness, not continuity. It stores them now, which is what makes this
+ * identity's PERSISTENCE load-bearing rather than incidental: a re-install
+ * mints a new one, and every MCP will refuse it until the user re-pairs
+ * deliberately.
  *
  * Persisted in `chrome.storage.local` under `extensionIdentity`. Same
  * shape as MCP identity (raw 32-byte priv + pub for each algorithm,

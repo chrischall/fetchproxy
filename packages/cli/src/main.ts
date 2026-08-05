@@ -2,7 +2,7 @@ import { rmSync } from 'node:fs';
 import type { bootstrap } from '@fetchproxy/bootstrap';
 import { parseCliArgs } from './args.js';
 import {
-  cliHome, emptyProfile, getProfile, identityPath, loadProfiles, saveProfiles,
+  cliHome, emptyProfile, extensionPinPath, getProfile, identityPath, loadProfiles, saveProfiles,
 } from './profiles.js';
 import { EXIT, UsageError, printJson, type Io } from './output.js';
 import { runFetch, type VerbServerFactory } from './verbs/fetch.js';
@@ -11,6 +11,7 @@ import { runSession } from './verbs/session.js';
 import { runDom } from './verbs/dom.js';
 import { runDownload } from './verbs/download.js';
 import { runHealth, runPair } from './verbs/health.js';
+import { runTrust } from './verbs/trust.js';
 import { VERSION } from './version.js';
 
 const USAGE = `fpx ${VERSION} — fetchproxy CLI: authenticated fetches through your signed-in browser tab
@@ -20,6 +21,7 @@ const USAGE = `fpx ${VERSION} — fetchproxy CLI: authenticated fetches through 
   fpx profile list | show <name> | remove <name>
   fpx pair -p <name> [--domain <apex>] [--subdomain <label>]
   fpx health -p <name>
+  fpx trust list | clear <server-name> | clear --all
   fpx get <url> -p <name> [--json] [-H 'K: V']… [--via-tab <url>]
   fpx post-json <url> <body|@file> -p <name> [--json] [-H …]… [--via-tab <url>]
   fpx request <url> -p <name> [-X METHOD] [-H …]… [-d body|@file] [--json] [--via-tab <url>]
@@ -107,6 +109,9 @@ export async function runCli(argv: string[], io: Io, deps: CliDeps = {}): Promis
         delete all[cmd.name];
         saveProfiles(all, home);
         rmSync(identityPath(cmd.name, deps.identityDir), { force: true });
+        // …and the pin beside it, or a profile re-created under this name
+        // inherits a browser identity it never paired with (#208).
+        rmSync(extensionPinPath(cmd.name, deps.identityDir), { force: true });
         io.err(`profile "${cmd.name}" removed — also revoke fpx-${cmd.name} in the Transporter extension popup`);
         return EXIT.OK;
       }
@@ -122,6 +127,8 @@ export async function runCli(argv: string[], io: Io, deps: CliDeps = {}): Promis
         return await runDownload(cmd, getProfile(cmd.profile, home), io, deps.makeServer);
       case 'health':
         return await runHealth(cmd, getProfile(cmd.profile, home), io, deps.makeServer);
+      case 'trust':
+        return await runTrust(cmd, io, deps.identityDir);
       case 'pair':
         return await runPair(cmd, getProfile(cmd.profile, home), io, deps.makeServer);
     }

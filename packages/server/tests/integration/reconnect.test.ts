@@ -27,9 +27,22 @@ const enc = new TextEncoder();
  * Helper: connect a mock extension to the host, complete the mutual-auth
  * handshake, and return everything needed to exchange encrypted frames.
  */
-async function connectMockExtension(port: number) {
-  const extIdX = await generateX25519();
-  const extIdEd = await generateEd25519();
+/**
+ * #208: the real extension persists its identity in `chrome.storage.local`, so
+ * a reconnect presents the SAME identity pubs with a fresh session nonce. The
+ * MCP now pins that identity, so a mock that minted a new keypair per connect
+ * was modelling a browser nobody has — and would be refused, correctly.
+ */
+async function newMockExtensionIdentity() {
+  return { x25519: await generateX25519(), ed25519: await generateEd25519() };
+}
+
+async function connectMockExtension(
+  port: number,
+  identity?: Awaited<ReturnType<typeof newMockExtensionIdentity>>,
+) {
+  const extIdX = identity?.x25519 ?? (await generateX25519());
+  const extIdEd = identity?.ed25519 ?? (await generateEd25519());
   const extSessionNonce = new Uint8Array(32);
   crypto.getRandomValues(extSessionNonce);
 
@@ -126,7 +139,8 @@ describe('extension reconnect (session-key renegotiation)', () => {
     await server.connect();
 
     // First connection — complete handshake and verify a fetch round-trips.
-    const ext1 = await connectMockExtension(port);
+    const browser = await newMockExtensionIdentity();
+    const ext1 = await connectMockExtension(port, browser);
 
     // Wire up a responder on ext1 for fetch requests.
     const ext1Handler = (data: WebSocket.RawData) => {
@@ -168,7 +182,7 @@ describe('extension reconnect (session-key renegotiation)', () => {
     await new Promise((r) => setTimeout(r, 50));
 
     // Reconnect with a fresh handshake — new ephemeral keys.
-    const ext2 = await connectMockExtension(port);
+    const ext2 = await connectMockExtension(port, browser);
 
     // Wire up a responder on ext2.
     ext2.ws.on('message', (data: WebSocket.RawData) => {
@@ -280,13 +294,14 @@ describe('extension reconnect (session-key renegotiation)', () => {
     await server.listen();
     await server.connect();
 
-    const ext1 = await connectMockExtension(port);
+    const browser = await newMockExtensionIdentity();
+    const ext1 = await connectMockExtension(port, browser);
     const ext1Closed = new Promise<void>((r) => ext1.ws.on('close', () => r()));
     ext1.ws.close();
     await ext1Closed;
     await new Promise((r) => setTimeout(r, 50));
 
-    const ext2 = await connectMockExtension(port);
+    const ext2 = await connectMockExtension(port, browser);
 
     // Wire up responder for the second session.
     ext2.ws.on('message', (data: WebSocket.RawData) => {
@@ -331,9 +346,13 @@ describe('extension reconnect (session-key renegotiation)', () => {
  * keyed by `mcpId` so the test can route encrypted frames to the right
  * session key after the host has multiplexed two server hellos in.
  */
-async function connectMockExtensionMulti(port: number, expectedMcps: number) {
-  const extIdX = await generateX25519();
-  const extIdEd = await generateEd25519();
+async function connectMockExtensionMulti(
+  port: number,
+  expectedMcps: number,
+  identity?: Awaited<ReturnType<typeof newMockExtensionIdentity>>,
+) {
+  const extIdX = identity?.x25519 ?? (await generateX25519());
+  const extIdEd = identity?.ed25519 ?? (await generateEd25519());
   const extSessionNonce = new Uint8Array(32);
   crypto.getRandomValues(extSessionNonce);
 
@@ -496,7 +515,8 @@ describe('extension reconnect (peer MCPs)', () => {
     }
 
     // First extension connect — handshakes with both MCPs.
-    const ext1 = await connectMockExtensionMulti(port, 2);
+    const browser = await newMockExtensionIdentity();
+    const ext1 = await connectMockExtensionMulti(port, 2, browser);
     wireResponder(ext1.ws, ext1.sessions, 'first');
 
     // Sanity check: peer fetch works on the first session.
@@ -516,7 +536,7 @@ describe('extension reconnect (peer MCPs)', () => {
 
     // The new extension WS handshakes again with both MCPs — fresh
     // ephemeral keys, fresh session keys on both ends of each pair.
-    const ext2 = await connectMockExtensionMulti(port, 2);
+    const ext2 = await connectMockExtensionMulti(port, 2, browser);
     wireResponder(ext2.ws, ext2.sessions, 'second');
 
     // The host MCP's fetch should keep working (covered by the host-side
@@ -570,7 +590,8 @@ describe('extension reconnect (peer MCPs)', () => {
 
     // Connect extension but never answer the fetch — we want to observe
     // the in-flight rejection path, not an upstream response.
-    const ext1 = await connectMockExtensionMulti(port, 2);
+    const browser = await newMockExtensionIdentity();
+    const ext1 = await connectMockExtensionMulti(port, 2, browser);
 
     const inflight = peer.fetch({
       url: 'https://peer.example.com/slow',
@@ -585,7 +606,7 @@ describe('extension reconnect (peer MCPs)', () => {
     const ext1Closed = new Promise<void>((r) => ext1.ws.on('close', () => r()));
     ext1.ws.close();
     await ext1Closed;
-    const ext2 = await connectMockExtensionMulti(port, 2);
+    const ext2 = await connectMockExtensionMulti(port, 2, browser);
 
     const result = await inflight;
     expect(result.ok).toBe(false);

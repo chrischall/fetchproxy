@@ -43,6 +43,21 @@ export function identityPath(
   return join(identityDir, `fpx-${name}.json`);
 }
 
+/**
+ * The extension pin that sits beside a profile's identity (#208).
+ *
+ * Paired with `identityPath` deliberately: removing a profile has to take both.
+ * Leaving the pin behind means a profile of the same name created later starts
+ * life already committed to a browser identity it never met — inheriting a
+ * refusal, or a trust, that nobody in this installation decided.
+ */
+export function extensionPinPath(
+  name: string,
+  identityDir: string = join(homedir(), '.fetchproxy', 'identity'),
+): string {
+  return join(identityDir, `fpx-${name}.extension-trust.json`);
+}
+
 export function emptyProfile(domains: string[]): Profile {
   return {
     domains,

@@ -17,6 +17,8 @@ export type Command =
       domSelectors: DomSelectorDecl[]; download: boolean; cookieWrite: boolean }
   | { kind: 'pair'; profile: string; domain?: string; subdomain?: string }
   | { kind: 'health'; profile: string }
+  | { kind: 'trust'; action: 'list'; json: boolean }
+  | { kind: 'trust'; action: 'clear'; serverName?: string; all?: boolean }
   | { kind: 'fetch'; profile: string; method: string; url: string;
       headers: Record<string, string>; body?: string; json: boolean; viaTab?: string }
   | { kind: 'read'; profile: string; bucket: Bucket; keys: string[];
@@ -82,6 +84,7 @@ export function parseCliArgs(
       options: {
         profile: { type: 'string', short: 'p' },
         json: { type: 'boolean', default: false },
+        all: { type: 'boolean', default: false },
         header: { type: 'string', short: 'H', multiple: true, default: [] },
         data: { type: 'string', short: 'd' },
         method: { type: 'string', short: 'X' },
@@ -157,6 +160,39 @@ export function parseCliArgs(
     };
   }
   if (cmd === 'health') return { kind: 'health', profile: requireProfile(values.profile) };
+  if (cmd === 'trust') {
+    const sub = rest[0];
+    if (sub === 'list' || sub === undefined) {
+      return { kind: 'trust', action: 'list', json: values.json ?? false };
+    }
+    if (sub === 'clear') {
+      // A bare `clear` is refused: dropping every pin is a real decision (a
+      // fleet re-pairs on the next connection), so it takes saying `--all`
+      // rather than happening by omitting an argument.
+      const named = rest[1];
+      if (values.all) {
+        // Naming a server AND asking for all of them is two different
+        // intentions in one command; silently doing the broader one is the
+        // wrong guess to make about a security control.
+        if (named) {
+          throw new UsageError(
+            'fpx trust clear takes a server name or --all, not both',
+            `drop just one with: fpx trust clear ${named}`,
+          );
+        }
+        return { kind: 'trust', action: 'clear', all: true };
+      }
+      const serverName = named;
+      if (!serverName) {
+        throw new UsageError(
+          'fpx trust clear requires a server name (or --all)',
+          'e.g. fpx trust clear opentable-mcp — --all re-pairs every MCP, which is what an extension re-install needs',
+        );
+      }
+      return { kind: 'trust', action: 'clear', serverName };
+    }
+    throw new UsageError(`unknown trust subcommand ${JSON.stringify(sub)}`, 'expected: list | clear <server-name>');
+  }
   if (cmd === 'session') {
     return {
       kind: 'session', profile: requireProfile(values.profile),

@@ -55,3 +55,18 @@ export {
 // Batch-paging primitives that pair with the fan-out kit above.
 export { chunk, sleep } from './batch.js';
 export type { Capability, FetchInit } from '@fetchproxy/protocol';
+// #208: the pin an MCP holds on the extension's identity. Exported so a tool
+// (fpx, an MCP's own healthcheck) can show what is pinned and drop one on
+// purpose — a refusal the user cannot inspect or undo is a refusal they will
+// route around.
+export {
+  clearExtensionPin,
+  decideExtensionTrust,
+  extensionTrustPath,
+  fileExtensionTrust,
+  readExtensionPin,
+  writeExtensionPin,
+  TRUST_NEW_EXTENSION_ENV,
+} from './extension-trust.js';
+export type { ExtensionPin, ExtensionTrustPort, TrustOutcome } from './extension-trust.js';
+export { defaultIdentityDir } from './identity.js';
