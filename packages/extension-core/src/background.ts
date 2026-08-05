@@ -484,7 +484,7 @@ declare const chrome: {
       sameSite?: string;
       expirationDate?: number;
       storeId?: string;
-    }) => Promise<unknown>;
+    }) => Promise<ChromeCookie | null>;
   };
   webRequest?: {
     onBeforeSendHeaders: {
@@ -1919,7 +1919,15 @@ async function handleWriteCookiesRequest(
   const written: string[] = [];
   for (const { decl, existing } of targets) {
     try {
-      await chrome.cookies.set(cookieSetDetailsFor(url, decl, existing));
+      // Chrome resolves the written Cookie on success and `null` on failure
+      // WITHOUT throwing. Reporting `written` on "didn't throw" alone would
+      // hand back a success for a write that never landed — the same silent
+      // staleness this verb exists to prevent.
+      const result = await chrome.cookies.set(cookieSetDetailsFor(url, decl, existing));
+      if (!result) {
+        await fail(`failed to write cookie ${decl.name}: chrome.cookies.set returned null`);
+        return;
+      }
       written.push(decl.name);
     } catch (e) {
       await fail(`failed to write cookie ${decl.name}: ${String(e)}`);
