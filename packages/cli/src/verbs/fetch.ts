@@ -73,6 +73,11 @@ export async function runFetch(
   makeServer: VerbServerFactory = defaultServerFactory,
 ): Promise<number> {
   const domain = assertUrlOnProfile(cmd.url, profile);
+  // Check the relay tab the same way and at the same time as the request URL.
+  // The server guards it too, but that guard only fires after the bridge is
+  // up, turning a typo into exit 2 ("bridge error") when it is plainly a usage
+  // error — and making the user wait on a connection to be told so (#209).
+  if (cmd.viaTab !== undefined) assertUrlOnProfile(cmd.viaTab, profile);
   const server = makeServer({
     ...serverOptsFor(cmd.profile, profile, VERSION),
     onPairCode: pairCodePrinter(io),

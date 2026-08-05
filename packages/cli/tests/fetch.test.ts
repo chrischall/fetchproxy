@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { runFetch, type VerbServer } from '../src/verbs/fetch.js';
 import { emptyProfile } from '../src/profiles.js';
-import { EXIT, type Io } from '../src/output.js';
+import { EXIT, UsageError, type Io } from '../src/output.js';
 import { FetchproxySessionNotReadyError } from '@fetchproxy/server';
 
 function memIo(): Io & { outs: string[]; errs: string[] } {
@@ -129,5 +129,39 @@ describe('runFetch — --via-tab', () => {
       CMD.url,
       expect.objectContaining({ viaTab: undefined }),
     );
+  });
+});
+
+describe('runFetch — --via-tab is validated like the request URL', () => {
+  // The request URL is checked against the profile before connecting, so a
+  // typo is exit 1 with guidance. --via-tab skipped that check, so the same
+  // class of mistake travelled to the bridge and came back as exit 2 — a
+  // "bridge error" for what is purely a usage error (#209).
+  it('rejects a malformed relay tab as a usage error', async () => {
+    const server = stubServer();
+    await expect(
+      runFetch({ ...CMD, viaTab: 'not a url' }, PROFILE, memIo(), () => server),
+    ).rejects.toThrow(UsageError);
+    // Must fail before connecting — no bridge round-trip for a typo.
+    expect(server.listen).not.toHaveBeenCalled();
+  });
+
+  it('rejects an off-domain relay tab as a usage error', async () => {
+    const server = stubServer();
+    await expect(
+      runFetch({ ...CMD, viaTab: 'https://evil.example/' }, PROFILE, memIo(), () => server),
+    ).rejects.toThrow(UsageError);
+    expect(server.listen).not.toHaveBeenCalled();
+  });
+
+  it('accepts a relay tab on a declared domain', async () => {
+    const server = stubServer();
+    const code = await runFetch(
+      { ...CMD, viaTab: 'https://www.tripadvisor.com/' },
+      PROFILE,
+      memIo(),
+      () => server,
+    );
+    expect(code).toBe(EXIT.OK);
   });
 });
