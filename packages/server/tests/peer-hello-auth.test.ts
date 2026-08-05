@@ -12,6 +12,7 @@ import { startHost, type HostHandle } from '../src/host.js';
 import { electRole } from '../src/election.js';
 import { loadOrCreateIdentity } from '../src/identity.js';
 import { buildServerHello } from '../src/build-server-hello.js';
+import type { ExtensionPin, ExtensionTrustPort } from '../src/extension-trust.js';
 
 /**
  * FP-C: peer (role:'server') registration was unauthenticated — any local
@@ -22,6 +23,18 @@ import { buildServerHello } from '../src/build-server-hello.js';
  * second live connection that claims an already-mapped mcpId with a DIFFERENT
  * identity. A same-identity re-dial (legitimate reconnect) is still allowed.
  */
+/** #208: startHost now requires a trust store; these tests want a blank one. */
+function blankTrust(): ExtensionTrustPort {
+  let pin: ExtensionPin | null = null;
+  return {
+    allowNew: false,
+    read: async () => pin,
+    write: async (next) => {
+      pin = next;
+    },
+  };
+}
+
 describe('authenticated peer hello (FP-C)', () => {
   let host: HostHandle | null = null;
 
@@ -55,6 +68,7 @@ describe('authenticated peer hello (FP-C)', () => {
       ownServerName: 'opentable-mcp',
       ownVersion: '0.9.1',
       ownDomains: ['opentable.com'],
+      extensionTrust: blankTrust(),
     });
     return { idDir, port };
   }

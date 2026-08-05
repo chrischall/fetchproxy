@@ -39,10 +39,7 @@ export function defaultIdentityDir(): string {
  * `serverName` — scoped packages like `@fetchproxy/example-mcp` are OK
  * and get their `/` translated to `_` for the filename.
  */
-export async function loadOrCreateIdentity(
-  serverName: string,
-  dir: string = defaultIdentityDir(),
-): Promise<Identity> {
+export function safeIdentityFileBase(serverName: string): string {
   // Reject empty, path-traversal, and disallowed characters.
   if (
     !serverName ||
@@ -53,7 +50,14 @@ export async function loadOrCreateIdentity(
     throw new Error(`unsafe serverName for identity file: ${JSON.stringify(serverName)}`);
   }
   // Allow scoped packages (@scope/name) by translating / to _.
-  const safeFile = serverName.replace(/\//g, '_');
+  return serverName.replace(/\//g, '_');
+}
+
+export async function loadOrCreateIdentity(
+  serverName: string,
+  dir: string = defaultIdentityDir(),
+): Promise<Identity> {
+  const safeFile = safeIdentityFileBase(serverName);
   const path = join(dir, `${safeFile}.json`);
   await mkdir(dir, { recursive: true, mode: 0o700 });
   try {

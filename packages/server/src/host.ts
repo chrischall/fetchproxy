@@ -26,6 +26,7 @@ import { buildServerHello } from './build-server-hello.js';
 import { SessionState } from './session.js';
 import { awaitSessionReady } from './session-ready.js';
 import type { Identity } from './identity.js';
+import { decideExtensionTrust, type ExtensionTrustPort } from './extension-trust.js';
 
 // Reject WS upgrades from public origins (drive-by webpage defense).
 // Browsers send Origin: <scheme>://<host>[:<port>] on WS upgrades from
@@ -65,6 +66,17 @@ export interface HostOpts {
    * host doesn't need to surface the code, omit it.
    */
   onPairCode?: (code: string) => void;
+  /**
+   * 1.12.0+ (#208): where this MCP's pin on the extension's identity lives.
+   *
+   * REQUIRED, and deliberately not defaulted. A default would have to be the
+   * file store under `$HOME`, which means every caller that forgot to think
+   * about it — including a unit test — would either write into the user's real
+   * identity directory or, worse, be handed a store that answers "no pin" and
+   * so trusts anybody. Making it an argument means each caller states what its
+   * trust store is.
+   */
+  extensionTrust: ExtensionTrustPort;
 }
 
 export interface HostHandle {
@@ -154,6 +166,10 @@ export async function startHost(opts: HostOpts): Promise<HostHandle> {
   // signature against the claimed Ed25519 identity. One extension per
   // host instance; cleared on disconnect.
   let extensionHello: HelloFrameFromExtension | null = null;
+  // 1.12.0 (#208): this connection's identity is not yet in the trust store
+  // (first contact, or an operator-allowed replacement) and should be written
+  // there the moment its signature verifies.
+  let pinOnReady = false;
 
   wss.on('connection', (ws) => {
     let identified: 'extension' | 'peer' | null = null;
@@ -176,6 +192,37 @@ export async function startHost(opts: HostOpts): Promise<HostHandle> {
             ws.close(1008, 'extension already connected');
             return;
           }
+          // #208: is this the extension we paired with? Checked HERE, before
+          // the connection becomes the extension slot, so a stranger never
+          // reaches the session machinery at all. The pin is only WRITTEN
+          // later, once the ready signature has proved the key — claiming an
+          // identity must not be enough to become the pinned one.
+          let pin: Awaited<ReturnType<ExtensionTrustPort['read']>>;
+          try {
+            pin = await opts.extensionTrust.read();
+          } catch (e) {
+            // An unreadable pin is the one state where carrying on would
+            // quietly mean "trust anybody".
+            console.error(`[fetchproxy] ${String(e)}`);
+            ws.close(1008, 'extension pin unreadable');
+            return;
+          }
+          const outcome = decideExtensionTrust({
+            pin,
+            hello: frame,
+            allowNew: opts.extensionTrust.allowNew,
+            serverName: opts.ownServerName,
+            location: opts.extensionTrust.location,
+          });
+          if (outcome.decision === 'refused') {
+            console.warn(outcome.message);
+            ws.close(1008, 'extension identity is not the pinned one');
+            return;
+          }
+          if (outcome.decision === 'replace') console.warn(outcome.message);
+          // Pin on first use, or replace a pin the operator chose to drop —
+          // but only after the ready frame proves the key (see below).
+          pinOnReady = outcome.decision !== 'pinned';
           identified = 'extension';
           extensionWs = ws;
           extensionHello = frame;
@@ -194,6 +241,10 @@ export async function startHost(opts: HostOpts): Promise<HostHandle> {
               console.error('[fetchproxy] onPairCode threw:', e);
             }
           }
+          // 1.12.0 (#208): relay this hello to every peer, so a peer can
+          // authenticate the extension behind us instead of taking whatever
+          // `ready` we hand it on trust. Peers before 1.12.0 ignore the frame.
+          for (const slot of peers.values()) slot.ws.send(JSON.stringify(frame));
           // Send own hello first.
           ws.send(JSON.stringify(ownHello));
           // Then forward any peer hellos that arrived earlier.
@@ -249,6 +300,9 @@ export async function startHost(opts: HostOpts): Promise<HostHandle> {
           peerMcpId = frame.mcpId;
           peers.set(frame.mcpId, { ws, helloFrame: frame });
           if (extensionWs) extensionWs.send(JSON.stringify(frame));
+          // 1.12.0 (#208): a peer joining an already-connected extension needs
+          // the same identity material a peer that was here first receives.
+          if (extensionHello) ws.send(JSON.stringify(extensionHello));
           return;
         }
 
@@ -283,6 +337,25 @@ export async function startHost(opts: HostOpts): Promise<HostHandle> {
               );
               ws.close(1008, 'extension session signature invalid');
               return;
+            }
+            // #208: the signature just proved this connection holds the key
+            // it presented, which is the only moment at which committing to
+            // it is meaningful. Written before the session derives so a pin
+            // is never skipped by a later failure.
+            if (pinOnReady) {
+              pinOnReady = false;
+              try {
+                await opts.extensionTrust.write({
+                  identityX25519Pub: extensionHello.identityX25519Pub,
+                  identityEd25519Pub: extensionHello.identityEd25519Pub,
+                  pinnedAt: Date.now(),
+                });
+              } catch (e) {
+                // Don't take the session down over a failed write — the
+                // handshake itself was sound. But say so: an MCP that cannot
+                // persist its pin will trust on first use again next boot.
+                console.error(`[fetchproxy] could not persist the extension pin: ${String(e)}`);
+              }
             }
             // Derive our own session key. The ECDH + HKDF calls are async
             // and yield to the event loop — the extension WS may close
@@ -356,6 +429,7 @@ export async function startHost(opts: HostOpts): Promise<HostHandle> {
       if (identified === 'extension' && extensionWs === ws) {
         extensionWs = null;
         extensionHello = null;
+        pinOnReady = false;
         if (!ownSession) {
           rejectOwnSession(new Error('extension disconnected before ready'));
         }

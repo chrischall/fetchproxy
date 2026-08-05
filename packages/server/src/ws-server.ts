@@ -21,6 +21,11 @@ import { electRole } from './election.js';
 import { startHost, type HostHandle } from './host.js';
 import { startPeer, type PeerHandle } from './peer.js';
 import { loadOrCreateIdentity, type Identity } from './identity.js';
+import {
+  allowNewExtensionIdentity,
+  fileExtensionTrust,
+  type ExtensionTrustPort,
+} from './extension-trust.js';
 import { classifyFetchError, type FetchErrorKind } from './error-kind.js';
 import { classifyBridgeError, type BridgeError } from './classify-bridge-error.js';
 
@@ -153,6 +158,37 @@ export interface FetchproxyServerOpts {
    * @default '~/.fetchproxy/identity/'
    */
   identityDir?: string;
+  /**
+   * 1.12.0+ (#208): accept an extension identity that is NOT the one this MCP
+   * pinned, replacing the pin with it.
+   *
+   * The MCP commits to the first extension that completes a handshake and
+   * refuses a different one afterwards — the mirror of the extension's own
+   * `trustedMcps`. A legitimate re-install mints a new identity, so there has
+   * to be a way to say "yes, that new browser is mine": this is it.
+   *
+   * Leave it undefined and the `FETCHPROXY_TRUST_NEW_EXTENSION=1` environment
+   * variable answers instead, which is the only lever that reaches an MCP
+   * whose source you are not editing. Setting it explicitly wins over the
+   * environment in both directions.
+   *
+   * @default false (or the environment variable, when unset)
+   */
+  allowNewExtensionIdentity?: boolean;
+  /**
+   * 1.12.0+ (#208): when this MCP is a PEER rather than the concentrator,
+   * refuse to open a session unless the concentrator forwards the extension's
+   * identity so it can be verified and pinned.
+   *
+   * A peer only sees what the concentrator relays, and concentrators before
+   * 1.12.0 relay no identity at all. Because the port election picks the
+   * concentrator arbitrarily, defaulting this to `true` would break a
+   * mixed-version fleet at random, so the default warns loudly instead. Set it
+   * where the concentrator is not simply another MCP on the same laptop.
+   *
+   * @default false
+   */
+  requireExtensionIdentity?: boolean;
   /**
    * 0.4.0+: invoked once on receipt of the extension hello, with the
    * joint pair code derived from `SHA256(mcpPub || extPub)`. Used by
@@ -936,6 +972,8 @@ interface ResolvedOpts {
   keepAliveIntervalMs: number;
   keepAliveMaxIdleMs: number;
   identityDir?: string;
+  allowNewExtensionIdentity?: boolean;
+  requireExtensionIdentity?: boolean;
   onPairCode?: (code: string) => void;
 }
 
@@ -1188,6 +1226,8 @@ export class FetchproxyServer {
       keepAliveIntervalMs: opts.keepAliveIntervalMs ?? 20_000,
       keepAliveMaxIdleMs: opts.keepAliveMaxIdleMs ?? 5 * 60 * 1000,
       identityDir: opts.identityDir,
+      allowNewExtensionIdentity: opts.allowNewExtensionIdentity,
+      requireExtensionIdentity: opts.requireExtensionIdentity,
       onPairCode: opts.onPairCode,
     };
   }
@@ -1302,6 +1342,7 @@ export class FetchproxyServer {
         ownDomSelectors: this.opts.domSelectors,
         ownGraphqlOps: this.opts.graphqlOps,
         onPairCode: this.opts.onPairCode,
+        extensionTrust: this.extensionTrust(),
       });
       this.hostHandle.onOwnInner((inner) => this.onInner(inner));
       this.hostHandle.onExtensionDisconnect(() => {
@@ -1334,6 +1375,8 @@ export class FetchproxyServer {
         sessionStoragePointers: this.opts.sessionStoragePointers,
         domSelectors: this.opts.domSelectors,
         graphqlOps: this.opts.graphqlOps,
+        extensionTrust: this.extensionTrust(),
+        requireExtensionIdentity: this.opts.requireExtensionIdentity,
       });
       this.peerHandle.onInner((inner) => this.onInner(inner));
       // Mirror the host's onExtensionDisconnect → rejectAllPending wiring.
@@ -1522,6 +1565,24 @@ export class FetchproxyServer {
    */
   markActive(): void {
     this.noteActivityForKeepalive();
+  }
+
+  /**
+   * #208: this MCP's pin on the extension's identity, stored beside its own
+   * identity key and so following `identityDir` wherever the caller put it.
+   *
+   * `allowNewExtensionIdentity` falls back to an environment variable when the
+   * caller expressed no opinion, because the thirteen MCPs that construct this
+   * class are separate packages: an operator whose extension re-install has
+   * just locked all of them out needs one lever that does not require patching
+   * every one of them.
+   */
+  private extensionTrust(): ExtensionTrustPort {
+    return fileExtensionTrust({
+      serverName: this.opts.serverName,
+      dir: this.opts.identityDir,
+      allowNew: allowNewExtensionIdentity(this.opts.allowNewExtensionIdentity),
+    });
   }
 
   private noteActivityForKeepalive(): void {

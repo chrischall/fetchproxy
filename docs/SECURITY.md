@@ -23,6 +23,7 @@ This document tracks 0.2.0. Two structural changes vs. 0.0.x / 0.1.x bear on the
 | Arbitrary JS execution in your tabs | The protocol has no `eval_js`, `inject_script`, or equivalent. `graphql` is NOT this — it can only invoke a page-declared GraphQL operation through the page's own Apollo client, never arbitrary page code. See [§T-graphql-misuse](#t-graphql-misuse--graphql-capability-misuse). |
 | Storage exfiltration | `read_storage`, `read_indexeddb`, etc. don't exist. `read_cookies` is a deliberate, narrow opt-in. |
 | An MCP tampering with your session | The one write verb, `write_cookies`, can only overwrite cookies the MCP already declares readable, only on declared domains, only when the cookie already exists, and only under its own approved capability. See [§T-cookie-write](#t-cookie-write--write_cookies-capability-misuse). |
+| Something else answering as your browser | The MCP pins the extension's identity on first pair and refuses a different one — the mirror of `trustedMcps`. See [§T-fake-extension](#t-fake-extension--something-else-answering-as-the-browser). 1.12.0+. |
 | Multi-user machine sniffing | Out of scope. Localhost binding only. |
 
 ## Local trust boundary
@@ -164,6 +165,24 @@ where `ciphertext` is `AES-256-GCM(sessionKey, iv, JSON(innerFrame))` with a 16-
 Replay protection: receivers track the highest seen `seq` per direction per session and reject anything `<= lastInbound`. WS guarantees ordering, so we don't have to tolerate gaps.
 
 **Residual risk:** The host can drop or delay peer traffic (denial of service against peers). It cannot read or modify it. If the host crashes, peers race the port and one wins; the takeover is invisible to peers because trust + session derivation are stateless given the identity keys.
+
+**1.12.0 correction — this claim was not true on the peer path until 1.12.0.** The paragraphs above describe the intent, and the intent held for the host's own session from 0.4.0. It did not hold for peers, and the reason is worth stating plainly rather than quietly fixing: a peer derived its session key from `ready.extensionSessionPub` and verified *nothing* — no signature, no identity. So the concentrator could put its own ephemeral public key in that frame, derive the same shared secret with the peer, and read and rewrite everything the peer believed was end-to-end encrypted, forwarding to the real extension to keep the illusion. "The host never holds the IKM" is only true when the peer authenticates whose ephemeral key it is deriving against.
+
+1.12.0 closes it with the material 0.4.0 already defined: the host relays the extension's hello to every peer, and a peer verifies `Ed25519Sign(extPriv, ownHelloNonce || extHelloNonce)` against it before deriving anything — the same check `host.ts` does for its own session. A concentrator cannot produce that signature without the extension's private key.
+
+One compatibility seam remains, deliberately: concentrators before 1.12.0 relay no hello, so a 1.12.0 peer behind an older host has nothing to verify against. It warns loudly and proceeds, because the port election picks the concentrator arbitrarily and refusing would break a mixed-version fleet at random. `requireExtensionIdentity: true` turns that warning into a refusal, and should be set anywhere the concentrator is not simply another MCP on the same laptop. **The peer path's guarantee is only in force once every MCP on the machine is ≥1.12.0.**
+
+### T-fake-extension — Something else answering as the browser
+
+Until 1.12.0 an MCP's answer to "which browser is this?" was "whichever one said hello". `host.ts` verified the ready signature against the identity presented *in the same connection* — proof that the connecting party holds the key it just showed us, and no evidence at all that it is the party we paired with — and `peer.ts` verified nothing (above). The extension has pinned the MCP since 0.2.0 (`trustedMcps`, keyed by the SHA-256 of its X25519 pub); nothing pinned in the other direction.
+
+On loopback that asymmetry is the [local trust boundary](#local-trust-boundary) doing its job: the only thing that can reach `127.0.0.1:37149` is a local process, and a local process under your account is already inside the model. It stops being harmless the moment the far end of that socket can be something other than a process on this machine — a relayed or hosted bridge, for example. There, "whichever extension said hello" means a stolen relay credential buys a working session with every bridged MCP: the attacker's browser sees every request those MCPs make (URLs, headers, bodies) and answers them with content of its choosing, and there is no prompt anywhere, because the MCP has nothing to compare against and the user's browser is not involved.
+
+**Defense — the MCP pins the extension too.** First contact is trusted and remembered (`~/.fetchproxy/identity/<server-name>.extension-trust.json`, mode 0600, written only after the ready signature proves the key). A different identity afterwards is refused before any session exists, on both the host and peer paths. This is the mirror of `trustedMcps`, and it uses the same TOFU shape the extension uses.
+
+**Getting out of it deliberately.** A legitimate extension re-install mints a new identity and would otherwise lock every MCP out at once, so the refusal names the exact file, `fpx trust list` / `fpx trust clear <server-name>` shows and drops pins, and `FETCHPROXY_TRUST_NEW_EXTENSION=1` re-pairs an MCP whose source you do not own. Each of those is a deliberate act; none of them happen by accident.
+
+**Residual risk:** the pin is a file beside the MCP's own private key, so a local process that can write there can delete it and force a fresh first contact — the same boundary the identity key itself has, and not something a file store can close. What the pin closes is the case where the attacker is *not* on this machine and cannot touch that file. Trust-on-first-use also assumes the first contact is yours; on loopback that is near-certain, on a network endpoint it is an assumption worth naming.
 
 **A malformed-but-legitimate response degrades gracefully, not fatally.** A peer's incoming `frame` can fail to open in two very different ways, and the code distinguishes them (`openEncryptedFrameDetailed` in `packages/protocol/src/seal.ts`):
 

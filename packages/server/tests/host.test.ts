@@ -12,6 +12,19 @@ import { startHost, type HostHandle } from '../src/host.js';
 import { electRole } from '../src/election.js';
 import { loadOrCreateIdentity } from '../src/identity.js';
 import { buildServerHello } from '../src/build-server-hello.js';
+import type { ExtensionPin, ExtensionTrustPort } from '../src/extension-trust.js';
+
+/** #208: startHost now requires a trust store; these tests want a blank one. */
+function blankTrust(): ExtensionTrustPort {
+  let pin: ExtensionPin | null = null;
+  return {
+    allowNew: false,
+    read: async () => pin,
+    write: async (next) => {
+      pin = next;
+    },
+  };
+}
 
 describe('host (concentrator)', () => {
   let host: HostHandle | null = null;
@@ -36,6 +49,7 @@ describe('host (concentrator)', () => {
       ownServerName: 'opentable-mcp',
       ownVersion: '0.9.1',
       ownDomains: ['opentable.com'],
+      extensionTrust: blankTrust(),
     });
 
     const ws = new WebSocket(`ws://127.0.0.1:${port}`);
@@ -91,6 +105,7 @@ describe('host (concentrator)', () => {
       ownServerName: 'opentable-mcp',
       ownVersion: '0.9.1',
       ownDomains: ['opentable.com'],
+      extensionTrust: blankTrust(),
     });
 
     // Connect with an Origin header that simulates a public webpage.
@@ -118,6 +133,7 @@ describe('host (concentrator)', () => {
       ownServerName: 'opentable-mcp',
       ownVersion: '0.9.1',
       ownDomains: ['opentable.com'],
+      extensionTrust: blankTrust(),
     });
 
     // Mock extension: open the WS, send hello, then disconnect without ready.
@@ -175,6 +191,7 @@ describe('host (concentrator)', () => {
       ownServerName: 'opentable-mcp',
       ownVersion: '0.9.1',
       ownDomains: ['opentable.com'],
+      extensionTrust: blankTrust(),
     });
 
     // Pretend to be the extension. Generate a real identity so the
@@ -258,6 +275,7 @@ describe('host (concentrator)', () => {
       ownServerName: 'opentable-mcp',
       ownVersion: '0.9.1',
       ownDomains: ['opentable.com'],
+      extensionTrust: blankTrust(),
     });
 
     const ws = new WebSocket(`ws://127.0.0.1:${port}`);
@@ -293,6 +311,7 @@ describe('host (concentrator)', () => {
       ownServerName: 'opentable-mcp',
       ownVersion: '0.9.1',
       ownDomains: ['opentable.com'],
+      extensionTrust: blankTrust(),
     });
 
     // Attach extension first.
@@ -367,6 +386,7 @@ describe('host (concentrator)', () => {
       ownServerName: 'opentable-mcp',
       ownVersion: '0.9.1',
       ownDomains: ['opentable.com'],
+      extensionTrust: blankTrust(),
     });
 
     // Attach the extension so peer→extension frame forwarding is live.
@@ -454,6 +474,7 @@ describe('host (concentrator)', () => {
       ownServerName: 'opentable-mcp',
       ownVersion: '0.9.1',
       ownDomains: ['opentable.com'],
+      extensionTrust: blankTrust(),
     });
 
     const extHello: HelloFrameFromExtension = {
