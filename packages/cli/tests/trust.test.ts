@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parseCliArgs } from '../src/args.js';
@@ -158,6 +158,26 @@ describe('fpx trust', () => {
     const rec3 = io();
     await runTrust({ kind: 'trust', action: 'list', json: false }, ioAdapter(rec3), dir);
     expect(rec3.out.join('\n')).toMatch(/no extension pins/i);
+  });
+
+  it('surfaces a filesystem failure as itself, not as "no such pin"', async () => {
+    // The fallback used to be reached by catching ANY throw, so a permissions
+    // problem on the identity directory was reported as a missing pin —
+    // sending the reader after a file that is right there.
+    if (process.getuid?.() === 0) return; // root ignores the mode
+    await writeFile(join(dir, '@fetchproxy_example-mcp.extension-trust.json'), PIN);
+    await chmod(dir, 0o500);
+    try {
+      await expect(
+        runTrust(
+          { kind: 'trust', action: 'clear', serverName: '@fetchproxy/example-mcp' },
+          ioAdapter(io()),
+          dir,
+        ),
+      ).rejects.toThrow(/EACCES|EPERM/);
+    } finally {
+      await chmod(dir, 0o700);
+    }
   });
 
   it('clears a scoped MCP, whose pin file name is not its server name', async () => {

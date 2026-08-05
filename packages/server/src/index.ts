@@ -69,4 +69,4 @@ export {
   TRUST_NEW_EXTENSION_ENV,
 } from './extension-trust.js';
 export type { ExtensionPin, ExtensionTrustPort, TrustOutcome } from './extension-trust.js';
-export { defaultIdentityDir } from './identity.js';
+export { defaultIdentityDir, safeIdentityFileBase } from './identity.js';

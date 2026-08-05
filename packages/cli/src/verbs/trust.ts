@@ -1,6 +1,6 @@
 import { readdir, readFile, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
-import { clearExtensionPin, defaultIdentityDir } from '@fetchproxy/server';
+import { clearExtensionPin, defaultIdentityDir, safeIdentityFileBase } from '@fetchproxy/server';
 import type { Command } from '../args.js';
 import { EXIT, printJson, UsageError, type Io } from '../output.js';
 
@@ -107,16 +107,26 @@ async function listPins(dir: string): Promise<PinnedEntry[]> {
  * and unusable at the same time.
  */
 async function clearPin(nameOrStem: string, identityDir: string): Promise<boolean> {
+  // Ask FIRST whether this is a legal server name, rather than trying and
+  // treating any throw as "must have been a stem". A `catch` here swallows
+  // real filesystem failures — an EACCES on the identity directory would come
+  // back as "no extension pin for X", sending someone to look for a missing
+  // file when the problem is permissions on one that exists.
+  let isServerName = true;
   try {
-    return await clearExtensionPin(nameOrStem, identityDir);
+    safeIdentityFileBase(nameOrStem);
   } catch {
-    // Not a legal server name — try it as the stem the listing showed.
-    const pins = await listPins(identityDir);
-    const match = pins.find((p) => p.pinFile === nameOrStem);
-    if (!match) throw new UsageError(`no extension pin for ${nameOrStem}`);
-    await unlink(match.file);
-    return true;
+    isServerName = false;
   }
+  if (isServerName) return clearExtensionPin(nameOrStem, identityDir);
+
+  // Otherwise it can only be the stem the listing printed for a name it could
+  // not recover. Anything that goes wrong from here is reported as itself.
+  const pins = await listPins(identityDir);
+  const match = pins.find((p) => p.pinFile === nameOrStem);
+  if (!match) throw new UsageError(`no extension pin for ${nameOrStem}`);
+  await unlink(match.file);
+  return true;
 }
 
 export async function runTrust(
