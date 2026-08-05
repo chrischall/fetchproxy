@@ -698,7 +698,11 @@ export function renderPopup(root: HTMLElement, state: PopupState): void {
   // "Overwrite …".
   appendScopeSubList(
     dl,
-    pending.capabilities.includes('write_cookies') ? 'Read and overwrite cookies' : 'Read cookies',
+    // `caps`, not `pending.capabilities` — the local above is the guarded
+    // form, and it exists because callers may omit the field. Reading it
+    // directly throws, and a popup that throws renders nothing at all, which
+    // is a worse outcome than a wrong heading.
+    caps.includes('write_cookies') ? 'Read and overwrite cookies' : 'Read cookies',
     pending.cookieKeys,
   );
   appendScopeSubList(dl, 'Read localStorage', pending.localStorageKeys);
