@@ -150,6 +150,49 @@ describe('the host pins the extension it paired with', () => {
     ext.close();
   });
 
+  it('does not wedge the bridge when the extension leaves during the pin read', async () => {
+    // The pin read is awaited, so the socket can close inside it. Claiming the
+    // extension slot for a socket that is already gone would leave `extensionWs`
+    // pointing at a dead connection — and since its close event has already
+    // fired, nothing would ever clear it: every later extension is refused
+    // "already connected" until the process restarts.
+    let releaseRead!: () => void;
+    let readStarted!: () => void;
+    const started = new Promise<void>((r) => {
+      readStarted = r;
+    });
+    const gate = new Promise<void>((r) => {
+      releaseRead = r;
+    });
+    const trust: ExtensionTrustPort = {
+      allowNew: false,
+      read: async () => {
+        readStarted();
+        await gate;
+        return null;
+      },
+      write: async () => {},
+    };
+    const port = await startTestHost(trust);
+
+    const leaving = await connectMockExtension(port);
+    await started;
+    leaving.close();
+    await leaving.closed();
+    // The server has to have PROCESSED the close before the read resolves —
+    // that ordering is the whole bug, and without the pause the handler wins
+    // the race and tidies up after itself.
+    await new Promise((r) => setTimeout(r, 50));
+    releaseRead();
+    await new Promise((r) => setTimeout(r, 20));
+
+    // The browser comes back, as it does after every MV3 eviction.
+    const returning = await connectMockExtension(port);
+    await returning.completeHandshake(MCP_ID);
+    await expect(host!.sendOwnInner({ type: 'ping' })).resolves.toBeUndefined();
+    returning.close();
+  });
+
   it('refuses rather than serving when the pin cannot be read', async () => {
     // Fail closed: an unreadable pin file is the one state in which "carry on"
     // would silently mean "trust anyone".

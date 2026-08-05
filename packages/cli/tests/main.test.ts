@@ -64,14 +64,19 @@ describe('runCli', () => {
     expect(loadProfiles(home).r.domSelectors).toEqual([{ name: 'title', selector: 'h1.final' }]);
   });
 
-  it('profile remove deletes entry and identity file', async () => {
+  it('profile remove deletes entry, identity file and extension pin', async () => {
     const io = memIo();
     await runCli(['profile', 'add', 'r', '--domain', 'resy.com'], io, { home });
     const idFile = join(identityDir, 'fpx-r.json');
+    // #208: the pin lives beside the identity, and a profile re-created under
+    // this name must not inherit a browser identity it never paired with.
+    const pinFile = join(identityDir, 'fpx-r.extension-trust.json');
     writeFileSync(idFile, '{}');
+    writeFileSync(pinFile, '{}');
     expect(await runCli(['profile', 'remove', 'r'], io, { home, identityDir })).toBe(EXIT.OK);
     expect(loadProfiles(home)).toEqual({});
     expect(existsSync(idFile)).toBe(false);
+    expect(existsSync(pinFile)).toBe(false);
     expect(io.errs.join('\n')).toMatch(/extension popup/);
   });
 

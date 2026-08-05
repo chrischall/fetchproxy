@@ -2,7 +2,7 @@ import { rmSync } from 'node:fs';
 import type { bootstrap } from '@fetchproxy/bootstrap';
 import { parseCliArgs } from './args.js';
 import {
-  cliHome, emptyProfile, getProfile, identityPath, loadProfiles, saveProfiles,
+  cliHome, emptyProfile, extensionPinPath, getProfile, identityPath, loadProfiles, saveProfiles,
 } from './profiles.js';
 import { EXIT, UsageError, printJson, type Io } from './output.js';
 import { runFetch, type VerbServerFactory } from './verbs/fetch.js';
@@ -109,6 +109,9 @@ export async function runCli(argv: string[], io: Io, deps: CliDeps = {}): Promis
         delete all[cmd.name];
         saveProfiles(all, home);
         rmSync(identityPath(cmd.name, deps.identityDir), { force: true });
+        // …and the pin beside it, or a profile re-created under this name
+        // inherits a browser identity it never paired with (#208).
+        rmSync(extensionPinPath(cmd.name, deps.identityDir), { force: true });
         io.err(`profile "${cmd.name}" removed — also revoke fpx-${cmd.name} in the Transporter extension popup`);
         return EXIT.OK;
       }

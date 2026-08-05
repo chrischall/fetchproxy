@@ -4,10 +4,14 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
+  ecdhX25519,
   ed25519Sign,
+  fromB64,
   generateEd25519,
   generateX25519,
+  hkdfSha256,
   validateFrame,
+  HKDF_SESSION_INFO,
   type HelloFrameFromExtension,
   type HelloFrameFromServer,
 } from '@fetchproxy/protocol';
@@ -19,17 +23,24 @@ import type { ExtensionPin, ExtensionTrustPort } from '../src/extension-trust.js
 /**
  * #208, peer path — which turns out to be more than a missing pin.
  *
- * A peer derives its session key from `ready.extensionSessionPub` and verifies
- * NOTHING: not a signature, not an identity. So a concentrator could put its
- * own ephemeral public key in that frame, derive the same shared secret with
- * the peer, and read and rewrite everything the peer thought was end-to-end
- * encrypted — the exact attack `T-host-MITM` in docs/SECURITY.md says is closed.
- * It is closed for the HOST's own session (0.4.0 mutual auth) and was never
- * closed here.
+ * A peer derived its session key from `ready.extensionSessionPub` while
+ * verifying NOTHING: not a signature, not an identity. Anything that could
+ * reach it could therefore BE the extension as far as it was concerned, with
+ * no key material of its own — while `T-host-MITM` in docs/SECURITY.md said
+ * peer traffic was end-to-end encrypted. The host's own session got mutual auth
+ * in 0.4.0; the peer path never did.
  *
  * The fix is the same material in both places: the host forwards the
  * extension's hello, and the peer verifies `Ed25519Sign(extPriv,
  * ownHelloNonce || extHelloNonce)` against it before deriving, then pins.
+ *
+ * WHAT THAT DOES NOT FIX, and these tests are careful not to imply otherwise:
+ * the signature covers the two nonces and NOT `extensionSessionPub`, so a relay
+ * forwarding genuine hellos and a genuine signature can still substitute its
+ * own ephemeral key and derive the same session key. The last test here pins
+ * that residual in place deliberately — it is the shape of the attack the
+ * private advisory tracks, and it should start failing the day the signature
+ * covers the ephemeral key.
  */
 
 const MCP_ID = 'opentable-mcp:0.9.1:a3f7c91d2e8b4f56';
@@ -174,9 +185,10 @@ describe('a peer authenticates the extension behind the host', () => {
     });
   });
 
-  it('refuses a ready whose signature does not verify — the MITM case', async () => {
-    // A concentrator substituting its own ephemeral pub cannot produce this
-    // signature, because it does not hold the extension's Ed25519 key.
+  it('refuses a ready whose signature does not verify', async () => {
+    // Nothing that lacks the extension's Ed25519 key can produce this — which
+    // is what stops a concentrator inventing an extension outright. It is NOT
+    // what stops one relaying a real extension's signature; see the last test.
     host = await fakeHost();
     const trust = memoryTrust();
     await startTestPeer(trust);
@@ -221,6 +233,50 @@ describe('a peer authenticates the extension behind the host', () => {
     await expect(peer!.session).resolves.toBeDefined();
     expect(warn.mock.calls.flat().join(' ')).toMatch(/does not forward|cannot verify/i);
     expect(trust.writes).toEqual([]);
+  });
+
+  it('KNOWN RESIDUAL: a relay can still swap the ephemeral key and share the session', async () => {
+    // Not a wish — a record. `sessionSig` covers (mcpNonce || extNonce) and not
+    // `extensionSessionPub`, so a relay that forwards the genuine hello and the
+    // genuine signature can substitute an ephemeral key it holds the private
+    // half of. Every check the peer makes still passes, and the relay derives
+    // the same session key. This test asserts that today's behaviour, so the
+    // day the signature covers the ephemeral key it fails loudly and is deleted
+    // along with the residual. See the private advisory referenced in
+    // docs/SECURITY.md §T-host-MITM.
+    host = await fakeHost();
+    const trust = memoryTrust();
+    await startTestPeer(trust);
+    const ext = await extensionIdentity();
+    const hello = await host.peerHello;
+
+    const genuine = (await readyFor(hello, ext)) as {
+      type: string;
+      mcpId: string;
+      extensionSessionPub: string;
+      sessionSig: string;
+    };
+    // The relay's own ephemeral key, in place of the browser's. Signature and
+    // hellos untouched.
+    const relayKey = await generateX25519();
+    host.send(ext.hello);
+    host.send({ ...genuine, extensionSessionPub: b64(relayKey.publicKey) });
+
+    const session = await peer!.session;
+    // The peer derived a key from the relay's material and is none the wiser.
+    const shared = await ecdhX25519(
+      relayKey.privateKey,
+      fromB64(hello.identityX25519Pub),
+    );
+    const relayDerived = await hkdfSha256(
+      shared,
+      fromB64(hello.sessionNonce),
+      new TextEncoder().encode(HKDF_SESSION_INFO),
+      32,
+    );
+    expect(Buffer.from(session.sessionKey).toString('hex')).toBe(
+      Buffer.from(relayDerived).toString('hex'),
+    );
   });
 
   it('refuses that same case when the caller requires the identity', async () => {

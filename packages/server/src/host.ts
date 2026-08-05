@@ -175,6 +175,10 @@ export async function startHost(opts: HostOpts): Promise<HostHandle> {
   wss.on('connection', (ws) => {
     let identified: 'extension' | 'peer' | null = null;
     let peerMcpId: string | null = null;
+    // Set the instant this socket closes, so code resuming after an await can
+    // tell "gone" from "still here" without depending on `readyState`
+    // bookkeeping or on having been identified yet.
+    let closed = false;
     // 1.12.0 (#208): THIS connection's identity is not yet in the trust store
     // (first contact, or an operator-allowed replacement) and should be written
     // there the moment its signature verifies. Per-connection by scope rather
@@ -237,6 +241,16 @@ export async function startHost(opts: HostOpts): Promise<HostHandle> {
             return;
           }
           if (outcome.decision === 'replace') console.warn(outcome.message);
+          // The read above yielded, so this socket may have gone while we were
+          // in it. Taking the slot for a connection that is already closed is
+          // worse than the race the claim closes: its close event has ALREADY
+          // fired, so nothing would ever clear `extensionWs`, and every later
+          // extension would be refused "already connected" until the process
+          // restarts. Check liveness, not just identity.
+          if (closed || ws.readyState !== WebSocket.OPEN) {
+            extensionClaim = null;
+            return;
+          }
           // Pin on first use, or replace a pin the operator chose to drop —
           // but only after the ready frame proves the key (see below).
           pinOnReady = outcome.decision !== 'pinned';
@@ -328,11 +342,20 @@ export async function startHost(opts: HostOpts): Promise<HostHandle> {
           if (frame.mcpId === opts.ownMcpId) {
             // 0.4.0 mutual auth: verify the extension's signature
             // over (mcpHelloNonce || extHelloNonce) against the
-            // claimed Ed25519 identity in the extension hello. A
-            // MITM-as-extension process can either substitute its own
-            // identity (visibly different pair code) or relay the
-            // real extension's bytes (signature won't verify because
-            // the MCP nonce differs). Tear the WS down on mismatch.
+            // claimed Ed25519 identity in the extension hello. This
+            // stops a process BEING the extension without its key —
+            // substituting its own identity shows up as a different
+            // pair code, and forging a signature needs the key.
+            //
+            // It does NOT stop a relay that forwards the real hellos
+            // and the real signature: both nonces are then genuine, so
+            // the signature verifies, and nothing here commits to
+            // `extensionSessionPub` — which is the only value the ECDH
+            // depends on. An earlier version of this comment claimed
+            // such a relay fails "because the MCP nonce differs"; that
+            // is only true of a MITM that terminates our connection
+            // with a hello of its own. See docs/SECURITY.md
+            // §T-host-MITM. Tear the WS down on mismatch.
             if (!extensionHello) {
               console.warn('[fetchproxy] ready before extension hello — closing');
               ws.close(1002, 'ready before extension hello');
@@ -443,6 +466,7 @@ export async function startHost(opts: HostOpts): Promise<HostHandle> {
     });
 
     ws.on('close', () => {
+      closed = true;
       if (extensionClaim === ws) extensionClaim = null;
       if (identified === 'extension' && extensionWs === ws) {
         extensionWs = null;
