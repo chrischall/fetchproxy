@@ -1843,9 +1843,15 @@ export function cookieSetDetailsFor(
     path: existing.path,
     secure: existing.secure,
     httpOnly: existing.httpOnly,
-    sameSite: existing.sameSite,
+    // Every optional attribute is spread conditionally, not passed as
+    // undefined. `domain` and `expirationDate` are the two where the
+    // difference is known to be load-bearing; `sameSite` and `storeId` follow
+    // the same rule so the next reader doesn't have to work out which of the
+    // four are special — and so a future Chrome that distinguishes
+    // absent-from-undefined can't quietly change behaviour here.
+    ...(existing.sameSite === undefined ? {} : { sameSite: existing.sameSite }),
     ...(existing.expirationDate === undefined ? {} : { expirationDate: existing.expirationDate }),
-    storeId: existing.storeId,
+    ...(existing.storeId === undefined ? {} : { storeId: existing.storeId }),
   };
 }
 
@@ -1868,6 +1874,13 @@ export function cookieSetDetailsFor(
  *     place; it does not author new cookies. Refusing here is what keeps a
  *     write capability from becoming a cookie-injection primitive.
  *
+ * The gates are all-or-nothing, but the writes themselves cannot be: there is
+ * no transaction over `chrome.cookies`, so a failure partway through a batch
+ * leaves the earlier cookies already rotated. That case reports which names
+ * landed (see {@link partialWriteError}) rather than a bare failure, because
+ * an MCP that believes nothing was written will retry the whole batch against
+ * a jar that is already half-updated.
+ *
  * The existing cookie's attributes are copied onto the write. Passing only
  * `{url, name, value}` would look like it worked and quietly create a SECOND
  * cookie — Chrome derives a host-only, non-HttpOnly, default-path cookie from
@@ -1876,6 +1889,20 @@ export function cookieSetDetailsFor(
  * this verb exists to prevent. `hostOnly` decides whether `domain` may be sent
  * at all: Chrome rejects `domain` on a host-only cookie.
  */
+/**
+ * Error text for a batch that failed partway through.
+ *
+ * Names what landed, because "the write failed" and "the write failed after
+ * rotating two of your three cookies" call for different recovery, and the
+ * caller cannot tell them apart from a bare message.
+ */
+function partialWriteError(name: string, cause: string, written: string[]): string {
+  const base = `failed to write cookie ${name}: ${cause}`;
+  return written.length === 0
+    ? `${base} (no cookies were changed)`
+    : `${base} (already written: ${written.join(', ')} — the jar is partially updated)`;
+}
+
 async function handleWriteCookiesRequest(
   mcpId: string,
   req: InnerRequestWriteCookies,
@@ -1925,12 +1952,12 @@ async function handleWriteCookiesRequest(
       // staleness this verb exists to prevent.
       const result = await chrome.cookies.set(cookieSetDetailsFor(url, decl, existing));
       if (!result) {
-        await fail(`failed to write cookie ${decl.name}: chrome.cookies.set returned null`);
+        await fail(partialWriteError(decl.name, 'chrome.cookies.set returned null', written));
         return;
       }
       written.push(decl.name);
     } catch (e) {
-      await fail(`failed to write cookie ${decl.name}: ${String(e)}`);
+      await fail(partialWriteError(decl.name, String(e), written));
       return;
     }
   }

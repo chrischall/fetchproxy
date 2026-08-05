@@ -1607,6 +1607,7 @@ export class FetchproxyServer {
         this.pending.delete(id);
         this.pendingReadCookies.delete(id);
         this.pendingStorage.delete(id);
+        this.pendingWriteCookies.delete(id);
         this.pendingCapture.delete(id);
         this.pendingRedirect.delete(id);
         this.pendingDownload.delete(id);
@@ -3125,6 +3126,8 @@ export class FetchproxyServer {
     this.pendingReadCookies.clear();
     for (const { reject } of this.pendingStorage.values()) reject(err);
     this.pendingStorage.clear();
+    for (const { reject } of this.pendingWriteCookies.values()) reject(err);
+    this.pendingWriteCookies.clear();
     for (const { reject } of this.pendingCapture.values()) reject(err);
     this.pendingCapture.clear();
     for (const { reject } of this.pendingRedirect.values()) reject(err);

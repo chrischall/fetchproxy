@@ -27,7 +27,7 @@ interface CapabilityDisplay {
   label: string;
   warn: boolean;
 }
-const CAPABILITY_DISPLAY: Record<string, CapabilityDisplay> = {
+export const CAPABILITY_DISPLAY: Record<string, CapabilityDisplay> = {
   fetch: { label: 'HTTP fetches', warn: false },
   read_cookies: { label: 'Read cookies', warn: true },
   read_local_storage: { label: 'Read localStorage', warn: true },

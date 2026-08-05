@@ -119,20 +119,29 @@ describe('cookieSetDetailsFor', () => {
 });
 
 describe('pair popup — write_cookies is presented as a write', () => {
-  // The popup is where the user actually grants this. A label reading like a
-  // sibling of the reads above it would understate what is being approved.
-  it('labels it as changing state, and warns', async () => {
-    const mod = await import('../src/popup/popup.js');
-    const display = (mod as unknown as {
-      __testCapabilityDisplay?: Record<string, { label: string; warn: boolean }>;
-    }).__testCapabilityDisplay;
-    // Falls back to reading the source when the map isn't exported for tests.
-    const { readFileSync } = await import('node:fs');
-    const src = display
-      ? JSON.stringify(display)
-      : readFileSync(new URL('../src/popup/popup.ts', import.meta.url), 'utf8');
-    expect(src).toMatch(/write_cookies/);
-    expect(src).toMatch(/Overwrite cookies/);
-    expect(src).toMatch(/signed-in session/);
+  // The popup is where the user actually grants this, and it is the only
+  // capability that changes state. A label reading like a sibling of the
+  // reads above it would understate what is being approved.
+  //
+  // Asserts the exported map, not the file's source text: the first version of
+  // this test matched on source and would have passed on a comment mentioning
+  // the right words while the label said anything at all.
+  it('labels it as a change to the signed-in session, and warns', async () => {
+    const { CAPABILITY_DISPLAY } = await import('../src/popup/popup.js');
+    const entry = CAPABILITY_DISPLAY.write_cookies;
+
+    expect(entry).toBeDefined();
+    expect(entry.warn).toBe(true);
+    expect(entry.label).toMatch(/overwrite/i);
+    expect(entry.label).toMatch(/signed-in session/i);
+  });
+
+  it('does not read as another read verb', async () => {
+    const { CAPABILITY_DISPLAY } = await import('../src/popup/popup.js');
+
+    expect(CAPABILITY_DISPLAY.write_cookies.label).not.toMatch(/^read/i);
+    // Every read verb's label starts with "Read"; this one must not be
+    // mistakable for one at a glance in the popup list.
+    expect(CAPABILITY_DISPLAY.read_cookies.label).toMatch(/^Read/);
   });
 });
