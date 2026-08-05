@@ -171,15 +171,17 @@ export async function startHost(opts: HostOpts): Promise<HostHandle> {
   // until it either becomes `extensionWs` or is refused, so the check-and-set
   // around an awaited pin read cannot interleave with a second hello.
   let extensionClaim: WebSocket | null = null;
-  // 1.12.0 (#208): the identity on the CURRENT extension connection is not yet
-  // in the trust store (first contact, or an operator-allowed replacement) and
-  // should be written there the moment its signature verifies. Cleared on
-  // close, and only ever consulted for the connection that set it.
-  let pinOnReady = false;
 
   wss.on('connection', (ws) => {
     let identified: 'extension' | 'peer' | null = null;
     let peerMcpId: string | null = null;
+    // 1.12.0 (#208): THIS connection's identity is not yet in the trust store
+    // (first contact, or an operator-allowed replacement) and should be written
+    // there the moment its signature verifies. Per-connection by scope rather
+    // than by discipline: a host-wide flag would outlive the socket that set
+    // it, and "which connection was this decided for" is not something the
+    // ready handler should have to reason about.
+    let pinOnReady = false;
 
     ws.on('message', async (data) => {
       try {
@@ -445,7 +447,6 @@ export async function startHost(opts: HostOpts): Promise<HostHandle> {
       if (identified === 'extension' && extensionWs === ws) {
         extensionWs = null;
         extensionHello = null;
-        pinOnReady = false;
         if (!ownSession) {
           rejectOwnSession(new Error('extension disconnected before ready'));
         }
