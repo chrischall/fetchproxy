@@ -20,13 +20,18 @@ const USAGE = `fpx ${VERSION} — fetchproxy CLI: authenticated fetches through 
   fpx profile list | show <name> | remove <name>
   fpx pair -p <name> [--domain <apex>] [--subdomain <label>]
   fpx health -p <name>
-  fpx get <url> -p <name> [--json] [-H 'K: V']…
-  fpx post-json <url> <body|@file> -p <name> [--json] [-H …]…
-  fpx request <url> -p <name> [-X METHOD] [-H …]… [-d body|@file] [--json]
+  fpx get <url> -p <name> [--json] [-H 'K: V']… [--via-tab <url>]
+  fpx post-json <url> <body|@file> -p <name> [--json] [-H …]… [--via-tab <url>]
+  fpx request <url> -p <name> [-X METHOD] [-H …]… [-d body|@file] [--json] [--via-tab <url>]
   fpx cookies|local-storage|session-storage|indexeddb [keys…] -p <name> [--storage-domain d] [--storage-subdomain s]
   fpx session -p <name> [--storage-domain d] [--storage-subdomain s]
   fpx dom <name…> -p <name> [--storage-domain d] [--storage-subdomain s]
   fpx download <url> -p <name> [--filename f]
+
+--via-tab picks which open tab relays the request. Default: a tab on the
+request's own host. Needed for API hosts that serve no page — e.g. fetch
+api.example.com through --via-tab https://www.example.com/. Must be on a
+declared domain.
 
 Data on stdout, everything else on stderr.
 Exit codes: 0 ok · 1 usage · 2 bridge unavailable · 3 bot wall · 4 upstream HTTP error`;
