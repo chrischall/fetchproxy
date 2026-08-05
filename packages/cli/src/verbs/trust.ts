@@ -2,7 +2,7 @@ import { readdir, readFile, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import { clearExtensionPin, defaultIdentityDir } from '@fetchproxy/server';
 import type { Command } from '../args.js';
-import { EXIT, printJson, type Io } from '../output.js';
+import { EXIT, printJson, UsageError, type Io } from '../output.js';
 
 /**
  * `fpx trust` — see and drop the extension identities MCPs have pinned (#208).
@@ -24,17 +24,24 @@ const SUFFIX = '.extension-trust.json';
 /**
  * Best-effort inverse of the identity-file naming: a scoped package's `/` is
  * stored as `_`, so `@fetchproxy_example-mcp` came from
- * `@fetchproxy/example-mcp`. Only the leading `@` form is ambiguous-free —
- * an unscoped name never starts with `@`, and a scoped one has exactly one
- * separator — so that is the only case translated back.
+ * `@fetchproxy/example-mcp`.
  *
- * This exists because a listing whose names `clear` refuses is a listing that
- * sends the reader to the wrong conclusion at the worst moment.
+ * The mapping is LOSSY, and an earlier version of this comment claimed
+ * otherwise. `_` is legal on both sides of the `/` (`SAFE_SCOPED` in
+ * `identity.ts`), so `@my_org/tool-mcp` and `@my/org_tool-mcp` share the stem
+ * `@my_org_tool-mcp` and neither can be recovered from it. Guessing produces a
+ * name for a package that may not exist; only the unambiguous case — a leading
+ * `@` and exactly one `_` — is translated, and everything else is left as the
+ * stem, which `clear` still resolves (see `pinFileFor`).
+ *
+ * This exists because a listing whose names `clear` refuses sends the reader
+ * to the wrong conclusion at the worst possible moment.
  */
 function serverNameFromPinFile(stem: string): string {
   if (!stem.startsWith('@')) return stem;
-  const at = stem.indexOf('_');
-  return at === -1 ? stem : `${stem.slice(0, at)}/${stem.slice(at + 1)}`;
+  const parts = stem.split('_');
+  if (parts.length !== 2) return stem;
+  return `${parts[0]}/${parts[1]}`;
 }
 
 interface PinnedEntry {
@@ -90,6 +97,26 @@ async function listPins(dir: string): Promise<PinnedEntry[]> {
     }
   }
   return entries;
+}
+
+/**
+ * Clear one pin by whatever the operator had to hand: a server name, or the
+ * file stem the listing printed when the name could not be recovered from it.
+ * The stem path exists so that everything `list` prints is something `clear`
+ * accepts — a scoped name whose stem is ambiguous would otherwise be legible
+ * and unusable at the same time.
+ */
+async function clearPin(nameOrStem: string, identityDir: string): Promise<boolean> {
+  try {
+    return await clearExtensionPin(nameOrStem, identityDir);
+  } catch {
+    // Not a legal server name — try it as the stem the listing showed.
+    const pins = await listPins(identityDir);
+    const match = pins.find((p) => p.pinFile === nameOrStem);
+    if (!match) throw new UsageError(`no extension pin for ${nameOrStem}`);
+    await unlink(match.file);
+    return true;
+  }
 }
 
 export async function runTrust(
@@ -150,7 +177,7 @@ export async function runTrust(
     return EXIT.OK;
   }
 
-  const had = await clearExtensionPin(cmd.serverName!, identityDir);
+  const had = await clearPin(cmd.serverName!, identityDir);
   if (had) {
     io.err(
       `cleared the extension pin for ${cmd.serverName} — the next browser to complete a ` +

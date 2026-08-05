@@ -136,6 +136,30 @@ describe('fpx trust', () => {
     expect(rec2.err.join('\n')).toMatch(/cleared/i);
   });
 
+  it('does not invent a name it cannot recover, and clears it anyway', async () => {
+    // `_` is legal on both sides of a scope's `/`, so `@my_org/tool-mcp` and
+    // `@my/org_tool-mcp` share one stem and neither is recoverable from it.
+    // Printing a guess would name a package that may not exist; the stem is
+    // shown instead, and `clear` accepts it so the listing stays usable.
+    await writeFile(join(dir, '@my_org_tool-mcp.extension-trust.json'), PIN);
+    const rec = io();
+    await runTrust({ kind: 'trust', action: 'list', json: false }, ioAdapter(rec), dir);
+    expect(rec.out.join('\n')).toContain('@my_org_tool-mcp');
+    expect(rec.out.join('\n')).not.toContain('@my/org_tool-mcp');
+
+    const rec2 = io();
+    expect(
+      await runTrust(
+        { kind: 'trust', action: 'clear', serverName: '@my_org_tool-mcp' },
+        ioAdapter(rec2),
+        dir,
+      ),
+    ).toBe(EXIT.OK);
+    const rec3 = io();
+    await runTrust({ kind: 'trust', action: 'list', json: false }, ioAdapter(rec3), dir);
+    expect(rec3.out.join('\n')).toMatch(/no extension pins/i);
+  });
+
   it('clears a scoped MCP, whose pin file name is not its server name', async () => {
     // `@fetchproxy/example-mcp` is stored as `@fetchproxy_example-mcp.…`, and
     // feeding that filename back in as a server name is rejected as unsafe —
