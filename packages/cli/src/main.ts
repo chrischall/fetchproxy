@@ -16,7 +16,7 @@ import { VERSION } from './version.js';
 const USAGE = `fpx ${VERSION} — fetchproxy CLI: authenticated fetches through your signed-in browser tab
 
   fpx profile add <name> --domain <apex> [--domain <apex>]…
-  fpx profile declare <name> [--cookie k]… [--local-storage k]… [--session-storage k]… [--capture-header name@host[/path]]… [--dom-selector handle=css]… [--allow-download]
+  fpx profile declare <name> [--cookie k]… [--local-storage k]… [--session-storage k]… [--capture-header name@host[/path]]… [--dom-selector handle=css]… [--allow-download] [--allow-cookie-write]
   fpx profile list | show <name> | remove <name>
   fpx pair -p <name> [--domain <apex>] [--subdomain <label>]
   fpx health -p <name>
@@ -96,6 +96,7 @@ export async function runCli(argv: string[], io: Io, deps: CliDeps = {}): Promis
           else p.domSelectors.push(decl);
         }
         if (cmd.download) p.download = true;
+        if (cmd.cookieWrite) p.cookieWrite = true;
         saveProfiles(all, home);
         io.err(`profile "${cmd.name}" scope updated — the next connect will ask you to re-pair (scope diff)`);
         return EXIT.OK;

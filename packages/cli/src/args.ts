@@ -14,7 +14,7 @@ export type Command =
   | { kind: 'profile-add'; name: string; domains: string[] }
   | { kind: 'profile-declare'; name: string; cookies: string[]; localStorage: string[];
       sessionStorage: string[]; captureHeaders: CaptureHeaderDecl[];
-      domSelectors: DomSelectorDecl[]; download: boolean }
+      domSelectors: DomSelectorDecl[]; download: boolean; cookieWrite: boolean }
   | { kind: 'pair'; profile: string; domain?: string; subdomain?: string }
   | { kind: 'health'; profile: string }
   | { kind: 'fetch'; profile: string; method: string; url: string;
@@ -92,6 +92,7 @@ export function parseCliArgs(
         'capture-header': { type: 'string', multiple: true, default: [] },
         'dom-selector': { type: 'string', multiple: true, default: [] },
         'allow-download': { type: 'boolean', default: false },
+        'allow-cookie-write': { type: 'boolean', default: false },
         filename: { type: 'string' },
         'storage-domain': { type: 'string' },
         'storage-subdomain': { type: 'string' },
@@ -140,6 +141,7 @@ export function parseCliArgs(
         captureHeaders: (values['capture-header'] ?? []).map(parseCaptureHeaderFlag),
         domSelectors: (values['dom-selector'] ?? []).map(parseDomSelectorFlag),
         download: values['allow-download'] ?? false,
+        cookieWrite: values['allow-cookie-write'] ?? false,
       };
     }
     throw new UsageError(`unknown profile subcommand ${JSON.stringify(sub)}`,

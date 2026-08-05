@@ -37,6 +37,13 @@ const CAPABILITY_DISPLAY: Record<string, CapabilityDisplay> = {
   read_dom: { label: 'Read DOM elements', warn: true },
   graphql: { label: 'Run declared GraphQL queries', warn: true },
   download: { label: 'Download files to your computer', warn: true },
+  // The only capability that CHANGES state in the browser rather than
+  // reading it. Labelled to say so outright — 'write cookies' alone reads
+  // as a sibling of the reads above, and it is not one.
+  write_cookies: {
+    label: 'Overwrite cookies it can already read (can change your signed-in session)',
+    warn: true,
+  },
 };
 
 /**

@@ -22,6 +22,14 @@ export interface Profile {
   sessionStoragePointers: PointerDecl[];
   domSelectors: DomSelectorDecl[];
   download: boolean;
+  /**
+   * 1.12.0+: may this profile OVERWRITE the cookies it declares?
+   *
+   * Its own flag rather than implied by `cookies`, because a write is a
+   * different privilege from a read and the user approves it as its own line
+   * in the pair popup. It still cannot reach beyond the declared `cookies`.
+   */
+  cookieWrite: boolean;
 }
 
 export function cliHome(env: Record<string, string | undefined> = process.env): string {
@@ -47,6 +55,7 @@ export function emptyProfile(domains: string[]): Profile {
     sessionStoragePointers: [],
     domSelectors: [],
     download: false,
+    cookieWrite: false,
   };
 }
 
@@ -106,6 +115,7 @@ function validateProfile(name: string, raw: unknown): Profile {
     });
   }
   if (p.download !== undefined && typeof p.download !== 'boolean') fail('download');
+  if (p.cookieWrite !== undefined && typeof p.cookieWrite !== 'boolean') fail('cookieWrite');
   return { ...emptyProfile(p.domains as string[]), ...(p as Partial<Profile>) } as Profile;
 }
 
