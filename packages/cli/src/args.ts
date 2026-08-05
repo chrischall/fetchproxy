@@ -17,7 +17,7 @@ export type Command =
       domSelectors: DomSelectorDecl[]; download: boolean; cookieWrite: boolean }
   | { kind: 'pair'; profile: string; domain?: string; subdomain?: string }
   | { kind: 'health'; profile: string }
-  | { kind: 'trust'; action: 'list' }
+  | { kind: 'trust'; action: 'list'; json: boolean }
   | { kind: 'trust'; action: 'clear'; serverName?: string; all?: boolean }
   | { kind: 'fetch'; profile: string; method: string; url: string;
       headers: Record<string, string>; body?: string; json: boolean; viaTab?: string }
@@ -162,13 +162,27 @@ export function parseCliArgs(
   if (cmd === 'health') return { kind: 'health', profile: requireProfile(values.profile) };
   if (cmd === 'trust') {
     const sub = rest[0];
-    if (sub === 'list' || sub === undefined) return { kind: 'trust', action: 'list' };
+    if (sub === 'list' || sub === undefined) {
+      return { kind: 'trust', action: 'list', json: values.json ?? false };
+    }
     if (sub === 'clear') {
       // A bare `clear` is refused: dropping every pin is a real decision (a
       // fleet re-pairs on the next connection), so it takes saying `--all`
       // rather than happening by omitting an argument.
-      if (values.all) return { kind: 'trust', action: 'clear', all: true };
-      const serverName = rest[1];
+      const named = rest[1];
+      if (values.all) {
+        // Naming a server AND asking for all of them is two different
+        // intentions in one command; silently doing the broader one is the
+        // wrong guess to make about a security control.
+        if (named) {
+          throw new UsageError(
+            'fpx trust clear takes a server name or --all, not both',
+            `drop just one with: fpx trust clear ${named}`,
+          );
+        }
+        return { kind: 'trust', action: 'clear', all: true };
+      }
+      const serverName = named;
       if (!serverName) {
         throw new UsageError(
           'fpx trust clear requires a server name (or --all)',

@@ -22,7 +22,11 @@ import { buildServerHello } from './build-server-hello.js';
 import { SessionState } from './session.js';
 import { awaitSessionReady } from './session-ready.js';
 import type { Identity } from './identity.js';
-import { decideExtensionTrust, type ExtensionTrustPort } from './extension-trust.js';
+import {
+  decideExtensionTrust,
+  type ExtensionPin,
+  type ExtensionTrustPort,
+} from './extension-trust.js';
 
 export interface PeerOpts {
   host: string;
@@ -187,6 +191,9 @@ export async function startPeer(opts: PeerOpts): Promise<InternalPeerHandle> {
   // means "this host does not relay it" — an older concentrator.
   let extensionHello: HelloFrameFromExtension | null = null;
   let warnedUnverifiable = false;
+  // `undefined` = not read yet; `null` = read, nothing pinned. See the note in
+  // `authenticateExtension` for why this is cached rather than re-read.
+  let cachedPin: ExtensionPin | null | undefined = undefined;
 
   /**
    * Decide whether the extension behind this host may open a session with us:
@@ -234,13 +241,22 @@ export async function startPeer(opts: PeerOpts): Promise<InternalPeerHandle> {
       return false;
     }
 
-    let pin;
-    try {
-      pin = await opts.extensionTrust.read();
-    } catch (e) {
-      console.error(`[fetchproxy] ${String(e)}`);
-      return false;
+    // Read the pin ONCE per peer, not once per ready. The extension
+    // renegotiates on every MV3 eviction, and a disk read on that path widens
+    // the window between "the extension is back" and "this peer's session key
+    // has caught up" — during which a call is sealed with the stale key and
+    // then rejected by the renegotiation. Nothing else writes this file while
+    // we hold it, and a pin deleted underneath a live process should not
+    // silently downgrade it mid-session anyway.
+    if (cachedPin === undefined) {
+      try {
+        cachedPin = await opts.extensionTrust.read();
+      } catch (e) {
+        console.error(`[fetchproxy] ${String(e)}`);
+        return false;
+      }
     }
+    const pin = cachedPin;
     const outcome = decideExtensionTrust({
       pin,
       hello: extensionHello,
@@ -255,11 +271,13 @@ export async function startPeer(opts: PeerOpts): Promise<InternalPeerHandle> {
     if (outcome.decision === 'replace') console.warn(outcome.message);
     if (outcome.decision !== 'pinned') {
       try {
-        await opts.extensionTrust.write({
+        const written = {
           identityX25519Pub: extensionHello.identityX25519Pub,
           identityEd25519Pub: extensionHello.identityEd25519Pub,
           pinnedAt: Date.now(),
-        });
+        };
+        await opts.extensionTrust.write(written);
+        cachedPin = written;
       } catch (e) {
         console.error(`[fetchproxy] could not persist the extension pin: ${String(e)}`);
       }

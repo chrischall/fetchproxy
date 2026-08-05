@@ -1,4 +1,4 @@
-import { readdir, readFile } from 'node:fs/promises';
+import { readdir, readFile, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import { clearExtensionPin, defaultIdentityDir } from '@fetchproxy/server';
 import type { Command } from '../args.js';
@@ -22,7 +22,14 @@ import { EXIT, printJson, type Io } from '../output.js';
 const SUFFIX = '.extension-trust.json';
 
 interface PinnedEntry {
-  serverName: string;
+  /**
+   * The pin FILE's stem, which is not always the server name: a scoped MCP
+   * (`@fetchproxy/example-mcp`) stores its pin as `@fetchproxy_example-mcp`,
+   * and feeding that back in as a server name is refused as unsafe (it has an
+   * `@` but no `/`). So this is labelled for what it is, and anything that
+   * deletes works from `file` rather than re-deriving a path from it.
+   */
+  pinFile: string;
   identityX25519Pub: string;
   identityEd25519Pub: string;
   pinnedAt: string;
@@ -42,7 +49,7 @@ async function listPins(dir: string): Promise<PinnedEntry[]> {
     try {
       const raw = JSON.parse(await readFile(file, 'utf8')) as Record<string, unknown>;
       entries.push({
-        serverName: name.slice(0, -SUFFIX.length),
+        pinFile: name.slice(0, -SUFFIX.length),
         identityX25519Pub: String(raw.identityX25519Pub ?? '(unreadable)'),
         identityEd25519Pub: String(raw.identityEd25519Pub ?? '(unreadable)'),
         pinnedAt:
@@ -54,7 +61,7 @@ async function listPins(dir: string): Promise<PinnedEntry[]> {
       // refuses every connection over it, so listing must show it rather than
       // skip it.
       entries.push({
-        serverName: name.slice(0, -SUFFIX.length),
+        pinFile: name.slice(0, -SUFFIX.length),
         identityX25519Pub: '(unreadable)',
         identityEd25519Pub: '(unreadable)',
         pinnedAt: '(unreadable)',
@@ -76,7 +83,16 @@ export async function runTrust(
       io.out(`no extension pins in ${identityDir}`);
       return EXIT.OK;
     }
-    printJson(io, pins);
+    if (cmd.json) {
+      printJson(io, pins);
+      return EXIT.OK;
+    }
+    // Default to something readable. Someone running this is usually staring
+    // at a refusal and wants to know which browser is pinned and since when,
+    // not to parse 32 bytes of base64.
+    for (const pin of pins) {
+      io.out(`${pin.pinFile}  pinned ${pin.pinnedAt}  x25519=${pin.identityX25519Pub}`);
+    }
     return EXIT.OK;
   }
 
@@ -86,11 +102,31 @@ export async function runTrust(
       io.err(`nothing pinned in ${identityDir}`);
       return EXIT.OK;
     }
-    for (const pin of pins) await clearExtensionPin(pin.serverName, identityDir);
+    // Delete by PATH, not by re-deriving one from the file stem: a scoped
+    // MCP's stem is not a legal server name, and the previous version threw on
+    // the first one — aborting partway and leaving the fleet half-cleared
+    // while reporting nothing.
+    const failed: string[] = [];
+    for (const pin of pins) {
+      try {
+        await unlink(pin.file);
+      } catch {
+        failed.push(pin.pinFile);
+      }
+    }
+    const cleared = pins.length - failed.length;
     io.err(
-      `cleared ${pins.length} extension pin(s): ${pins.map((p) => p.serverName).join(', ')} — ` +
-        `each re-pins on the next browser to complete a handshake with it`,
+      `cleared ${cleared} extension pin(s): ${pins
+        .filter((p) => !failed.includes(p.pinFile))
+        .map((p) => p.pinFile)
+        .join(', ')} — each re-pins on the next browser to complete a handshake with it`,
     );
+    if (failed.length > 0) {
+      // Say which ones survived rather than reporting a clean sweep: an
+      // operator who thinks the fleet is cleared and finds one MCP still
+      // refusing has no way to tell that from a new attack.
+      io.err(`could not clear: ${failed.join(', ')} — delete them by hand in ${identityDir}`);
+    }
     return EXIT.OK;
   }
 

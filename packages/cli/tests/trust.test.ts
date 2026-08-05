@@ -42,7 +42,12 @@ describe('fpx trust', () => {
   });
 
   it('parses list and clear', () => {
-    expect(parseCliArgs(['trust', 'list'])).toEqual({ kind: 'trust', action: 'list' });
+    expect(parseCliArgs(['trust', 'list'])).toEqual({ kind: 'trust', action: 'list', json: false });
+    expect(parseCliArgs(['trust', 'list', '--json'])).toEqual({
+      kind: 'trust',
+      action: 'list',
+      json: true,
+    });
     expect(parseCliArgs(['trust', 'clear', 'opentable-mcp'])).toEqual({
       kind: 'trust',
       action: 'clear',
@@ -57,6 +62,8 @@ describe('fpx trust', () => {
       action: 'clear',
       all: true,
     });
+    // Two intentions in one command: refuse rather than guess the broader one.
+    expect(() => parseCliArgs(['trust', 'clear', 'opentable-mcp', '--all'])).toThrow(/not both/);
   });
 
   it('clears every pin with --all, which is what an extension re-install needs', async () => {
@@ -69,21 +76,26 @@ describe('fpx trust', () => {
     expect(rec.err.join('\n')).toMatch(/cleared 2 extension pin/);
 
     const rec2 = io();
-    await runTrust({ kind: 'trust', action: 'list' }, ioAdapter(rec2), dir);
+    await runTrust({ kind: 'trust', action: 'list', json: false }, ioAdapter(rec2), dir);
     expect(rec2.out.join('\n')).toMatch(/no extension pins/i);
   });
 
   it('lists what is pinned, and says plainly when nothing is', async () => {
     const rec = io();
-    expect(await runTrust({ kind: 'trust', action: 'list' }, ioAdapter(rec), dir)).toBe(EXIT.OK);
+    expect(await runTrust({ kind: 'trust', action: 'list', json: false }, ioAdapter(rec), dir)).toBe(EXIT.OK);
     expect(rec.out.join('\n')).toMatch(/no extension pins/i);
 
     await writeFile(join(dir, 'opentable-mcp.extension-trust.json'), PIN);
     const rec2 = io();
-    await runTrust({ kind: 'trust', action: 'list' }, ioAdapter(rec2), dir);
+    await runTrust({ kind: 'trust', action: 'list', json: false }, ioAdapter(rec2), dir);
     const listed = rec2.out.join('\n');
     expect(listed).toContain('opentable-mcp');
     expect(listed).toContain('QUFB');
+    expect(listed.startsWith('[')).toBe(false);
+
+    const rec3 = io();
+    await runTrust({ kind: 'trust', action: 'list', json: true }, ioAdapter(rec3), dir);
+    expect(JSON.parse(rec3.out.join('\n'))[0].pinFile).toBe('opentable-mcp');
   });
 
   it('clears one pin and reports whether there was one', async () => {
@@ -107,6 +119,40 @@ describe('fpx trust', () => {
     expect(rec2.err.join('\n')).toMatch(/nothing pinned/i);
   });
 
+  it('clears a scoped MCP, whose pin file name is not its server name', async () => {
+    // `@fetchproxy/example-mcp` is stored as `@fetchproxy_example-mcp.…`, and
+    // feeding that filename back in as a server name is rejected as unsafe —
+    // so listing and clearing have to agree about which string is which.
+    await writeFile(join(dir, '@fetchproxy_example-mcp.extension-trust.json'), PIN);
+    const rec = io();
+    expect(
+      await runTrust(
+        { kind: 'trust', action: 'clear', serverName: '@fetchproxy/example-mcp' },
+        ioAdapter(rec),
+        dir,
+      ),
+    ).toBe(EXIT.OK);
+    expect(rec.err.join('\n')).toMatch(/cleared/i);
+
+    const rec2 = io();
+    await runTrust({ kind: 'trust', action: 'list', json: false }, ioAdapter(rec2), dir);
+    expect(rec2.out.join('\n')).toMatch(/no extension pins/i);
+  });
+
+  it('clears every pin with --all even when one is scoped', async () => {
+    // --all used to abort partway on the first scoped name, leaving the fleet
+    // half-cleared and the operator believing it was done.
+    await writeFile(join(dir, '@fetchproxy_example-mcp.extension-trust.json'), PIN);
+    await writeFile(join(dir, 'opentable-mcp.extension-trust.json'), PIN);
+    const rec = io();
+    expect(await runTrust({ kind: 'trust', action: 'clear', all: true }, ioAdapter(rec), dir)).toBe(
+      EXIT.OK,
+    );
+    const rec2 = io();
+    await runTrust({ kind: 'trust', action: 'list', json: false }, ioAdapter(rec2), dir);
+    expect(rec2.out.join('\n')).toMatch(/no extension pins/i);
+  });
+
   it('leaves the other MCPs pins alone', async () => {
     await writeFile(join(dir, 'opentable-mcp.extension-trust.json'), PIN);
     await writeFile(join(dir, 'resy-mcp.extension-trust.json'), PIN);
@@ -116,7 +162,7 @@ describe('fpx trust', () => {
       dir,
     );
     const rec = io();
-    await runTrust({ kind: 'trust', action: 'list' }, ioAdapter(rec), dir);
+    await runTrust({ kind: 'trust', action: 'list', json: false }, ioAdapter(rec), dir);
     expect(rec.out.join('\n')).toContain('resy-mcp');
     expect(rec.out.join('\n')).not.toContain('opentable-mcp');
   });

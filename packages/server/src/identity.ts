@@ -33,11 +33,10 @@ export function defaultIdentityDir(): string {
 }
 
 /**
- * Read the identity for `serverName` from `dir`, generating + persisting
- * a fresh X25519/Ed25519 keypair if no file exists. The file is written
- * with mode 0o600 (single-user only). Callers must use a safe
- * `serverName` — scoped packages like `@fetchproxy/example-mcp` are OK
- * and get their `/` translated to `_` for the filename.
+ * The filename stem for `serverName`, rejecting anything that could escape the
+ * identity directory. Scoped packages (`@fetchproxy/example-mcp`) are legal and
+ * get their `/` translated to `_` — which means the stem is NOT a round-trip of
+ * the server name, so callers that hold a stem must not feed it back in here.
  */
 export function safeIdentityFileBase(serverName: string): string {
   // Reject empty, path-traversal, and disallowed characters.
@@ -53,6 +52,13 @@ export function safeIdentityFileBase(serverName: string): string {
   return serverName.replace(/\//g, '_');
 }
 
+/**
+ * Read the identity for `serverName` from `dir`, generating + persisting
+ * a fresh X25519/Ed25519 keypair if no file exists. The file is written
+ * with mode 0o600 (single-user only). Callers must use a safe
+ * `serverName` — scoped packages like `@fetchproxy/example-mcp` are OK
+ * and get their `/` translated to `_` for the filename.
+ */
 export async function loadOrCreateIdentity(
   serverName: string,
   dir: string = defaultIdentityDir(),

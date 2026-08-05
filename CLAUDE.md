@@ -85,11 +85,13 @@ the bind fails with `EADDRINUSE`, the MCP dials the existing host as a
    `fpx trust list|clear <server>`, or
    `FETCHPROXY_TRUST_NEW_EXTENSION=1` for an MCP you don't own.
    The same change makes PEERS verify the ready signature — until
-   1.12.0 they verified nothing, so a concentrator could substitute its
-   own ephemeral pub and read peer traffic that `T-host-MITM` claims is
-   end-to-end. The host now relays the extension hello to peers so they
-   CAN check; a peer behind a pre-1.12.0 host warns and proceeds unless
-   `requireExtensionIdentity` is set.
+   1.12.0 they verified nothing at all. The host now relays the
+   extension hello to peers so they CAN check; a peer behind a
+   pre-1.12.0 host warns and proceeds unless `requireExtensionIdentity`
+   is set. NOTE the signature covers `(mcpNonce || extNonce)` and NOT
+   `extensionSessionPub`, so a relay forwarding genuine frames can still
+   swap the ephemeral pub and MITM the session — `T-host-MITM` is
+   narrowed, not closed. Fixing it is a wire change on both sides.
 4. **Capabilities** declared in hello frame, approved at pair time,
    stored in the trust record. Tightening (or widening) the
    capability set forces a re-pair with diff UI. `graphql` is one

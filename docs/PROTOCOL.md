@@ -159,7 +159,9 @@ The extension's hello carries no crypto material — its identity is "the only W
 
 #### `ready` (extension → host → server)
 
-The signature binds both endpoints' nonces, and **both the host and (1.12.0+) peers verify it** before deriving a session key. A concentrator that substituted its own `extensionSessionPub` would derive the same shared secret as the peer and could read everything — the signature is what makes that fail, because it cannot be produced without the extension's Ed25519 private key.
+The signature binds both endpoints' nonces, and **both the host and (1.12.0+) peers verify it** before deriving a session key. That proves the extension on the other end is the one whose hello arrived — it cannot be produced without the extension's Ed25519 private key.
+
+**It does not bind `extensionSessionPub`.** A relay that forwards the genuine hellos and the genuine signature can still substitute its own ephemeral public key here and derive the same shared secret as the receiving MCP. Verifying the signature does not make the session private against something already positioned in the middle; see `docs/SECURITY.md` §T-host-MITM.
 
 After the user approves a new pair (or auto-trust hits for a known identity), the extension generates an ephemeral X25519 keypair, computes the session key, and sends:
 

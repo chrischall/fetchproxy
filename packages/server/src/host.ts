@@ -166,9 +166,15 @@ export async function startHost(opts: HostOpts): Promise<HostHandle> {
   // signature against the claimed Ed25519 identity. One extension per
   // host instance; cleared on disconnect.
   let extensionHello: HelloFrameFromExtension | null = null;
-  // 1.12.0 (#208): this connection's identity is not yet in the trust store
-  // (first contact, or an operator-allowed replacement) and should be written
-  // there the moment its signature verifies.
+  // 1.12.0 (#208): the socket that has claimed the extension slot but has not
+  // finished being vetted. Held from the synchronous moment its hello arrives
+  // until it either becomes `extensionWs` or is refused, so the check-and-set
+  // around an awaited pin read cannot interleave with a second hello.
+  let extensionClaim: WebSocket | null = null;
+  // 1.12.0 (#208): the identity on the CURRENT extension connection is not yet
+  // in the trust store (first contact, or an operator-allowed replacement) and
+  // should be written there the moment its signature verifies. Cleared on
+  // close, and only ever consulted for the connection that set it.
   let pinOnReady = false;
 
   wss.on('connection', (ws) => {
@@ -188,10 +194,17 @@ export async function startHost(opts: HostOpts): Promise<HostHandle> {
 
         // Hello dispatch.
         if (frame.type === 'hello' && frame.role === 'extension') {
-          if (extensionWs) {
+          if (extensionWs || extensionClaim) {
             ws.close(1008, 'extension already connected');
             return;
           }
+          // Claim the slot SYNCHRONOUSLY, before the first await. Reading the
+          // pin yields to the event loop, so a second extension hello arriving
+          // in that window would otherwise pass the guard above — two
+          // connections both believing they are the extension, with the later
+          // one's `pinOnReady` deciding what gets written. The claim is
+          // released on any refusal below and on close.
+          extensionClaim = ws;
           // #208: is this the extension we paired with? Checked HERE, before
           // the connection becomes the extension slot, so a stranger never
           // reaches the session machinery at all. The pin is only WRITTEN
@@ -204,6 +217,7 @@ export async function startHost(opts: HostOpts): Promise<HostHandle> {
             // An unreadable pin is the one state where carrying on would
             // quietly mean "trust anybody".
             console.error(`[fetchproxy] ${String(e)}`);
+            extensionClaim = null;
             ws.close(1008, 'extension pin unreadable');
             return;
           }
@@ -216,6 +230,7 @@ export async function startHost(opts: HostOpts): Promise<HostHandle> {
           });
           if (outcome.decision === 'refused') {
             console.warn(outcome.message);
+            extensionClaim = null;
             ws.close(1008, 'extension identity is not the pinned one');
             return;
           }
@@ -426,6 +441,7 @@ export async function startHost(opts: HostOpts): Promise<HostHandle> {
     });
 
     ws.on('close', () => {
+      if (extensionClaim === ws) extensionClaim = null;
       if (identified === 'extension' && extensionWs === ws) {
         extensionWs = null;
         extensionHello = null;
