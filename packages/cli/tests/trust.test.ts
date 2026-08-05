@@ -119,6 +119,23 @@ describe('fpx trust', () => {
     expect(rec2.err.join('\n')).toMatch(/nothing pinned/i);
   });
 
+  it('lists a scoped MCP under a name clear will accept', async () => {
+    // The listing is what an operator copies into `clear`. Printing the file
+    // stem meant handing them `@fetchproxy_example-mcp` — the one string that
+    // comes back "unsafe serverName", at the moment they are already locked out.
+    await writeFile(join(dir, '@fetchproxy_example-mcp.extension-trust.json'), PIN);
+    const rec = io();
+    await runTrust({ kind: 'trust', action: 'list', json: false }, ioAdapter(rec), dir);
+    expect(rec.out.join('\n')).toContain('@fetchproxy/example-mcp');
+
+    const listed = rec.out.join('\n').split(/\s+/)[0]!;
+    const rec2 = io();
+    expect(
+      await runTrust({ kind: 'trust', action: 'clear', serverName: listed }, ioAdapter(rec2), dir),
+    ).toBe(EXIT.OK);
+    expect(rec2.err.join('\n')).toMatch(/cleared/i);
+  });
+
   it('clears a scoped MCP, whose pin file name is not its server name', async () => {
     // `@fetchproxy/example-mcp` is stored as `@fetchproxy_example-mcp.…`, and
     // feeding that filename back in as a server name is rejected as unsafe —

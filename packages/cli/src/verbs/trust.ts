@@ -21,7 +21,25 @@ import { EXIT, printJson, type Io } from '../output.js';
 
 const SUFFIX = '.extension-trust.json';
 
+/**
+ * Best-effort inverse of the identity-file naming: a scoped package's `/` is
+ * stored as `_`, so `@fetchproxy_example-mcp` came from
+ * `@fetchproxy/example-mcp`. Only the leading `@` form is ambiguous-free —
+ * an unscoped name never starts with `@`, and a scoped one has exactly one
+ * separator — so that is the only case translated back.
+ *
+ * This exists because a listing whose names `clear` refuses is a listing that
+ * sends the reader to the wrong conclusion at the worst moment.
+ */
+function serverNameFromPinFile(stem: string): string {
+  if (!stem.startsWith('@')) return stem;
+  const at = stem.indexOf('_');
+  return at === -1 ? stem : `${stem.slice(0, at)}/${stem.slice(at + 1)}`;
+}
+
 interface PinnedEntry {
+  /** What to hand back to `fpx trust clear`. */
+  serverName: string;
   /**
    * The pin FILE's stem, which is not always the server name: a scoped MCP
    * (`@fetchproxy/example-mcp`) stores its pin as `@fetchproxy_example-mcp`,
@@ -49,6 +67,7 @@ async function listPins(dir: string): Promise<PinnedEntry[]> {
     try {
       const raw = JSON.parse(await readFile(file, 'utf8')) as Record<string, unknown>;
       entries.push({
+        serverName: serverNameFromPinFile(name.slice(0, -SUFFIX.length)),
         pinFile: name.slice(0, -SUFFIX.length),
         identityX25519Pub: String(raw.identityX25519Pub ?? '(unreadable)'),
         identityEd25519Pub: String(raw.identityEd25519Pub ?? '(unreadable)'),
@@ -61,6 +80,7 @@ async function listPins(dir: string): Promise<PinnedEntry[]> {
       // refuses every connection over it, so listing must show it rather than
       // skip it.
       entries.push({
+        serverName: serverNameFromPinFile(name.slice(0, -SUFFIX.length)),
         pinFile: name.slice(0, -SUFFIX.length),
         identityX25519Pub: '(unreadable)',
         identityEd25519Pub: '(unreadable)',
@@ -91,7 +111,7 @@ export async function runTrust(
     // at a refusal and wants to know which browser is pinned and since when,
     // not to parse 32 bytes of base64.
     for (const pin of pins) {
-      io.out(`${pin.pinFile}  pinned ${pin.pinnedAt}  x25519=${pin.identityX25519Pub}`);
+      io.out(`${pin.serverName}  pinned ${pin.pinnedAt}  x25519=${pin.identityX25519Pub}`);
     }
     return EXIT.OK;
   }
@@ -111,14 +131,14 @@ export async function runTrust(
       try {
         await unlink(pin.file);
       } catch {
-        failed.push(pin.pinFile);
+        failed.push(pin.serverName);
       }
     }
     const cleared = pins.length - failed.length;
     io.err(
       `cleared ${cleared} extension pin(s): ${pins
-        .filter((p) => !failed.includes(p.pinFile))
-        .map((p) => p.pinFile)
+        .filter((p) => !failed.includes(p.serverName))
+        .map((p) => p.serverName)
         .join(', ')} — each re-pins on the next browser to complete a handshake with it`,
     );
     if (failed.length > 0) {

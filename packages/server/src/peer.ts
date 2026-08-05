@@ -298,9 +298,16 @@ export async function startPeer(opts: PeerOpts): Promise<InternalPeerHandle> {
       }
       if (frame.type === 'ready' && frame.mcpId === opts.mcpId) {
         // #208: authenticate the extension BEFORE deriving anything from a
-        // key it supplied. Without this a concentrator can put its own
-        // ephemeral pub here, derive the same shared secret with us, and read
-        // the traffic `T-host-MITM` says it cannot.
+        // key it supplied. Without this, anything that could reach us could BE
+        // the extension with no key material at all.
+        //
+        // It does not make the session private against something already in
+        // the middle: the signature covers the two nonces and NOT
+        // `extensionSessionPub`, so a concentrator relaying a genuine hello
+        // and a genuine signature can still substitute its own ephemeral key
+        // and derive the same secret we do. See docs/SECURITY.md
+        // §T-host-MITM, and the residual pinned by
+        // `extension-pin-peer.test.ts`.
         const authorised = await authenticateExtension(frame.sessionSig);
         if (!authorised) {
           ws.close(1008, 'extension identity refused');
