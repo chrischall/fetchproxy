@@ -1,6 +1,6 @@
 import {
   classifyBridgeError,
-  FetchproxyScopeError,
+  FetchproxyHintedError,
   FetchproxySessionNotReadyError,
 } from '@fetchproxy/server';
 import { EXIT, UsageError, type Io } from './output.js';
@@ -32,15 +32,18 @@ export function mapBridgeError(err: unknown, io: Io): number {
     );
     return EXIT.USAGE;
   }
-  // A widened declared scope is rejected by the extension's gate #2 until the
-  // user re-approves. That arrives as a `protocol` error, so without this it
-  // inherits the blanket "version mismatch — update both" hint below and sends
-  // people chasing a version problem that does not exist.
+  // Some rejections know their own remedy — a widened scope needs a re-pair,
+  // a missing tab needs a tab. Both arrive as `protocol` errors, so without
+  // this they inherit the blanket "version mismatch — update both" hint below
+  // and send people chasing a version problem that does not exist.
   //
-  // The wording knowledge now lives on the error itself (FetchproxyScopeError,
-  // server 1.10+) rather than in a regex here — the CLI is not the only
-  // consumer that needs it, and a second copy would drift from the first.
-  if (err instanceof FetchproxyScopeError) {
+  // The wording knowledge lives on the error itself (server 1.10+) rather than
+  // in a regex here — the CLI is not the only consumer that needs it, and a
+  // second copy would drift from the first. Branching on the shared
+  // FetchproxyHintedError base rather than each subclass (1.12+, #204) means
+  // the next hinted error is rendered right here without a new branch; keying
+  // on FetchproxyScopeError alone is how the no-tab case ended up mis-hinted.
+  if (err instanceof FetchproxyHintedError) {
     io.err(`bridge error (${kind}): ${err.originalError} — ${err.hint}`);
     return EXIT.BRIDGE;
   }

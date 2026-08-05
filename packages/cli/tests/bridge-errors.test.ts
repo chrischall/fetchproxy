@@ -64,3 +64,39 @@ describe('mapBridgeError — scope-diff errors are not version mismatches', () =
     expect(io.errs.join('\n')).toMatch(/version mismatch/i);
   });
 });
+
+describe('mapBridgeError — a missing tab is not a version mismatch', () => {
+  // Reported as #204: `fpx post-json https://api.creditkarma.com/graphql` on a
+  // current CLI and a current extension printed
+  //   bridge error (protocol): no tab matching https://api.creditkarma.com/
+  //     — extension/server version mismatch — update both.
+  // Nothing was mismatched; nothing was open on that host.
+  it('tells the user to open a tab, not to update', () => {
+    const io = memIo();
+    const code = mapBridgeError(
+      protocolErrorFrom('no tab matching https://api.creditkarma.com/'),
+      io,
+    );
+    expect(code).toBe(EXIT.BRIDGE);
+    const out = io.errs.join('\n');
+    expect(out).toMatch(/no tab matching https:\/\/api\.creditkarma\.com\//);
+    expect(out).toMatch(/open a tab/i);
+    expect(out).not.toMatch(/version mismatch/i);
+    expect(out).not.toMatch(/update both/i);
+  });
+
+  it('leaves the unreachable-content-script wording to say its own piece', () => {
+    // That message already tells the user to refresh the page. "Open a tab"
+    // would be wrong there — one is open.
+    const io = memIo();
+    mapBridgeError(
+      protocolErrorFrom(
+        'no tab matching https://x.com/ has the fetchproxy content script loaded ' +
+          '(1 URL match, none responded). Refresh the page in your browser to inject ' +
+          'the content script, then retry.',
+      ),
+      io,
+    );
+    expect(io.errs.join('\n')).toMatch(/Refresh the page/);
+  });
+});

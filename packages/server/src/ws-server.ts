@@ -492,6 +492,34 @@ export class FetchproxyBridgeDownError extends FetchproxyProtocolError {
 }
 
 /**
+ * 1.12.0+: a protocol error that knows its own remedy.
+ *
+ * Every consumer that re-wraps bridge errors — the CLI, `@fetchproxy/bootstrap`
+ * callers, MCPs with their own auth copy — needs to answer "and what do I do
+ * about it?". Answering per-consumer is how the guidance goes missing, and
+ * answering per-subclass is how consumers end up branching on
+ * `instanceof FetchproxyScopeError` and inheriting blanket advice for
+ * everything else (the bug behind #204).
+ *
+ * So the shape lives here: catch `FetchproxyHintedError`, render
+ * `originalError — hint`, and every present and future hinted error renders
+ * correctly without a new branch.
+ */
+export class FetchproxyHintedError extends FetchproxyProtocolError {
+  /** The extension's raw rejection, unmodified. */
+  readonly originalError: string;
+  /** What the user should actually do, in prose. */
+  readonly hint: string;
+
+  constructor(originalError: string, hint: string) {
+    super(`${originalError} — ${hint}`);
+    this.name = 'FetchproxyHintedError';
+    this.originalError = originalError;
+    this.hint = hint;
+  }
+}
+
+/**
  * 1.10.0+: the extension rejected a request because its declared scope no
  * longer covers what was asked for (gate #2).
  *
@@ -508,21 +536,42 @@ export class FetchproxyBridgeDownError extends FetchproxyProtocolError {
  * guidance on the error itself means every consumer can surface it the way
  * they already surface {@link FetchproxyBridgeDownError.hint}.
  */
-export class FetchproxyScopeError extends FetchproxyProtocolError {
-  /** The extension's raw rejection, unmodified. */
-  readonly originalError: string;
-  readonly hint: string;
-
+export class FetchproxyScopeError extends FetchproxyHintedError {
   constructor(originalError: string) {
-    const hint =
+    super(
+      originalError,
       'the declared scope changed since you paired, so the extension is ' +
-      'refusing the request. Revoke this MCP in the Transporter extension ' +
-      'popup, then re-run — you will be asked to approve the new scope. ' +
-      'This is not a version problem and does not need an update.';
-    super(`${originalError} — ${hint}`);
+        'refusing the request. Revoke this MCP in the Transporter extension ' +
+        'popup, then re-run — you will be asked to approve the new scope. ' +
+        'This is not a version problem and does not need an update.',
+    );
     this.name = 'FetchproxyScopeError';
-    this.originalError = originalError;
-    this.hint = hint;
+  }
+}
+
+/**
+ * 1.12.0+: no browser tab is open on the host the request needed.
+ *
+ * Typed for the same reason as {@link FetchproxyScopeError}: untyped, the
+ * rejection is a plain `FetchproxyProtocolError`, `classifyBridgeError`
+ * (which dispatches on type, not message) calls it `protocol`, and every
+ * consumer's blanket protocol advice lands on it. In the CLI that advice was
+ * "extension/server version mismatch — update both", so a user whose versions
+ * were entirely current got sent to update them (#204).
+ *
+ * Deliberately NOT applied to the "matched a tab, but its content script never
+ * answered" wording. That has a different remedy — refresh the page rather
+ * than open one — and the extension's own message already spells it out, so
+ * retyping it here would staple contradictory advice onto it.
+ */
+export class FetchproxyNoTabError extends FetchproxyHintedError {
+  constructor(originalError: string) {
+    super(
+      originalError,
+      'open a tab on that host and sign in, then re-run. This is not a ' +
+        'version problem and does not need an update.',
+    );
+    this.name = 'FetchproxyNoTabError';
   }
 }
 
@@ -538,16 +587,27 @@ export class FetchproxyScopeError extends FetchproxyProtocolError {
 const SCOPE_REJECTION = /not in declared/;
 
 /**
+ * "Nothing is open on that host."
+ *
+ * The negative lookahead keeps the sibling wording out: `no tab matching <url>
+ * has the fetchproxy content script loaded …` means a tab DID match but never
+ * answered, which is fixed by refreshing the page, not by opening one. Both
+ * start `no tab matching `, so matching that prefix alone would give the
+ * unreachable-content-script case advice that cannot fix it.
+ */
+const NO_TAB_REJECTION = /no tab matching (?!.*content script loaded)/;
+
+/**
  * Build the right error for an extension rejection.
  *
  * Use this instead of `new FetchproxyProtocolError(err)` at every site that
- * turns an `ok:false` response into a throw, so scope rejections cannot
- * silently lose their guidance again at one forgotten call site.
+ * turns an `ok:false` response into a throw, so rejections that know their own
+ * remedy cannot silently lose it again at one forgotten call site.
  */
 export function protocolErrorFrom(error: string): FetchproxyProtocolError {
-  return SCOPE_REJECTION.test(error)
-    ? new FetchproxyScopeError(error)
-    : new FetchproxyProtocolError(error);
+  if (SCOPE_REJECTION.test(error)) return new FetchproxyScopeError(error);
+  if (NO_TAB_REJECTION.test(error)) return new FetchproxyNoTabError(error);
+  return new FetchproxyProtocolError(error);
 }
 
 /**
