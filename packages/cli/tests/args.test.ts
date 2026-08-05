@@ -15,7 +15,7 @@ describe('parseCliArgs', () => {
       kind: 'profile-declare', name: 'trip', cookies: ['datadome'],
       localStorage: [], sessionStorage: [],
       captureHeaders: [{ headerName: 'x-csrf-token', host: 'www.tripadvisor.com', path: '/data/*' }],
-      domSelectors: [], download: false,
+      domSelectors: [], download: false, cookieWrite: false,
     });
   });
 
@@ -25,6 +25,7 @@ describe('parseCliArgs', () => {
     expect(cmd).toEqual({
       kind: 'profile-declare', name: 'r', cookies: [], localStorage: [], sessionStorage: [],
       captureHeaders: [], domSelectors: [{ name: 'title', selector: 'h1.title' }], download: true,
+      cookieWrite: false,
     });
   });
 

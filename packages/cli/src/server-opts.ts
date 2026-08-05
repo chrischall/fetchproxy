@@ -57,6 +57,7 @@ export function serverOptsFor(profileName: string, p: Profile, version: string):
   if (p.indexedDb.length > 0) capabilities.push('read_indexed_db');
   if (p.domSelectors.length > 0) capabilities.push('read_dom');
   if (p.download === true) capabilities.push('download');
+  if (p.cookieWrite === true) capabilities.push('write_cookies');
 
   const localStorageKeys = new Set(p.localStorage);
   for (const ptr of p.localStoragePointers) localStorageKeys.add(ptr.storageKey);

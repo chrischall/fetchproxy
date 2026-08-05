@@ -730,6 +730,46 @@ function validateInnerRequest(raw: Record<string, unknown>): InnerFrame {
     }
     return raw as unknown as InnerFrame;
   }
+  if (raw.op === 'write_cookies') {
+    assertObject(raw.init, 'inner.init');
+    assertHttpsOriginOnly(raw.init.origin, 'inner.init.origin');
+    if (!Array.isArray(raw.init.cookies) || raw.init.cookies.length === 0) {
+      // Non-empty is enforced here, not just server-side: an empty write is
+      // meaningless, and the extension would otherwise answer a wire-level
+      // `cookies: []` with `ok: true, written: []` — a success that wrote
+      // nothing, which is the shape of a silent failure.
+      throw new ProtocolError('inner.init.cookies: must be a non-empty array');
+    }
+    for (const [i, entry] of raw.init.cookies.entries()) {
+      assertObject(entry, `inner.init.cookies[${i}]`);
+      // Names are held to the same charset as declared scope keys, so a write
+      // cannot smuggle a name shape the popup could not render or the
+      // declared-key comparison could not match.
+      assertString(entry.name, `inner.init.cookies[${i}].name`);
+      // SCOPE_KEY_RE, not the glob variant: a write names one exact cookie.
+      // A pattern here would be a way to write cookies the popup never showed.
+      if (!SCOPE_KEY_RE.test(entry.name as string)) {
+        throw new ProtocolError(
+          `inner.init.cookies[${i}].name: invalid key ${JSON.stringify(entry.name)}`,
+        );
+      }
+      assertString(entry.value, `inner.init.cookies[${i}].value`);
+      for (const k of Object.keys(entry)) {
+        if (k !== 'name' && k !== 'value') {
+          throw new ProtocolError(
+            `inner.init.cookies[${i}]: unexpected field ${JSON.stringify(k)}`,
+          );
+        }
+      }
+    }
+    if (raw.init.path !== undefined) assertCookiePath(raw.init.path, 'inner.init.path');
+    for (const k of Object.keys(raw.init)) {
+      if (k !== 'origin' && k !== 'cookies' && k !== 'path') {
+        throw new ProtocolError(`inner.init: unexpected field ${JSON.stringify(k)} on write_cookies`);
+      }
+    }
+    return raw as unknown as InnerFrame;
+  }
   if (raw.op === 'read_local_storage' || raw.op === 'read_session_storage') {
     assertObject(raw.init, 'inner.init');
     if (raw.init.origin === undefined) {
@@ -957,7 +997,7 @@ function validateInnerRequest(raw: Record<string, unknown>): InnerFrame {
     return raw as unknown as InnerFrame;
   }
   throw new ProtocolError(
-    `inner.op: must be one of "fetch", "read_cookies", "read_local_storage", "read_session_storage", "capture_request_header", "capture_redirect", "read_indexed_db", "read_dom", "download", "graphql_query"; got ${JSON.stringify(raw.op)}`,
+    `inner.op: must be one of "fetch", "read_cookies", "read_local_storage", "read_session_storage", "capture_request_header", "capture_redirect", "read_indexed_db", "read_dom", "download", "graphql_query", "write_cookies"; got ${JSON.stringify(raw.op)}`,
   );
 }
 
@@ -1041,6 +1081,18 @@ function validateInnerResponse(raw: Record<string, unknown>): InnerFrame {
         assertString(raw.cookies, 'inner.cookies');
       } else {
         assertStringMap(raw.values, 'inner.values');
+      }
+      return raw as unknown as InnerFrame;
+    }
+    if (op === 'write_cookies') {
+      if (raw.written === undefined) {
+        throw new ProtocolError('inner.written: missing on write_cookies response');
+      }
+      if (!Array.isArray(raw.written)) {
+        throw new ProtocolError('inner.written: must be an array');
+      }
+      for (const [i, name] of raw.written.entries()) {
+        assertString(name, `inner.written[${i}]`);
       }
       return raw as unknown as InnerFrame;
     }

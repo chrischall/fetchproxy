@@ -22,6 +22,7 @@ This document tracks 0.2.0. Two structural changes vs. 0.0.x / 0.1.x bear on the
 | MCP silently expanding its powers post-pair | The trust record stores the approved `domains` AND `capabilities` set. Any change → re-pair prompt. |
 | Arbitrary JS execution in your tabs | The protocol has no `eval_js`, `inject_script`, or equivalent. `graphql` is NOT this — it can only invoke a page-declared GraphQL operation through the page's own Apollo client, never arbitrary page code. See [§T-graphql-misuse](#t-graphql-misuse--graphql-capability-misuse). |
 | Storage exfiltration | `read_storage`, `read_indexeddb`, etc. don't exist. `read_cookies` is a deliberate, narrow opt-in. |
+| An MCP tampering with your session | The one write verb, `write_cookies`, can only overwrite cookies the MCP already declares readable, only on declared domains, only when the cookie already exists, and only under its own approved capability. See [§T-cookie-write](#t-cookie-write--write_cookies-capability-misuse). |
 | Multi-user machine sniffing | Out of scope. Localhost binding only. |
 
 ## Local trust boundary
@@ -104,6 +105,23 @@ If an MCP legitimately needs more than one domain (rare), it enumerates them: `d
 4. **HTTP-only cookies are not exposed.** The browser refuses to surface them to page JS. fetchproxy doesn't have a side channel to read them either — it relies on `document.cookie`, same as any in-page script.
 
 **Residual risk:** A user who approves a pair with `read_cookies` is giving the MCP a powerful read primitive for the declared domains. The popup tries to make that visible; the trust record forces re-approval on change. There is no further defense — if you don't trust the MCP, don't approve the pair.
+
+### T-cookie-write — `write_cookies` capability misuse
+
+`write_cookies` is the **only verb in the protocol that changes browser state**. Everything else reads.
+
+It exists for one failure class. Sites that **rotate** a credential cookie hand back a new value on every refresh; when an MCP refreshes and keeps the result to itself, the copy in the browser's cookie jar is dead, and the user is silently signed out of a tab they never touched — usually reported to them as "inactivity", which points nowhere near the cause. Reading cannot repair that. Measured on creditkarma.com: **two** MCP-side refreshes were enough to log out an untouched, freshly signed-in tab, and reloading the page does not recover it — only a full sign-in does (chrischall/creditkarma-mcp#119).
+
+**What it is NOT:** a general cookie-authoring primitive. Four independent constraints, each enforced on the extension side:
+
+1. **Capability.** `write_cookies` is declared in the hello, approved at pair time as its own line, and stored in the trust record — so adding it later forces a re-pair with the diff UI, like any other capability change. The popup labels it "Overwrite cookies it can already read (can change your signed-in session)" rather than as a sibling of the read verbs, because it is not one.
+2. **Read scope.** Every name must already be in the MCP's declared `cookieKeys`. A write can never reach a cookie the user did not already approve for reading, so granting it cannot widen *which* cookies are in play — only what may be done to the ones already listed.
+3. **Domain.** The origin is gated against the declared `domains`, decided on the bare origin before any path is appended, exactly as the read path does.
+4. **Existence.** The cookie must already exist. This verb refreshes a value in place; it cannot create cookies. That is what keeps it from becoming a cookie-*injection* primitive — an MCP cannot mint a session cookie for a domain, only replace a value the user's browser already holds.
+
+Attributes are copied off the cookie being replaced (`domain`/`path`/`secure`/`httpOnly`/`sameSite`/`expirationDate`), so a write overwrites rather than shadows. `domain` is omitted for host-only cookies and `expirationDate` for session cookies, because passing either would silently widen the cookie's scope or lifetime.
+
+**Residual risk:** an MCP granted `write_cookies` can set a declared cookie to a value of its choosing on a declared domain — including a value the user did not authorise, e.g. swapping a session for one the MCP controls. The containment is that this is limited to cookies the MCP could already *read* (and therefore already exfiltrate), so it grants no new access to the user's data; what it adds is the ability to alter the browser's state for those specific cookies. As with `read_cookies`: if you don't trust the MCP, don't approve the pair.
 
 ### T-graphql-misuse — `graphql` capability misuse
 

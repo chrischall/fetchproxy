@@ -22,17 +22,18 @@ When an MCP server calls `fetch()` through Transporter, the extension makes the 
 
 ### 2.2 Session Data (Cookies, Storage, IndexedDB)
 
-Depending on the capabilities an MCP server declares and you approve at pair time, Transporter may read:
+Depending on the capabilities an MCP server declares and you approve at pair time, Transporter may read — and, for one capability, modify:
 
-| Capability | What it reads |
+| Capability | What it reads or changes |
 |---|---|
 | `read_cookies` | Cookies for declared domains |
 | `read_local_storage` | `localStorage` contents for declared domains |
 | `read_session_storage` | `sessionStorage` contents for declared domains |
 | `read_indexed_db` | IndexedDB contents for declared domains |
 | `capture_request_header` | Specific HTTP request headers on declared domains |
+| `write_cookies` | **Changes** the value of cookies on declared domains. The only capability that modifies browser state rather than reading it. It can only overwrite a cookie that already exists and whose name the MCP already declared readable — it cannot create cookies, and it reaches nothing the MCP could not already read. |
 
-**All session data reads are:**
+**All session data reads — and the one write — are:**
 - Scoped to the domains the MCP server explicitly declared in its hello frame.
 - Gated on your explicit approval at pair time — you see the requested capabilities and domains before any access is granted.
 - Passed directly to the requesting MCP server over the local encrypted WebSocket. Transporter does not store, forward, or log the content of cookies or storage values.

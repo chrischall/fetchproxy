@@ -1025,6 +1025,12 @@ export class FetchproxyServer {
     number,
     { resolve: (v: Record<string, string>) => void; reject: (e: Error) => void }
   >();
+  // 1.12.0+: write-cookies awaiters resolve the list of names actually
+  // written, so a caller can confirm rather than assume.
+  private pendingWriteCookies = new Map<
+    number,
+    { resolve: (v: string[]) => void; reject: (e: Error) => void }
+  >();
   // 0.3.0+: capture-header awaiters resolve a single string.
   private pendingCapture = new Map<
     number,
@@ -1601,6 +1607,7 @@ export class FetchproxyServer {
         this.pending.delete(id);
         this.pendingReadCookies.delete(id);
         this.pendingStorage.delete(id);
+        this.pendingWriteCookies.delete(id);
         this.pendingCapture.delete(id);
         this.pendingRedirect.delete(id);
         this.pendingDownload.delete(id);
@@ -2133,6 +2140,69 @@ export class FetchproxyServer {
       throw protocolErrorFrom(result.error);
     }
     return result.cookies;
+  }
+
+  /**
+   * 1.12.0+: overwrite the value of cookies this MCP already declares.
+   *
+   * The bridge's only write verb, and it exists for one failure class. Sites
+   * that ROTATE a credential cookie hand back a new value on every refresh; if
+   * the MCP refreshes and keeps the result to itself, the copy in the browser's
+   * cookie jar is dead, and the user gets signed out of a tab they never
+   * touched — usually reported to them as "inactivity". Writing the rotated
+   * value back is the only thing that repairs it.
+   *
+   * Requires `'write_cookies'` in capabilities, which the user approves at pair
+   * time as its own line. Every name must ALSO be in declared `cookieKeys`: a
+   * write can never reach a cookie the MCP was not already trusted to read, so
+   * granting it cannot widen which cookies are in play — only what may be done
+   * to the ones already listed.
+   *
+   * The extension refuses the whole request unless every named cookie already
+   * exists; this refreshes a value in place and deliberately cannot author new
+   * cookies. Returns the names actually written.
+   */
+  async writeCookies(opts: {
+    cookies: Record<string, string>;
+    domain?: string;
+    subdomain?: string;
+    path?: string;
+  }): Promise<string[]> {
+    if (!this.opts.capabilities.includes('write_cookies')) {
+      throw new Error(
+        'FetchproxyServer.writeCookies(): MCP did not declare "write_cookies" in capabilities — add it to FetchproxyServerOpts.capabilities to enable this verb',
+      );
+    }
+    const names = Object.keys(opts.cookies);
+    if (names.length === 0) {
+      throw new Error('FetchproxyServer.writeCookies(): no cookies given');
+    }
+    await this.ensureConnected();
+    this.throwIfPendingPair();
+    if (opts.subdomain !== undefined) assertSubdomainLabel(opts.subdomain);
+    const baseDomain = this.resolveBaseDomain(opts.domain);
+    const host = opts.subdomain ? `${opts.subdomain}.${baseDomain}` : baseDomain;
+    // Gate #1 (the extension re-checks as gate #2): names ⊆ declared cookieKeys.
+    this.assertScopeSubset(names, this.opts.cookieKeys, 'cookieKeys');
+    const cookiePath = normalizeCookiePath(opts.path);
+    const id = this.nextRequestId++;
+    const inner: InnerFrame = {
+      type: 'request',
+      id,
+      op: 'write_cookies',
+      init: {
+        // Bare origin, same invariant as the read path: a path must never be
+        // able to move the request past the domain gate.
+        origin: `https://${host}`,
+        cookies: Object.entries(opts.cookies).map(([name, value]) => ({ name, value })),
+        ...(cookiePath !== undefined ? { path: cookiePath } : {}),
+      },
+    };
+    const pending = new Promise<string[]>((resolve, reject) => {
+      this.pendingWriteCookies.set(id, { resolve, reject });
+    });
+    await this.sendInnerFrame(inner);
+    return this._withVerbTimeout(pending, this.pendingWriteCookies, id, `https://${host}`);
   }
 
   /**
@@ -2999,6 +3069,18 @@ export class FetchproxyServer {
       }
       return;
     }
+    const writeCookiesCb = this.pendingWriteCookies.get(inner.id);
+    if (writeCookiesCb) {
+      this.pendingWriteCookies.delete(inner.id);
+      if (inner.ok && inner.op === 'write_cookies') {
+        writeCookiesCb.resolve([...inner.written]);
+      } else {
+        writeCookiesCb.reject(
+          protocolErrorFrom(inner.ok ? 'write_cookies response had the wrong op' : inner.error),
+        );
+      }
+      return;
+    }
     const cookiesCb = this.pendingReadCookies.get(inner.id);
     if (cookiesCb) {
       this.pendingReadCookies.delete(inner.id);
@@ -3044,6 +3126,8 @@ export class FetchproxyServer {
     this.pendingReadCookies.clear();
     for (const { reject } of this.pendingStorage.values()) reject(err);
     this.pendingStorage.clear();
+    for (const { reject } of this.pendingWriteCookies.values()) reject(err);
+    this.pendingWriteCookies.clear();
     for (const { reject } of this.pendingCapture.values()) reject(err);
     this.pendingCapture.clear();
     for (const { reject } of this.pendingRedirect.values()) reject(err);

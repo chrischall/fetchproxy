@@ -117,7 +117,8 @@ export type Capability =
   | 'read_indexed_db'
   | 'read_dom'
   | 'download'
-  | 'graphql';
+  | 'graphql'
+  | 'write_cookies';
 
 /**
  * Set of capability strings that are valid on the wire. Runtime sibling
@@ -136,6 +137,7 @@ export const KNOWN_CAPABILITIES: ReadonlySet<Capability> = new Set<Capability>([
   'read_dom',
   'download',
   'graphql',
+  'write_cookies',
 ]);
 
 /**
@@ -464,6 +466,42 @@ export interface ReadCookiesInitV3 {
 /** Discriminated init for `read_cookies` — 0.2.0 legacy or 0.3.0 new shape. */
 export type ReadCookiesInit = ReadCookiesInitLegacy | ReadCookiesInitV3;
 
+/**
+ * 1.12.0+ `init` payload for `write_cookies`.
+ *
+ * The only write verb on the wire. It exists for one failure class: sites that
+ * ROTATE a credential cookie. The MCP refreshes, the site issues a new value,
+ * and the copy in the browser's cookie is now dead — so the user gets silently
+ * signed out of a tab they never touched, usually blamed on "inactivity".
+ * Reading cannot fix that; only writing the rotated value back can.
+ *
+ * Deliberately scoped to the names already in the trust record's `cookieKeys`.
+ * A write is strictly more dangerous than a read, so it is gated by its own
+ * `write_cookies` capability that the user approves at pair time — but it
+ * cannot reach a cookie the MCP was not already trusted to read, which keeps
+ * the blast radius identical to the read scope the user already saw.
+ */
+export interface WriteCookiesInit {
+  /** Bare HTTPS origin the cookies belong to. E.g. `https://www.example.com`. */
+  origin: string;
+  /** Optional cookie path, same semantics as {@link ReadCookiesInitV3.path}. */
+  path?: string;
+  /**
+   * Cookies to set. Each `name` must appear in the trust record's
+   * `cookieKeys`; the extension refuses the whole request otherwise rather
+   * than partially applying it.
+   */
+  cookies: WriteCookieDecl[];
+}
+
+/** One cookie to write. Attributes beyond the value are deliberately not
+ *  settable — this verb exists to refresh a value in place, not to author
+ *  arbitrary cookies with attacker-chosen scope or lifetime. */
+export interface WriteCookieDecl {
+  name: string;
+  value: string;
+}
+
 /** 0.3.0 `init` payload for `read_local_storage` / `read_session_storage`. */
 export interface ReadStorageInit {
   /** Bare HTTPS origin of the tab whose storage is being read. */
@@ -615,6 +653,13 @@ export interface InnerRequestReadCookies {
   init: ReadCookiesInit;
 }
 
+export interface InnerRequestWriteCookies {
+  type: 'request';
+  id: number;
+  op: 'write_cookies';
+  init: WriteCookiesInit;
+}
+
 export interface InnerRequestReadLocalStorage {
   type: 'request';
   id: number;
@@ -678,6 +723,7 @@ export interface InnerRequestGraphqlQuery {
 export type InnerRequest =
   | InnerRequestFetch
   | InnerRequestReadCookies
+  | InnerRequestWriteCookies
   | InnerRequestReadLocalStorage
   | InnerRequestReadSessionStorage
   | InnerRequestCaptureRequestHeader
@@ -714,6 +760,16 @@ export interface InnerResponseReadCookiesOk {
    * are included.
    */
   values?: Record<string, string>;
+}
+
+export interface InnerResponseWriteCookiesOk {
+  type: 'response';
+  id: number;
+  ok: true;
+  op: 'write_cookies';
+  /** Names actually written, echoed so the caller can confirm rather than
+   *  assume. Same order as requested. */
+  written: string[];
 }
 
 export interface InnerResponseReadLocalStorageOk {
@@ -829,6 +885,7 @@ export interface InnerResponseGraphqlQueryOk {
 export type InnerResponseOk =
   | InnerResponseFetchOk
   | InnerResponseReadCookiesOk
+  | InnerResponseWriteCookiesOk
   | InnerResponseReadLocalStorageOk
   | InnerResponseReadSessionStorageOk
   | InnerResponseCaptureRequestHeaderOk
