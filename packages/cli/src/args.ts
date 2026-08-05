@@ -18,7 +18,7 @@ export type Command =
   | { kind: 'pair'; profile: string; domain?: string; subdomain?: string }
   | { kind: 'health'; profile: string }
   | { kind: 'fetch'; profile: string; method: string; url: string;
-      headers: Record<string, string>; body?: string; json: boolean }
+      headers: Record<string, string>; body?: string; json: boolean; viaTab?: string }
   | { kind: 'read'; profile: string; bucket: Bucket; keys: string[];
       storageDomain?: string; storageSubdomain?: string }
   | { kind: 'session'; profile: string; storageDomain?: string; storageSubdomain?: string }
@@ -95,6 +95,7 @@ export function parseCliArgs(
         filename: { type: 'string' },
         'storage-domain': { type: 'string' },
         'storage-subdomain': { type: 'string' },
+        'via-tab': { type: 'string' },
         subdomain: { type: 'string' },
         help: { type: 'boolean', short: 'h', default: false },
         version: { type: 'boolean', short: 'v', default: false },
@@ -192,7 +193,7 @@ export function parseCliArgs(
     const profile = requireProfile(values.profile);
     if (cmd === 'get') {
       return { kind: 'fetch', profile, method: 'GET', url, headers, body: undefined,
-        json: values.json ?? false };
+        json: values.json ?? false, viaTab: values['via-tab'] };
     }
     if (cmd === 'post-json') {
       const rawBody = rest[1];
@@ -208,11 +209,11 @@ export function parseCliArgs(
       const hasContentType = Object.keys(headers).some((k) => k.toLowerCase() === 'content-type');
       if (!hasContentType) headers['Content-Type'] = 'application/json';
       return { kind: 'fetch', profile, method: 'POST', url, headers, body,
-        json: values.json ?? false };
+        json: values.json ?? false, viaTab: values['via-tab'] };
     }
     const body = values.data === undefined ? undefined : resolveBody(values.data, readFile);
     return { kind: 'fetch', profile, method: (values.method ?? 'GET').toUpperCase(), url,
-      headers, body, json: values.json ?? false };
+      headers, body, json: values.json ?? false, viaTab: values['via-tab'] };
   }
 
   throw new UsageError(`unknown command ${JSON.stringify(cmd)}`, 'run: fpx --help');

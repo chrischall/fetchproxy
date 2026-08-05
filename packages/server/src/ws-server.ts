@@ -385,6 +385,28 @@ export interface RequestOpts {
    * becomes the implicit default).
    */
   domain?: string;
+  /**
+   * 1.12.0+: the tab to relay this request through, when it isn't the one the
+   * request's own host would imply.
+   *
+   * By default the relay tab is `https://{host-of-the-request}/`, which is
+   * right for app hosts — routing `photos.x.com` through a `www.x.com` tab
+   * would be wrong. But it assumes every host CAN have a tab, and API hosts
+   * cannot: `api.example.com` typically serves no HTML app, so a tab opened
+   * there has no content script and the request is unroutable however hard the
+   * user tries. Meanwhile the signed-in `www.example.com` tab can issue that
+   * cross-origin fetch perfectly well — which is exactly what the site's own
+   * web app does.
+   *
+   * Naming the relay explicitly keeps the safe default intact while unblocking
+   * that case. The value is matched against open tabs by prefix, so
+   * `https://www.example.com/` accepts any page on the host and a deeper path
+   * pins one specific page.
+   *
+   * Must be inside the declared `domains`: this widens which tab performs the
+   * fetch, never which origins are reachable. The request URL is unaffected.
+   */
+  viaTab?: string;
 }
 
 /**
@@ -402,6 +424,8 @@ export interface BodylessRequestOpts {
   subdomain?: string;
   /** Same as `RequestOpts.domain`. */
   domain?: string;
+  /** Same as `RequestOpts.viaTab`. */
+  viaTab?: string;
 }
 
 /**
@@ -1765,10 +1789,26 @@ export class FetchproxyServer {
     // gives the MCP author a clear error at the call site instead of a
     // generic "domain not allowed" from the bridge.
     assertUrlInDomains('request url', url, this.opts.domains);
+    // 1.12.0+: `viaTab` overrides which tab relays the request — see
+    // RequestOpts.viaTab for why API-only hosts need it. Guarded the same way
+    // the request URL is: it changes which page performs the fetch, and that
+    // page must be one the user already approved via the declared domains.
+    let tabUrl = `https://${host}/`;
+    if (opts.viaTab !== undefined) {
+      try {
+        new URL(opts.viaTab);
+      } catch {
+        throw new Error(
+          `FetchproxyServer.request: viaTab is not a valid URL: ${JSON.stringify(opts.viaTab)}`,
+        );
+      }
+      assertUrlInDomains('viaTab', opts.viaTab, this.opts.domains);
+      tabUrl = opts.viaTab;
+    }
     const init: FetchInit = {
       url,
       method,
-      tabUrl: `https://${host}/`,
+      tabUrl,
       headers: opts.headers,
       body: opts.body,
     };

@@ -13,7 +13,9 @@ export interface VerbServer {
   request(
     method: string,
     path: string,
-    opts?: { headers?: Record<string, string>; body?: string; domain?: string },
+    opts?: {
+      headers?: Record<string, string>; body?: string; domain?: string; viaTab?: string;
+    },
   ): Promise<{ status: number; body: string; url: string }>;
   readCookies(o: { keys: string[]; domain?: string; subdomain?: string }): Promise<string>;
   readLocalStorage(o: { keys: string[]; domain?: string; subdomain?: string }): Promise<Record<string, string>>;
@@ -81,6 +83,7 @@ export async function runFetch(
       headers: Object.keys(cmd.headers).length ? cmd.headers : undefined,
       body: cmd.body,
       domain,
+      viaTab: cmd.viaTab,
     });
     io.out(cmd.json ? fetchEnvelope(res) : res.body);
     const wall = classifyBotWall(res.body, res.status);

@@ -104,3 +104,27 @@ describe('parseCliArgs', () => {
     expect(() => parseCliArgs(['get', 'https://x.com/', '--bogus', '-p', 'x'])).toThrow(UsageError);
   });
 });
+
+describe('parseCliArgs — --via-tab', () => {
+  // API hosts serve no page, so the tab that relays the request has to be
+  // nameable separately from the request's own host (#203).
+  it.each([
+    [['get', 'https://api.x.com/v1', '-p', 'x'], 'GET'],
+    [['request', 'https://api.x.com/v1', '-p', 'x', '-X', 'PUT'], 'PUT'],
+  ])('threads it through %j', (argv, method) => {
+    const cmd = parseCliArgs([...argv, '--via-tab', 'https://www.x.com/']);
+    expect(cmd).toMatchObject({ kind: 'fetch', method, viaTab: 'https://www.x.com/' });
+  });
+
+  it('threads it through post-json', () => {
+    const cmd = parseCliArgs(
+      ['post-json', 'https://api.x.com/gql', '{"a":1}', '-p', 'x', '--via-tab', 'https://www.x.com/'],
+    );
+    expect(cmd).toMatchObject({ kind: 'fetch', method: 'POST', viaTab: 'https://www.x.com/' });
+  });
+
+  it('is absent when not passed, so the request host stays the default', () => {
+    const cmd = parseCliArgs(['get', 'https://api.x.com/v1', '-p', 'x']);
+    expect((cmd as { viaTab?: string }).viaTab).toBeUndefined();
+  });
+});

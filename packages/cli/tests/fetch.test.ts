@@ -104,3 +104,30 @@ describe('runFetch', () => {
     expect(sawDomain).toBe('hbportal.co');
   });
 });
+
+describe('runFetch — --via-tab', () => {
+  it('passes the relay tab to the server', async () => {
+    const server = stubServer();
+    await runFetch(
+      { ...CMD, url: 'https://api.tripadvisor.com/x', viaTab: 'https://www.tripadvisor.com/' },
+      PROFILE,
+      memIo(),
+      () => server,
+    );
+    expect(server.request).toHaveBeenCalledWith(
+      'GET',
+      'https://api.tripadvisor.com/x',
+      expect.objectContaining({ viaTab: 'https://www.tripadvisor.com/' }),
+    );
+  });
+
+  it('leaves it undefined when not given', async () => {
+    const server = stubServer();
+    await runFetch(CMD, PROFILE, memIo(), () => server);
+    expect(server.request).toHaveBeenCalledWith(
+      'GET',
+      CMD.url,
+      expect.objectContaining({ viaTab: undefined }),
+    );
+  });
+});
