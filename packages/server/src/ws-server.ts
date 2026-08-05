@@ -392,11 +392,20 @@ export interface RequestOpts {
    * By default the relay tab is `https://{host-of-the-request}/`, which is
    * right for app hosts — routing `photos.x.com` through a `www.x.com` tab
    * would be wrong. But it assumes every host CAN have a tab, and API hosts
-   * cannot: `api.example.com` typically serves no HTML app, so a tab opened
-   * there has no content script and the request is unroutable however hard the
-   * user tries. Meanwhile the signed-in `www.example.com` tab can issue that
-   * cross-origin fetch perfectly well — which is exactly what the site's own
-   * web app does.
+   * cannot.
+   *
+   * The mechanism is worth knowing, because the extension's own advice for
+   * this failure ("refresh the page to inject the content script") cannot
+   * work. An API host typically 404s at `/`, so Chrome renders its OWN
+   * document at `chrome-error://chromewebdata/` — and Chrome never injects
+   * content scripts into `chrome-error://` pages, `<all_urls>` match or not.
+   * `chrome.tabs.query` still reports the tab's URL as the requested https
+   * one, which is why the failure reads "1 URL match, none responded": the URL
+   * matches, the document behind it cannot host a relay, and no amount of
+   * reloading changes that.
+   *
+   * Meanwhile the signed-in `www.example.com` tab can issue that cross-origin
+   * fetch perfectly well — which is exactly what the site's own web app does.
    *
    * Naming the relay explicitly keeps the safe default intact while unblocking
    * that case. The value is matched against open tabs by prefix, so
