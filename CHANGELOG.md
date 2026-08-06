@@ -1,5 +1,34 @@
 # Changelog
 
+## [2.0.0](https://github.com/chrischall/fetchproxy/compare/v1.11.0...v2.0.0) (2026-08-06)
+
+
+### ⚠ BREAKING CHANGES
+
+* **protocol:** bind the ephemeral key into the ready signature ([#222](https://github.com/chrischall/fetchproxy/issues/222))
+
+### Features
+
+* **protocol:** add write_cookies, the one verb that can repair a rotated session ([#211](https://github.com/chrischall/fetchproxy/issues/211)) ([b2557c2](https://github.com/chrischall/fetchproxy/commit/b2557c2301fd624b65191200ac4f8026d9749230))
+* **protocol:** bind the ephemeral key into the ready signature ([#222](https://github.com/chrischall/fetchproxy/issues/222)) ([c13aeed](https://github.com/chrischall/fetchproxy/commit/c13aeeddbf1bd2acf99e54116f2183772ffe1df1))
+* **server:** let a request name the tab that relays it ([#207](https://github.com/chrischall/fetchproxy/issues/207)) ([c5d3f4d](https://github.com/chrischall/fetchproxy/commit/c5d3f4de113201c6fabf83794d012429740f9b6c))
+* **server:** pin the extension's identity, and verify it on the peer path ([#213](https://github.com/chrischall/fetchproxy/issues/213)) ([0eeced7](https://github.com/chrischall/fetchproxy/commit/0eeced79b90acf23b79ae0349f156bdef725ae59))
+
+
+### Bug Fixes
+
+* **cli:** let a real filesystem error be itself, not "no extension pin" ([#221](https://github.com/chrischall/fetchproxy/issues/221)) ([c87a864](https://github.com/chrischall/fetchproxy/commit/c87a8644b8fa7fd603f5db161bb6c2d9632d24a3)), closes [#220](https://github.com/chrischall/fetchproxy/issues/220)
+* **cli:** validate --via-tab before connecting, like the request URL ([#210](https://github.com/chrischall/fetchproxy/issues/210)) ([959fcc5](https://github.com/chrischall/fetchproxy/commit/959fcc5a88e7815a6b03342ff72ed0ef54b11578))
+* **extension:** reattach the write_cookies doc block, and name the writable cookies as writable ([#215](https://github.com/chrischall/fetchproxy/issues/215)) ([2730c4a](https://github.com/chrischall/fetchproxy/commit/2730c4ad3170f1cee2c96ca55089e193cbc6e749))
+* **extension:** use the guarded caps local for the cookie heading ([#217](https://github.com/chrischall/fetchproxy/issues/217)) ([f95c832](https://github.com/chrischall/fetchproxy/commit/f95c832eebabce28cbe39b4f6400d85f97de7cb9))
+* **server:** release only our own extension claim, and stop guessing scoped names ([#219](https://github.com/chrischall/fetchproxy/issues/219)) ([3d90a64](https://github.com/chrischall/fetchproxy/commit/3d90a64049ab5b2c93076dd5fd297c771118fe30)), closes [#218](https://github.com/chrischall/fetchproxy/issues/218)
+* **server:** type no-tab rejections so they stop reading as version mismatches ([#205](https://github.com/chrischall/fetchproxy/issues/205)) ([dc30bd9](https://github.com/chrischall/fetchproxy/commit/dc30bd9023d93872ead2c1597e52264b91b078a4))
+
+
+### Refactor
+
+* **server:** drop the concatBytes imports the signature change orphaned ([#224](https://github.com/chrischall/fetchproxy/issues/224)) ([4985ba7](https://github.com/chrischall/fetchproxy/commit/4985ba7b3475ea250000436e67ee76dab69eedb7)), closes [#223](https://github.com/chrischall/fetchproxy/issues/223)
+
 ## [1.11.0](https://github.com/chrischall/fetchproxy/compare/v1.10.0...v1.11.0) (2026-08-03)
 
 
