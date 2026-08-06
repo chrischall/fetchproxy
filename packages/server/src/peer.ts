@@ -2,6 +2,7 @@ import { WebSocket } from 'ws';
 import {
   concatBytes,
   ecdhX25519,
+  readySignaturePayload,
   ed25519Verify,
   fromB64,
   hkdfSha256,
@@ -201,7 +202,10 @@ export async function startPeer(opts: PeerOpts): Promise<InternalPeerHandle> {
    * identity must be the one we pinned (or the first we have seen). Pins on
    * success, since the signature is what makes committing meaningful.
    */
-  const authenticateExtension = async (sessionSig: string): Promise<boolean> => {
+  const authenticateExtension = async (
+    sessionSig: string,
+    extensionSessionPub: string,
+  ): Promise<boolean> => {
     if (!extensionHello) {
       if (opts.requireExtensionIdentity) {
         console.error(
@@ -222,7 +226,11 @@ export async function startPeer(opts: PeerOpts): Promise<InternalPeerHandle> {
       return true;
     }
 
-    const payload = concatBytes(sessionNonce, fromB64(extensionHello.sessionNonce));
+    const payload = readySignaturePayload(
+      sessionNonce,
+      fromB64(extensionHello.sessionNonce),
+      fromB64(extensionSessionPub),
+    );
     let sigOk = false;
     try {
       sigOk = await ed25519Verify(
@@ -301,14 +309,15 @@ export async function startPeer(opts: PeerOpts): Promise<InternalPeerHandle> {
         // key it supplied. Without this, anything that could reach us could BE
         // the extension with no key material at all.
         //
-        // It does not make the session private against something already in
-        // the middle: the signature covers the two nonces and NOT
-        // `extensionSessionPub`, so a concentrator relaying a genuine hello
-        // and a genuine signature can still substitute its own ephemeral key
-        // and derive the same secret we do. See docs/SECURITY.md
-        // §T-host-MITM, and the residual pinned by
-        // `extension-pin-peer.test.ts`.
-        const authorised = await authenticateExtension(frame.sessionSig);
+        // 2.0.0: the signature covers `extensionSessionPub` as well as the
+        // two nonces, so this also makes the session private against
+        // something already in the middle — a relay would have to sign its
+        // own ephemeral key with the extension's Ed25519 key. Under v2 it
+        // could not, and that was the whole of the remaining MITM.
+        const authorised = await authenticateExtension(
+          frame.sessionSig,
+          frame.extensionSessionPub,
+        );
         if (!authorised) {
           ws.close(1008, 'extension identity refused');
           rejectFirstReady(new Error('peer: extension identity refused'));

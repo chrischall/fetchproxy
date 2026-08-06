@@ -8,6 +8,7 @@ import {
   generateX25519,
   generateEd25519,
   ed25519Sign,
+  readySignaturePayload,
   concatBytes,
   ecdhX25519,
   hkdfSha256,
@@ -108,7 +109,7 @@ describe('integration: 0.4.0 mutual auth + read_indexed_db', () => {
             mcpId = frame.mcpId;
             const sig = await ed25519Sign(
               extIdEd.privateKey,
-              concatBytes(mcpSessionNonce, extSessionNonce),
+              readySignaturePayload(mcpSessionNonce, extSessionNonce, ephemeral.publicKey),
             );
             const readyFrame: ReadyFrame = {
               type: 'ready',
@@ -143,7 +144,7 @@ describe('integration: 0.4.0 mutual auth + read_indexed_db', () => {
       // Extension hello with v2 identity claims + per-WS nonce.
       const extHello: HelloFrameFromExtension = {
         type: 'hello',
-        protocolVersion: 2,
+        protocolVersion: 3,
         role: 'extension',
         platform: 'chrome',
         extensionId: 'fetchproxy',
@@ -239,7 +240,7 @@ describe('integration: 0.4.0 mutual auth + read_indexed_db', () => {
 
     const extHello: HelloFrameFromExtension = {
       type: 'hello',
-      protocolVersion: 2,
+      protocolVersion: 3,
       role: 'extension',
       platform: 'chrome',
       extensionId: 'fetchproxy',

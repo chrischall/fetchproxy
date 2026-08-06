@@ -8,6 +8,7 @@ import {
   generateX25519,
   generateEd25519,
   ed25519Sign,
+  readySignaturePayload,
   concatBytes,
   ecdhX25519,
   hkdfSha256,
@@ -112,7 +113,7 @@ describe('integration: all 0.3.0 bootstrap verbs', () => {
             mcpId = frame.mcpId;
             const sig = await ed25519Sign(
               extIdEd.privateKey,
-              concatBytes(mcpSessionNonce, extSessionNonce),
+              readySignaturePayload(mcpSessionNonce, extSessionNonce, ephemeral.publicKey),
             );
             const readyFrame: ReadyFrame = {
               type: 'ready',
@@ -176,7 +177,7 @@ describe('integration: all 0.3.0 bootstrap verbs', () => {
       // Send the extension hello so the host forwards the server hello.
       const extHello: HelloFrameFromExtension = {
         type: 'hello',
-        protocolVersion: 2,
+        protocolVersion: 3,
         role: 'extension',
         platform: 'chrome',
         extensionId: 'fetchproxy',
