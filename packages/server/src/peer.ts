@@ -1,6 +1,5 @@
 import { WebSocket } from 'ws';
 import {
-  concatBytes,
   ecdhX25519,
   readySignaturePayload,
   ed25519Verify,
