@@ -9,7 +9,6 @@ import {
   generateEd25519,
   ed25519Sign,
   readySignaturePayload,
-  concatBytes,
   ecdhX25519,
   hkdfSha256,
   sealInnerFrame,
