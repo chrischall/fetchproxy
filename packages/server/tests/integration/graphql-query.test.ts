@@ -8,6 +8,7 @@ import {
   generateX25519,
   generateEd25519,
   ed25519Sign,
+  readySignaturePayload,
   concatBytes,
   ecdhX25519,
   hkdfSha256,
@@ -100,7 +101,7 @@ describe('integration: graphql capability', () => {
             mcpId = frame.mcpId;
             const sig = await ed25519Sign(
               extIdEd.privateKey,
-              concatBytes(mcpSessionNonce, extSessionNonce),
+              readySignaturePayload(mcpSessionNonce, extSessionNonce, ephemeral.publicKey),
             );
             const readyFrame: ReadyFrame = {
               type: 'ready',
@@ -136,7 +137,7 @@ describe('integration: graphql capability', () => {
 
       const extHello: HelloFrameFromExtension = {
         type: 'hello',
-        protocolVersion: 2,
+        protocolVersion: 3,
         role: 'extension',
         platform: 'chrome',
         extensionId: 'fetchproxy',
@@ -239,7 +240,7 @@ describe('integration: graphql capability', () => {
             mcpId = frame.mcpId;
             const sig = await ed25519Sign(
               extIdEd.privateKey,
-              concatBytes(mcpSessionNonce, extSessionNonce),
+              readySignaturePayload(mcpSessionNonce, extSessionNonce, ephemeral.publicKey),
             );
             const readyFrame: ReadyFrame = {
               type: 'ready',
@@ -277,7 +278,7 @@ describe('integration: graphql capability', () => {
 
       const extHello: HelloFrameFromExtension = {
         type: 'hello',
-        protocolVersion: 2,
+        protocolVersion: 3,
         role: 'extension',
         platform: 'chrome',
         extensionId: 'fetchproxy',

@@ -8,6 +8,7 @@ import {
   generateX25519,
   generateEd25519,
   ed25519Sign,
+  readySignaturePayload,
   concatBytes,
   ecdhX25519,
   hkdfSha256,
@@ -54,7 +55,7 @@ async function connectMockExtension(
 
   const extHello: HelloFrameFromExtension = {
     type: 'hello',
-    protocolVersion: 2,
+    protocolVersion: 3,
     role: 'extension',
     platform: 'chrome',
     extensionId: 'fetchproxy',
@@ -87,7 +88,7 @@ async function connectMockExtension(
           mcpId = frame.mcpId;
           const sig = await ed25519Sign(
             extIdEd.privateKey,
-            concatBytes(mcpNonce, extSessionNonce),
+            readySignaturePayload(mcpNonce, extSessionNonce, ephemeral.publicKey),
           );
           const readyFrame: ReadyFrame = {
             type: 'ready',
@@ -394,7 +395,7 @@ async function connectMockExtensionMulti(
           sessions.set(frame.mcpId, { sessionKey, outboundSeq: 0 });
           const sig = await ed25519Sign(
             extIdEd.privateKey,
-            concatBytes(mcpNonce, extSessionNonce),
+            readySignaturePayload(mcpNonce, extSessionNonce, ephemeral.publicKey),
           );
           const readyFrame: ReadyFrame = {
             type: 'ready',
@@ -413,7 +414,7 @@ async function connectMockExtensionMulti(
 
   const extHello: HelloFrameFromExtension = {
     type: 'hello',
-    protocolVersion: 2,
+    protocolVersion: 3,
     role: 'extension',
     platform: 'chrome',
     extensionId: 'fetchproxy',

@@ -24,9 +24,20 @@
  * storage reads, and glob patterns in declared key arrays. All
  * additions within v2 remain wire-additive — only the version bump
  * itself is a hard break.
+ *
+ * 2.0.0: PROTOCOL_VERSION bumps 2 → 3. `ReadyFrame.sessionSig` now
+ * covers the extension's EPHEMERAL public key as well as the two
+ * nonces. Under v2 it did not, and that gap was the whole of the
+ * remaining MITM: a relay could forward the genuine hellos and the
+ * genuine signature while substituting an ephemeral key it held the
+ * private half of, derive the same shared secret, and read the
+ * session. Nothing the receiver checked committed to the key the ECDH
+ * actually used. Same class of fix as 0.4.0's, and the same handling —
+ * a hard break, all packages released together, no downgrade path
+ * (a negotiated variant would just let a rewriting relay ask for v2).
  */
 
-export const PROTOCOL_VERSION = 2 as const;
+export const PROTOCOL_VERSION = 3 as const;
 
 /**
  * HKDF info label for session-key derivation. Both sides (MCP server
@@ -34,6 +45,29 @@ export const PROTOCOL_VERSION = 2 as const;
  * diverge and AES-GCM decryption fails silently.
  */
 export const HKDF_SESSION_INFO = 'fetchproxy/1.0.0/session' as const;
+
+/**
+ * The bytes `ReadyFrame.sessionSig` signs, in one place so the extension that
+ * produces it and the two server paths that verify it cannot drift apart.
+ *
+ * `mcpHelloNonce || extHelloNonce || extensionSessionPub` (2.0.0+). The
+ * ephemeral pub is what makes this worth signing: the nonces prove freshness
+ * of the two endpoints, and only this third field commits to the key the
+ * session is actually derived from.
+ */
+export function readySignaturePayload(
+  mcpHelloNonce: Uint8Array,
+  extHelloNonce: Uint8Array,
+  extensionSessionPub: Uint8Array,
+): Uint8Array {
+  const out = new Uint8Array(
+    mcpHelloNonce.length + extHelloNonce.length + extensionSessionPub.length,
+  );
+  out.set(mcpHelloNonce, 0);
+  out.set(extHelloNonce, mcpHelloNonce.length);
+  out.set(extensionSessionPub, mcpHelloNonce.length + extHelloNonce.length);
+  return out;
+}
 
 export type Platform = 'chrome' | 'safari' | 'firefox';
 
@@ -261,7 +295,7 @@ export interface GraphqlOpDeclaration {
 
 export interface HelloFrameFromServer {
   type: 'hello';
-  protocolVersion: 2;
+  protocolVersion: typeof PROTOCOL_VERSION;
   role: 'server';
   mcpId: string;                  // server:version:rand
   serverName: string;
@@ -335,7 +369,7 @@ export interface HelloFrameFromServer {
 
 export interface HelloFrameFromExtension {
   type: 'hello';
-  protocolVersion: 2;
+  protocolVersion: typeof PROTOCOL_VERSION;
   role: 'extension';
   platform: Platform;
   extensionId: string;
@@ -365,7 +399,10 @@ export interface ReadyFrame {
   mcpId: string;
   extensionSessionPub: string;    // base64 raw 32B (ephemeral extension X25519 pub)
   /**
-   * 0.4.0+: `Ed25519Sign(extEdPriv, mcpHelloSessionNonce || extHello.sessionNonce)`.
+   * 2.0.0+: `Ed25519Sign(extEdPriv, mcpHelloSessionNonce ||
+   * extHello.sessionNonce || extensionSessionPub)` — see
+   * {@link readySignaturePayload}. Before 2.0.0 the ephemeral pub was NOT
+   * covered, so a relay could swap it and share the session.
    * Verified by the MCP host's connection handler against the
    * extension's claimed `identityEd25519Pub` (from its earlier hello).
    * Binds both endpoints' fresh-per-connection nonces, so a relay

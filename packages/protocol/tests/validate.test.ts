@@ -7,10 +7,10 @@ import {
 } from '../src/validate.js';
 
 describe('validateFrame', () => {
-  describe('hello (server, v2)', () => {
+  describe('hello (server, v3)', () => {
     const validHello = {
       type: 'hello',
-      protocolVersion: 2,
+      protocolVersion: 3,
       role: 'server',
       mcpId: 'opentable-mcp:0.9.1:a3f7c91d2e8b4f56',
       serverName: 'opentable-mcp',
@@ -40,8 +40,12 @@ describe('validateFrame', () => {
     });
 
     it('rejects wrong protocolVersion', () => {
+      // v2 included: 2.0.0 is a hard break, and a v2 peer must be refused at
+      // the hello rather than negotiated down to a signature that does not
+      // cover the ephemeral key.
       expect(() => validateFrame({ ...validHello, protocolVersion: 1 })).toThrow(/protocolVersion/);
-      expect(() => validateFrame({ ...validHello, protocolVersion: 3 })).toThrow(/protocolVersion/);
+      expect(() => validateFrame({ ...validHello, protocolVersion: 2 })).toThrow(/protocolVersion/);
+      expect(() => validateFrame({ ...validHello, protocolVersion: 4 })).toThrow(/protocolVersion/);
     });
 
     it('rejects non-base64 identityX25519Pub', () => {
@@ -169,7 +173,7 @@ describe('validateFrame', () => {
   describe('hello (server, 0.3.0 scope decls)', () => {
     const validHello = {
       type: 'hello',
-      protocolVersion: 2,
+      protocolVersion: 3,
       role: 'server',
       mcpId: 'ofw-mcp:0.5.0:a3f7c91d2e8b4f56',
       serverName: 'ofw-mcp',
@@ -412,10 +416,10 @@ describe('validateFrame', () => {
     });
   });
 
-  describe('hello (extension, v2)', () => {
+  describe('hello (extension, v3)', () => {
     const validExtHello = {
       type: 'hello',
-      protocolVersion: 2,
+      protocolVersion: 3,
       role: 'extension',
       platform: 'chrome',
       extensionId: 'fetchproxy',
@@ -1438,7 +1442,7 @@ describe('validateInnerFrame', () => {
       expect(() =>
         validateFrame({
           type: 'hello',
-          protocolVersion: 2,
+          protocolVersion: 3,
           role: 'mystery',
           // Pad with the rest of the v2 extension/server fields so the
           // role check is what trips, not a missing-field check.
@@ -1481,7 +1485,7 @@ describe('validateInnerFrame', () => {
 describe('validateFrame (0.4.0 IndexedDb scope decls)', () => {
   const validHello = {
     type: 'hello',
-    protocolVersion: 2,
+    protocolVersion: 3,
     role: 'server',
     mcpId: 'resy-mcp:0.0.1:a3f7c91d2e8b4f56',
     serverName: 'resy-mcp',
@@ -1581,7 +1585,7 @@ describe('validateFrame (0.4.0 IndexedDb scope decls)', () => {
 describe('validateFrame (0.4.0 storage pointers)', () => {
   const validHello = {
     type: 'hello',
-    protocolVersion: 2,
+    protocolVersion: 3,
     role: 'server',
     mcpId: 'honeybook-mcp:0.1.0:a3f7c91d2e8b4f56',
     serverName: 'honeybook-mcp',
@@ -1898,7 +1902,7 @@ describe('validateCaptureHeaderDecls', () => {
 describe('validateFrame (1.4.0 read_dom domSelectors)', () => {
   const validHello = {
     type: 'hello',
-    protocolVersion: 2,
+    protocolVersion: 3,
     role: 'server',
     mcpId: 'easytable-mcp:0.0.1:a3f7c91d2e8b4f56',
     serverName: 'easytable-mcp',
@@ -2054,7 +2058,7 @@ describe('validateFrame (1.4.0 read_dom domSelectors)', () => {
 describe('validateFrame (graphql graphqlOps)', () => {
   const validHello = {
     type: 'hello',
-    protocolVersion: 2,
+    protocolVersion: 3,
     role: 'server',
     mcpId: 'opentable-mcp:0.0.1:a3f7c91d2e8b4f56',
     serverName: 'opentable-mcp',

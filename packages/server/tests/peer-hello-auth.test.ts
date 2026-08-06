@@ -45,7 +45,7 @@ describe('authenticated peer hello (FP-C)', () => {
 
   const extHello: HelloFrameFromExtension = {
     type: 'hello',
-    protocolVersion: 2,
+    protocolVersion: 3,
     role: 'extension',
     platform: 'chrome',
     extensionId: 'fetchproxy',

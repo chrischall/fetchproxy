@@ -28,6 +28,7 @@ import {
   fromB64,
   toHex,
   concatBytes,
+  readySignaturePayload,
   matchesDeclaredKey,
   undeclaredKeys,
   PROTOCOL_VERSION,
@@ -1108,10 +1109,15 @@ async function onServerHello(hello: HelloFrameFromServer): Promise<void> {
       });
     }
     // 0.4.0: ready frame carries the binding signature so the MCP
-    // host can verify before proceeding.
+    // host can verify before proceeding. 2.0.0: it covers the ephemeral
+    // pub too, so the key the session is derived from is the one we signed.
     const sessionSig = await ed25519Sign(
       extIdentity.ed25519Priv,
-      concatBytes(result.mcpSessionNonce, currentExtSessionNonce),
+      readySignaturePayload(
+        result.mcpSessionNonce,
+        currentExtSessionNonce,
+        result.extensionSessionPub,
+      ),
     );
     const ready: ReadyFrame = {
       type: 'ready',
@@ -2901,12 +2907,13 @@ async function onApproval(approved: AnyPendingRecord): Promise<void> {
       // Part 3: track identity hash per approved session.
       mcpIdentityHash.set(mcpId, approved.identityHash);
       broadcastConnectionsChanged();
-      // 0.4.0: sign over (mcpHelloNonce || extHello.sessionNonce). The
-      // MCP host verifies this against the extension's claimed Ed25519
-      // pub and gates session-key derivation on it.
+      // 0.4.0: sign over the MCP hello nonce and ours; 2.0.0: and the
+      // ephemeral pub below, so a relay cannot swap it for one of its own.
+      // The MCP verifies this against our claimed Ed25519 pub and gates
+      // session-key derivation on it.
       const sessionSig = await ed25519Sign(
         extIdentity.ed25519Priv,
-        concatBytes(sessionNonce, currentExtSessionNonce!),
+        readySignaturePayload(sessionNonce, currentExtSessionNonce!, ephemeral.publicKey),
       );
       const ready: ReadyFrame = {
         type: 'ready',

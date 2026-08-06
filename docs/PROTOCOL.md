@@ -2,7 +2,7 @@
 
 The wire format between MCP servers and the browser extension. JSON-over-WebSocket. Three top-level frame types; all data frames after the handshake are AES-256-GCM encrypted end-to-end between each MCP and the extension.
 
-`PROTOCOL_VERSION` is `1`. The `hello` frame carries it explicitly; mismatches are rejected.
+`PROTOCOL_VERSION` is `3`. The `hello` frame carries it explicitly; mismatches are rejected.
 
 **0.2.0 is wire-incompatible with 0.1.x.** The server hello now carries `domains: string[]` instead of `domain: string` — a single-domain MCP just sends a 1-element array; a multi-domain MCP (e.g. HoneyBook, which spans two hosts) sends multiple. Trust records, popup state, and the per-request allowlist all key off the full set.
 
@@ -161,7 +161,8 @@ The extension's hello carries no crypto material — its identity is "the only W
 
 The signature binds both endpoints' nonces, and **both the host and (1.12.0+) peers verify it** before deriving a session key. That proves the extension on the other end is the one whose hello arrived — it cannot be produced without the extension's Ed25519 private key.
 
-**It does not bind `extensionSessionPub`.** A relay that forwards the genuine hellos and the genuine signature can still substitute its own ephemeral public key here and derive the same shared secret as the receiving MCP. Verifying the signature does not make the session private against something already positioned in the middle; see `docs/SECURITY.md` §T-host-MITM.
+**2.0.0+: it binds `extensionSessionPub` too.** The payload is
+`mcpHelloNonce || extHelloNonce || extensionSessionPub` (`readySignaturePayload()` in `@fetchproxy/protocol`). Under v2 the ephemeral key was unsigned, so a relay forwarding genuine frames could substitute its own and derive the same session key; signing it is what makes the session private against something already in the middle. `PROTOCOL_VERSION` is 3 and v2 is refused at the hello — there is deliberately no negotiated downgrade, because a relay that can rewrite frames could choose it.
 
 After the user approves a new pair (or auto-trust hits for a known identity), the extension generates an ephemeral X25519 keypair, computes the session key, and sends:
 

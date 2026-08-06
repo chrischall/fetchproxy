@@ -3,6 +3,7 @@ import {
   ed25519Sign,
   generateEd25519,
   generateX25519,
+  readySignaturePayload,
   validateFrame,
   type HelloFrameFromExtension,
 } from '@fetchproxy/protocol';
@@ -38,7 +39,7 @@ export async function connectMockExtension(
 
   const hello: HelloFrameFromExtension = {
     type: 'hello',
-    protocolVersion: 2,
+    protocolVersion: 3,
     role: 'extension',
     platform: 'chrome',
     extensionId: 'fetchproxy',
@@ -106,13 +107,11 @@ export async function connectMockExtension(
     completeHandshake: async (mcpId, opts = {}) => {
       const { sessionNonce: mcpNonceB64 } = await waitForServerHello(mcpId);
       const mcpNonce = new Uint8Array(Buffer.from(mcpNonceB64, 'base64'));
-      const payload = new Uint8Array(mcpNonce.length + sessionNonce.length);
-      payload.set(mcpNonce, 0);
-      payload.set(sessionNonce, mcpNonce.length);
+      const eph = await generateX25519();
+      const payload = readySignaturePayload(mcpNonce, sessionNonce, eph.publicKey);
       const sig = opts.forgeSignature
         ? new Uint8Array(64).fill(9)
         : await ed25519Sign(ed.privateKey, payload);
-      const eph = await generateX25519();
       ws.send(
         JSON.stringify({
           type: 'ready',

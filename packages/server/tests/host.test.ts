@@ -60,7 +60,7 @@ describe('host (concentrator)', () => {
 
     const extHello: HelloFrameFromExtension = {
       type: 'hello',
-      protocolVersion: 2,
+      protocolVersion: 3,
       role: 'extension',
       platform: 'chrome',
       extensionId: 'fetchproxy',
@@ -141,7 +141,7 @@ describe('host (concentrator)', () => {
     await new Promise<void>((r) => ws.once('open', () => r()));
     const extHello: HelloFrameFromExtension = {
       type: 'hello',
-      protocolVersion: 2,
+      protocolVersion: 3,
       role: 'extension',
       platform: 'chrome',
       extensionId: 'fetchproxy',
@@ -174,9 +174,13 @@ describe('host (concentrator)', () => {
     // session pub to provoke the ecdhX25519 throw — which still
     // routes through the same outer-catch path and still produces
     // 1011.
-    const { generateX25519: genX, generateEd25519: genEd, ed25519Sign, validateFrame: vf } = await import(
-      '@fetchproxy/protocol'
-    );
+    const {
+      generateX25519: genX,
+      generateEd25519: genEd,
+      ed25519Sign,
+      readySignaturePayload,
+      validateFrame: vf,
+    } = await import('@fetchproxy/protocol');
 
     const el = await electRole({ host: '127.0.0.1', port: 0 });
     if (el.role !== 'host') throw new Error('expected host');
@@ -202,7 +206,7 @@ describe('host (concentrator)', () => {
     const extSessionNonce = new Uint8Array(32).fill(7);
     const extHello: HelloFrameFromExtension = {
       type: 'hello',
-      protocolVersion: 2,
+      protocolVersion: 3,
       role: 'extension',
       platform: 'chrome',
       extensionId: 'fetchproxy',
@@ -241,15 +245,16 @@ describe('host (concentrator)', () => {
       );
     });
     const mcpNonce = new Uint8Array(Buffer.from(mcpNonceB64, 'base64'));
-    const sigPayload = new Uint8Array(mcpNonce.length + extSessionNonce.length);
-    sigPayload.set(mcpNonce, 0);
-    sigPayload.set(extSessionNonce, mcpNonce.length);
+    // 8 bytes instead of 32 — a legal base64 field that ECDH will reject. The
+    // signature has to cover THIS value (2.0.0+), or the host closes 1008 for a
+    // bad signature before it ever reaches the crypto path under test.
+    const shortPub = new Uint8Array(8);
+    const sigPayload = readySignaturePayload(mcpNonce, extSessionNonce, shortPub);
     const sig = await ed25519Sign(extEd.privateKey, sigPayload);
     const badReady = {
       type: 'ready',
       mcpId: 'opentable-mcp:0.9.1:abc1234567890def',
-      // 8 bytes instead of 32 — passes BASE64_RE, fails ECDH.
-      extensionSessionPub: Buffer.from(new Uint8Array(8)).toString('base64'),
+      extensionSessionPub: Buffer.from(shortPub).toString('base64'),
       sessionSig: Buffer.from(sig).toString('base64'),
     };
     ws.send(JSON.stringify(badReady));
@@ -319,7 +324,7 @@ describe('host (concentrator)', () => {
     await new Promise<void>((r) => ext.once('open', () => r()));
     const extHello: HelloFrameFromExtension = {
       type: 'hello',
-      protocolVersion: 2,
+      protocolVersion: 3,
       role: 'extension',
       platform: 'chrome',
       extensionId: 'fetchproxy',
@@ -394,7 +399,7 @@ describe('host (concentrator)', () => {
     await new Promise<void>((r) => ext.once('open', () => r()));
     const extHello: HelloFrameFromExtension = {
       type: 'hello',
-      protocolVersion: 2,
+      protocolVersion: 3,
       role: 'extension',
       platform: 'chrome',
       extensionId: 'fetchproxy',
@@ -479,7 +484,7 @@ describe('host (concentrator)', () => {
 
     const extHello: HelloFrameFromExtension = {
       type: 'hello',
-      protocolVersion: 2,
+      protocolVersion: 3,
       role: 'extension',
       platform: 'chrome',
       extensionId: 'fetchproxy',

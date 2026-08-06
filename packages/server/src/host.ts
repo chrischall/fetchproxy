@@ -4,6 +4,7 @@ import {
   ecdhX25519,
   ed25519Verify,
   concatBytes,
+  readySignaturePayload,
   fromB64,
   hkdfSha256,
   openEncryptedFrame,
@@ -352,15 +353,15 @@ export async function startHost(opts: HostOpts): Promise<HostHandle> {
             // substituting its own identity shows up as a different
             // pair code, and forging a signature needs the key.
             //
-            // It does NOT stop a relay that forwards the real hellos
-            // and the real signature: both nonces are then genuine, so
-            // the signature verifies, and nothing here commits to
-            // `extensionSessionPub` — which is the only value the ECDH
-            // depends on. An earlier version of this comment claimed
-            // such a relay fails "because the MCP nonce differs"; that
-            // is only true of a MITM that terminates our connection
-            // with a hello of its own. See docs/SECURITY.md
-            // §T-host-MITM. Tear the WS down on mismatch.
+            // 2.0.0: it also stops a relay that forwards the real
+            // hellos and the real signature, because the payload now
+            // covers `extensionSessionPub` — the value the ECDH
+            // actually depends on. Under v2 it did not, and an even
+            // earlier version of this comment claimed such a relay
+            // fails "because the MCP nonce differs", which was only
+            // ever true of a MITM that terminates our connection with a
+            // hello of its own. See docs/SECURITY.md §T-host-MITM.
+            // Tear the WS down on mismatch.
             if (!extensionHello) {
               console.warn('[fetchproxy] ready before extension hello — closing');
               ws.close(1002, 'ready before extension hello');
@@ -368,7 +369,11 @@ export async function startHost(opts: HostOpts): Promise<HostHandle> {
             }
             const extEdPub = fromB64(extensionHello.identityEd25519Pub);
             const extNonce = fromB64(extensionHello.sessionNonce);
-            const msg = concatBytes(ownSessionNonce, extNonce);
+            const msg = readySignaturePayload(
+              ownSessionNonce,
+              extNonce,
+              fromB64(frame.extensionSessionPub),
+            );
             const sig = fromB64(frame.sessionSig);
             let sigOk = false;
             try {
