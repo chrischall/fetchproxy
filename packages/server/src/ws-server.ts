@@ -29,6 +29,25 @@ import {
 import { classifyFetchError, type FetchErrorKind } from './error-kind.js';
 import { classifyBridgeError, type BridgeError } from './classify-bridge-error.js';
 
+/**
+ * The `FETCHPROXY_WS_PORT` fallback for `FetchproxyServerOpts.port`.
+ *
+ * Returns `undefined` — not the default — for anything that is not a usable
+ * TCP port, so a typo falls through to 37149 and the concentrator election
+ * behaves exactly as it did before the variable was set. Refusing to bind at
+ * all would turn a stray environment variable into a dead bridge, and
+ * coercing (`parseInt('37150abc')`) would bind a port the operator did not
+ * write down.
+ */
+function envWsPort(): number | undefined {
+  const raw = process.env.FETCHPROXY_WS_PORT;
+  if (raw === undefined || raw.trim() === '') return undefined;
+  if (!/^\d+$/.test(raw.trim())) return undefined;
+  const port = Number(raw.trim());
+  if (!Number.isInteger(port) || port < 1 || port > 65535) return undefined;
+  return port;
+}
+
 export interface FetchproxyServerOpts {
   /**
    * Localhost TCP port the concentrator binds to. The first MCP to call
@@ -40,7 +59,25 @@ export interface FetchproxyServerOpts {
    * local development or test isolation — production MCPs all need to
    * share one port for the concentrator to work.
    *
-   * @default 37149
+   * Omitted, the `FETCHPROXY_WS_PORT` environment variable is consulted
+   * before the default. It exists for consumers that never see this option at
+   * all — `@fetchproxy/bootstrap` constructs the server itself — and it moves
+   * the port the same way this option does, with the same constraint: on one
+   * machine every MCP shares the concentrator, so the value has to be the SAME
+   * for all of them or the ones that differ sit unreachable on a port nothing
+   * dials.
+   *
+   * The one place a port PER MCP is meaningful is a hosted deployment, where
+   * the thing dialling a child is a relay agent on the same machine rather
+   * than the browser (chrischall/mcp-host, docs/BROWSER-BRIDGE.md): each child
+   * is its own concentrator on its own port, and the browser reaches them
+   * through a configured remote target instead of loopback. That is a
+   * different topology, not a way to run several concentrators on a laptop.
+   *
+   * An explicit value here is a decision made in code and beats the
+   * environment.
+   *
+   * @default `FETCHPROXY_WS_PORT`, else 37149
    */
   port?: number;
   /**
@@ -1166,7 +1203,7 @@ export class FetchproxyServer {
       }
     }
     this.opts = {
-      port: opts.port ?? 37149,
+      port: opts.port ?? envWsPort() ?? 37149,
       host: opts.host ?? '127.0.0.1',
       serverName: opts.serverName,
       version: opts.version,

@@ -213,6 +213,18 @@ Override the bind address if you need to:
 new FetchproxyServer({ port: 37150, host: '127.0.0.1', /* … */ });
 ```
 
+Without an explicit `port`, `FETCHPROXY_WS_PORT` is consulted before the 37149 default:
+
+```bash
+FETCHPROXY_WS_PORT=37150 my-mcp
+```
+
+This is the only way to move the port for a consumer that never constructs the server itself (`@fetchproxy/bootstrap` builds it inside `bootstrap()`). It carries the same constraint the option does: **on one machine every MCP shares the concentrator**, so set the same value for all of them — an MCP on a port of its own sits there unreachable, because the extension dials one loopback port.
+
+A port *per MCP* is meaningful in exactly one topology, and it is not this one: a hosted deployment where each child is its own concentrator and a relay agent on that machine dials it, with the browser reaching them through a configured remote target rather than loopback (see [Remote bridge targets](#remote-bridge-targets-210) below, and chrischall/mcp-host's `docs/BROWSER-BRIDGE.md`).
+
+An explicit `port` option always wins; an unparseable value is ignored rather than binding something nobody wrote down.
+
 ### Remote bridge targets (2.1.0+)
 
 The extension can also dial a configured `wss://` relay, **in addition to** loopback — for an MCP that runs somewhere other than this laptop and still has to issue its requests from inside your signed-in tab. Add one in the popup's **Bridges** section: a URL plus a credential.
