@@ -1,5 +1,25 @@
 # Changelog
 
+## [2.1.0](https://github.com/chrischall/fetchproxy/compare/v2.0.0...v2.1.0) (2026-08-09)
+
+
+### Features
+
+* **extension:** dial configured remote bridges alongside loopback ([#233](https://github.com/chrischall/fetchproxy/issues/233)) ([cc81e8a](https://github.com/chrischall/fetchproxy/commit/cc81e8aa3f37b99f7445280f1f732c7cbb2768f8))
+* **server:** fall back to FETCHPROXY_WS_PORT for the concentrator port ([#231](https://github.com/chrischall/fetchproxy/issues/231)) ([c221262](https://github.com/chrischall/fetchproxy/commit/c2212626385454918d7e6e319510849637e5bf14))
+
+
+### Bug Fixes
+
+* **extension:** give a refused hello its binding back, and show each bridge's own state ([#236](https://github.com/chrischall/fetchproxy/issues/236)) ([1f8da11](https://github.com/chrischall/fetchproxy/commit/1f8da11e77f97e8866bd53d69f6543058d490579)), closes [#234](https://github.com/chrischall/fetchproxy/issues/234)
+* **extension:** refuse download over a remote bridge ([#235](https://github.com/chrischall/fetchproxy/issues/235)) ([306d1f5](https://github.com/chrischall/fetchproxy/commit/306d1f5a97348c4226eb36781cfc68c703a08594))
+
+
+### Refactor
+
+* **extension-core:** split background.ts into purpose-shaped modules ([#226](https://github.com/chrischall/fetchproxy/issues/226)) ([db30f4d](https://github.com/chrischall/fetchproxy/commit/db30f4d69dbcd30f10bce42c6a4dc4fee676207a)), closes [#10](https://github.com/chrischall/fetchproxy/issues/10)
+* **extension-core:** stop exporting background helpers nothing imports ([#229](https://github.com/chrischall/fetchproxy/issues/229)) ([42c39a1](https://github.com/chrischall/fetchproxy/commit/42c39a1edeca447b86b045eaa266583aec02c501)), closes [#227](https://github.com/chrischall/fetchproxy/issues/227)
+
 ## [2.0.0](https://github.com/chrischall/fetchproxy/compare/v1.11.0...v2.0.0) (2026-08-06)
 
 
