@@ -2,18 +2,29 @@
  * `onServerHello` — the handshake reaction, moved verbatim out of
  * `background.ts`.
  *
+ * It now takes the LINK the hello arrived on, and that argument is the
+ * security-relevant part rather than plumbing. Two things come off it:
+ *
+ * - the `mcpId` is bound to this link before anything else happens, and a
+ *   hello claiming an id another live link already holds is dropped here
+ *   (`links.ts` rule 2). Nothing downstream can re-point that binding;
+ * - the ready signature is made over THIS link's per-connection nonce and
+ *   sent back on THIS link's socket. A global nonce would sign one bridge's
+ *   ready with another bridge's handshake, which the MCP would reject — as it
+ *   should.
+ *
  * This is the widest fan-out module in the split: it reaches the pure
  * decision function (`hello.ts`), the per-session scope maps, the pending
  * records, the pending-pair store, the badge, tab creation, and the
  * protocol crypto. It is nonetheless a leaf with respect to the transport —
  * it does NOT import `socket.ts`. Its only outbound need is `ws.send`, and
- * it reaches that through `state.ws`, so `socket.ts` → `server-hello.ts`
- * stays a one-way edge.
+ * it reaches that through the link's own socket, so `socket.ts` →
+ * `server-hello.ts` stays a one-way edge.
  *
- * `state.currentExtSessionNonce` and `state.ws` are deliberately re-read at
- * their original lines rather than captured at the guard: both are reassigned
- * by a reconnect, and caching them would sign a ReadyFrame with a stale nonce
- * or write it to a dead socket.
+ * `link.sessionNonce` and `link.ws` are deliberately re-read at their original
+ * lines rather than captured at the guard: both are reassigned by a reconnect,
+ * and caching them would sign a ReadyFrame with a stale nonce or write it to a
+ * dead socket.
  */
 
 import {
@@ -32,6 +43,7 @@ import { ensureDomainTab } from '../ensure-domain-tab.js';
 import { scopeHash } from '../lib/scope.js';
 
 import { state } from './state.js';
+import { bindMcpToLink, sendOnLink, type Link } from './links.js';
 import { handleServerHello } from './hello.js';
 import { setPairPendingBadge } from './badge.js';
 import {
@@ -54,8 +66,17 @@ import {
 
 declare const chrome: ChromeApi;
 
-export async function onServerHello(hello: HelloFrameFromServer): Promise<void> {
-  if (!state.trust || !state.sessions || !state.extIdentity || !state.currentExtSessionNonce) return;
+export async function onServerHello(link: Link, hello: HelloFrameFromServer): Promise<void> {
+  if (!state.trust || !state.sessions || !state.extIdentity || !link.sessionNonce) return;
+  // Bind before deciding anything. An mcpId another live link already holds is
+  // not this link's to speak for, and the refusal has to happen before a
+  // session key, a scope grant or a pair prompt exists for it.
+  if (!bindMcpToLink(hello.mcpId, link)) {
+    console.warn(
+      `[fetchproxy] dropped hello for ${hello.mcpId} on ${link.label}: that id is already bound to another bridge`,
+    );
+    return;
+  }
   const result = await handleServerHello(hello, {
     trust: state.trust,
     extensionIdentityX25519Pub: state.extIdentity.x25519Pub,
@@ -86,7 +107,7 @@ export async function onServerHello(hello: HelloFrameFromServer): Promise<void> 
       state.extIdentity.ed25519Priv,
       readySignaturePayload(
         result.mcpSessionNonce,
-        state.currentExtSessionNonce,
+        link.sessionNonce,
         result.extensionSessionPub,
       ),
     );
@@ -96,7 +117,7 @@ export async function onServerHello(hello: HelloFrameFromServer): Promise<void> 
       extensionSessionPub: toB64(result.extensionSessionPub),
       sessionSig: toB64(sessionSig),
     };
-    state.ws?.send(JSON.stringify(ready));
+    sendOnLink(link, JSON.stringify(ready));
 
     // Part 2: if the MCP declared more than approved, queue a non-blocking
     // scope-update offer. The user can Grant (update trust) or dismiss.
@@ -253,23 +274,22 @@ export async function onServerHello(hello: HelloFrameFromServer): Promise<void> 
   // host needs to know its own pairing is pending. Best-effort: if the WS
   // dropped between the hello and here, the next reconnect triggers a fresh
   // pair-pending.
-  if (state.ws && state.ws.readyState === WebSocket.OPEN) {
-    try {
-      // Look up the (possibly just-updated) entry to get the pairCode.
-      const got = await chrome.storage.local.get(PENDING_PAIR_KEY);
-      const dict = mergePending(got[PENDING_PAIR_KEY]);
-      const entry = dict[pendingKey];
-      if (entry && entry.kind === 'pair') {
-        state.ws.send(
-          JSON.stringify({
-            type: 'pair-pending',
-            mcpId: result.mcpId,
-            pairCode: entry.pairCode,
-          }),
-        );
-      }
-    } catch (e) {
-      console.warn('[fetchproxy] pair-pending send failed:', e);
+  try {
+    // Look up the (possibly just-updated) entry to get the pairCode.
+    const got = await chrome.storage.local.get(PENDING_PAIR_KEY);
+    const dict = mergePending(got[PENDING_PAIR_KEY]);
+    const entry = dict[pendingKey];
+    if (entry && entry.kind === 'pair') {
+      sendOnLink(
+        link,
+        JSON.stringify({
+          type: 'pair-pending',
+          mcpId: result.mcpId,
+          pairCode: entry.pairCode,
+        }),
+      );
     }
+  } catch (e) {
+    console.warn('[fetchproxy] pair-pending send failed:', e);
   }
 }

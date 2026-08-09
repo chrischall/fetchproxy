@@ -101,6 +101,38 @@
       }
       .status-dot.connected { background: #2ecc71; }
       .status-dot.offline { background: #bbb; }
+      /* 2.1.0: the bridges section — loopback plus configured remote targets. */
+      ul.bridge-list { list-style: none; padding: 0; margin: 4px 0 8px; }
+      li.bridge {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        padding: 4px 0;
+        border-bottom: 1px solid #f3f4f6;
+      }
+      li.bridge:last-child { border-bottom: none; }
+      li.bridge.disabled .bridge-url { color: #9ca3af; text-decoration: line-through; }
+      .bridge-url { flex: 1; word-break: break-all; }
+      button.bridge-remove {
+        background: transparent;
+        border: 1px solid #e5e7eb;
+        color: #6b7280;
+        padding: 2px 8px;
+        font-size: 14px;
+        line-height: 1;
+        cursor: pointer;
+        border-radius: 4px;
+      }
+      button.bridge-remove:hover { background: #fef2f2; color: #b91c1c; border-color: #fca5a5; }
+      .bridge-add { display: flex; flex-direction: column; gap: 4px; }
+      .bridge-add input {
+        padding: 4px 6px;
+        border: 1px solid #e5e7eb;
+        border-radius: 4px;
+        font: inherit;
+      }
+      .bridge-error:empty { display: none; }
+      .bridge-error { color: #b91c1c; }
     </style>
   </head>
   <body>

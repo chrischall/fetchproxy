@@ -24,6 +24,7 @@ This document tracks 0.2.0. Two structural changes vs. 0.0.x / 0.1.x bear on the
 | Storage exfiltration | `read_storage`, `read_indexeddb`, etc. don't exist. `read_cookies` is a deliberate, narrow opt-in. |
 | An MCP tampering with your session | The one write verb, `write_cookies`, can only overwrite cookies the MCP already declares readable, only on declared domains, only when the cookie already exists, and only under its own approved capability. See [§T-cookie-write](#t-cookie-write--write_cookies-capability-misuse). |
 | Something else answering as your browser | The MCP pins the extension's identity on first pair and refuses a different one — the mirror of `trustedMcps`. See [§T-fake-extension](#t-fake-extension--something-else-answering-as-the-browser). 1.12.0+. |
+| A remote bridge the user configured turning into a way in | The target is `wss://` (or loopback), the credential is a separate field, no configuration removes or repoints the loopback link, and every MCP the relay carries still pairs, pins and encrypts exactly as it does on a laptop. See [§T-remote-bridge](#t-remote-bridge--a-configured-remote-bridge-target). 2.1.0+. |
 | Multi-user machine sniffing | Out of scope. Localhost binding only. |
 
 ## Local trust boundary
@@ -196,6 +197,33 @@ On loopback that asymmetry is the [local trust boundary](#local-trust-boundary) 
 - **Validation failure** *after a successful decrypt* — the ciphertext authenticated fine under the *current* session key (so this really is the live host forwarding the live extension's bytes), but the plaintext is malformed JSON or fails the wire schema. This is a genuine protocol bug, not a stale-key symptom, so `peer.ts` logs it loudly (`console.error`) and, when the malformed response's `id` is recoverable, routes a synthetic `ok:false` through the normal id-keyed dispatch — failing just that one pending call immediately instead of leaving it to hang until its own timeout with zero diagnostic signal, and without tearing down the connection over one bad response.
 
 `host.ts` — the concentrator's single physical connection to the extension, multiplexing every MCP's traffic — still closes the whole WS on ANY validation failure (its message handler wraps everything in one try/catch; see `host.ts:344-351`). That remains a broader-blast-radius reaction than the peer path now has, but the concrete triggers found for it in this PR (the graphql errorPolicy bug, the download `bytes:-1` sentinel, the graphql_query op-echo gap) were each fixed at the SOURCE — the extension no longer produces a response that fails validation for those cases — rather than by changing what `host.ts` does when one does. A future op-specific bug could still trip the same host.ts-side "close everything" behavior; this is a known, accepted broader risk, not one this PR closes generically.
+
+### T-remote-bridge — A configured remote bridge target
+
+**2.1.0+.** The extension can dial a configured `wss://` relay in addition to `ws://127.0.0.1:37149`. This exists so an MCP that has to run somewhere other than the user's laptop — a hosted one — can still issue its requests from inside the user's signed-in tab (chrischall/mcp-host#162). It is the one feature in fetchproxy that widens the [local trust boundary](#local-trust-boundary), so it is worth being exact about which parts move and which do not.
+
+**What does not change, and is the reason this is tractable at all.** A relay is a concentrator, and a concentrator has never been able to read what it routes: every MCP derives its own AES-256-GCM session key with the extension from its own X25519 identity, and the relay sees `{mcpId, seq, iv, ciphertext}`. That is [§T-host-MITM](#t-host-mitm--host-mcp-reading-peer-traffic), already closed, and 2.0.0's ready signature over the ephemeral pub is what closes it against a relay that forwards genuine frames. Every MCP arriving over a remote link still pairs with a code the user confirms, still declares domains and capabilities the extension enforces, and still holds a session key the relay never has. **Hosting an MCP does not give the host the user's cookies, requests or responses.**
+
+**What does change:**
+
+- **which relay to trust is now a decision.** A remote target is a URL plus a credential the user pastes in. Point it at something hostile and the traffic still cannot be read — but the MCPs behind it are MCPs that hostile thing chose, and each of them can ask the browser to pair. Approving a bridge is therefore approving *what may ask*, which is why the popup says so next to the form;
+- **the population that can reach this browser grows** from "processes on this machine under my account" to "whatever that relay carries";
+- **pairing happens across a WAN**, where the pair code is doing more work than it did on loopback: on a laptop "this is my machine" carried most of the argument, and here it carries none of it.
+
+**Defenses in this change:**
+
+- **loopback is not configurable.** Remote targets are strictly additional; nothing in storage or in the popup can remove or repoint the local link. A misconfiguration cannot take the bridge that has always worked;
+- **`wss://` is required** unless the host is loopback, so the hello, the `mcpId` and the pair-pending frame are not readable in transit. The inner frames were already sealed; the handshake around them was not;
+- **the credential is its own field.** Credentials in the URL are refused, because a URL is the part that gets pasted into a chat window;
+- **one `mcpId`, one bridge.** An `mcpId` is minted by the MCP, so it is not a name the extension can assume is unique across relays. It binds to the link its hello arrived on, a second link claiming a bound id is refused, and a frame arriving on the wrong link is dropped before it is decrypted. Otherwise a relay could claim an id it observed and have this browser answer for it;
+- **per-link handshake.** Each link sends its own hello with its own nonce and signs its readies over that nonce, so a ready cannot be replayed onto another bridge;
+- **teardown is per link.** A relay dropping takes its own sessions with it and leaves the loopback ones alone.
+
+**Residual risks, stated rather than implied:**
+
+- **a relay can drop, delay or reorder** — denial of service, never disclosure. The same residual the concentrator has always had, for the same reason;
+- **the MCP-side pin ([§T-fake-extension](#t-fake-extension--something-else-answering-as-the-browser)) is what makes a stolen relay credential survivable.** Without it, an attacker holding the credential pairs their own browser with the hosted MCPs and reads every request they make. It shipped in 1.12.0 and is a hard precondition for using this feature with anything hosted — not an improvement to it;
+- **the extension's trust store is keyed by MCP identity, not by bridge.** An MCP identity the user already approved locally is auto-trusted if it appears over a relay. It cannot be impersonated (the session derives via ECDH against that identity's public key, so only the holder of the private key can read the traffic), but the trust decision is deliberately about *who the MCP is* and not *which pipe it arrived through*.
 
 ### T4 — User installs unknown MCP via Claude Code or similar
 
