@@ -30,6 +30,7 @@ import type { AnyPendingRecord } from './pending-records.js';
 import { state } from './state.js';
 import { connect, loadRemoteLinks } from './socket.js';
 import { connectedIdentityHashes } from './session-scope.js';
+import { linkStatuses } from './links.js';
 import { PENDING_PAIR_KEY, APPROVED_PAIR_KEY, mergePending } from './pending-pair-store.js';
 import { REMOTE_TARGETS_KEY } from '../remote-targets.js';
 import { onApproval, onScopeUpdateDismiss } from './approval.js';
@@ -60,7 +61,10 @@ export function maybeBoot(): void {
         typeof msg === 'object' &&
         (msg as { type?: unknown }).type === 'get-connected-identities'
       ) {
-        sendResponse({ connectedHashes: [...connectedIdentityHashes()] });
+        // The link statuses ride the same query rather than a second one: the
+        // popup asks once, and a bridge row that says "configured" while its
+        // socket is down is the state this exists to make visible.
+        sendResponse({ connectedHashes: [...connectedIdentityHashes()], links: linkStatuses() });
         return true;
       }
     });

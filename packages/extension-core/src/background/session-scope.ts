@@ -8,10 +8,12 @@
  * read and write ONE set of tables. Never re-declare them elsewhere — a second
  * copy would silently split writer from reader and fail every gated verb.
  *
- * `clearAllSessionScopes` is the one piece of new code in this move: it
- * collects the twelve `.clear()` calls that were inlined in the WS `close`
- * handler, in the same order, so teardown cannot drift out of sync with a
- * future thirteenth map.
+ * Teardown is PER LINK since the extension gained remote bridges: a link
+ * dropping clears the sessions derived under its hello and nobody else's, so
+ * `clearSessionScopeFor` is the production path and `SCOPE_TABLES` is what
+ * keeps it honest — one list, derived against the module's own exports in
+ * `session-scope-teardown.test.ts`, so a thirteenth map cannot be added and
+ * forgotten.
  */
 
 import type {
@@ -222,14 +224,6 @@ export const SCOPE_TABLES: Map<string, unknown>[] = [
   // Part 3: the identity hash map tears down with the rest.
   mcpIdentityHash,
 ];
-
-/**
- * Clear every per-mcpId scope table. Called on WS teardown so a reconnect
- * cannot inherit a previous connection's granted scope.
- */
-export function clearAllSessionScopes(): void {
-  for (const table of SCOPE_TABLES) table.clear();
-}
 
 /**
  * Clear the scope tables for ONE mcpId. This is the per-link teardown: when a

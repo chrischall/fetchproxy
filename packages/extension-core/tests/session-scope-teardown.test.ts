@@ -1,10 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import * as sessionScope from '../src/background/session-scope.js';
-import {
-  SCOPE_TABLES,
-  clearAllSessionScopes,
-  clearSessionScopeFor,
-} from '../src/background/session-scope.js';
+import { SCOPE_TABLES, clearSessionScopeFor } from '../src/background/session-scope.js';
 
 // Every per-mcpId scope table, DERIVED from the module's own exports rather
 // than listed by hand. A map that survives a WS teardown is a privilege leak —
@@ -13,19 +9,19 @@ import {
 //
 // A hand-maintained literal cannot make that guarantee, and this file used to
 // carry one under a comment claiming it could. It could not: a thirteenth map
-// added to session-scope.ts and forgotten in `clearAllSessionScopes` would also
+// added to session-scope.ts and forgotten in the teardown list would also
 // be forgotten HERE, so the test passed and the leak shipped. Verified before
 // changing it — adding an uncleaned `mcpThirteenth` left this suite green at
 // 2/2 (fetchproxy#227).
 //
 // Deriving from the namespace closes that: a new exported Map is picked up with
-// no edit to this file, so forgetting `clearAllSessionScopes` is the only way to
+// no edit to this file, so forgetting `SCOPE_TABLES` is the only way to
 // fail, which is exactly the mistake worth catching.
 const ALL_SCOPE_MAPS: [string, Map<string, unknown>][] = Object.entries(sessionScope)
   .filter((entry): entry is [string, Map<string, unknown>] => entry[1] instanceof Map)
   .sort(([a], [b]) => a.localeCompare(b));
 
-describe('clearAllSessionScopes', () => {
+describe('scope teardown', () => {
   it('empties every per-mcpId scope table', () => {
     for (const [, map] of ALL_SCOPE_MAPS) {
       map.set('musescore-mcp:0.5.0:aabb0001', [] as unknown);
@@ -34,7 +30,7 @@ describe('clearAllSessionScopes', () => {
       expect(map.size, `${name} was not seeded`).toBe(1);
     }
 
-    clearAllSessionScopes();
+    clearSessionScopeFor('musescore-mcp:0.5.0:aabb0001');
 
     for (const [name, map] of ALL_SCOPE_MAPS) {
       expect(map.size, `${name} survived teardown`).toBe(0);
@@ -53,7 +49,7 @@ describe('clearAllSessionScopes', () => {
   // Both teardown paths now read one list. Deriving the same set here is what
   // keeps that list honest: a thirteenth exported map that nobody adds to
   // SCOPE_TABLES fails HERE, before it can leak a grant through either path.
-  it('drives both teardowns from a list holding every scope table', () => {
+  it('drives teardown from a list holding every scope table', () => {
     expect(new Set(SCOPE_TABLES)).toEqual(new Set(ALL_SCOPE_MAPS.map(([, m]) => m)));
   });
 });
@@ -71,6 +67,6 @@ describe('clearSessionScopeFor', () => {
       expect(map.has('going'), `${name} kept the dropped session`).toBe(false);
       expect(map.has('staying'), `${name} dropped a live session on another link`).toBe(true);
     }
-    clearAllSessionScopes();
+    clearSessionScopeFor('staying');
   });
 });
