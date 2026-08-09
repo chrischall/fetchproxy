@@ -4,6 +4,7 @@ import {
   anyLinkOpen,
   bindMcpToLink,
   linkForMcp,
+  linkStatuses,
   links,
   localLink,
   mcpIdsForLink,
@@ -114,5 +115,39 @@ describe('links', () => {
     ws.readyState = 2;
     expect(sendOnLink(local, 'later')).toBe(false);
     expect(ws.sent).toEqual(['frame']);
+  });
+});
+
+describe('linkStatuses', () => {
+  it('reports each link separately, local first', () => {
+    unbindAll();
+    links.clear();
+    const local = localLink();
+    const remote = remoteLink(
+      { id: 'host1', url: 'wss://mcp.nullnet.app/bridge', token: 'mcpb_x', label: 'mcp-host', enabled: true },
+      bridgeSubprotocols('mcpb_x'),
+    );
+    links.set(local.id, local);
+    links.set(remote.id, remote);
+    open(remote);
+    bindMcpToLink('m1', remote);
+
+    const statuses = linkStatuses();
+    expect(statuses.map((s) => s.id)).toEqual(['local', 'remote:host1']);
+    // One state per link, which is the whole point: a dead loopback link is
+    // invisible behind any single "connected" flag.
+    expect(statuses[0]).toMatchObject({ kind: 'local', connected: false, sessions: 0 });
+    expect(statuses[1]).toMatchObject({ kind: 'remote', connected: true, sessions: 1, label: 'mcp-host' });
+  });
+
+  it('never carries the credential', () => {
+    unbindAll();
+    links.clear();
+    const remote = remoteLink(
+      { id: 'host1', url: 'wss://h/b', token: 'mcpb_secret', enabled: true },
+      bridgeSubprotocols('mcpb_secret'),
+    );
+    links.set(remote.id, remote);
+    expect(JSON.stringify(linkStatuses())).not.toContain('mcpb_secret');
   });
 });

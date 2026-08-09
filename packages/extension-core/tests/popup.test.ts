@@ -1196,3 +1196,32 @@ describe('renderPopup — bridges', () => {
     expect(container.textContent).toContain('can ask this browser to pair');
   });
 });
+
+describe('renderPopup — bridge status dots', () => {
+  let container: HTMLElement;
+
+  beforeEach(() => {
+    document.body.innerHTML = '<div id="root"></div>';
+    container = document.getElementById('root')!;
+  });
+
+  const withBridges = (bridges: BridgesView): void =>
+    renderPopup(container, { mode: 'status', trusted: [], bridges });
+
+  it('shows the loopback link as offline when it is — a green badge would not', () => {
+    // The failure this exists for: with a remote bridge up, one global
+    // connection state says nothing about the local concentrator every MCP on
+    // this machine needs.
+    withBridges({
+      localConnected: false,
+      targets: [{ id: 'b1', url: 'wss://h/b', enabled: true, connected: true }],
+    });
+    expect(container.querySelector('.bridge.local .status-dot')?.getAttribute('aria-label')).toBe('offline');
+    expect(container.querySelector('.bridge.remote .status-dot')?.getAttribute('aria-label')).toBe('connected');
+  });
+
+  it('renders no dot at all when the background did not answer', () => {
+    withBridges({ targets: [{ id: 'b1', url: 'wss://h/b', enabled: true }] });
+    expect(container.querySelector('.status-dot')).toBeNull();
+  });
+});

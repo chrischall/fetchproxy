@@ -113,6 +113,17 @@ export function bindMcpToLink(mcpId: string, link: Link): boolean {
   return true;
 }
 
+/**
+ * Release ONE binding, when the link that holds it says so.
+ *
+ * Scoped to the holder on purpose: a caller may only give back a binding it
+ * owns, so this cannot become a way for one link to unbind another's id and
+ * then claim it.
+ */
+export function unbindMcp(mcpId: string, link: Link): void {
+  if (mcpLink.get(mcpId) === link) mcpLink.delete(mcpId);
+}
+
 /** Every `mcpId` currently bound to `link`. */
 export function mcpIdsForLink(link: Link): string[] {
   const out: string[] = [];
@@ -130,6 +141,40 @@ export function unbindLink(link: Link): string[] {
 /** Drop every binding, on every link. */
 export function unbindAll(): void {
   mcpLink.clear();
+}
+
+/** What the popup shows for one bridge: which it is, and whether it is up. */
+export interface LinkStatus {
+  id: string;
+  kind: 'local' | 'remote';
+  label: string;
+  url: string;
+  connected: boolean;
+  /** How many MCP sessions are currently bound to this link. */
+  sessions: number;
+}
+
+/**
+ * A status per link, local first.
+ *
+ * Per LINK rather than one connection state, because a single flag is the
+ * thing that hides the failure worth seeing: with a remote bridge up, a green
+ * badge says nothing about whether the loopback concentrator — the one every
+ * MCP on this machine needs — is there at all.
+ */
+export function linkStatuses(): LinkStatus[] {
+  const out: LinkStatus[] = [];
+  for (const link of links.values()) {
+    out.push({
+      id: link.id,
+      kind: link.kind,
+      label: link.label,
+      url: link.url,
+      connected: link.ws?.readyState === WebSocket.OPEN,
+      sessions: mcpIdsForLink(link).length,
+    });
+  }
+  return out.sort((a, b) => (a.kind === b.kind ? a.id.localeCompare(b.id) : a.kind === 'local' ? -1 : 1));
 }
 
 /** True while at least one link has an open socket. */

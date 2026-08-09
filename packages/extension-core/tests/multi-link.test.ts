@@ -406,3 +406,25 @@ describe('two bridges at once', () => {
     expect(FakeSocket.opened.filter((s) => s.url === REMOTE.url)).toHaveLength(1);
   });
 });
+
+describe('a refused hello', () => {
+  it('gives its binding back, so the id is not held until the link drops', async () => {
+    FakeSocket.opened = [];
+    unbindAll();
+    links.clear();
+    reconcileRemoteLinks([REMOTE]);
+    const localWs = FakeSocket.opened.find((s) => s.url.startsWith('ws://127.0.0.1'))!;
+    localWs.open();
+
+    const mcp = await scriptedMcp('alltrails-mcp:2.1.3:9999999999999999');
+    // Not trusted, and with a broken signature: `handleServerHello` rejects.
+    const hello = await helloFrom(mcp);
+    localWs.message({ ...hello, sessionSig: toB64(new Uint8Array(64)) });
+    await new Promise((r) => setTimeout(r, 20));
+
+    // Held until the link dropped, a rejected id would let a hello flood grow
+    // the table without bound — and would block a legitimate re-hello of the
+    // same id behind a rejection.
+    expect(linkForMcp(mcp.mcpId)).toBeNull();
+  });
+});

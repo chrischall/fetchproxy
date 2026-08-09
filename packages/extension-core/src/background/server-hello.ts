@@ -43,7 +43,7 @@ import { ensureDomainTab } from '../ensure-domain-tab.js';
 import { scopeHash } from '../lib/scope.js';
 
 import { state } from './state.js';
-import { bindMcpToLink, sendOnLink, type Link } from './links.js';
+import { bindMcpToLink, sendOnLink, unbindMcp, type Link } from './links.js';
 import { handleServerHello } from './hello.js';
 import { setPairPendingBadge } from './badge.js';
 import {
@@ -82,6 +82,12 @@ export async function onServerHello(link: Link, hello: HelloFrameFromServer): Pr
     extensionIdentityX25519Pub: state.extIdentity.x25519Pub,
   });
   if (result.kind === 'reject') {
+    // Give the binding back. It was taken before the decision — deliberately,
+    // so a second link cannot claim the id mid-decision — but a REFUSED id is
+    // one this extension is not speaking for, and holding it until the link
+    // drops would let a hello flood grow the table without bound and would
+    // block a legitimate re-hello of the same id behind a rejection.
+    unbindMcp(hello.mcpId, link);
     console.warn(`[fetchproxy] rejected hello for ${hello.mcpId}: ${result.reason}`);
     return;
   }

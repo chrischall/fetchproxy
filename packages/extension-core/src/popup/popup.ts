@@ -168,10 +168,18 @@ export interface RemoteTargetView {
   url: string;
   label?: string;
   enabled: boolean;
+  /**
+   * Whether this bridge's socket is open right now. Undefined when the
+   * background did not answer — the row then renders without a dot rather
+   * than claiming a state nobody vouched for.
+   */
+  connected?: boolean;
 }
 
 export interface BridgesView {
   targets: RemoteTargetView[];
+  /** Whether the loopback link — the one every local MCP needs — is up. */
+  localConnected?: boolean;
   /** Save a new target. Returns an error string to show, or null on success. */
   onAdd?: (input: { url: string; token: string; label: string }) => Promise<string | null>;
   onRemove?: (id: string) => void;
@@ -579,6 +587,15 @@ function buildTrustedEntry(
 }
 
 
+/** The green/grey dot a bridge row carries, with the state named for a11y. */
+function statusDot(connected: boolean): HTMLElement {
+  return elem('span', {
+    class: connected ? 'status-dot connected' : 'status-dot offline',
+    'aria-label': connected ? 'connected' : 'offline',
+    title: connected ? 'connected' : 'not connected',
+  });
+}
+
 /**
  * The bridges section: where this browser is willing to answer MCPs from.
  *
@@ -597,6 +614,11 @@ function appendBridges(root: HTMLElement, bridges: BridgesView): void {
 
   const ul = elem('ul', { class: 'bridge-list' });
   const local = elem('li', { class: 'bridge local' });
+  // The dot is per LINK, and the loopback row is the reason. A single
+  // connection state goes green as soon as ANY bridge is up, which is exactly
+  // when a dead local concentrator — the one every MCP on this machine needs —
+  // stops being visible.
+  if (bridges.localConnected !== undefined) local.appendChild(statusDot(bridges.localConnected));
   local.appendChild(elem('span', { class: 'bridge-url' }, 'localhost (always on)'));
   ul.appendChild(local);
 
@@ -611,6 +633,7 @@ function appendBridges(root: HTMLElement, bridges: BridgesView): void {
       });
       li.appendChild(box);
     }
+    if (t.connected !== undefined) li.appendChild(statusDot(t.connected));
     li.appendChild(elem('span', { class: 'bridge-url' }, t.label ? `${t.label} — ${t.url}` : t.url));
     if (bridges.onRemove) {
       const rm = elem('button', { class: 'bridge-remove', 'aria-label': `remove ${t.url}` }, '✕');
@@ -930,6 +953,12 @@ interface PendingScopeUpdateRecord {
 
 type AnyPendingRecord = PendingPairRecord | PendingScopeUpdateRecord;
 
+/** One entry of the background's link-status answer (background/links.ts). */
+interface LinkStatusMessage {
+  id: string;
+  connected: boolean;
+}
+
 declare const chrome: {
   runtime?: {
     getManifest: () => { version: string };
@@ -1096,19 +1125,27 @@ async function bootstrap(): Promise<void> {
    * the two agree on what a target IS, in one place, rather than the popup
    * writing something the background silently drops.
    */
-  const bridgesView = async (): Promise<BridgesView> => {
+  const bridgesView = async (links: LinkStatusMessage[]): Promise<BridgesView> => {
     const got = await chrome.storage!.local.get(REMOTE_TARGETS_KEY);
     const targets = normaliseRemoteTargets(got[REMOTE_TARGETS_KEY]);
+    const statusFor = (id: string): boolean | undefined =>
+      links.find((link) => link.id === id)?.connected;
     const write = async (next: RemoteTarget[]): Promise<void> => {
       await chrome.storage!.local.set({ [REMOTE_TARGETS_KEY]: normaliseRemoteTargets(next) });
     };
+    const localConnected = statusFor('local');
     return {
-      targets: targets.map((t) => ({
-        id: t.id,
-        url: t.url,
-        ...(t.label === undefined ? {} : { label: t.label }),
-        enabled: t.enabled,
-      })),
+      ...(localConnected === undefined ? {} : { localConnected }),
+      targets: targets.map((t) => {
+        const connected = statusFor(`remote:${t.id}`);
+        return {
+          id: t.id,
+          url: t.url,
+          ...(t.label === undefined ? {} : { label: t.label }),
+          enabled: t.enabled,
+          ...(connected === undefined ? {} : { connected }),
+        };
+      }),
       onAdd: async ({ url, token, label }) => {
         if (targets.some((t) => t.url === url)) return 'That bridge is already configured.';
         const id = `b${Date.now().toString(36)}${Math.floor(Math.random() * 1e6).toString(36)}`;
@@ -1142,12 +1179,17 @@ async function bootstrap(): Promise<void> {
     // so we can render the connection-status dot on each entry. Best-effort:
     // if the query fails (no background, old SW), fall back to no dot.
     let connectedHashes: Set<string> = new Set();
+    // Link statuses ride the same query (boot.ts). Absent means the background
+    // did not answer, and a bridge row then renders WITHOUT a dot rather than
+    // claiming a state nobody vouched for.
+    let links: LinkStatusMessage[] = [];
     if (chrome.runtime?.sendMessage) {
       try {
         const resp = await chrome.runtime.sendMessage({ type: 'get-connected-identities' }) as
-          | { connectedHashes?: string[] }
+          | { connectedHashes?: string[]; links?: LinkStatusMessage[] }
           | undefined;
         connectedHashes = new Set(resp?.connectedHashes ?? []);
+        links = resp?.links ?? [];
       } catch {
         // Background not available — dots will be absent.
       }
@@ -1159,7 +1201,7 @@ async function bootstrap(): Promise<void> {
       capabilities: r.capabilities ? [...r.capabilities] : ['fetch'],
       connected: connectedHashes.has(identityHash),
     }));
-    const bridges = await bridgesView();
+    const bridges = await bridgesView(links);
     if (trustedList.length === 0) {
       renderPopup(root, { mode: 'empty', bridges });
     } else {
