@@ -60,10 +60,20 @@ export interface FetchproxyServerOpts {
    * share one port for the concentrator to work.
    *
    * Omitted, the `FETCHPROXY_WS_PORT` environment variable is consulted
-   * before the default. That fallback exists for consumers that never see
-   * this option — `@fetchproxy/bootstrap` constructs the server itself — and
-   * for a supervisor that needs to give each MCP a port of its own without
-   * knowing which of a dozen per-MCP variable names that MCP happens to read.
+   * before the default. It exists for consumers that never see this option at
+   * all — `@fetchproxy/bootstrap` constructs the server itself — and it moves
+   * the port the same way this option does, with the same constraint: on one
+   * machine every MCP shares the concentrator, so the value has to be the SAME
+   * for all of them or the ones that differ sit unreachable on a port nothing
+   * dials.
+   *
+   * The one place a port PER MCP is meaningful is a hosted deployment, where
+   * the thing dialling a child is a relay agent on the same machine rather
+   * than the browser (chrischall/mcp-host, docs/BROWSER-BRIDGE.md): each child
+   * is its own concentrator on its own port, and the browser reaches them
+   * through a configured remote target instead of loopback. That is a
+   * different topology, not a way to run several concentrators on a laptop.
+   *
    * An explicit value here is a decision made in code and beats the
    * environment.
    *
