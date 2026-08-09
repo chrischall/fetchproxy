@@ -219,6 +219,8 @@ On loopback that asymmetry is the [local trust boundary](#local-trust-boundary) 
 - **per-link handshake.** Each link sends its own hello with its own nonce and signs its readies over that nonce, so a ready cannot be replayed onto another bridge;
 - **teardown is per link.** A relay dropping takes its own sessions with it and leaves the loopback ones alone.
 
+**One verb does not cross.** `download` saves a file on the machine running the browser and answers with that machine's path, on the assumption the MCP asking reads the same disk. Over a remote bridge neither half holds — the path names a file the MCP cannot open, and the request would have a remote MCP writing bytes into the user's Downloads folder, which is the only thing in this protocol that leaves something behind on the machine. It is refused on a remote link, before the URL is examined, with a reason the calling MCP can print.
+
 **Residual risks, stated rather than implied:**
 
 - **a relay can drop, delay or reorder** — denial of service, never disclosure. The same residual the concentrator has always had, for the same reason;

@@ -456,6 +456,8 @@ A relay must accept the connection with `fetchproxy.bridge.v1` selected. Subprot
 3. **Mint nothing else either.** `frame` payloads are AES-256-GCM under a key derived from the MCP's identity, so a relay cannot read or forge one — but `pair-pending` and `ready` are cleartext, and passing them through unmodified is what keeps the pair code meaningful on both ends.
 4. **Expect a reconnect to invalidate everything derived from the old hello.** The extension's nonce is per connection, so when the browser leg drops, every MCP link built on that hello has to be re-established.
 
+**`download` is local-only.** It answers with a filesystem path on the browser's machine, so the extension refuses it on a remote link (`ok: false`, with a reason naming why) rather than returning a path that cannot resolve — and rather than letting a remote MCP write files onto somebody's machine. Every other verb crosses unchanged.
+
 A relay cannot serve MCPs by dialling an existing concentrator as a peer and standing behind it: a peer receives frames for its own `mcpId`, not the extension role's traffic. It has to terminate the browser's socket itself.
 
 The MCP-side identity pin (§`T-fake-extension` in `docs/SECURITY.md`, 1.12.0+) is a precondition for running one of these, not an enhancement to it: without it an MCP accepts whatever identity presents a well-formed hello, so a stolen relay credential is a working session with every MCP behind that relay rather than a prompt.

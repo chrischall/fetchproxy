@@ -4,6 +4,16 @@
  * The sole consumer of `chrome.downloads`, and the only verb whose gate is
  * just `isUrlAllowedForAnyDomain` — it reads no per-session scope Map.
  *
+ * **Local only, and refused over a remote bridge.** This verb answers with a
+ * FILESYSTEM PATH on the machine running the browser, on the explicit
+ * assumption that the MCP asking reads the same disk — true for every MCP on
+ * `127.0.0.1`, and false for one reached through a relay. Two things go wrong
+ * there rather than one: the path names a file the MCP cannot open, and a
+ * remote MCP gets to write bytes into the user's Downloads folder, which is
+ * the one verb in this protocol that leaves something behind on the machine.
+ * So a `download` arriving on a remote link is refused with a reason the
+ * calling MCP can print, instead of a path that will not resolve.
+ *
  * Two orderings inside `handleDownloadRequest` are load-bearing and are
  * preserved exactly: `downloads.onChanged.addListener` is registered BEFORE
  * `downloads.download(...)` so a fast completion cannot be missed, and
@@ -18,6 +28,7 @@ import type {
 
 import type { ChromeApi } from '../../chrome-api.js';
 import { isUrlAllowedForAnyDomain } from '../../lib/url-match.js';
+import { linkForMcp } from '../links.js';
 import { sendInner } from '../send-inner.js';
 
 declare const chrome: ChromeApi;
@@ -59,11 +70,29 @@ export function downloadValueFromItem(item: {
  * Only the `url` host needs to be a declared `domain`; chrome.downloads
  * follows redirects (e.g. to a presigned subdomain) on its own.
  */
+export const DOWNLOAD_LOCAL_ONLY_ERROR =
+  'download is local-only: it saves a file on the machine running this browser and answers with that ' +
+  'machine\'s path, so an MCP reached through a remote bridge could neither open it nor should be ' +
+  'writing files here. Run this MCP on the same machine as the browser to use download.';
+
 export async function handleDownloadRequest(
   mcpId: string,
   req: InnerRequestDownload,
   domains: string[],
 ): Promise<void> {
+  // Before the domain check on purpose: "this cannot work from there" is a
+  // fact about the link, not about the URL, and answering it first keeps the
+  // refusal identical whatever was asked for.
+  if (linkForMcp(mcpId)?.kind === 'remote') {
+    await sendInner(mcpId, {
+      type: 'response',
+      id: req.id,
+      ok: false,
+      op: 'download',
+      error: DOWNLOAD_LOCAL_ONLY_ERROR,
+    });
+    return;
+  }
   if (!isUrlAllowedForAnyDomain(req.init.url, domains)) {
     await sendInner(mcpId, {
       type: 'response',
