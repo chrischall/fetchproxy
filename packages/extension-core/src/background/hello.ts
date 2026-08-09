@@ -150,7 +150,7 @@ export type HandleHelloResult =
  * `domains` and the server hello's `domains` must declare the same set
  * (the user approved THIS set); a permutation is fine.
  */
-export function sameDomainSet(a: readonly string[], b: readonly string[]): boolean {
+function sameDomainSet(a: readonly string[], b: readonly string[]): boolean {
   if (a.length !== b.length) return false;
   const sa = [...a].map((s) => s.toLowerCase()).sort();
   const sb = [...b].map((s) => s.toLowerCase()).sort();
@@ -159,15 +159,15 @@ export function sameDomainSet(a: readonly string[], b: readonly string[]): boole
 }
 
 /** Default capability set when the server hello doesn't carry one. */
-export const DEFAULT_CAPABILITIES: readonly Capability[] = ['fetch'];
+const DEFAULT_CAPABILITIES: readonly Capability[] = ['fetch'];
 
-export function effectiveCapabilities(hello: HelloFrameFromServer): Capability[] {
+function effectiveCapabilities(hello: HelloFrameFromServer): Capability[] {
   return hello.capabilities && hello.capabilities.length > 0
     ? [...hello.capabilities]
     : [...DEFAULT_CAPABILITIES];
 }
 
-export interface DeclaredScope {
+interface DeclaredScope {
   cookieKeys: string[];
   localStorageKeys: string[];
   sessionStorageKeys: string[];
@@ -179,7 +179,7 @@ export interface DeclaredScope {
   sessionStoragePointers: StoragePointerDecl[];
 }
 
-export function declaredScope(hello: HelloFrameFromServer): DeclaredScope {
+function declaredScope(hello: HelloFrameFromServer): DeclaredScope {
   return {
     cookieKeys: [...(hello.cookieKeys ?? [])],
     localStorageKeys: [...(hello.localStorageKeys ?? [])],
