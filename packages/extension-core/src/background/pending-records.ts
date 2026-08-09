@@ -2,9 +2,11 @@
  * Shapes of the records queued in `chrome.storage.local` for the popup,
  * plus `applyNeedsPairRecord`, moved verbatim out of `background.ts`.
  *
- * `PendingRecordBase`, `PendingPairRecord` and `PendingScopeUpdateRecord`
- * were file-local; they are exported here because `background.ts` still
- * constructs both record kinds.
+ * `PendingPairRecord` and `PendingScopeUpdateRecord` are exported because
+ * `server-hello.ts` constructs both record kinds. `PendingRecordBase` is only
+ * the `extends` base of those two, so it stays file-local as it was before
+ * the split — a type does not need `export` to be reachable through the
+ * exported interfaces that extend it.
  */
 
 import type {
@@ -18,7 +20,7 @@ import type {
  * Shared fields for all pending record kinds.
  * keyed by `${identityHash}:${scopeHash}` in `chrome.storage.local`.
  */
-export interface PendingRecordBase {
+interface PendingRecordBase {
   /** `${identityHash}:${scopeHash}` — dict key. */
   key: string;
   identityHash: string;

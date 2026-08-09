@@ -66,7 +66,7 @@ function setBadge(text: string, color: string): void {
   }
 }
 
-export function syncBadge(): void {
+function syncBadge(): void {
   if (pairPendingActive) {
     setBadge(BADGE_PAIR_PENDING_TEXT, BADGE_PAIR_PENDING_COLOR);
     return;
