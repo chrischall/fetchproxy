@@ -28,9 +28,10 @@ declare const chrome: ChromeApi;
 import { setPairPendingBadge, clearPairPendingBadge } from './badge.js';
 import type { AnyPendingRecord } from './pending-records.js';
 import { state } from './state.js';
-import { connect } from './socket.js';
+import { connect, loadRemoteLinks } from './socket.js';
 import { connectedIdentityHashes } from './session-scope.js';
 import { PENDING_PAIR_KEY, APPROVED_PAIR_KEY, mergePending } from './pending-pair-store.js';
+import { REMOTE_TARGETS_KEY } from '../remote-targets.js';
 import { onApproval, onScopeUpdateDismiss } from './approval.js';
 
 // Boot: only run in a real MV3 service worker context. Skipped under vitest
@@ -82,6 +83,16 @@ export function maybeBoot(): void {
     // going through onApproval, so this is the catch-all clear point.
     // 0.5.2+: the value is now a dict — has any non-empty content means
     // at least one pending entry remains and the badge should stay lit.
+    // 2.1.0: the configured remote bridge targets changed — a target added,
+    // removed, disabled or repointed. Reconcile the live links onto the new
+    // set rather than waiting for a restart, and note that a REMOVED target's
+    // sessions go with it: a bridge the user just deleted must stop being one
+    // this browser answers.
+    if (REMOTE_TARGETS_KEY in changes) {
+      void loadRemoteLinks().catch((e) =>
+        console.error('[fetchproxy] remote bridge reconcile:', e),
+      );
+    }
     if (PENDING_PAIR_KEY in changes) {
       const next = changes[PENDING_PAIR_KEY]?.newValue;
       const dict = mergePending(next);
@@ -119,6 +130,10 @@ export function maybeBoot(): void {
     .then((id) => {
       state.extIdentity = id;
       connect();
+      // Remote targets are additional and asynchronous: the loopback link is
+      // dialled above without waiting on storage, so a slow (or empty) target
+      // list cannot delay the bridge that has always worked.
+      return loadRemoteLinks();
     })
     .catch((e) => console.error('[fetchproxy] extension identity boot:', e));
 }

@@ -11,6 +11,13 @@
  *
  * Both are called only from `./boot.js`'s single `storage.local.onChanged`
  * listener; nothing else in the background imports this module.
+ *
+ * The approval arrives from storage, so it carries no link — it is replayed
+ * against the link each waiting `mcpId` is bound to, and an id whose link has
+ * dropped in the meantime is skipped rather than answered on another socket.
+ * That is not a fussy detail: the ready signature commits to the link's
+ * per-connection nonce, so a ready sent on the wrong link is a signature the
+ * MCP is right to refuse.
  */
 
 import {
@@ -34,6 +41,7 @@ declare const chrome: ChromeApi;
 import { clearPairPendingBadge } from './badge.js';
 import type { AnyPendingRecord } from './pending-records.js';
 import { state } from './state.js';
+import { linkForMcp, sendOnLink } from './links.js';
 import {
   PENDING_PAIR_KEY,
   APPROVED_PAIR_KEY,
@@ -51,7 +59,7 @@ import {
 } from './session-scope.js';
 
 export async function onApproval(approved: AnyPendingRecord): Promise<void> {
-  if (!state.trust || !state.sessions || !state.extIdentity || !state.currentExtSessionNonce) return;
+  if (!state.trust || !state.sessions || !state.extIdentity) return;
   // Persist trust. Default to ['fetch'] when older popup state somehow
   // omits the field — defensive, the popup always populates it in 0.2.0+.
   const approvedCapabilities =
@@ -113,6 +121,14 @@ export async function onApproval(approved: AnyPendingRecord): Promise<void> {
         console.warn(`[fetchproxy] onApproval: missing sessionNonce for mcpId ${mcpId}; skipping`);
         continue;
       }
+      // The bridge this MCP said hello on, and the nonce it said it on. Both
+      // gone means the link dropped between the prompt and the click: there is
+      // nothing to answer, and the MCP will hello again on reconnect.
+      const link = linkForMcp(mcpId);
+      if (!link || !link.sessionNonce) {
+        console.warn(`[fetchproxy] onApproval: no live bridge for mcpId ${mcpId}; skipping`);
+        continue;
+      }
       const sessionNonce = fromB64(sessionNonceB64);
       // Each process gets its own fresh ephemeral keypair so the resulting
       // session keys are independent.
@@ -136,7 +152,7 @@ export async function onApproval(approved: AnyPendingRecord): Promise<void> {
       // session-key derivation on it.
       const sessionSig = await ed25519Sign(
         state.extIdentity.ed25519Priv,
-        readySignaturePayload(sessionNonce, state.currentExtSessionNonce!, ephemeral.publicKey),
+        readySignaturePayload(sessionNonce, link.sessionNonce, ephemeral.publicKey),
       );
       const ready: ReadyFrame = {
         type: 'ready',
@@ -144,7 +160,7 @@ export async function onApproval(approved: AnyPendingRecord): Promise<void> {
         extensionSessionPub: toB64(ephemeral.publicKey),
         sessionSig: toB64(sessionSig),
       };
-      state.ws?.send(JSON.stringify(ready));
+      sendOnLink(link, JSON.stringify(ready));
     }
     // Ensure domain tabs for the approved domains (once for the group).
     for (const d of approved.domains) {

@@ -213,6 +213,16 @@ Override the bind address if you need to:
 new FetchproxyServer({ port: 37150, host: '127.0.0.1', /* … */ });
 ```
 
+### Remote bridge targets (2.1.0+)
+
+The extension can also dial a configured `wss://` relay, **in addition to** loopback — for an MCP that runs somewhere other than this laptop and still has to issue its requests from inside your signed-in tab. Add one in the popup's **Bridges** section: a URL plus a credential.
+
+What stays true over a relay: every MCP still pairs with a code you confirm, still enforces its declared domains and capabilities, and still holds an AES-256-GCM session key the relay does not have — a concentrator has never been able to read what it routes, remote or not.
+
+What is new is a decision. The MCPs behind a relay are MCPs that relay chose, and each of them can ask your browser to pair. Add a bridge only if you run it. `docs/SECURITY.md` §T-remote-bridge is the full statement, including why the MCP-side identity pin (1.12.0+) has to be in place first.
+
+Loopback is not configurable — no target can remove or repoint it — and each link handshakes, routes and tears down on its own.
+
 ## Security
 
 `docs/SECURITY.md` is the full threat model. The headlines:

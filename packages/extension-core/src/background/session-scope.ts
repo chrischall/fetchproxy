@@ -197,21 +197,46 @@ export function broadcastConnectionsChanged(): void {
 }
 
 /**
+ * Every per-mcpId scope table, in one list, so the two teardown paths below
+ * cannot drift apart from each other or from the module.
+ *
+ * A table missing from a teardown is a privilege leak — the next session
+ * inherits the previous one's grant — and there are now two ways to tear one
+ * down (a whole extension shutdown, and one bridge link dropping while
+ * another stays up). `session-scope-teardown.test.ts` derives the exported
+ * Maps from this module's namespace and asserts this list holds all of them,
+ * so a thirteenth map is a failing test rather than a silent gap.
+ */
+export const SCOPE_TABLES: Map<string, unknown>[] = [
+  mcpDomains,
+  mcpCapabilities,
+  mcpCookieKeys,
+  mcpLocalStorageKeys,
+  mcpSessionStorageKeys,
+  mcpCaptureHeaders,
+  mcpIndexedDbScopes,
+  mcpDomSelectors,
+  mcpGraphqlOps,
+  mcpLocalStoragePointers,
+  mcpSessionStoragePointers,
+  // Part 3: the identity hash map tears down with the rest.
+  mcpIdentityHash,
+];
+
+/**
  * Clear every per-mcpId scope table. Called on WS teardown so a reconnect
  * cannot inherit a previous connection's granted scope.
  */
 export function clearAllSessionScopes(): void {
-  mcpDomains.clear();
-  mcpCapabilities.clear();
-  mcpCookieKeys.clear();
-  mcpLocalStorageKeys.clear();
-  mcpSessionStorageKeys.clear();
-  mcpCaptureHeaders.clear();
-  mcpIndexedDbScopes.clear();
-  mcpDomSelectors.clear();
-  mcpGraphqlOps.clear();
-  mcpLocalStoragePointers.clear();
-  mcpSessionStoragePointers.clear();
-  // Part 3: clear identity hash map on teardown.
-  mcpIdentityHash.clear();
+  for (const table of SCOPE_TABLES) table.clear();
+}
+
+/**
+ * Clear the scope tables for ONE mcpId. This is the per-link teardown: when a
+ * bridge link drops, the sessions derived under that link's hello nonce die
+ * with it, but sessions on every other link are untouched and must keep their
+ * grants.
+ */
+export function clearSessionScopeFor(mcpId: string): void {
+  for (const table of SCOPE_TABLES) table.delete(mcpId);
 }

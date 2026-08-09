@@ -1,6 +1,10 @@
 import { describe, it, expect } from 'vitest';
 import * as sessionScope from '../src/background/session-scope.js';
-import { clearAllSessionScopes } from '../src/background/session-scope.js';
+import {
+  SCOPE_TABLES,
+  clearAllSessionScopes,
+  clearSessionScopeFor,
+} from '../src/background/session-scope.js';
 
 // Every per-mcpId scope table, DERIVED from the module's own exports rather
 // than listed by hand. A map that survives a WS teardown is a privilege leak —
@@ -44,5 +48,29 @@ describe('clearAllSessionScopes', () => {
   // table also needs seeding, redaction or a popup surface — not just clearing.
   it('has exactly the scope tables it was last reviewed with', () => {
     expect(ALL_SCOPE_MAPS).toHaveLength(12);
+  });
+
+  // Both teardown paths now read one list. Deriving the same set here is what
+  // keeps that list honest: a thirteenth exported map that nobody adds to
+  // SCOPE_TABLES fails HERE, before it can leak a grant through either path.
+  it('drives both teardowns from a list holding every scope table', () => {
+    expect(new Set(SCOPE_TABLES)).toEqual(new Set(ALL_SCOPE_MAPS.map(([, m]) => m)));
+  });
+});
+
+describe('clearSessionScopeFor', () => {
+  it('clears one mcpId and leaves every other session\'s grant alone', () => {
+    for (const [, map] of ALL_SCOPE_MAPS) {
+      map.set('going', [] as unknown);
+      map.set('staying', [] as unknown);
+    }
+
+    clearSessionScopeFor('going');
+
+    for (const [name, map] of ALL_SCOPE_MAPS) {
+      expect(map.has('going'), `${name} kept the dropped session`).toBe(false);
+      expect(map.has('staying'), `${name} dropped a live session on another link`).toBe(true);
+    }
+    clearAllSessionScopes();
   });
 });

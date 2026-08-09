@@ -437,6 +437,29 @@ Frame routing rule (executed inside the host):
 
 Host shutdown: peers see WS close and re-race the port. Whoever wins becomes the new host; others reconnect as peers. There is a brief blip (~100 ms) but no state loss because trust + session derivation are stateless given the identity keys.
 
+## Remote relays (2.1.0+)
+
+The extension can hold several bridges at once: `ws://127.0.0.1:37149` always, plus zero-or-more configured `wss://` targets. Each is an independent link speaking exactly the protocol above — the concentrator being on another machine changes the topology, not the wire.
+
+**The browser leg's credential travels as a subprotocol**, because an MV3 service worker cannot set a request header:
+
+```
+Sec-WebSocket-Protocol: fetchproxy.bridge.v1, fetchproxy.token.<credential>
+```
+
+A relay must accept the connection with `fetchproxy.bridge.v1` selected. Subprotocol values are RFC 7230 tokens, so a credential may not contain `=`, `/`, `,` or spaces (unpadded base64url is fine).
+
+**What a relay MUST do**, all of it forced by the handshake rather than by convention:
+
+1. **Forward `hello` verbatim in BOTH directions.** `ready.sessionSig` covers `(mcpHelloNonce || extHelloNonce || extensionSessionPub)` and the MCP verifies it against the extension hello *it was handed*, so a relay that mints a hello of its own is closed by the MCP as a MITM — correctly. The extension's hello has to reach every MCP unmodified, and each MCP's hello has to reach the extension unmodified.
+2. **Route on its OWN bookkeeping, never on what a frame asserts.** `mcpId` is `<serverName>:<version>:<16-hex>`, minted by the MCP. A relay serving more than one user must resolve the destination from the socket a hello arrived on and refuse any frame carrying an `mcpId` it did not itself bind to that user. The extension does the same in the other direction: an `mcpId` belongs to the link it said hello on, and a frame arriving on any other link is dropped.
+3. **Mint nothing else either.** `frame` payloads are AES-256-GCM under a key derived from the MCP's identity, so a relay cannot read or forge one — but `pair-pending` and `ready` are cleartext, and passing them through unmodified is what keeps the pair code meaningful on both ends.
+4. **Expect a reconnect to invalidate everything derived from the old hello.** The extension's nonce is per connection, so when the browser leg drops, every MCP link built on that hello has to be re-established.
+
+A relay cannot serve MCPs by dialling an existing concentrator as a peer and standing behind it: a peer receives frames for its own `mcpId`, not the extension role's traffic. It has to terminate the browser's socket itself.
+
+The MCP-side identity pin (§`T-fake-extension` in `docs/SECURITY.md`, 1.12.0+) is a precondition for running one of these, not an enhancement to it: without it an MCP accepts whatever identity presents a well-formed hello, so a stolen relay credential is a working session with every MCP behind that relay rather than a prompt.
+
 ## Timeouts + retries
 
 - **Handshake** — the host gives the extension `15s` to send its hello. Peers give the host `15s` to forward the extension's `ready`.

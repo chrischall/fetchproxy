@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
 
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 
-import { renderPopup, type PopupState } from '../src/popup/popup.js';
+import { renderPopup, type BridgesView, type PopupState } from '../src/popup/popup.js';
 
 describe('renderPopup', () => {
   let container: HTMLElement;
@@ -1088,5 +1088,111 @@ describe('pair popup — renders when capabilities is absent', () => {
     // ['fetch'], which grants no cookie access at all.
     expect(container.textContent).toContain('CKAT');
     expect(container.textContent).toContain('Read cookies');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Bridges section (2.1.0): where this browser is willing to answer MCPs from.
+// ---------------------------------------------------------------------------
+
+describe('renderPopup — bridges', () => {
+  let container: HTMLElement;
+
+  beforeEach(() => {
+    document.body.innerHTML = '<div id="root"></div>';
+    container = document.getElementById('root')!;
+  });
+
+  const withBridges = (bridges: BridgesView): void =>
+    renderPopup(container, { mode: 'status', trusted: [], bridges });
+
+  it('is absent entirely when no bridges view is supplied', () => {
+    renderPopup(container, { mode: 'status', trusted: [] });
+    expect(container.textContent).not.toContain('Bridges');
+  });
+
+  it('always shows loopback, and says it cannot be turned off', () => {
+    withBridges({ targets: [] });
+    expect(container.querySelector('.bridge.local')?.textContent).toContain('always on');
+  });
+
+  it('lists configured remote targets without their tokens', () => {
+    withBridges({
+      targets: [{ id: 'b1', url: 'wss://mcp.nullnet.app/bridge', label: 'mcp-host', enabled: true }],
+    });
+    const row = container.querySelector('.bridge.remote')!;
+    expect(row.textContent).toContain('mcp-host');
+    expect(row.textContent).toContain('wss://mcp.nullnet.app/bridge');
+    expect(container.innerHTML).not.toContain('mcpb_');
+  });
+
+  it('marks a disabled target as disabled rather than hiding it', () => {
+    withBridges({ targets: [{ id: 'b1', url: 'wss://h/b', enabled: false }] });
+    expect(container.querySelector('.bridge.remote.disabled')).not.toBeNull();
+  });
+
+  it('refuses to save a URL that is not a WebSocket target, before any write', () => {
+    const onAdd = vi.fn(async () => null);
+    withBridges({ targets: [], onAdd });
+    (container.querySelector('.bridge-url-input') as HTMLInputElement).value = 'https://h/b';
+    (container.querySelector('.bridge-token-input') as HTMLInputElement).value = 'mcpb_x';
+    (container.querySelector('.bridge-save') as HTMLButtonElement).click();
+
+    expect(onAdd).not.toHaveBeenCalled();
+    expect(container.querySelector('.bridge-error')?.textContent).toContain('Bridge URL');
+  });
+
+  it('refuses a token a WebSocket subprotocol cannot carry, before any write', () => {
+    const onAdd = vi.fn(async () => null);
+    withBridges({ targets: [], onAdd });
+    (container.querySelector('.bridge-url-input') as HTMLInputElement).value = 'wss://h/b';
+    (container.querySelector('.bridge-token-input') as HTMLInputElement).value = 'has space';
+    (container.querySelector('.bridge-save') as HTMLButtonElement).click();
+
+    expect(onAdd).not.toHaveBeenCalled();
+    expect(container.querySelector('.bridge-error')?.textContent).toContain('Bridge token');
+  });
+
+  it('saves a valid target and passes the label through', () => {
+    const onAdd = vi.fn(async () => null);
+    withBridges({ targets: [], onAdd });
+    (container.querySelector('.bridge-url-input') as HTMLInputElement).value = 'wss://h/b';
+    (container.querySelector('.bridge-token-input') as HTMLInputElement).value = 'mcpb_x';
+    (container.querySelector('.bridge-label-input') as HTMLInputElement).value = 'home';
+    (container.querySelector('.bridge-save') as HTMLButtonElement).click();
+
+    expect(onAdd).toHaveBeenCalledWith({ url: 'wss://h/b', token: 'mcpb_x', label: 'home' });
+  });
+
+  it('shows what the save path refused', async () => {
+    withBridges({ targets: [], onAdd: async () => 'That bridge is already configured.' });
+    (container.querySelector('.bridge-url-input') as HTMLInputElement).value = 'wss://h/b';
+    (container.querySelector('.bridge-token-input') as HTMLInputElement).value = 'mcpb_x';
+    (container.querySelector('.bridge-save') as HTMLButtonElement).click();
+    await vi.waitUntil(() => container.querySelector('.bridge-error')?.textContent !== '');
+    expect(container.querySelector('.bridge-error')?.textContent).toContain('already configured');
+  });
+
+  it('removes and toggles by id', () => {
+    const onRemove = vi.fn();
+    const onToggle = vi.fn();
+    withBridges({
+      targets: [{ id: 'b1', url: 'wss://h/b', enabled: true }],
+      onRemove,
+      onToggle,
+    });
+    (container.querySelector('.bridge-remove') as HTMLButtonElement).click();
+    expect(onRemove).toHaveBeenCalledWith('b1');
+
+    const box = container.querySelector('.bridge-enabled') as HTMLInputElement;
+    expect(box.checked).toBe(true);
+    box.checked = false;
+    box.dispatchEvent(new Event('change'));
+    expect(onToggle).toHaveBeenCalledWith('b1', false);
+  });
+
+  it('says plainly what adding a bridge means', () => {
+    withBridges({ targets: [], onAdd: async () => null });
+    expect(container.textContent).toContain('can ask this browser to pair');
   });
 });

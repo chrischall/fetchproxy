@@ -14,6 +14,13 @@
 
 import { TrustStore } from '../trust-store.js';
 import { normalisePendingPair } from '../lib/pending-pair.js';
+import {
+  REMOTE_TARGETS_KEY,
+  normaliseRemoteTargets,
+  validateRemoteTargetToken,
+  validateRemoteTargetUrl,
+  type RemoteTarget,
+} from '../remote-targets.js';
 
 const HIGH_RISK_KEYWORDS = ['bank', 'gov', 'mil'];
 
@@ -150,11 +157,38 @@ export interface ScopeSnapshot {
   sessionStoragePointers: { key: string; jsonPointer: string }[];
 }
 
+/**
+ * A configured remote bridge as the popup shows it — never the credential.
+ * The token is write-only from here: it goes into storage on save and is
+ * never read back out for display, so a shoulder-surfed popup discloses which
+ * relay this browser talks to and not the right to talk to it.
+ */
+export interface RemoteTargetView {
+  id: string;
+  url: string;
+  label?: string;
+  enabled: boolean;
+}
+
+export interface BridgesView {
+  targets: RemoteTargetView[];
+  /** Save a new target. Returns an error string to show, or null on success. */
+  onAdd?: (input: { url: string; token: string; label: string }) => Promise<string | null>;
+  onRemove?: (id: string) => void;
+  onToggle?: (id: string, enabled: boolean) => void;
+}
+
 export type PopupState =
-  | { mode: 'empty' }
+  | { mode: 'empty'; bridges?: BridgesView }
   | {
       mode: 'status';
       trusted: TrustedSummary[];
+      /**
+       * 2.1.0+: the bridges this browser dials. Optional — a popup rendered
+       * without it looks exactly as it did before remote targets existed,
+       * which is what keeps every prior test honest.
+       */
+      bridges?: BridgesView;
       /**
        * 0.4.2+: invoked with the trusted entry's `identityHash` when
        * the user clicks the revoke (✕) button. The popup calls
@@ -544,6 +578,95 @@ function buildTrustedEntry(
   return li;
 }
 
+
+/**
+ * The bridges section: where this browser is willing to answer MCPs from.
+ *
+ * Loopback is rendered as a fixed row rather than an entry, because it is not
+ * configuration — it cannot be removed or repointed, and showing it as though
+ * it could would misdescribe what a remote target is (an addition, never a
+ * replacement).
+ *
+ * Adding one is deliberately a two-field form with visible validation rather
+ * than a paste-anything box: the URL decides who this browser's signed-in
+ * sessions can be asked to act for, so a typo should fail here, in front of
+ * the person making the decision, rather than in a reconnect loop.
+ */
+function appendBridges(root: HTMLElement, bridges: BridgesView): void {
+  root.appendChild(elem('h3', {}, 'Bridges'));
+
+  const ul = elem('ul', { class: 'bridge-list' });
+  const local = elem('li', { class: 'bridge local' });
+  local.appendChild(elem('span', { class: 'bridge-url' }, 'localhost (always on)'));
+  ul.appendChild(local);
+
+  for (const t of bridges.targets) {
+    const li = elem('li', { class: t.enabled ? 'bridge remote' : 'bridge remote disabled' });
+    li.setAttribute('data-target-id', t.id);
+    if (bridges.onToggle) {
+      const box = elem('input', { type: 'checkbox', class: 'bridge-enabled' });
+      (box as HTMLInputElement).checked = t.enabled;
+      box.addEventListener('change', () => {
+        bridges.onToggle!(t.id, (box as HTMLInputElement).checked);
+      });
+      li.appendChild(box);
+    }
+    li.appendChild(elem('span', { class: 'bridge-url' }, t.label ? `${t.label} — ${t.url}` : t.url));
+    if (bridges.onRemove) {
+      const rm = elem('button', { class: 'bridge-remove', 'aria-label': `remove ${t.url}` }, '✕');
+      rm.addEventListener('click', () => bridges.onRemove!(t.id));
+      li.appendChild(rm);
+    }
+    ul.appendChild(li);
+  }
+  root.appendChild(ul);
+
+  if (!bridges.onAdd) return;
+
+  const form = elem('div', { class: 'bridge-add' });
+  const url = elem('input', { type: 'text', class: 'bridge-url-input', placeholder: 'wss://host/bridge' });
+  const token = elem('input', { type: 'password', class: 'bridge-token-input', placeholder: 'bridge token' });
+  const label = elem('input', { type: 'text', class: 'bridge-label-input', placeholder: 'label (optional)' });
+  const err = elem('p', { class: 'bridge-error hint' });
+  const save = elem('button', { class: 'bridge-save' }, 'Add bridge');
+
+  save.addEventListener('click', () => {
+    const urlValue = (url as HTMLInputElement).value.trim();
+    const tokenValue = (token as HTMLInputElement).value.trim();
+    const urlCheck = validateRemoteTargetUrl(urlValue);
+    if (!urlCheck.ok) {
+      err.textContent = `Bridge URL: ${urlCheck.reason}`;
+      return;
+    }
+    const tokenCheck = validateRemoteTargetToken(tokenValue);
+    if (!tokenCheck.ok) {
+      err.textContent = `Bridge token: ${tokenCheck.reason}`;
+      return;
+    }
+    err.textContent = '';
+    void Promise.resolve(
+      bridges.onAdd!({ url: urlValue, token: tokenValue, label: (label as HTMLInputElement).value.trim() }),
+    ).then((problem) => {
+      if (problem) err.textContent = problem;
+    });
+  });
+
+  form.appendChild(url);
+  form.appendChild(token);
+  form.appendChild(label);
+  form.appendChild(save);
+  form.appendChild(err);
+  root.appendChild(form);
+
+  root.appendChild(
+    elem(
+      'p',
+      { class: 'hint' },
+      'A bridge can ask this browser to pair with MCPs it hosts. Add one only if you run it.',
+    ),
+  );
+}
+
 export function renderPopup(root: HTMLElement, state: PopupState): void {
   root.innerHTML = '';
 
@@ -551,6 +674,7 @@ export function renderPopup(root: HTMLElement, state: PopupState): void {
     root.appendChild(
       elem('p', {}, 'No MCP servers connected. Start an MCP server, then refresh.'),
     );
+    if (state.bridges) appendBridges(root, state.bridges);
     return;
   }
 
@@ -558,6 +682,7 @@ export function renderPopup(root: HTMLElement, state: PopupState): void {
     root.appendChild(elem('h3', {}, 'Trusted MCPs'));
     if (state.trusted.length === 0) {
       root.appendChild(elem('p', { class: 'hint' }, 'No trusted MCPs yet.'));
+      if (state.bridges) appendBridges(root, state.bridges);
       return;
     }
     const onRevoke = state.onRevoke;
@@ -599,6 +724,7 @@ export function renderPopup(root: HTMLElement, state: PopupState): void {
     } else {
       root.appendChild(buildList(sorted));
     }
+    if (state.bridges) appendBridges(root, state.bridges);
     return;
   }
 
@@ -962,6 +1088,52 @@ async function bootstrap(): Promise<void> {
     });
   };
 
+  /**
+   * Read the configured bridges and build the section's callbacks.
+   *
+   * Every write goes through `normaliseRemoteTargets` on the way back out, so
+   * the popup can only ever persist rows the background will actually dial —
+   * the two agree on what a target IS, in one place, rather than the popup
+   * writing something the background silently drops.
+   */
+  const bridgesView = async (): Promise<BridgesView> => {
+    const got = await chrome.storage!.local.get(REMOTE_TARGETS_KEY);
+    const targets = normaliseRemoteTargets(got[REMOTE_TARGETS_KEY]);
+    const write = async (next: RemoteTarget[]): Promise<void> => {
+      await chrome.storage!.local.set({ [REMOTE_TARGETS_KEY]: normaliseRemoteTargets(next) });
+    };
+    return {
+      targets: targets.map((t) => ({
+        id: t.id,
+        url: t.url,
+        ...(t.label === undefined ? {} : { label: t.label }),
+        enabled: t.enabled,
+      })),
+      onAdd: async ({ url, token, label }) => {
+        if (targets.some((t) => t.url === url)) return 'That bridge is already configured.';
+        const id = `b${Date.now().toString(36)}${Math.floor(Math.random() * 1e6).toString(36)}`;
+        const next: RemoteTarget[] = [
+          ...targets,
+          { id, url, token, ...(label === '' ? {} : { label }), enabled: true },
+        ];
+        await write(next);
+        if (normaliseRemoteTargets(next).length === targets.length) {
+          return 'That bridge could not be saved — the list is full.';
+        }
+        await renderTrustedStatus();
+        return null;
+      },
+      onRemove: (id) => {
+        void write(targets.filter((t) => t.id !== id)).then(() => renderTrustedStatus());
+      },
+      onToggle: (id, enabled) => {
+        void write(targets.map((t) => (t.id === id ? { ...t, enabled } : t))).then(() =>
+          renderTrustedStatus(),
+        );
+      },
+    };
+  };
+
   const renderTrustedStatus = async (): Promise<void> => {
     const ev2 = chrome.runtime?.getManifest().version ?? '0.2.0';
     const trust2 = new TrustStore(ev2);
@@ -987,13 +1159,14 @@ async function bootstrap(): Promise<void> {
       capabilities: r.capabilities ? [...r.capabilities] : ['fetch'],
       connected: connectedHashes.has(identityHash),
     }));
+    const bridges = await bridgesView();
     if (trustedList.length === 0) {
-      renderPopup(root, { mode: 'empty' });
+      renderPopup(root, { mode: 'empty', bridges });
     } else {
       const onRevoke = (identityHash: string): void => {
         void trust2.remove(identityHash).then(() => renderTrustedStatus());
       };
-      renderPopup(root, { mode: 'status', trusted: trustedList, onRevoke });
+      renderPopup(root, { mode: 'status', trusted: trustedList, onRevoke, bridges });
     }
   };
 
