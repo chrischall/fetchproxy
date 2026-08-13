@@ -13,7 +13,7 @@
     "typecheck": "tsc -b packages/protocol packages/server packages/bootstrap packages/cli packages/extension-core packages/test-helpers"
   },
   "devDependencies": {
-    "@types/node": "^26.1.2",
+    "@types/node": "^26.2.0",
     "@vitest/coverage-v8": "^4.1.10",
     "prettier": "^3.9.6",
     "typescript": "^7.0.2",
