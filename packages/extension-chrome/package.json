@@ -11,7 +11,7 @@
     "@fetchproxy/protocol": "^2.1.0"
   },
   "devDependencies": {
-    "esbuild": "^0.28.1",
-    "tsx": "^4.23.5"
+    "esbuild": "^0.28.2",
+    "tsx": "^4.23.12"
   }
 }
