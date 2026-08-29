@@ -28,6 +28,7 @@ import {
 } from './extension-trust.js';
 import { classifyFetchError, type FetchErrorKind } from './error-kind.js';
 import { classifyBridgeError, type BridgeError } from './classify-bridge-error.js';
+import { isIP } from 'node:net';
 
 /**
  * The `FETCHPROXY_WS_PORT` fallback for `FetchproxyServerOpts.port`.
@@ -46,6 +47,31 @@ function envWsPort(): number | undefined {
   const port = Number(raw.trim());
   if (!Number.isInteger(port) || port < 1 || port > 65535) return undefined;
   return port;
+}
+
+/**
+ * The `FETCHPROXY_WS_HOST` fallback for `FetchproxyServerOpts.host`.
+ *
+ * Honours a literal IP address and nothing else. A hostname — `localhost`
+ * included — is ignored, not resolved: the bind would then land on whatever
+ * the resolver answered, which is an address the operator did not write down
+ * and one that can differ between the child and the thing dialling it
+ * (`localhost` is `::1` on one stack and `127.0.0.1` on the next). As with
+ * `envWsPort`, `undefined` — not the default — is returned for anything
+ * unusable, so a stray or mistyped variable falls through to `127.0.0.1` and
+ * the concentrator binds exactly where it always has, rather than refusing
+ * to bind (a dead bridge) or binding something it was never asked for.
+ *
+ * The variable exists for ONE topology, and the `host` docblock says which:
+ * a sandboxed hosted child whose 127.0.0.1 is unreachable from outside its
+ * own network namespace. It is not a knob for a laptop.
+ */
+function envWsHost(): string | undefined {
+  const raw = process.env.FETCHPROXY_WS_HOST;
+  if (raw === undefined) return undefined;
+  const host = raw.trim();
+  if (host === '' || isIP(host) === 0) return undefined;
+  return host;
 }
 
 export interface FetchproxyServerOpts {
@@ -81,13 +107,34 @@ export interface FetchproxyServerOpts {
    */
   port?: number;
   /**
-   * Localhost interface to bind. Always keep this on a loopback address
-   * — fetchproxy's threat model assumes single-user, single-host
-   * trust; binding a public address would expose the bridge (and via
-   * it, the user's signed-in cookies) to the network. Override only
-   * for test setups that need a non-`127.0.0.1` loopback alias.
+   * Interface the concentrator binds. Keep this on a loopback address —
+   * fetchproxy's threat model assumes single-user, single-host trust
+   * (docs/SECURITY.md §Local trust boundary); binding a public address
+   * exposes the bridge, and via it the user's signed-in cookies, to the
+   * network. On a laptop the only reasons to override it are a test setup
+   * that needs a non-`127.0.0.1` loopback alias.
    *
-   * @default '127.0.0.1'
+   * The ONE topology where a non-loopback bind is correct is a hosted
+   * deployment that sandboxes each child (chrischall/mcp-host on gVisor,
+   * docs/BROWSER-BRIDGE.md). There every child has its own network
+   * namespace, so a concentrator on 127.0.0.1 is a loopback nobody outside
+   * the sandbox can reach, and the runner's relay agent dials the child at
+   * the sandbox end of a veth pair (`10.200.<slot>.2`) instead. That address
+   * is private to a /30 whose other end is the runner, so the trust scope is
+   * the same "a process on this host" that 127.0.0.1 states and the
+   * reasoning in `extension-trust.ts` is unchanged — the fence moved, the
+   * population inside it did not.
+   *
+   * Omitted, the `FETCHPROXY_WS_HOST` environment variable is consulted
+   * before the default, for the same consumer `FETCHPROXY_WS_PORT` serves:
+   * `@fetchproxy/bootstrap` constructs the server itself and never sees this
+   * option. Only a literal IP address (v4 or v6) is honoured; a hostname,
+   * `localhost` or an empty value is ignored and the default applies, so a
+   * typo cannot turn into a dead bridge or a bind on something the operator
+   * did not write down. An explicit value here is a decision made in code
+   * and beats the environment.
+   *
+   * @default `FETCHPROXY_WS_HOST`, else '127.0.0.1'
    * @see https://github.com/chrischall/fetchproxy/blob/main/docs/SECURITY.md
    */
   host?: string;
@@ -780,6 +827,14 @@ export interface BridgeHealth {
   role: 'host' | 'peer' | null;
   /** Localhost port the bridge is bound to (matches `FetchproxyServerOpts.port`). */
   port: number;
+  /**
+   * 2.2.0+: address the bridge is bound to (matches `FetchproxyServerOpts.host`
+   * after the `FETCHPROXY_WS_HOST` fallback). `'127.0.0.1'` everywhere but a
+   * sandboxed hosted child, where a healthcheck that shows only the port
+   * cannot tell "bound where the relay dials" from "bound on a loopback
+   * nothing outside the sandbox can reach".
+   */
+  host: string;
   /** 0.8.0+: server version this bridge was constructed with. */
   serverVersion: string;
   /**
@@ -1204,7 +1259,7 @@ export class FetchproxyServer {
     }
     this.opts = {
       port: opts.port ?? envWsPort() ?? 37149,
-      host: opts.host ?? '127.0.0.1',
+      host: opts.host ?? envWsHost() ?? '127.0.0.1',
       serverName: opts.serverName,
       version: opts.version,
       domains: [...opts.domains],
@@ -1555,6 +1610,7 @@ export class FetchproxyServer {
     return {
       role: this.role,
       port: this.opts.port,
+      host: this.opts.host,
       serverVersion: this.opts.version,
       fetchTimeoutMs: this.opts.fetchTimeoutMs ?? 0,
       bridgeReviveDelayMs: this.opts.bridgeReviveDelayMs ?? 0,

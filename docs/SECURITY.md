@@ -35,6 +35,16 @@ This matters because the cookie jar is *not* freely readable by every local proc
 
 We don't pretend otherwise. The defenses below are about making sure malicious local processes can't *quietly* trust themselves.
 
+### Where the concentrator binds — `FETCHPROXY_WS_HOST`
+
+**2.2.0+.** The concentrator binds `127.0.0.1`, and that address is doing work in this document: [§T2](#t2--webpage-you-visit-connects-to-the-ws) defence 1 and the [§T-fake-extension](#t-fake-extension--something-else-answering-as-the-browser) argument both rest on "the only thing that can reach the socket is a process on this host". `FetchproxyServerOpts.host` has always allowed a different address, and `FETCHPROXY_WS_HOST` now supplies it from the environment the way `FETCHPROXY_WS_PORT` supplies the port — for the consumer that never sees the option, `@fetchproxy/bootstrap`. It exists for exactly one topology and is worth being exact about it.
+
+**The topology.** A hosted deployment that sandboxes each MCP child (chrischall/mcp-host, gVisor) gives every child its own network namespace. Inside one, `127.0.0.1` is a loopback nobody outside the sandbox can reach — the runner's relay agent, which is what dials a hosted child in place of the browser, gets connection refused. So the child binds the sandbox end of a veth pair instead, `10.200.<slot>.2`, and the runner dials that. The address is private to a /30 whose other end is the runner: the population that can reach the socket is still "a process on this host", the trust scope 127.0.0.1 states is unchanged, and nothing in `extension-trust.ts` needs to reason differently. The fence moved; what is inside it did not.
+
+**It is not a knob for a laptop.** Binding an address the network can route — `0.0.0.0`, the machine's LAN address — puts the bridge, and through it the user's signed-in cookies, on the network, and every defence above that says "local" stops being true. Nothing in fetchproxy prevents that bind, for the same reason nothing prevents `opts.host`; the variable is an operator's statement about where the sandbox is, and the operator is accountable for it being one.
+
+**What it refuses.** Only a literal IP address (v4 or v6) is honoured. A hostname — `localhost` included — an empty value or whitespace is ignored and the default applies, never resolved: a resolved name binds whatever the resolver said, which can differ between the child and the thing dialling it, and a mistyped variable must fall through to the bind that has always worked rather than becoming a dead bridge or a bind on something the operator did not write down. An explicit `opts.host` is a decision made in code and beats the environment. `bridgeHealth().host` reports the address actually bound so a hosted healthcheck can tell "bound where the relay dials" from "bound on a loopback nothing outside the sandbox can reach".
+
 ## Threat model
 
 ### T1 — Malicious local process exfiltrates signed-in sessions
