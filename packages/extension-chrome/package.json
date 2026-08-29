@@ -7,8 +7,8 @@
     "build": "tsx build.ts"
   },
   "dependencies": {
-    "@fetchproxy/extension-core": "^2.1.0",
-    "@fetchproxy/protocol": "^2.1.0"
+    "@fetchproxy/extension-core": "^2.2.0",
+    "@fetchproxy/protocol": "^2.2.0"
   },
   "devDependencies": {
     "esbuild": "^0.28.2",
