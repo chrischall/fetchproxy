@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.2.0](https://github.com/chrischall/fetchproxy/compare/v2.1.0...v2.2.0) (2026-08-29)
+
+
+### Features
+
+* **server:** read the concentrator bind address from FETCHPROXY_WS_HOST ([#243](https://github.com/chrischall/fetchproxy/issues/243)) ([cd35384](https://github.com/chrischall/fetchproxy/commit/cd3538418ad68aab9a2f0ea48298994a193e0bcf))
+
 ## [2.1.0](https://github.com/chrischall/fetchproxy/compare/v2.0.0...v2.1.0) (2026-08-09)
 
 
