@@ -219,6 +219,8 @@ Without an explicit `port`, `FETCHPROXY_WS_PORT` is consulted before the 37149 d
 FETCHPROXY_WS_PORT=37150 my-mcp
 ```
 
+`FETCHPROXY_WS_HOST` does the same for `host`, accepting a literal IP address only. It exists for a hosted deployment that runs each MCP in its own network namespace (chrischall/mcp-host's gVisor sandbox), where the relay agent dials the child on a private veth address rather than loopback — not for binding a laptop's concentrator to the network, which would expose the signed-in session to it (SECURITY.md).
+
 This is the only way to move the port for a consumer that never constructs the server itself (`@fetchproxy/bootstrap` builds it inside `bootstrap()`). It carries the same constraint the option does: **on one machine every MCP shares the concentrator**, so set the same value for all of them — an MCP on a port of its own sits there unreachable, because the extension dials one loopback port.
 
 A port *per MCP* is meaningful in exactly one topology, and it is not this one: a hosted deployment where each child is its own concentrator and a relay agent on that machine dials it, with the browser reaching them through a configured remote target rather than loopback (see [Remote bridge targets](#remote-bridge-targets-210) below, and chrischall/mcp-host's `docs/BROWSER-BRIDGE.md`).
