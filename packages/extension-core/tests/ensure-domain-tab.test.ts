@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { ensureDomainTab } from '../src/ensure-domain-tab.js';
+import { ensureDomainTab, __resetRelayGroupForTests } from '../src/ensure-domain-tab.js';
 
 interface FakeTab {
   id: number;
@@ -116,6 +116,7 @@ describe('ensureDomainTab', () => {
 });
 
 describe('background tab + relay tab group', () => {
+  beforeEach(() => __resetRelayGroupForTests());
   function mockWithGroups(initial: { id: number; url: string }[]) {
     let nextId = 2000;
     let nextGroup = 50;
@@ -212,5 +213,23 @@ describe('background tab + relay tab group', () => {
     const r = await ensureDomainTab('example.com');
     expect(r.opened).toBe(true);
     expect(r.groupId).toBeUndefined();
+  });
+
+  // background/approval.ts fires ensureDomainTab once per domain WITHOUT
+  // awaiting, so the group resolution must be single-flighted or every domain
+  // creates its own "fetchproxy" group.
+  it('concurrent calls share ONE group instead of creating one each', async () => {
+    const m = mockWithGroups([]);
+    await Promise.all([
+      ensureDomainTab('a-example.com'),
+      ensureDomainTab('b-example.com'),
+      ensureDomainTab('c-example.com'),
+    ]);
+    expect(m.created).toHaveLength(3);
+    // Exactly one group ever created, and every later tab joined it by id.
+    expect(m.groups).toHaveLength(1);
+    const joined = m.grouped.filter((g) => g.groupId !== undefined);
+    expect(joined).toHaveLength(2);
+    for (const g of joined) expect(g.groupId).toBe(m.groups[0]!.id);
   });
 });

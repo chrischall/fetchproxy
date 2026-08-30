@@ -41,6 +41,31 @@ export interface EnsureDomainTabResult {
 }
 
 /**
+ * In-flight resolution of the shared group id, so CONCURRENT callers share one
+ * group instead of each creating their own.
+ *
+ * A multi-domain MCP fires `ensureDomainTab` once per domain without awaiting
+ * (`background/approval.ts`, `background/server-hello.ts`), so without this
+ * latch every one of them would `tabGroups.query`, all see nothing, and all
+ * create a separate "fetchproxy" group — the exact scattering this feature
+ * exists to prevent. Reset whenever the group turns out to be unusable (the
+ * person closed it), so a later call rebuilds one rather than failing forever.
+ */
+let relayGroupPromise: Promise<number | undefined> | null = null;
+
+/** Resolve the group id once: adopt an existing group, else create one. */
+async function resolveRelayGroup(firstTabId: number): Promise<number | undefined> {
+  const existing = (await chrome.tabGroups?.query({ title: RELAY_TAB_GROUP_TITLE })) ?? [];
+  const groupId = existing.length > 0
+    ? await chrome.tabs.group!({ tabIds: firstTabId, groupId: existing[0]!.id })
+    : await chrome.tabs.group!({ tabIds: firstTabId });
+  // Naming only matters on creation, but it is idempotent and cheap, and it
+  // repairs a group the person renamed by hand.
+  await chrome.tabGroups?.update(groupId, { title: RELAY_TAB_GROUP_TITLE, color: 'blue' });
+  return groupId;
+}
+
+/**
  * Put `tabId` in the shared fetchproxy group, creating it on first use.
  *
  * Deliberately best-effort: every failure here is cosmetic, while the tab it
@@ -49,19 +74,27 @@ export interface EnsureDomainTabResult {
  * without either must still get its relay tab.
  */
 async function fileInRelayGroup(tabId: number): Promise<number | undefined> {
+  if (typeof chrome.tabs.group !== 'function') return undefined;
   try {
-    if (typeof chrome.tabs.group !== 'function') return undefined;
-    const existing = (await chrome.tabGroups?.query({ title: RELAY_TAB_GROUP_TITLE })) ?? [];
-    const groupId = existing.length > 0
-      ? await chrome.tabs.group({ tabIds: tabId, groupId: existing[0]!.id })
-      : await chrome.tabs.group({ tabIds: tabId });
-    // Naming only matters on creation, but it is idempotent and cheap, and it
-    // repairs a group the person renamed by hand.
-    await chrome.tabGroups?.update(groupId, { title: RELAY_TAB_GROUP_TITLE, color: 'blue' });
+    if (relayGroupPromise === null) {
+      relayGroupPromise = resolveRelayGroup(tabId);
+      return await relayGroupPromise;
+    }
+    const groupId = await relayGroupPromise;
+    if (groupId === undefined) return undefined;
+    await chrome.tabs.group({ tabIds: tabId, groupId });
     return groupId;
   } catch {
+    // Either the creation failed or the remembered group is gone. Drop the
+    // latch so the next call re-resolves instead of inheriting the failure.
+    relayGroupPromise = null;
     return undefined;
   }
+}
+
+/** Test seam: forget the remembered group between cases. */
+export function __resetRelayGroupForTests(): void {
+  relayGroupPromise = null;
 }
 
 export async function ensureDomainTab(domain: string): Promise<EnsureDomainTabResult> {
