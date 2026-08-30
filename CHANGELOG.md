@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.2.1](https://github.com/chrischall/fetchproxy/compare/v2.2.0...v2.2.1) (2026-08-30)
+
+
+### Bug Fixes
+
+* **extension:** treat `www.` as optional when matching the relay tab ([#245](https://github.com/chrischall/fetchproxy/issues/245)) ([6dd0b25](https://github.com/chrischall/fetchproxy/commit/6dd0b250ef0d48d087269b7ae5cb11bc1a30d278))
+
 ## [2.2.0](https://github.com/chrischall/fetchproxy/compare/v2.1.0...v2.2.0) (2026-08-29)
 
 
