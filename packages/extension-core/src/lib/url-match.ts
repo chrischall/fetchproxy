@@ -48,7 +48,7 @@ export function isUrlAllowedForAnyDomain(
  */
 export function isTabUrlMatch(tabUrl: string, prefix: string): boolean {
   if (tabUrl.startsWith(prefix)) return true;
-  // 2.3.0: retry with `www.` treated as optional on both sides.
+  // 2.2.1: retry with `www.` treated as optional on both sides.
   //
   // A relay tab defaults to `https://<host-of-the-request>/`, so an MCP with
   // `defaultSubdomain: 'www'` demands a `www.` tab even on sites whose apex

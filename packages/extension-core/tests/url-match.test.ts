@@ -89,7 +89,7 @@ describe('isTabUrlMatch', () => {
   });
 });
 
-// 2.3.0: `www.` is optional on BOTH sides.
+// 2.2.1: `www.` is optional on BOTH sides.
 //
 // Measured against the live fleet (2026-08-30): etix-mcp declares
 // `defaultSubdomain: 'www'`, so its relay tab defaults to
@@ -102,7 +102,7 @@ describe('isTabUrlMatch', () => {
 // Host-or-subdomain matching does NOT fix this: an apex is a PARENT of `www`,
 // not a subdomain of it, so `isUrlAllowedForDomain('https://etix.com/',
 // 'www.etix.com')` is correctly false. Only `www` equivalence closes it.
-describe('www is optional on both sides (2.3.0)', () => {
+describe('www is optional on both sides (2.2.1)', () => {
   it('matches an apex tab against a www prefix', () => {
     expect(isTabUrlMatch('https://etix.com/ticket', 'https://www.etix.com/')).toBe(true);
   });

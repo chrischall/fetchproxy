@@ -114,3 +114,103 @@ describe('ensureDomainTab', () => {
     expect(created[0]!.url).toBe('https://honeybook.com/');
   });
 });
+
+describe('background tab + relay tab group', () => {
+  function mockWithGroups(initial: { id: number; url: string }[]) {
+    let nextId = 2000;
+    let nextGroup = 50;
+    const tabs = [...initial];
+    const created: { id: number; url: string; active?: boolean }[] = [];
+    const groups: { id: number; title?: string }[] = [];
+    const grouped: { tabIds: number | number[]; groupId?: number }[] = [];
+    const updated: { groupId: number; props: { title?: string; color?: string } }[] = [];
+    (globalThis as { chrome?: unknown }).chrome = {
+      tabs: {
+        query: async () => tabs.filter((t) => t.url.includes('example.com')),
+        create: async (props: { url: string; active?: boolean }) => {
+          const tab = { id: nextId++, url: props.url, active: props.active };
+          created.push(tab);
+          return tab;
+        },
+        group: async (opts: { tabIds: number | number[]; groupId?: number }) => {
+          grouped.push(opts);
+          if (opts.groupId !== undefined) return opts.groupId;
+          const g = { id: nextGroup++ };
+          groups.push(g);
+          return g.id;
+        },
+      },
+      tabGroups: {
+        query: async (q: { title?: string }) => groups.filter((g) => g.title === q.title),
+        update: async (groupId: number, props: { title?: string; color?: string }) => {
+          updated.push({ groupId, props });
+          const g = groups.find((x) => x.id === groupId);
+          if (g) g.title = props.title;
+          return {};
+        },
+      },
+    };
+    return { created, grouped, updated, groups };
+  }
+
+  it('opens the relay tab in the BACKGROUND, never stealing focus', async () => {
+    const m = mockWithGroups([]);
+    await ensureDomainTab('example.com');
+    expect(m.created).toHaveLength(1);
+    expect(m.created[0]!.active).toBe(false);
+  });
+
+  it('files the new tab into a titled fetchproxy group', async () => {
+    const m = mockWithGroups([]);
+    const r = await ensureDomainTab('example.com');
+    expect(m.grouped).toHaveLength(1);
+    expect(r.groupId).toBeDefined();
+    expect(m.updated[0]!.props.title).toBe('fetchproxy');
+  });
+
+  it('reuses the existing group rather than making one per domain', async () => {
+    const m = mockWithGroups([]);
+    await ensureDomainTab('example.com');
+    const firstGroup = m.grouped[0];
+    await ensureDomainTab('other-example.com');
+    // Second call must target the SAME group id, not create a second group.
+    expect(m.grouped).toHaveLength(2);
+    expect(m.grouped[1]!.groupId).toBeDefined();
+    expect(m.grouped[1]!.groupId).toBe(m.updated[0]!.groupId);
+    expect(firstGroup).toBeDefined();
+  });
+
+  // Grouping is cosmetic; the tab it files is load-bearing.
+  it('still opens the tab when grouping is unavailable', async () => {
+    (globalThis as { chrome?: unknown }).chrome = {
+      tabs: {
+        query: async () => [],
+        create: async (props: { url: string; active?: boolean }) => ({ id: 9, url: props.url }),
+        // no `group`, no `tabGroups` — an older Chrome or a build without the
+        // tabGroups permission.
+      },
+    };
+    const r = await ensureDomainTab('example.com');
+    expect(r.opened).toBe(true);
+    expect(r.groupId).toBeUndefined();
+  });
+
+  it('still opens the tab when grouping throws', async () => {
+    (globalThis as { chrome?: unknown }).chrome = {
+      tabs: {
+        query: async () => [],
+        create: async (props: { url: string }) => ({ id: 9, url: props.url }),
+        group: async () => {
+          throw new Error('permission denied');
+        },
+      },
+      tabGroups: {
+        query: async () => [],
+        update: async () => ({}),
+      },
+    };
+    const r = await ensureDomainTab('example.com');
+    expect(r.opened).toBe(true);
+    expect(r.groupId).toBeUndefined();
+  });
+});
