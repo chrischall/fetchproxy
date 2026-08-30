@@ -47,7 +47,49 @@ export function isUrlAllowedForAnyDomain(
  * matching open tab.
  */
 export function isTabUrlMatch(tabUrl: string, prefix: string): boolean {
-  return tabUrl.startsWith(prefix);
+  if (tabUrl.startsWith(prefix)) return true;
+  // 2.3.0: retry with `www.` treated as optional on both sides.
+  //
+  // A relay tab defaults to `https://<host-of-the-request>/`, so an MCP with
+  // `defaultSubdomain: 'www'` demands a `www.` tab even on sites whose apex
+  // does not redirect there (etix.com 302s to etix.com/ticket, keeping the
+  // apex). The user is then browsing the same site on the same origin family
+  // and the fetch fails with `no_tab`.
+  //
+  // Deliberately EXACT host equality after stripping one leading `www.` — not
+  // `isUrlAllowedForDomain`, which admits any subdomain. Widening `www.x.com`
+  // to `api.x.com` would change which tab performs a fetch in a way the MCP
+  // did not ask for; `www` and the apex are the same site by convention, and
+  // that is the whole claim being made here.
+  const tab = parseForMatch(tabUrl);
+  const want = parseForMatch(prefix);
+  if (!tab || !want) return false;
+  return (
+    tab.protocol === want.protocol &&
+    tab.port === want.port &&
+    tab.host === want.host &&
+    tab.rest.startsWith(want.rest)
+  );
+}
+
+/** Scheme/host/port plus the path-and-after, with one leading `www.` removed. */
+function parseForMatch(
+  url: string,
+): { protocol: string; host: string; port: string; rest: string } | null {
+  let u: URL;
+  try {
+    u = new URL(url);
+  } catch {
+    return null;
+  }
+  if (u.protocol !== 'https:' && u.protocol !== 'http:') return null;
+  const host = u.hostname.toLowerCase().replace(/^www\./, '');
+  return {
+    protocol: u.protocol,
+    host,
+    port: u.port,
+    rest: `${u.pathname}${u.search}${u.hash}`,
+  };
 }
 
 /**

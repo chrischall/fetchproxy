@@ -89,6 +89,52 @@ describe('isTabUrlMatch', () => {
   });
 });
 
+// 2.3.0: `www.` is optional on BOTH sides.
+//
+// Measured against the live fleet (2026-08-30): etix-mcp declares
+// `defaultSubdomain: 'www'`, so its relay tab defaults to
+// `https://www.etix.com/` — but `etix.com` does NOT redirect to `www`
+// (302 -> https://etix.com/ticket), so a user browsing normally sits on the
+// apex and the strict prefix never matched. The healthcheck reported
+// `no_tab: no tab matching https://www.etix.com/` while the extension itself
+// was healthy (it answered in 330ms).
+//
+// Host-or-subdomain matching does NOT fix this: an apex is a PARENT of `www`,
+// not a subdomain of it, so `isUrlAllowedForDomain('https://etix.com/',
+// 'www.etix.com')` is correctly false. Only `www` equivalence closes it.
+describe('www is optional on both sides (2.3.0)', () => {
+  it('matches an apex tab against a www prefix', () => {
+    expect(isTabUrlMatch('https://etix.com/ticket', 'https://www.etix.com/')).toBe(true);
+  });
+
+  it('matches a www tab against an apex prefix', () => {
+    expect(isTabUrlMatch('https://www.etix.com/ticket', 'https://etix.com/')).toBe(true);
+  });
+
+  it('still pins a deeper path', () => {
+    expect(isTabUrlMatch('https://etix.com/other', 'https://www.etix.com/ticket')).toBe(false);
+    expect(isTabUrlMatch('https://etix.com/ticket/v/1', 'https://www.etix.com/ticket')).toBe(true);
+  });
+
+  it('does not treat www as a wildcard for other subdomains', () => {
+    expect(isTabUrlMatch('https://api.etix.com/x', 'https://www.etix.com/')).toBe(false);
+    expect(isTabUrlMatch('https://wwwevil.com/', 'https://www.etix.com/')).toBe(false);
+  });
+
+  it('does not match an unrelated host that merely starts with the same letters', () => {
+    expect(isTabUrlMatch('https://www.etix.com.evil.com/', 'https://www.etix.com/')).toBe(false);
+  });
+
+  it('keeps scheme significant', () => {
+    expect(isTabUrlMatch('http://etix.com/ticket', 'https://www.etix.com/')).toBe(false);
+  });
+
+  it('leaves a malformed prefix falling back to plain prefix semantics', () => {
+    expect(isTabUrlMatch('not a url', 'not a url')).toBe(true);
+    expect(isTabUrlMatch('https://etix.com/', 'not a url')).toBe(false);
+  });
+});
+
 // 0.3.0 regression: Canvas serves arbitrarily-deep subdomains
 // (a.b.c.instructure.com); confirm the existing match logic handles them.
 describe('arbitrary subdomain depth (0.3.0 regression)', () => {
