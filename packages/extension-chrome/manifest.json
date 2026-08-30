@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Transporter",
-  "version": "2.2.1",
-  "description": "Bridge local MCP servers to your signed-in browser tabs \u2014 let agentic tools hit authenticated APIs without copying credentials.",
+  "version": "2.3.0",
+  "description": "Bridge local MCP servers to your signed-in browser tabs — let agentic tools hit authenticated APIs without copying credentials.",
   "icons": {
     "16": "icons/16.png",
     "32": "icons/32.png",
