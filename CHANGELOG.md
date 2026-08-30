@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.3.0](https://github.com/chrischall/fetchproxy/compare/v2.2.1...v2.3.0) (2026-08-30)
+
+
+### Features
+
+* **extension:** open relay tabs in the background, in a fetchproxy tab group ([#247](https://github.com/chrischall/fetchproxy/issues/247)) ([1f125d5](https://github.com/chrischall/fetchproxy/commit/1f125d55f0f8483945d51f82caeb796c92808316)), closes [#248](https://github.com/chrischall/fetchproxy/issues/248)
+
 ## [2.2.1](https://github.com/chrischall/fetchproxy/compare/v2.2.0...v2.2.1) (2026-08-30)
 
 

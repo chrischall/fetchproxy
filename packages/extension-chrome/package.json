@@ -1,14 +1,14 @@
 {
   "name": "@fetchproxy/extension-chrome",
-  "version": "2.2.1",
+  "version": "2.3.0",
   "private": true,
   "type": "module",
   "scripts": {
     "build": "tsx build.ts"
   },
   "dependencies": {
-    "@fetchproxy/extension-core": "^2.2.1",
-    "@fetchproxy/protocol": "^2.2.1"
+    "@fetchproxy/extension-core": "^2.3.0",
+    "@fetchproxy/protocol": "^2.3.0"
   },
   "devDependencies": {
     "esbuild": "^0.28.2",
