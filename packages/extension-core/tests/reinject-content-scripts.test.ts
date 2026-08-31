@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import {
   reinjectContentScripts,
   maybeReinjectOnInstalled,
+  matchesAnyPattern,
 } from '../src/reinject-content-scripts.js';
 
 // Chrome tears down content scripts in ALREADY-OPEN tabs when an extension
@@ -110,6 +111,36 @@ describe('reinjectContentScripts', () => {
     await expect(reinjectContentScripts()).resolves.toEqual({ tabs: 0, failed: 0 });
   });
 
+  // The whole point of reading the manifest: restore what it declares, where it
+  // declares it — not "everything, everywhere".
+  it('injects a narrowed script only into tabs its matches cover', async () => {
+    const { injections } = installFakeChrome({
+      tabs: [
+        { id: 1, url: 'https://hbportal.co/flow/x' },
+        { id: 2, url: 'https://elsewhere.test/' },
+      ],
+      contentScripts: [
+        { matches: ['<all_urls>'], js: ['content.js'], world: 'ISOLATED' },
+        { matches: ['*://*.hbportal.co/*'], js: ['narrow.js'], world: 'ISOLATED' },
+      ],
+    });
+    await reinjectContentScripts();
+    const byTab = (id: number) => injections.filter((i) => i.tabId === id).map((i) => i.files[0]).sort();
+    expect(byTab(1)).toEqual(['content.js', 'narrow.js']);
+    expect(byTab(2)).toEqual(['content.js']);
+  });
+
+  // A tab no declared script claims is not a failure — nothing was owed to it.
+  it('does not count an unmatched tab as failed', async () => {
+    const { injections } = installFakeChrome({
+      tabs: [{ id: 1, url: 'https://elsewhere.test/' }],
+      contentScripts: [{ matches: ['*://*.hbportal.co/*'], js: ['narrow.js'] }],
+    });
+    const r = await reinjectContentScripts();
+    expect(injections).toEqual([]);
+    expect(r).toEqual({ tabs: 0, failed: 0 });
+  });
+
   it('no-ops when the manifest declares no content scripts', async () => {
     const { injections } = installFakeChrome({ tabs: [{ id: 1, url: 'https://a.test/' }], contentScripts: [] });
     await reinjectContentScripts();
@@ -134,5 +165,41 @@ describe('maybeReinjectOnInstalled', () => {
     const { injections } = installFakeChrome({ tabs: [{ id: 1, url: 'https://a.test/' }] });
     await maybeReinjectOnInstalled({ reason });
     expect(injections).toEqual([]);
+  });
+});
+
+// A content script declares WHERE it belongs. Ignoring `matches` and injecting
+// everything everywhere happens to be harmless for the shipped manifest, whose
+// two entries are both `<all_urls>` — but it makes the re-injection path mean
+// something different from the manifest it is supposed to restore, so the day a
+// script is narrowed to one origin this would quietly put it on every tab.
+describe('matchesAnyPattern', () => {
+  it('matches <all_urls> for http(s)', () => {
+    expect(matchesAnyPattern('https://a.test/x', ['<all_urls>'])).toBe(true);
+    expect(matchesAnyPattern('http://a.test/', ['<all_urls>'])).toBe(true);
+  });
+
+  it('honours scheme', () => {
+    expect(matchesAnyPattern('http://a.test/', ['https://*/*'])).toBe(false);
+    expect(matchesAnyPattern('https://a.test/', ['https://*/*'])).toBe(true);
+    // `*` as a scheme means http|https only, never file:.
+    expect(matchesAnyPattern('https://a.test/', ['*://*/*'])).toBe(true);
+  });
+
+  it('honours host, including the *. subdomain form', () => {
+    expect(matchesAnyPattern('https://zoomws.hbportal.co/f', ['*://*.hbportal.co/*'])).toBe(true);
+    // `*.domain` matches the apex too, as Chrome does.
+    expect(matchesAnyPattern('https://hbportal.co/f', ['*://*.hbportal.co/*'])).toBe(true);
+    expect(matchesAnyPattern('https://evil-hbportal.co/f', ['*://*.hbportal.co/*'])).toBe(false);
+    expect(matchesAnyPattern('https://b.test/', ['*://a.test/*'])).toBe(false);
+  });
+
+  it('honours the path glob', () => {
+    expect(matchesAnyPattern('https://a.test/app/x', ['https://a.test/app/*'])).toBe(true);
+    expect(matchesAnyPattern('https://a.test/other', ['https://a.test/app/*'])).toBe(false);
+  });
+
+  it('is false for an empty pattern list, not true', () => {
+    expect(matchesAnyPattern('https://a.test/', [])).toBe(false);
   });
 });
