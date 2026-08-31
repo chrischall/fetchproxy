@@ -175,7 +175,12 @@ describe('sendToFirstResponsiveTab', () => {
       // against what they see in DevTools.
       expect(result.error).toContain('2 URL matches');
       expect(result.error).toContain('none responded');
-      expect(result.error).toContain('Refresh the page');
+      expect(result.error).toContain('Reload that tab');
+      // The remedy is useless without the cause: this is what every tab looks
+      // like right after an extension update, and "reload" reads as a shrug
+      // unless the message says why. Transporter 2.2.1 -> 2.3.0 sent two
+      // debugging sessions after key derivation for want of this sentence.
+      expect(result.error).toContain('right after the extension updates');
       expect(result.error).toContain('Receiving end does not exist');
     }
   });
