@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.3.2](https://github.com/chrischall/fetchproxy/compare/v2.3.1...v2.3.2) (2026-08-31)
+
+
+### Bug Fixes
+
+* **extension:** honour each content script's matches when re-injecting ([#255](https://github.com/chrischall/fetchproxy/issues/255)) ([a3e9aa7](https://github.com/chrischall/fetchproxy/commit/a3e9aa74735398fd6d75bdb41c9cf780cc37bee0))
+
 ## [2.3.1](https://github.com/chrischall/fetchproxy/compare/v2.3.0...v2.3.1) (2026-08-31)
 
 
