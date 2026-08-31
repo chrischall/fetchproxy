@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.3.1](https://github.com/chrischall/fetchproxy/compare/v2.3.0...v2.3.1) (2026-08-31)
+
+
+### Bug Fixes
+
+* **extension:** re-inject content scripts after an update, not on next reload ([#251](https://github.com/chrischall/fetchproxy/issues/251)) ([57ff992](https://github.com/chrischall/fetchproxy/commit/57ff9923c41f3a82a9adf97a2f97b468e3a775aa))
+
 ## [2.3.0](https://github.com/chrischall/fetchproxy/compare/v2.2.1...v2.3.0) (2026-08-30)
 
 
