@@ -1,6 +1,6 @@
 {
   "name": "@fetchproxy/test-helpers",
-  "version": "2.3.1",
+  "version": "3.0.0",
   "description": "Vitest mock helpers for @fetchproxy/server — drop-in FetchproxyServer mock that captures constructor opts and exposes spy-able request/fetch/captureRequestHeader/bridgeHealth methods.",
   "type": "module",
   "main": "./dist/index.js",
