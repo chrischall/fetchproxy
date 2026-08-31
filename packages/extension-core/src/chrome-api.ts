@@ -32,6 +32,14 @@ export interface ChromeApi {
   runtime: {
     getManifest: () => { version: string };
     /**
+     * Optional: absent under vitest and on older Chrome. Used to re-inject
+     * content scripts after an update, which otherwise leaves every open tab
+     * without one until the person reloads it by hand.
+     */
+    onInstalled?: {
+      addListener: (cb: (details: { reason: string }) => void) => void;
+    };
+    /**
      * Part 3: broadcast a message to all extension pages (e.g. open
      * popups). Used to notify the popup that the connected-session set
      * changed so it can re-render the status dots.

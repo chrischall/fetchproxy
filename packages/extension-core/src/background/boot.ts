@@ -34,6 +34,7 @@ import { linkStatuses } from './links.js';
 import { PENDING_PAIR_KEY, APPROVED_PAIR_KEY, mergePending } from './pending-pair-store.js';
 import { REMOTE_TARGETS_KEY } from '../remote-targets.js';
 import { onApproval, onScopeUpdateDismiss } from './approval.js';
+import { maybeReinjectOnInstalled } from '../reinject-content-scripts.js';
 
 // Boot: only run in a real MV3 service worker context. Skipped under vitest
 // (no chrome.runtime.getManifest, no chrome.storage.local.onChanged).
@@ -53,6 +54,16 @@ export function maybeBoot(): void {
   }
   state.trust = new TrustStore(chrome.runtime.getManifest().version);
   state.sessions = new SessionKeys();
+  // An extension UPDATE orphans the content script in every already-open tab
+  // (Chrome tears the old ones down and injects no new ones), so every MCP
+  // reading from a long-lived tab breaks at once until the person reloads it.
+  // Re-inject instead of making them find that out. Guarded like the rest of
+  // boot: absent in tests and on older Chrome, where it is simply skipped.
+  if (typeof chrome.runtime.onInstalled?.addListener === 'function') {
+    chrome.runtime.onInstalled.addListener((details) => {
+      void maybeReinjectOnInstalled(details);
+    });
+  }
   // Part 3: respond to popup queries for the connected identity hash set.
   if (typeof chrome.runtime.onMessage?.addListener === 'function') {
     chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {

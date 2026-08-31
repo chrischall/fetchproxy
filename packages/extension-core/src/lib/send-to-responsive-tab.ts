@@ -93,7 +93,9 @@ export async function sendToFirstResponsiveTab(
     error:
       `no tab matching ${tabUrlForError} has the fetchproxy content script loaded ` +
       `(${matches.length} URL match${matches.length === 1 ? '' : 'es'}, none responded). ` +
-      `Refresh the page in your browser to inject the content script, then retry.` +
+      `Reload that tab in your browser to inject the content script, then retry. ` +
+      `This is the expected state right after the extension updates: Chrome removes the ` +
+      `content script from tabs that were already open and does not replace it.` +
       (lastNoListener ? ` Last error: ${lastNoListener}` : ''),
   };
 }
