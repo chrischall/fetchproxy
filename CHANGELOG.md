@@ -1,5 +1,17 @@
 # Changelog
 
+## [2.5.0](https://github.com/chrischall/fetchproxy/compare/v2.4.2...v2.5.0) (2026-09-02)
+
+
+### Features
+
+* **server:** expose the extension link state in bridge health and the probe ([#282](https://github.com/chrischall/fetchproxy/issues/282)) ([0e33fc8](https://github.com/chrischall/fetchproxy/commit/0e33fc8c2e705a566fe1a6dd58c3ab6b80e0dc48))
+
+
+### Bug Fixes
+
+* **server:** forget an unapproved pair code when the extension goes away ([#285](https://github.com/chrischall/fetchproxy/issues/285)) ([76a404e](https://github.com/chrischall/fetchproxy/commit/76a404e46577d94c971518fcc684e2a866bd48f8))
+
 ## [2.4.2](https://github.com/chrischall/fetchproxy/compare/v2.4.1...v2.4.2) (2026-09-02)
 
 
