@@ -1,5 +1,19 @@
 # Changelog
 
+## [2.4.1](https://github.com/chrischall/fetchproxy/compare/v2.4.0...v2.4.1) (2026-09-02)
+
+
+### Bug Fixes
+
+* **extension:** tag MAIN-world failures so the world is readable off the error ([#274](https://github.com/chrischall/fetchproxy/issues/274)) ([989c383](https://github.com/chrischall/fetchproxy/commit/989c38316aad4f4935afa1a9f897f4d1bbbfb21a))
+* **server:** keep in-page fetch failures classified as tab_fetch_failed ([#276](https://github.com/chrischall/fetchproxy/issues/276)) ([d8e74fd](https://github.com/chrischall/fetchproxy/commit/d8e74fd7dd0ec1fe0db9ab806b84d20d3f301d6c))
+
+
+### Documentation
+
+* how to reach an API through the bridge, keyed by the error you get ([#269](https://github.com/chrischall/fetchproxy/issues/269)) ([c26d5e9](https://github.com/chrischall/fetchproxy/commit/c26d5e9eea178660dfb29d47cfd4e6c537637dcf))
+* say four failures in the intro, matching the worked example ([#272](https://github.com/chrischall/fetchproxy/issues/272)) ([4392807](https://github.com/chrischall/fetchproxy/commit/439280726645a93105a3043459e8703f0440bb19))
+
 ## [2.4.0](https://github.com/chrischall/fetchproxy/compare/v2.3.2...v2.4.0) (2026-09-02)
 
 
