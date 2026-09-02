@@ -291,6 +291,7 @@ Semantics:
 - `tabUrl`: optional. Same host-or-subdomain matching as other verbs; must map to one of the MCP's declared `domains`. Omitted ⇒ the extension picks a tab on the MCP's declared domain.
 - The MCP must have declared `"graphql"` in its hello `capabilities` AND the specific `name` must be one of the declared `graphqlOps` — both gates are checked on every call, not just at pair time.
 - If the page's Apollo client has not yet observed the declared `operationName` (its `DocumentNode` isn't cached — e.g. the user hasn't loaded the relevant page in this tab), the response is a typed failure: `{ok: false, op: "graphql_query", error: "operation not yet observed on this tab — open <hint> and retry"}` (exact wording may vary).
+- That miss is per-tab, so it does not end the search: the extension walks **every** matching tab and returns the first one whose Apollo client owns the operation. Only when no matching tab has observed it is the miss returned to the MCP. Before 2.3.3 the walk stopped at the first tab that answered at all, so a single stale same-origin tab (a dashboard, a confirmation page) could shadow the tab that had the operation on every call — reloading the right page never helped, because that page was never asked.
 
 Response:
 

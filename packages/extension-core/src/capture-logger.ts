@@ -37,6 +37,8 @@
  * and only ever invokes operations the page's own client has observed.
  */
 
+import { notYetObservedError } from './lib/graphql-observed.js';
+
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
 declare global {
@@ -159,7 +161,7 @@ async function handleGraphqlRequest(
       __fetchproxy: RES_MARKER,
       reqId,
       ok: false,
-      error: `operation ${operationName} not yet observed on this tab — open a page on the site that triggers this GraphQL operation, then retry`,
+      error: notYetObservedError(operationName),
     });
     return;
   }

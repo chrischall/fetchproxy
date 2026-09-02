@@ -32,6 +32,15 @@ declare const chrome: ChromeApi;
  *     first such throw since it likely indicates a real fault rather
  *     than a missing content script.
  *
+ * `isSoftMiss` (optional) widens the fan-out: when it returns true for a
+ * tab's response, that tab is treated like one without a content script —
+ * iteration continues to the next match instead of stopping. If every
+ * matching tab soft-misses, the FIRST miss is returned as the response, so
+ * its actionable hint survives. Only `graphql_query` passes one; every
+ * other verb keeps the first-answer-wins behaviour unchanged, because for
+ * them an `ok:false` is a real answer (an HTTP error, a denied read) that
+ * must not be retried against every other tab on the origin.
+ *
  * `buildMessage` is called per-tab so the message can carry the matched
  * tab's resolved URL (useful for verbs that need to canonicalise their
  * tabUrl against the actual tab). The caller controls the matcher so
@@ -51,6 +60,7 @@ export async function sendToFirstResponsiveTab(
   matcher: (tabUrl: string) => boolean,
   buildMessage: (matchedTabUrl: string) => unknown,
   tabUrlForError: string,
+  isSoftMiss?: (response: unknown) => boolean,
 ): Promise<SendToFirstResponsiveTabResult> {
   const tabs = await chrome.tabs.query({});
   // Fold the ID check into the filter so `matches.length` accurately
@@ -70,6 +80,10 @@ export async function sendToFirstResponsiveTab(
   // self-heals the common "extension reloaded, old tabs still open" case
   // without the user having to refresh every pre-reload tab.
   let lastNoListener: string | null = null;
+  // First soft miss, kept so it can be returned verbatim if EVERY matching
+  // tab misses — the miss carries the actionable "open a page that triggers
+  // this operation" hint, which is still the right remedy in that case.
+  let firstSoftMiss: { response: unknown; tabUrl: string } | null = null;
   for (const match of matches) {
     // `match.id` is guaranteed `number` by the filter above, but the
     // chrome typings still type it as `number | undefined` so we use a
@@ -78,6 +92,14 @@ export async function sendToFirstResponsiveTab(
     const tabUrl = match.url ?? tabUrlForError;
     try {
       const response = await chrome.tabs.sendMessage(id, buildMessage(tabUrl));
+      // A soft miss means "this tab can't serve the request, but another
+      // matching tab might" — the graphql bridge's per-tab DocumentNode
+      // cache is the only such case today. Keep walking rather than let one
+      // stale tab shadow the tab that actually has what was asked for.
+      if (isSoftMiss?.(response)) {
+        if (firstSoftMiss === null) firstSoftMiss = { response, tabUrl };
+        continue;
+      }
       return { kind: 'response', response, tabUrl };
     } catch (e) {
       const msg = String(e);
@@ -87,6 +109,13 @@ export async function sendToFirstResponsiveTab(
       }
       return { kind: 'throw', error: msg };
     }
+  }
+  if (firstSoftMiss !== null) {
+    return {
+      kind: 'response',
+      response: firstSoftMiss.response,
+      tabUrl: firstSoftMiss.tabUrl,
+    };
   }
   return {
     kind: 'no-tab',

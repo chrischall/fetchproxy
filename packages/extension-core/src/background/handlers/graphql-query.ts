@@ -16,6 +16,7 @@ import type {
 
 import { isUrlAllowedForAnyDomain, isTabUrlOnOrigin } from '../../lib/url-match.js';
 import { sendToFirstResponsiveTab } from '../../lib/send-to-responsive-tab.js';
+import { isNotYetObservedError } from '../../lib/graphql-observed.js';
 import { sendInner } from '../send-inner.js';
 import { mcpCapabilities, mcpGraphqlOps } from '../session-scope.js';
 
@@ -82,6 +83,22 @@ export function graphqlTabMatcher(
   return (candidateTabUrl: string) => isUrlAllowedForAnyDomain(candidateTabUrl, domains);
 }
 
+/**
+ * A tab's response that means "not this tab — try another", as opposed to a
+ * real answer. The Apollo DocumentNode cache is per-tab, so a tab that never
+ * fired the operation misses while a sibling tab on the same origin has it.
+ *
+ * Without this, the first matching tab in `chrome.tabs.query` order decides
+ * the outcome for every call: a dashboard or confirmation tab left open ahead
+ * of the restaurant tab shadows it permanently, and no amount of reloading the
+ * *right* page helps, because that page is never asked.
+ */
+function isGraphqlSoftMiss(response: unknown): boolean {
+  if (!response || typeof response !== 'object') return false;
+  const r = response as { ok?: unknown; error?: unknown };
+  return r.ok === false && isNotYetObservedError(r.error);
+}
+
 export async function handleGraphqlQueryRequest(
   mcpId: string,
   req: InnerRequestGraphqlQuery,
@@ -117,6 +134,7 @@ export async function handleGraphqlQueryRequest(
       },
     }),
     tabUrlForError,
+    isGraphqlSoftMiss,
   );
   if (result.kind === 'no-tab') {
     await sendInner(mcpId, {
