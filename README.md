@@ -181,7 +181,7 @@ const cookies = await fp.readCookies({ subdomain: 'www' });
 // "sid=...; csrf=...; ..."
 ```
 
-See [`docs/PROTOCOL.md`](docs/PROTOCOL.md) for the wire-level definition and [`docs/SECURITY.md`](docs/SECURITY.md) for the threat model.
+See [`docs/PROTOCOL.md`](docs/PROTOCOL.md) for the wire-level definition and [`docs/SECURITY.md`](docs/SECURITY.md) for the threat model. [`docs/REACHING-AN-API.md`](docs/REACHING-AN-API.md) is the practical companion: which of `viaTab`, `capture_request_header` and `fetch_in_page` a given failure calls for, keyed by the error you actually see.
 
 ## Multi-domain MCPs
 
