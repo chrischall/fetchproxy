@@ -78,6 +78,12 @@ function assertBase64(x: unknown, label: string): asserts x is string {
   if (!BASE64_RE.test(x)) throw new ProtocolError(`${label}: invalid base64`);
 }
 
+function assertBoolean(x: unknown, label: string): asserts x is boolean {
+  if (typeof x !== 'boolean') {
+    throw new ProtocolError(`${label}: must be boolean`);
+  }
+}
+
 function assertPositiveInt(x: unknown, label: string): asserts x is number {
   if (typeof x !== 'number' || !Number.isInteger(x) || x <= 0) {
     throw new ProtocolError(`${label}: expected positive integer`);
@@ -688,6 +694,11 @@ function validateInnerRequest(raw: Record<string, unknown>): InnerFrame {
     }
     if (raw.init.body !== undefined) {
       assertString(raw.init.body, 'inner.init.body');
+    }
+    if (raw.init.inPage !== undefined) {
+      // Strictly boolean: a truthy string must never be coerced into
+      // "run this in the page", which is a privilege decision.
+      assertBoolean(raw.init.inPage, 'inner.init.inPage');
     }
     return raw as unknown as InnerFrame;
   }

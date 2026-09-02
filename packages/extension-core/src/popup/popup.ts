@@ -43,6 +43,13 @@ export const CAPABILITY_DISPLAY: Record<string, CapabilityDisplay> = {
   read_indexed_db: { label: 'Read IndexedDB', warn: true },
   read_dom: { label: 'Read DOM elements', warn: true },
   graphql: { label: 'Run declared GraphQL queries', warn: true },
+  // Names the cost, not the mechanism: "run fetches in the page" sounds like
+  // an implementation note, and the thing the user is actually approving is
+  // that the site's own scripts can see and alter those requests.
+  fetch_in_page: {
+    label: 'Send some requests via the page (the site can read/alter them)',
+    warn: true,
+  },
   download: { label: 'Download files to your computer', warn: true },
   // The only capability that CHANGES state in the browser rather than
   // reading it. Labelled to say so outright — 'write cookies' alone reads

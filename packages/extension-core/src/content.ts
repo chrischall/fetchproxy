@@ -17,6 +17,7 @@ import { evalJsonPointer } from '@fetchproxy/protocol';
 const MAX_REQUEST_BODY_BYTES = 1 * 1024 * 1024; // 1 MB
 const MAX_RESPONSE_BODY_BYTES = 5 * 1024 * 1024; // 5 MB
 const GRAPHQL_TIMEOUT_MS = 20 * 1000; // 20 s to await the MAIN-world reply
+const IN_PAGE_FETCH_TIMEOUT_MS = 30 * 1000; // 30 s to await the MAIN-world reply
 
 interface FetchInit {
   url: string;
@@ -24,6 +25,12 @@ interface FetchInit {
   headers?: Record<string, string>;
   body?: string;
   tabUrl: string;
+  /**
+   * Run this request in the MAIN world instead of here. Already authorised by
+   * the background against the `fetch_in_page` capability by the time it
+   * arrives — the content script does not re-decide, it only routes.
+   */
+  inPage?: boolean;
 }
 
 /**
@@ -489,6 +496,128 @@ async function runReadIndexedDb(
   });
 }
 
+/**
+ * Window surface `runInPageFetch` touches. Mirrors `GraphqlRelayWindow` so a
+ * fake can drive the relay deterministically in tests.
+ */
+interface InPageFetchRelayWindow {
+  addEventListener: (type: string, fn: (e: MessageEvent) => void) => void;
+  removeEventListener: (type: string, fn: (e: MessageEvent) => void) => void;
+  postMessage: (message: unknown, targetOrigin?: string) => void;
+  location?: { origin?: string };
+}
+
+// Monotonic request id so concurrent in-page fetches can't cross wires.
+let inPageFetchReqCounter = 0;
+
+/**
+ * Relay one fetch to the MAIN-world bridge (`installFetchBridge` in
+ * capture-logger.ts) and await its reply.
+ *
+ * Same shape as `runGraphqlQuery`: monotonic `reqId`, same-window source
+ * guard, timeout, and full validation of the reply before it is trusted.
+ * MAIN and isolated worlds share one message bus, so page script can post a
+ * forged `fetch-res`. It gains nothing by doing so — it can already issue the
+ * request itself, and the reply only travels back to the MCP that asked — but
+ * a malformed shape reaching the server's `assertObject`/type checks would,
+ * via host.ts's catch-all, tear down the extension WebSocket for every MCP on
+ * the concentrator. So every field is checked here.
+ *
+ * Exported for unit tests; production callers pass the default `window`.
+ */
+export function runInPageFetch(
+  init: FetchInit,
+  win: InPageFetchRelayWindow = window as unknown as InPageFetchRelayWindow,
+  timeoutMs: number = IN_PAGE_FETCH_TIMEOUT_MS,
+): Promise<FetchResponse | FetchError> {
+  return new Promise<FetchResponse | FetchError>((resolve) => {
+    const reqId = ++inPageFetchReqCounter;
+    let settled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+
+    const finish = (r: FetchResponse | FetchError): void => {
+      if (settled) return;
+      settled = true;
+      if (timer !== undefined) clearTimeout(timer);
+      win.removeEventListener('message', onMessage);
+      resolve(r);
+    };
+
+    const onMessage = (event: MessageEvent): void => {
+      try {
+        if (event.source !== (win as unknown as MessageEventSource)) return;
+        const data = event.data as
+          | {
+              __fetchproxy?: string;
+              reqId?: number;
+              ok?: boolean;
+              status?: unknown;
+              url?: unknown;
+              body?: unknown;
+              error?: unknown;
+            }
+          | null
+          | undefined;
+        if (!data || typeof data !== 'object' || data.__fetchproxy !== 'fetch-res') return;
+        if (data.reqId !== reqId) return;
+        if (data.ok !== true) {
+          finish({
+            ok: false,
+            error:
+              typeof data.error === 'string'
+                ? data.error
+                : 'in-page fetch bridge returned an error',
+          });
+          return;
+        }
+        if (typeof data.status !== 'number' || !Number.isFinite(data.status)) {
+          finish({ ok: false, error: 'in-page fetch bridge returned a non-numeric status' });
+          return;
+        }
+        if (typeof data.url !== 'string' || typeof data.body !== 'string') {
+          finish({ ok: false, error: 'in-page fetch bridge returned a non-string url/body' });
+          return;
+        }
+        // Mirrors runFetch's own guard: the MAIN world is not a trusted
+        // size-limiter, so cap the body before it crosses to the background.
+        if (data.body.length > MAX_RESPONSE_BODY_BYTES) {
+          finish({ ok: false, error: `response body too large: ${data.body.length} bytes` });
+          return;
+        }
+        finish({ ok: true, status: data.status, url: data.url, body: data.body });
+      } catch {
+        // Never throw out of a window 'message' listener.
+      }
+    };
+
+    win.addEventListener('message', onMessage);
+    timer = setTimeout(
+      () =>
+        finish({
+          ok: false,
+          error: `in-page fetch bridge timed out after ${timeoutMs}ms waiting for the MAIN world`,
+        }),
+      timeoutMs,
+    );
+
+    try {
+      win.postMessage(
+        {
+          __fetchproxy: 'fetch-req',
+          reqId,
+          url: init.url,
+          method: init.method,
+          headers: init.headers ?? {},
+          body: init.body,
+        },
+        win.location?.origin ?? '*',
+      );
+    } catch (e) {
+      finish({ ok: false, error: `in-page fetch relay failed to post: ${(e as Error).message}` });
+    }
+  });
+}
+
 async function runFetch(init: FetchInit): Promise<FetchResponse | FetchError> {
   if (init.body && init.body.length > MAX_REQUEST_BODY_BYTES) {
     return { ok: false, error: `request body too large: ${init.body.length} bytes` };
@@ -501,6 +630,15 @@ async function runFetch(init: FetchInit): Promise<FetchResponse | FetchError> {
   const headers: Record<string, string> = { ...(init.headers ?? {}) };
   if (csrf && !('x-csrf-token' in headers) && !('X-CSRF-Token' in headers)) {
     headers['x-csrf-token'] = csrf;
+  }
+  // `inPage` requests are handed to the MAIN-world bridge rather than issued
+  // from here. The CSRF injection above still applies, so the relayed request
+  // carries exactly the headers this path would have sent — the ONLY
+  // difference is which world calls `fetch`. Authorisation happened in the
+  // background against the `fetch_in_page` capability; by the time a request
+  // reaches this function the flag is already approved.
+  if (init.inPage === true) {
+    return runInPageFetch({ ...init, headers });
   }
   let response: Response;
   try {

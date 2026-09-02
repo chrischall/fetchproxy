@@ -238,8 +238,11 @@ Semantics:
 - `headers`: optional. `Cookie`, `User-Agent`, `Origin`, `Referer` are controlled by the browser and ignored if set here. `credentials: 'include'` is always implied.
 - `body`: optional string. The caller serialises JSON.
 - `tabUrl`: required. Prefix-matched against `chrome.tabs.query({})`. First match wins. If no match, the response is `ok: false`. After a successful pair, the extension proactively opens `https://${domains[0]}/` if no matching tab is open. (Future: open a tab for every declared domain.)
+- `inPage`: optional boolean, default `false`. When `true` the request is issued by the page's MAIN world instead of the content script's isolated world — same URL, method, body, injected CSRF header and cookies; only the calling world differs. Requires the `fetch_in_page` capability: the background rejects `inPage: true` from an MCP that didn't declare it, before the request reaches any tab. Must be a real boolean — a non-boolean is a protocol error, never coerced.
 
-**Body size caps:** request body ≤ 1 MB, response body ≤ 5 MB. Larger bodies are rejected with `ok: false`.
+  Use it only where the isolated world genuinely fails. Some edge bot-managers accept a request from the page and reject the byte-identical one from the isolated world: on opentable.com a GraphQL **mutation** POST 403s from the isolated world and returns 200 from the page, while GraphQL queries and REST writes pass from either. The cost is that page script can see and patch `window.fetch`, so a flagged request loses the isolated world's tamper resistance — see `T-in-page-fetch` in [SECURITY.md](./SECURITY.md). Flag individual calls, never everything.
+
+**Body size caps:** request body ≤ 1 MB, response body ≤ 5 MB. Larger bodies are rejected with `ok: false` — including on the `inPage` path, which re-checks the response cap in the content script before the body leaves it.
 
 ##### `op: "read_cookies"`
 
