@@ -51,6 +51,17 @@ describe('classifyFetchError', () => {
       'fetch threw: TypeError: Failed to fetch',
       'tab_fetch_failed',
     ],
+    // The MAIN-world bridge tags its failures `in-page` so the world is
+    // readable off the error (#273). That prefix must not cost the message its
+    // CLASSIFICATION: the anchored `/^fetch threw:/` stopped matching, and an
+    // in-page failure silently became `other` for every downstream MCP reading
+    // the exported classifier — a worse regression than the ambiguity the
+    // prefix was added to fix.
+    [
+      'MAIN-world bridge fetch threw',
+      'in-page fetch threw: TypeError: Failed to fetch',
+      'tab_fetch_failed',
+    ],
     [
       'no compass.com tab open',
       'no tab matching https://www.compass.com/',

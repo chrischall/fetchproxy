@@ -82,7 +82,14 @@ export function classifyFetchError(error: string): FetchErrorKind {
   if (/^tab fetch failed:/.test(error)) {
     return 'tab_fetch_failed';
   }
-  if (/^fetch threw:/.test(error)) {
+  // The optional `in-page ` prefix is the MAIN-world bridge tagging which world
+  // it came from (capture-logger.ts, #273). It is a DIAGNOSTIC on the message,
+  // not a different failure: the upstream cause is the same network/DNS/CORS
+  // shape either way, and a caller branching on `kind` wants the same branch.
+  // Anchored without it, the tag silently demoted every in-page failure to
+  // `other` — so any message template change here has to be walked back to
+  // this file.
+  if (/^(in-page )?fetch threw:/.test(error)) {
     return 'tab_fetch_failed';
   }
   if (/^no tab matching /.test(error)) {
