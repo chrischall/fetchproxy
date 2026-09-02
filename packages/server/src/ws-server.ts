@@ -810,6 +810,15 @@ export class FetchproxyTimeoutError extends FetchproxyProtocolError {
    */
   readonly retryAttempted: boolean;
 
+  /**
+   * 2.4.2+ (#277): what the CALL asked for, when that is more than the
+   * deadline that actually fired. A per-call `timeoutMs` is forwarded to the
+   * extension but does not raise this server's `fetchTimeoutMs`, so the
+   * shorter deadline wins — and used to report only its own number, a value
+   * the caller never supplied, from an option the message never named.
+   */
+  readonly requestedTimeoutMs: number | null;
+
   constructor(args: {
     url: string;
     timeoutMs: number;
@@ -817,9 +826,20 @@ export class FetchproxyTimeoutError extends FetchproxyProtocolError {
     port?: number;
     elapsedMs?: number;
     retryAttempted?: boolean;
+    requestedTimeoutMs?: number;
   }) {
+    // Only when the call actually asked for MORE. Naming the deadline when it
+    // was not the binding constraint is noise, and noise in an error is how a
+    // reader learns to skim it.
+    const capped =
+      args.requestedTimeoutMs !== undefined &&
+      args.requestedTimeoutMs > args.timeoutMs;
     super(
-      `fetchproxy: ${args.url} did not respond within ${args.timeoutMs}ms`,
+      `fetchproxy: ${args.url} did not respond within ${args.timeoutMs}ms` +
+        (capped
+          ? ` — that is this server's fetchTimeoutMs, not the ${args.requestedTimeoutMs}ms this call asked for.` +
+            ' A per-call timeoutMs cannot exceed it; raise fetchTimeoutMs on the transport to wait longer.'
+          : ''),
     );
     this.name = 'FetchproxyTimeoutError';
     this.url = args.url;
@@ -828,6 +848,7 @@ export class FetchproxyTimeoutError extends FetchproxyProtocolError {
     this.port = args.port ?? 0;
     this.elapsedMs = args.elapsedMs ?? args.timeoutMs;
     this.retryAttempted = args.retryAttempted ?? false;
+    this.requestedTimeoutMs = args.requestedTimeoutMs ?? null;
   }
 }
 
@@ -1856,6 +1877,12 @@ export class FetchproxyServer {
     pendingMap: Map<number, unknown>,
     id: number,
     url: string,
+    /**
+     * What the CALLER asked for, on the verbs that take a per-call timeout
+     * (#277). Not used to extend the deadline — only so the error can name
+     * `fetchTimeoutMs` as the reason it fired early.
+     */
+    requestedTimeoutMs?: number,
   ): Promise<T> {
     const timeoutMs = this.opts.fetchTimeoutMs;
     if (timeoutMs === undefined || timeoutMs <= 0) return pending;
@@ -1877,6 +1904,7 @@ export class FetchproxyServer {
                 port: this.opts.port,
                 elapsedMs: Date.now() - start,
                 retryAttempted: false,
+                ...(requestedTimeoutMs !== undefined ? { requestedTimeoutMs } : {}),
               }),
             );
           }, timeoutMs);
@@ -2647,6 +2675,9 @@ export class FetchproxyServer {
       this.pendingCapture,
       id,
       `https://${opts.host}${opts.path ?? '/*'}`,
+      // #277: not to extend the deadline — so a timeout can say the deadline,
+      // and not the value asked for here, is what fired.
+      opts.timeoutMs,
     );
   }
 
@@ -2757,6 +2788,9 @@ export class FetchproxyServer {
       this.pendingRedirect,
       id,
       `https://${opts.host}${opts.path ?? '/*'}`,
+      // #277: not to extend the deadline — so a timeout can say the deadline,
+      // and not the value asked for here, is what fired.
+      opts.timeoutMs,
     );
   }
 
