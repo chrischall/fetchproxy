@@ -138,11 +138,30 @@ export type Platform = 'chrome' | 'safari' | 'firefox';
  *                             operations in the pair popup. Scoped to the
  *                             MCP's declared `domains`.
  *
+ * - `fetch_in_page`: permits a fetch carrying `init.inPage: true` to run in
+ *                    the page's MAIN world rather than the content script's
+ *                    isolated world. Some edge bot-managers accept a request
+ *                    issued by the page and reject the byte-identical request
+ *                    from the isolated world — verified on opentable.com,
+ *                    where a GraphQL *mutation* 403s from the isolated world
+ *                    while queries and REST writes pass from either, blocking
+ *                    every booking write.
+ *
+ *                    Elevated, and the trade-off is real: a MAIN-world fetch
+ *                    runs where page script can see and patch `window.fetch`,
+ *                    so a compromised page could observe or alter a flagged
+ *                    request's headers and body. The isolated world is not
+ *                    reachable that way. Scoped to the MCP's declared
+ *                    `domains` like every other verb, and per-request, so an
+ *                    MCP surrenders that isolation only for the calls it
+ *                    marks — never wholesale.
+ *
  * Future additions are wire-additive: unknown capabilities are rejected
  * by the validator, so adding a new verb requires extending this union.
  */
 export type Capability =
   | 'fetch'
+  | 'fetch_in_page'
   | 'read_cookies'
   | 'read_local_storage'
   | 'read_session_storage'
@@ -162,6 +181,7 @@ export type Capability =
  */
 export const KNOWN_CAPABILITIES: ReadonlySet<Capability> = new Set<Capability>([
   'fetch',
+  'fetch_in_page',
   'read_cookies',
   'read_local_storage',
   'read_session_storage',
@@ -452,6 +472,19 @@ export interface FetchInit {
   headers?: Record<string, string>;
   body?: string;
   tabUrl: string;
+  /**
+   * Run this ONE request in the page's MAIN world instead of the content
+   * script's isolated world. Requires the `fetch_in_page` capability; the
+   * background rejects it otherwise. Omitted/false is the default and keeps
+   * the isolated world.
+   *
+   * Per-request rather than per-MCP on purpose: an MCP flags only the calls
+   * that actually need it (for opentable-mcp, two GraphQL mutations) and
+   * every other fetch keeps the stronger isolation. See the capability's
+   * docs above for what that isolation buys and what flagging a request
+   * gives up.
+   */
+  inPage?: boolean;
 }
 
 export interface InnerPing {

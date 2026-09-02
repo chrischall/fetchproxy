@@ -1,12 +1,12 @@
 /**
  * `fetch` verb handler, moved verbatim out of `background.ts`.
  *
- * The first handler to be split out, and deliberately the simplest one:
- * it reads no per-session scope Map (`domains` arrives as a parameter) and
- * makes no direct `chrome.*` call, so it needs neither `session-scope.ts`
- * nor a chrome declaration. Its only dependencies point strictly downward —
- * `sendInner` (L2) and two leaf helpers under `src/lib/` — which is the
- * shape every subsequent handler module follows.
+ * Long the simplest handler: `domains` arrives as a parameter and it makes
+ * no direct `chrome.*` call. It now reads ONE scope Map — `mcpCapabilities`,
+ * to gate `init.inPage` — because that flag is a privilege decision and the
+ * only authority on which MCP holds it is the approved capability set. Its
+ * dependencies still point strictly downward: `sendInner` (L2), the scope
+ * tables, and two leaf helpers under `src/lib/`.
  */
 
 import type { InnerRequestFetch } from '@fetchproxy/protocol';
@@ -14,12 +14,33 @@ import type { InnerRequestFetch } from '@fetchproxy/protocol';
 import { isUrlAllowedForAnyDomain, isTabUrlMatch } from '../../lib/url-match.js';
 import { sendToFirstResponsiveTab } from '../../lib/send-to-responsive-tab.js';
 import { sendInner } from '../send-inner.js';
+import { mcpCapabilities } from '../session-scope.js';
 
 export async function handleFetchRequest(
   mcpId: string,
   req: InnerRequestFetch,
   domains: string[],
 ): Promise<void> {
+  // `inPage` runs the request in the page's MAIN world, where page script can
+  // observe and patch `window.fetch`. Refuse it here — before the request
+  // reaches a tab — for any MCP that didn't declare `fetch_in_page` and have
+  // it approved at pair time. `inPage: false` is just an ordinary fetch and
+  // needs nothing.
+  if (req.init.inPage === true) {
+    const capabilities = mcpCapabilities.get(mcpId) ?? ['fetch'];
+    if (!capabilities.includes('fetch_in_page')) {
+      await sendInner(mcpId, {
+        type: 'response',
+        id: req.id,
+        ok: false,
+        op: 'fetch',
+        error:
+          'init.inPage requires the "fetch_in_page" capability ' +
+          `(declared: [${capabilities.join(', ')}])`,
+      });
+      return;
+    }
+  }
   if (!isUrlAllowedForAnyDomain(req.init.url, domains)) {
     await sendInner(mcpId, {
       type: 'response',

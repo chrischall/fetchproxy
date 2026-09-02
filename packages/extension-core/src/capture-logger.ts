@@ -295,6 +295,96 @@ export function interceptClientAssignment(
 }
 
 /**
+ * Subset of `Window` the MAIN-world fetch bridge touches. A fake stand-in is
+ * used in unit tests so the `event.source === win` guard is exercised without
+ * depending on jsdom's `postMessage` delivery semantics.
+ */
+export interface FetchBridgeWindow {
+  fetch: (
+    url: string,
+    init?: Record<string, unknown>,
+  ) => Promise<{ status: number; url: string; text: () => Promise<string> }>;
+  addEventListener: (type: string, fn: (e: any) => void) => void;
+  postMessage: (message: unknown, targetOrigin?: string) => void;
+  location?: { origin?: string };
+}
+
+const FETCH_REQ_MARKER = 'fetch-req';
+const FETCH_RES_MARKER = 'fetch-res';
+
+/**
+ * Install the MAIN-world fetch bridge: runs one `fetch` in the page's own
+ * world on behalf of the isolated-world content script, which relays a
+ * request here only when the MCP flagged it `inPage` AND holds the
+ * `fetch_in_page` capability (both checked upstream, in the background).
+ *
+ * Why it exists: some edge bot-managers accept a request issued by the page
+ * and reject the byte-identical request issued from the isolated world.
+ * Verified on opentable.com — a GraphQL *mutation* POST 403s from the
+ * isolated world and returns 200 from here with the same URL, body, CSRF
+ * header and cookies, while GraphQL queries and REST writes pass from either.
+ * That 403 blocks every booking write.
+ *
+ * This listener creates no privilege. It runs in the page's own world with
+ * the page's own credentials, so anything it can fetch, page script could
+ * already fetch itself. What a routed request gives up is fetchproxy's
+ * tamper resistance — in here, page script can patch `window.fetch` and
+ * observe or alter the request. That is the whole reason the capability is
+ * declared, approved at pair time, and applied per-request rather than
+ * becoming the default path.
+ */
+export function installFetchBridge(win: FetchBridgeWindow): void {
+  win.addEventListener('message', (event: any) => {
+    void (async (): Promise<void> => {
+      try {
+        // Same-window guard: MAIN + isolated worlds share this window's
+        // message bus; a cross-origin frame would have a different source.
+        if (!event || event.source !== win) return;
+        const data = event.data;
+        if (!data || typeof data !== 'object' || data.__fetchproxy !== FETCH_REQ_MARKER) return;
+        if (typeof data.reqId !== 'number' || typeof data.url !== 'string') return;
+        const reply = (payload: Record<string, unknown>): void => {
+          try {
+            win.postMessage(
+              { __fetchproxy: FETCH_RES_MARKER, reqId: data.reqId, ...payload },
+              win.location?.origin ?? '*',
+            );
+          } catch {
+            // A failed post-back can't be surfaced anywhere useful; the
+            // isolated world's request simply times out.
+          }
+        };
+        let res: { status: number; url: string; text: () => Promise<string> };
+        try {
+          res = await win.fetch(data.url, {
+            method: typeof data.method === 'string' ? data.method : 'GET',
+            headers: data.headers && typeof data.headers === 'object' ? data.headers : {},
+            body: typeof data.body === 'string' ? data.body : undefined,
+            credentials: 'include',
+          });
+        } catch (e) {
+          reply({ ok: false, error: `fetch threw: ${(e as Error)?.message ?? String(e)}` });
+          return;
+        }
+        let body: string;
+        try {
+          body = await res.text();
+        } catch (e) {
+          reply({
+            ok: false,
+            error: `response.text() threw: ${(e as Error)?.message ?? String(e)}`,
+          });
+          return;
+        }
+        reply({ ok: true, status: res.status, url: res.url, body });
+      } catch {
+        // Never throw out of a window 'message' listener.
+      }
+    })();
+  });
+}
+
+/**
  * Install the Apollo bridge on `win`. Registers the `message` listener
  * immediately (so a request that arrives before the client exists gets a
  * clean "not yet observed" answer rather than being dropped), then wraps
@@ -374,4 +464,5 @@ if (!underTest && typeof window !== 'undefined') {
   syncCsrf();
   setInterval(syncCsrf, SYNC_INTERVAL_MS);
   installApolloBridge(window as unknown as ApolloBridgeWindow);
+  installFetchBridge(window as unknown as FetchBridgeWindow);
 }

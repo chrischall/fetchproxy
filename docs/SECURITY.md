@@ -154,6 +154,27 @@ Attributes are copied off the cookie being replaced (`domain`/`path`/`secure`/`h
 
 **Known limitation (tracked, not yet fixed):** the MAIN-world bridge script (`capture-logger.ts`) wraps `client.link.request` on **every** page that exposes an Apollo client, regardless of whether any MCP has declared the `graphql` capability — the captured `DocumentNode`s stay in an in-process `Map` and are never exfiltrated, so this is a wider MAIN-world footprint (not a data leak) than the read-only CSRF sync this file previously did. It also polls for `window.__APOLLO_CLIENT__` every 500ms for the lifetime of any tab that never gets one, with no give-up cap. Neither is a security hole, but both are worth tightening — see the PR #178 auto-review follow-up issue.
 
+The same applies to the in-page fetch bridge added for `fetch_in_page` (T-in-page-fetch below): `installFetchBridge` registers its `message` listener on **every** page the content script runs in, regardless of whether any MCP has declared the capability. The listener creates no privilege — it runs in the page's own world with the page's own credentials, so anything it can fetch, page script could already fetch itself, and a request it never receives is a request it never makes — but it is MAIN-world surface present on tabs that will never use it. Gating installation on an approved capability is the tightening; it is not free, because the MAIN-world script is injected at document_start and does not know which capabilities were approved, so it needs a signal from the isolated world it does not have today. Tracked with the Apollo footprint above rather than fixed here.
+
+### T-in-page-fetch — `fetch_in_page` capability misuse
+
+`fetch_in_page` permits a fetch carrying `init.inPage: true` to be issued by the page's MAIN world instead of the content script's isolated world. Everything else is unchanged: same URL, method, body, injected CSRF header, same cookies, same domain allowlist.
+
+It exists because some edge bot-managers distinguish the two worlds. Verified live on opentable.com: a GraphQL **mutation** POST returns 403 from the isolated world and 200 from the page, byte-for-byte identical, while GraphQL *queries* and *REST* writes pass from either — that 403 blocks every booking write. The precise signal was never confirmed (most likely the extension `Origin`/`Sec-Fetch-Site` Chrome attaches to content-script requests), so this is characterised by the observed world difference, not by a header we read.
+
+**What it is NOT:** MAIN-world JS execution. Nothing is evaluated in the page. The bridge takes a URL, method, headers and body, calls `fetch`, and posts back `{status, url, body}`. It cannot read page globals, the DOM, or anything else.
+
+**Defenses:**
+
+1. **Per-request, not per-MCP.** The flag is set on individual calls, so an MCP needing it for two GraphQL mutations keeps the isolated world for every other fetch. There is no mode that routes all traffic through the page.
+2. **Capability-gated, refused early.** `fetch_in_page` must be declared and approved at pair time; `handleFetchRequest` rejects `inPage: true` from an MCP without it **before the request reaches any tab**.
+3. **Strictly boolean on the wire.** The validator rejects a non-boolean `inPage` rather than coercing it, so a truthy string can never become a privilege decision.
+4. **Domain allowlist unchanged.** The URL must still be on the MCP's declared `domains`, with the usual tab matching.
+5. **Every field of the reply is validated.** MAIN and isolated worlds share one message bus, so page script can post a forged `fetch-res`. The isolated side matches a monotonic `reqId`, requires a **positive integer** `status` and string `url`/`body`, and enforces the same `MAX_RESPONSE_BODY_BYTES` cap as the ordinary path — a malformed shape reaching the server's validators would otherwise tear down the WebSocket for every MCP on the concentrator. The status check is deliberately no weaker than the wire's own `assertPositiveInt`: a merely-finite test would admit `0`, a negative and a fractional status, and the frame built from one is refused inside the host's message handler, whose catch closes that shared socket (1011).
+6. **No privilege is created in the page.** The bridge runs with the page's own credentials on its own origin, so anything it can fetch, page script could already fetch itself.
+
+**Residual risk — and it is a real one.** The isolated world is what makes an ordinary fetchproxy request tamper-resistant: page script cannot see or alter it. A request routed through the MAIN world gives that up. A compromised or hostile page on a declared domain can patch `window.fetch` and observe or modify a flagged request's headers and body — including the injected CSRF token — and can hand the MCP a fabricated response. That is strictly worse than the isolated-world path, and it is exactly why this is a separate capability the user approves rather than a silent fallback: an MCP declaring it is asking for that trade on the calls it marks. Do not declare it for requests that work without it.
+
 ### T-host-MITM — Host MCP reading peer traffic
 
 In the 0.2.0 concentrator model, one MCP wins the WS port and acts as the host. Other MCPs on the same machine dial it as peers and tunnel their traffic through. A backdoored host MCP could read or tamper with peer traffic, exfiltrating their fetches or rewriting responses.
