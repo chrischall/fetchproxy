@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { sendToFirstResponsiveTab } from '../src/background.js';
+import { sendToFirstResponsiveTab, isGraphqlSoftMiss } from '../src/background.js';
 import {
   notYetObservedError,
   isNotYetObservedError,
@@ -46,12 +46,11 @@ function installFakeChrome(
   return { messagesSent };
 }
 
-// The soft-miss predicate the graphql_query handler supplies.
-const graphqlSoftMiss = (response: unknown): boolean =>
-  !!response &&
-  typeof response === 'object' &&
-  (response as { ok?: unknown }).ok === false &&
-  isNotYetObservedError((response as { error?: unknown }).error);
+// NOTE: these tests drive the REAL `isGraphqlSoftMiss` the handler passes to
+// `sendToFirstResponsiveTab` (see graphql-query.ts), not a local copy of it.
+// A hand-rolled stand-in here would keep passing while the shipped predicate
+// drifted, which is exactly the regression this file exists to catch.
+const graphqlSoftMiss = isGraphqlSoftMiss;
 
 describe('graphql_query multi-tab fallthrough', () => {
   beforeEach(() => {
@@ -68,6 +67,26 @@ describe('graphql_query multi-tab fallthrough', () => {
     // rather than send the same query at every other tab on the origin.
     expect(isNotYetObservedError('Response not successful: Received status code 400')).toBe(false);
     expect(isNotYetObservedError(undefined)).toBe(false);
+  });
+
+  it('isGraphqlSoftMiss classifies whole tab responses, not just error text', () => {
+    // The one shape that means "ask another tab".
+    expect(
+      isGraphqlSoftMiss({ ok: false, error: notYetObservedError('RestaurantsAvailability') }),
+    ).toBe(true);
+
+    // A success is never a miss, even if something echoes the phrase in data.
+    expect(isGraphqlSoftMiss({ ok: true, data: { note: 'not yet observed on this tab' } })).toBe(
+      false,
+    );
+    // A real failure is a real answer — stop, don't replay it at every tab.
+    expect(isGraphqlSoftMiss({ ok: false, error: 'graphql errors: session expired' })).toBe(false);
+    expect(isGraphqlSoftMiss({ ok: false, error: 'Received status code 400' })).toBe(false);
+    // Malformed / absent responses must not be mistaken for a miss.
+    expect(isGraphqlSoftMiss(undefined)).toBe(false);
+    expect(isGraphqlSoftMiss(null)).toBe(false);
+    expect(isGraphqlSoftMiss('not yet observed on this tab')).toBe(false);
+    expect(isGraphqlSoftMiss({ error: notYetObservedError('Op') })).toBe(false);
   });
 
   it('falls through a shadowing tab to the tab that observed the operation', async () => {

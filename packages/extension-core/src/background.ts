@@ -45,7 +45,11 @@ export { resolveWriteCookiesRequest, cookieSetDetailsFor } from './background/ha
 export { CAPTURE_EXTRA_INFO_SPEC } from './background/handlers/capture.js';
 export { downloadValueFromItem } from './background/handlers/download.js';
 export { resolveReadDomRequest, readDomTabMatcher } from './background/handlers/read-dom.js';
-export { resolveGraphqlQueryRequest, graphqlTabMatcher } from './background/handlers/graphql-query.js';
+export {
+  resolveGraphqlQueryRequest,
+  graphqlTabMatcher,
+  isGraphqlSoftMiss,
+} from './background/handlers/graphql-query.js';
 
 export {
   connectedIdentityHashes,
