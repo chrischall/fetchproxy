@@ -1,5 +1,13 @@
 # Changelog
 
+## [2.4.2](https://github.com/chrischall/fetchproxy/compare/v2.4.1...v2.4.2) (2026-09-02)
+
+
+### Bug Fixes
+
+* **server:** explain the deadline cap on download() too, and test all three ([#281](https://github.com/chrischall/fetchproxy/issues/281)) ([971a50c](https://github.com/chrischall/fetchproxy/commit/971a50cafdecacd182352371b8e96bcbfb7b28e8))
+* **server:** say when fetchTimeoutMs is what capped a per-call timeout ([#278](https://github.com/chrischall/fetchproxy/issues/278)) ([885a12f](https://github.com/chrischall/fetchproxy/commit/885a12f10764ff68d3e5bb8b25c3b2d92a22a6ff))
+
 ## [2.4.1](https://github.com/chrischall/fetchproxy/compare/v2.4.0...v2.4.1) (2026-09-02)
 
 
