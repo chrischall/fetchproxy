@@ -50,6 +50,13 @@ await server.request('GET', 'https://api.example.com/x',  { viaTab: 'https://exa
 Same-origin passing while cross-origin fails is the signature. If both fail,
 the bridge is the problem, not the origin.
 
+**Which world am I in?** Read the prefix. The MAIN-world bridge tags its
+failures `in-page fetch threw: …`; an untagged `fetch threw: …` came from the
+isolated world. So a request sent with `inPage: true` that comes back
+*untagged* did not run in the page — a stale background service worker is the
+usual reason, and reloading the extension is the fix. Same for
+`in-page response.text() threw: …`.
+
 Two ways out, and prefer the first:
 
 - **Read instead of ask.** If the page already sends the credential you need,
@@ -59,6 +66,22 @@ Two ways out, and prefer the first:
   when there is no header to read, or when the response itself is what you
   need. It gives up the isolated world's tamper resistance — read
   §T-in-page-fetch before declaring it.
+
+  **It does not defeat CORS**, and this is the common disappointment. The
+  page's world is subject to the response's `Access-Control-Allow-Origin`
+  exactly as the isolated world is, so an API that answers the OPTIONS
+  preflight correctly and then omits the header on the ACTUAL response is
+  blocked in both. Check before you build on it:
+
+  ```sh
+  curl -sI -X OPTIONS https://api.example.com/thing -H 'Origin: https://example.com' \
+    -H 'Access-Control-Request-Method: POST' | grep -i access-control   # preflight
+  curl -sI -X POST https://api.example.com/thing -H 'Origin: https://example.com' \
+    | grep -i access-control                                             # the real one
+  ```
+
+  `allow-origin` present on the first and missing on the second means no world
+  will help you.
 
 ### `capability "…" not granted (declared: [fetch])`
 

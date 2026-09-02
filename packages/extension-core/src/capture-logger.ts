@@ -363,7 +363,13 @@ export function installFetchBridge(win: FetchBridgeWindow): void {
             credentials: 'include',
           });
         } catch (e) {
-          reply({ ok: false, error: `fetch threw: ${(e as Error)?.message ?? String(e)}` });
+          // `in-page` prefix, and it is load-bearing rather than cosmetic: the
+          // isolated world reports the same failure as `fetch threw: …`
+          // (content.ts), so an untagged message left the ONE question
+          // `fetch_in_page` exists to answer — did this actually run in the
+          // page? — unanswerable from the error. Establishing that for one MCP
+          // took reading this file and probing the API's CORS headers by hand.
+          reply({ ok: false, error: `in-page fetch threw: ${(e as Error)?.message ?? String(e)}` });
           return;
         }
         let body: string;
@@ -372,7 +378,7 @@ export function installFetchBridge(win: FetchBridgeWindow): void {
         } catch (e) {
           reply({
             ok: false,
-            error: `response.text() threw: ${(e as Error)?.message ?? String(e)}`,
+            error: `in-page response.text() threw: ${(e as Error)?.message ?? String(e)}`,
           });
           return;
         }

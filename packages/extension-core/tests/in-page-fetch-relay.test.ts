@@ -258,6 +258,42 @@ describe('installFetchBridge (MAIN world)', () => {
     expect(String(posted[0]!.error)).toContain('network down');
   });
 
+  /**
+   * The world has to be readable off the error.
+   *
+   * `fetch_in_page` exists for the case where the isolated world's request is
+   * refused and the page's is not, so the first question on any failure is
+   * "did it actually run in the page?" — and both worlds used to answer
+   * `fetch threw: …`, which answers nothing. Evaluating the capability for
+   * resy-mcp took reading extension source and probing the API's CORS headers
+   * with curl to establish something the error should have said (#273).
+   */
+  it('tags its errors as in-page, so they cannot be read as isolated-world ones', async () => {
+    const { win, posted, dispatch } = makeMainWin(async () => {
+      throw new Error('Failed to fetch');
+    });
+    installFetchBridge(win as never);
+    dispatch({ __fetchproxy: 'fetch-req', reqId: 9, url: 'https://www.opentable.com/x', method: 'GET' });
+    await flush();
+    // The exact string the isolated world produces for the same failure is
+    // `fetch threw: Failed to fetch` (content.ts). These must not collide.
+    expect(String(posted[0]!.error)).toBe('in-page fetch threw: Failed to fetch');
+  });
+
+  it('tags a body-read failure the same way', async () => {
+    const { win, posted, dispatch } = makeMainWin(async () => ({
+      status: 200,
+      url: 'https://www.opentable.com/x',
+      text: async () => {
+        throw new Error('stream broke');
+      },
+    }));
+    installFetchBridge(win as never);
+    dispatch({ __fetchproxy: 'fetch-req', reqId: 10, url: 'https://www.opentable.com/x', method: 'GET' });
+    await flush();
+    expect(String(posted[0]!.error)).toBe('in-page response.text() threw: stream broke');
+  });
+
   it('ignores messages from another window and non-fetch-req envelopes', async () => {
     const fetchMock = vi.fn();
     const { win, posted, dispatch } = makeMainWin(fetchMock);
