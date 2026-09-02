@@ -320,9 +320,13 @@ describe('peer client', () => {
     // kept (sendInner's invariant), only the report changes. Last in this
     // test on purpose: the re-link below mints a new key, and the sealed
     // frames above were built under the first one.
+    hostWs!.send(JSON.stringify({ type: 'pair-pending', mcpId, pairCode: '457-035' }));
+    await vi.waitFor(() => expect(peer!.pendingPairCode()).toBe('457-035'));
     hostWs!.send(JSON.stringify({ type: 'extension-disconnected' }));
     await vi.waitFor(() => expect(peer!.extensionConnected()).toBe(false));
     expect(peer.sessionLinked()).toBe(false);
+    // #283: a code nobody can approve any more goes with the extension.
+    expect(peer.pendingPairCode()).toBeNull();
     // It comes back: a fresh ready re-links (the extension hello is not yet
     // relayed here, so the ready goes through the pre-1.12 unverifiable path).
     const ephemeral2 = await generateX25519();

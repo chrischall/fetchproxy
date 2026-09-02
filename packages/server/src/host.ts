@@ -489,6 +489,13 @@ export async function startHost(opts: HostOpts): Promise<HostHandle> {
           rejectOwnSession(new Error('extension disconnected before ready'));
         }
         ownSession = null;
+        // A pair code the user never approved is not actionable once the
+        // browser holding the popup is gone — and `bridgeHealth().session`
+        // ranks `pair_pending` above "extension not attached", so leaving it
+        // would tell the user to approve a popup that no longer exists. The
+        // extension re-sends pair-pending on its next hello if it still
+        // wants approval.
+        ownPendingPairCode = null;
         resetSessionPromise();
         disconnectListeners.forEach((cb) => cb());
         // 2.5.0: tell the peers that can take it. A peer before 2.5.0 would
