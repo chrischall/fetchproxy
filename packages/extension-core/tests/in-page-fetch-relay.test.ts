@@ -123,7 +123,38 @@ describe('runInPageFetch (isolated → MAIN relay)', () => {
       reply({ __fetchproxy: 'fetch-res', reqId: posted[0]!.reqId, ...bad });
       const r = (await p) as { ok: boolean; error: string };
       expect(r.ok).toBe(false);
-      expect(r.error).toMatch(/non-numeric status|non-string url\/body/);
+      expect(r.error).toMatch(/invalid status|non-string url\/body/);
+    }
+  });
+
+  /**
+   * The isolated world's status check must be AT LEAST as strict as the wire's.
+   *
+   * `assertPositiveInt` (protocol/src/validate.ts) requires an integer > 0. A
+   * check that only asks for a finite number lets 0, a negative and a
+   * fractional status through — and the frame those build is rejected at the
+   * server, inside the host's message handler, whose catch closes the
+   * concentrator socket with 1011. That is one page forging one reply and
+   * every MCP on the shared socket losing its connection, which is exactly
+   * what this relay's untrusted-reply validation exists to stop.
+   */
+  it('rejects a status the wire validator would reject: 0, negative, fractional', async () => {
+    for (const status of [0, -1, -200, 1.5, 200.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+      const { win, posted, reply } = makeIsolatedWin();
+      const p = runInPageFetch(INIT, win, 50);
+      reply({ __fetchproxy: 'fetch-res', reqId: posted[0]!.reqId, ok: true, status, url: 'u', body: 'b' });
+      const r = (await p) as { ok: boolean; error: string };
+      expect(r.ok, `status ${String(status)} must not be accepted`).toBe(false);
+      expect(r.error).toMatch(/status/);
+    }
+  });
+
+  it('still accepts an ordinary integer status', async () => {
+    for (const status of [200, 301, 404, 500]) {
+      const { win, posted, reply } = makeIsolatedWin();
+      const p = runInPageFetch(INIT, win, 50);
+      reply({ __fetchproxy: 'fetch-res', reqId: posted[0]!.reqId, ok: true, status, url: 'u', body: 'b' });
+      await expect(p).resolves.toMatchObject({ ok: true, status });
     }
   });
 

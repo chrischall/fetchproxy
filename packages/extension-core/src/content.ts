@@ -17,7 +17,12 @@ import { evalJsonPointer } from '@fetchproxy/protocol';
 const MAX_REQUEST_BODY_BYTES = 1 * 1024 * 1024; // 1 MB
 const MAX_RESPONSE_BODY_BYTES = 5 * 1024 * 1024; // 5 MB
 const GRAPHQL_TIMEOUT_MS = 20 * 1000; // 20 s to await the MAIN-world reply
-const IN_PAGE_FETCH_TIMEOUT_MS = 30 * 1000; // 30 s to await the MAIN-world reply
+// Must stay UNDER the server's own `fetchTimeoutMs` (default 30s,
+// ws-server.ts). At 30s the two raced and the server's generic timeout won,
+// so the specific 'timed out waiting for the MAIN world' diagnostic — the one
+// that says which half of the bridge is stuck — could never be the error a
+// caller saw. 20s for the same reason GRAPHQL_TIMEOUT_MS above uses it.
+const IN_PAGE_FETCH_TIMEOUT_MS = 20 * 1000; // 20 s to await the MAIN-world reply
 
 interface FetchInit {
   url: string;
@@ -570,8 +575,17 @@ export function runInPageFetch(
           });
           return;
         }
-        if (typeof data.status !== 'number' || !Number.isFinite(data.status)) {
-          finish({ ok: false, error: 'in-page fetch bridge returned a non-numeric status' });
+        // At least as strict as the WIRE's own check: `assertPositiveInt`
+        // (protocol/src/validate.ts) requires an integer > 0. A finite-number
+        // test would pass 0, a negative and a fractional status, and the frame
+        // built from one is rejected inside the host's message handler — whose
+        // catch closes the concentrator socket (1011) for every MCP sharing it.
+        // The page cannot be allowed to reach that path with a forged reply.
+        // `typeof` first: it is the only one of the three that NARROWS
+        // `unknown` to `number` for TypeScript — `Number.isInteger` is not a
+        // type predicate, so dropping it compiles the body against `unknown`.
+        if (typeof data.status !== 'number' || !Number.isInteger(data.status) || data.status <= 0) {
+          finish({ ok: false, error: 'in-page fetch bridge returned an invalid status' });
           return;
         }
         if (typeof data.url !== 'string' || typeof data.body !== 'string') {

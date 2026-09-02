@@ -536,6 +536,19 @@ export interface RequestOpts {
    * fetch, never which origins are reachable. The request URL is unaffected.
    */
   viaTab?: string;
+
+  /**
+   * Run this request inside the tab's MAIN world rather than the extension's
+   * isolated one, for the requests the isolated world cannot make — a fetch
+   * the site's own service worker or a page-global interceptor has to see.
+   *
+   * Requires the `fetch_in_page` capability; the extension refuses it
+   * otherwise. Threaded here, and not only on the low-level `fetch(init)`,
+   * because reaching for that to set one flag gives up everything `request()`
+   * adds: the resolved URL's `assertUrlInDomains` guard, `expectStatus`, and
+   * the typed error conversion.
+   */
+  inPage?: boolean;
 }
 
 /**
@@ -555,6 +568,8 @@ export interface BodylessRequestOpts {
   domain?: string;
   /** Same as `RequestOpts.viaTab`. */
   viaTab?: string;
+  /** Same as `RequestOpts.inPage`. */
+  inPage?: boolean;
 }
 
 /**
@@ -1981,6 +1996,10 @@ export class FetchproxyServer {
       tabUrl,
       headers: opts.headers,
       body: opts.body,
+      // Spread rather than `inPage: opts.inPage`: the wire's validator treats
+      // the key's PRESENCE as the request, and a literal `undefined` would
+      // both serialize away inconsistently and read as "asked for" here.
+      ...(opts.inPage === true ? { inPage: true } : {}),
     };
     const result = await this.fetch(init);
     if (!result.ok) {
