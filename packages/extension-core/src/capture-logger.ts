@@ -218,10 +218,67 @@ async function handleGraphqlRequest(
 }
 
 /**
+ * Wrap `__APOLLO_CLIENT__` in a transparent accessor so `onAssigned` runs the
+ * instant Apollo assigns the client, before the page can dispatch anything
+ * through it.
+ *
+ * Polling alone loses the page's OWN load-time query: Apollo constructs the
+ * client and the route fires its first operation in the same task, while the
+ * next poll tick is up to `APOLLO_POLL_INTERVAL_MS` away. That made the one
+ * operation the user just watched run the one operation never recorded, and
+ * the resulting error told them to open a page that triggers it — the exact
+ * thing that does not work (#261).
+ *
+ * The accessor must be invisible to everyone else: it chains to a getter or
+ * setter that is already there (devtools hook, another extension) instead of
+ * replacing it, and it never lets a recording failure escape into the page's
+ * assignment. Returns false when the property can't be redefined, so the
+ * caller keeps its polling fallback.
+ */
+export function interceptClientAssignment(
+  win: ApolloBridgeWindow,
+  onAssigned: () => void,
+): boolean {
+  try {
+    const prior = Object.getOwnPropertyDescriptor(win, '__APOLLO_CLIENT__');
+    if (prior && prior.configurable === false) return false;
+    const priorGet = prior && typeof prior.get === 'function' ? prior.get : undefined;
+    const priorSet = prior && typeof prior.set === 'function' ? prior.set : undefined;
+    let stored: unknown = prior && 'value' in prior ? prior.value : undefined;
+    Object.defineProperty(win, '__APOLLO_CLIENT__', {
+      configurable: true,
+      enumerable: prior ? prior.enumerable !== false : true,
+      get(this: unknown): unknown {
+        return priorGet ? priorGet.call(this) : stored;
+      },
+      set(this: unknown, value: unknown): void {
+        if (priorSet) priorSet.call(this, value);
+        else stored = value;
+        try {
+          onAssigned();
+        } catch {
+          // The page is mid-assignment; a recording failure must not surface
+          // as an exception thrown from `window.__APOLLO_CLIENT__ = client`.
+        }
+      },
+    });
+    return true;
+  } catch {
+    // Frozen window, hostile descriptor, exotic environment — the poll below
+    // is still a correct (just slower) way to find the client.
+    return false;
+  }
+}
+
+/**
  * Install the Apollo bridge on `win`. Registers the `message` listener
  * immediately (so a request that arrives before the client exists gets a
- * clean "not yet observed" answer rather than being dropped) and polls for
- * `__APOLLO_CLIENT__`, wrapping its link the moment it appears.
+ * clean "not yet observed" answer rather than being dropped), then wraps
+ * `__APOLLO_CLIENT__`'s link by two paths: an assignment interceptor, which
+ * catches the client the moment Apollo creates it (and so catches the page's
+ * own first query), and a poll, which stays as the fallback for a client that
+ * already exists, one whose `link` isn't usable yet at assignment time, and
+ * any window where the property can't be redefined.
  */
 export function installApolloBridge(win: ApolloBridgeWindow): void {
   const docsByOp = new Map<string, unknown>();
@@ -259,11 +316,17 @@ export function installApolloBridge(win: ApolloBridgeWindow): void {
     }
   });
 
-  if (!tryWrap()) {
-    const timer = win.setInterval(() => {
-      if (tryWrap()) win.clearInterval(timer);
-    }, APOLLO_POLL_INTERVAL_MS);
-  }
+  if (tryWrap()) return;
+
+  // Best-effort: closes the race against the page's load-time query.
+  interceptClientAssignment(win, tryWrap);
+
+  // Kept regardless — `tryWrap` can legitimately fail at assignment (a client
+  // whose `link` isn't wired yet), and the interceptor may not have installed
+  // at all. Cleared by the first tick that finds the link, as before.
+  const timer = win.setInterval(() => {
+    if (tryWrap()) win.clearInterval(timer);
+  }, APOLLO_POLL_INTERVAL_MS);
 }
 
 // ---------------------------------------------------------------------------
