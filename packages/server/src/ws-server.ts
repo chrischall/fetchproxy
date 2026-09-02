@@ -2892,7 +2892,17 @@ export class FetchproxyServer {
       this.pendingDownload.set(id, { resolve, reject });
     });
     await this.sendInnerFrame(inner);
-    return this._withVerbTimeout(pending, this.pendingDownload, id, opts.url);
+    return this._withVerbTimeout(
+      pending,
+      this.pendingDownload,
+      id,
+      opts.url,
+      // #277, same as the two capture verbs: `download` takes a per-call
+      // timeoutMs too, so it hits the identical cap and needs the identical
+      // explanation. Missing it was the point of #279 — "both verbs" was
+      // counted off the two call sites in view rather than off the type.
+      opts.timeoutMs,
+    );
   }
 
   /**
