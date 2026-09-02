@@ -327,6 +327,9 @@ export async function startPeer(opts: PeerOpts): Promise<InternalPeerHandle> {
       if (frame.type === 'extension-disconnected') {
         extensionHello = null;
         extensionGone = true;
+        // Same as the host: a code nobody can approve any more must not
+        // outrank "the extension is gone" in the session snapshot.
+        pendingPairCode = null;
         return;
       }
       if (frame.type === 'ready' && frame.mcpId === opts.mcpId) {

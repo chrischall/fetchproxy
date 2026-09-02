@@ -186,6 +186,54 @@ describe('host (concentrator)', () => {
     oldPeer.close();
   });
 
+  it('forgets an unapproved pair code when the extension closes (#283)', async () => {
+    const el = await electRole({ host: '127.0.0.1', port: 0 });
+    if (el.role !== 'host') throw new Error('expected host');
+    const port = (el.server.address() as AddressInfo).port;
+    const idDir = mkdtempSync(join(tmpdir(), 'fp-host-'));
+    const id = await loadOrCreateIdentity('opentable-mcp', idDir);
+    host = await startHost({
+      httpServer: el.server,
+      ownIdentity: id,
+      ownMcpId: 'opentable-mcp:0.9.1:abc1234567890def',
+      ownServerName: 'opentable-mcp',
+      ownVersion: '0.9.1',
+      ownDomains: ['opentable.com'],
+      extensionTrust: blankTrust(),
+    });
+    const ws = new WebSocket(`ws://127.0.0.1:${port}`);
+    await new Promise<void>((r) => ws.once('open', () => r()));
+    ws.send(
+      JSON.stringify({
+        type: 'hello',
+        protocolVersion: 3,
+        role: 'extension',
+        platform: 'chrome',
+        extensionId: 'fetchproxy',
+        version: '0.4.0',
+        identityX25519Pub: 'AAAA',
+        identityEd25519Pub: 'AAAA',
+        sessionNonce: 'AAAA',
+      } satisfies HelloFrameFromExtension),
+    );
+    await vi.waitFor(() => expect(host!.extensionConnected()).toBe(true));
+    ws.send(
+      JSON.stringify({
+        type: 'pair-pending',
+        mcpId: 'opentable-mcp:0.9.1:abc1234567890def',
+        pairCode: '457-035',
+      }),
+    );
+    await vi.waitFor(() => expect(host!.pendingPairCode()).toBe('457-035'));
+
+    ws.close();
+    await vi.waitFor(() => expect(host!.extensionConnected()).toBe(false));
+    // The popup that showed the code is gone with the browser; reporting
+    // "approve 457-035" now would send the user to a prompt that no longer
+    // exists, when the remedy is to reopen the browser.
+    expect(host.pendingPairCode()).toBeNull();
+  });
+
   it('reports the extension link as unattached before any extension dials in', async () => {
     const el = await electRole({ host: '127.0.0.1', port: 0 });
     if (el.role !== 'host') throw new Error('expected host');

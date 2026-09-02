@@ -3415,7 +3415,9 @@ export class FetchproxyServer {
    * whichever handle is live. A pending pair code outranks "extension not
    * seen" because the code could only have come from the extension — a
    * peer behind an older host never sees the extension hello but does see
-   * pair-pending frames.
+   * pair-pending frames. Where the extension is KNOWN to be gone (a host's
+   * socket closed, a peer told by a 2.5.0+ host) the handle has already
+   * dropped the code, so the precedence never lies there (#283).
    */
   private sessionSnapshot(): BridgeSessionState {
     const handle = this.hostHandle ?? this.peerHandle;
