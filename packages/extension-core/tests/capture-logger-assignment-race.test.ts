@@ -32,9 +32,10 @@ type BridgeWindow = {
 };
 
 let installApolloBridge: (win: BridgeWindow) => void;
+let interceptClientAssignment: (win: BridgeWindow, onAssigned: () => void) => boolean;
 
 beforeAll(async () => {
-  ({ installApolloBridge } = await import('../src/capture-logger.js'));
+  ({ installApolloBridge, interceptClientAssignment } = await import('../src/capture-logger.js'));
 });
 
 const flush = (): Promise<void> => new Promise((r) => setTimeout(r, 0));
@@ -249,7 +250,12 @@ describe('installApolloBridge — client assigned after install (#261)', () => {
     expect(wrapFlag(client)).toBe(true);
   });
 
-  it('preserves a value already present behind a prior getter', () => {
+  it('seeds storage from a prior getter (interceptClientAssignment directly)', () => {
+    // Driven through `interceptClientAssignment` rather than
+    // `installApolloBridge`: the latter's initial `tryWrap()` succeeds against
+    // any client with a usable link and returns BEFORE installing the
+    // interceptor, so a test that goes through it reads the ORIGINAL getter
+    // and passes whether or not seeding works.
     const { win } = makeFakeWindow();
     const existing = makeClient({});
     Object.defineProperty(win, '__APOLLO_CLIENT__', {
@@ -257,10 +263,44 @@ describe('installApolloBridge — client assigned after install (#261)', () => {
       get: () => existing,
     });
 
+    expect(interceptClientAssignment(win, () => {})).toBe(true);
+
+    // Read now goes through OUR accessor (getter-only prior ⇒ we own storage),
+    // so the pre-existing value only survives if it was seeded across.
+    expect(win.__APOLLO_CLIENT__).toBe(existing);
+  });
+
+  it('survives a prior getter that throws', () => {
+    const { win } = makeFakeWindow();
+    Object.defineProperty(win, '__APOLLO_CLIENT__', {
+      configurable: true,
+      get: () => {
+        throw new Error('hostile getter');
+      },
+    });
+
+    expect(() => interceptClientAssignment(win, () => {})).not.toThrow();
+    expect(win.__APOLLO_CLIENT__).toBeUndefined();
+
+    const client = makeClient({});
+    win.__APOLLO_CLIENT__ = client;
+    expect(win.__APOLLO_CLIENT__).toBe(client);
+  });
+
+  it('reaches the interceptor when the existing client has no usable link', () => {
+    // The real path to seeding: `tryWrap()` fails (nothing to wrap), so
+    // `installApolloBridge` goes on to install the interceptor while a prior
+    // getter still holds a value.
+    const { win } = makeFakeWindow();
+    const linkless = { query: vi.fn(async () => ({ data: {} })) };
+    Object.defineProperty(win, '__APOLLO_CLIENT__', {
+      configurable: true,
+      get: () => linkless,
+    });
+
     installApolloBridge(win);
 
-    // Nothing assigned yet — the pre-existing value must not vanish.
-    expect(win.__APOLLO_CLIENT__).toBe(existing);
+    expect(win.__APOLLO_CLIENT__).toBe(linkless);
   });
 
   it('falls back to polling when the property cannot be redefined', () => {
