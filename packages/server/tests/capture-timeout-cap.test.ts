@@ -25,7 +25,12 @@ const baseOpts = {
   serverName: 'test-mcp',
   version: '0.0.1',
   domains: ['example.com'],
-  capabilities: ['fetch' as const, 'capture_request_header' as const],
+  capabilities: [
+    'fetch' as const,
+    'capture_request_header' as const,
+    'capture_redirect' as const,
+    'download' as const,
+  ],
   captureHeaders: [{ host: 'example.com', path: '/x*', headerName: 'Authorization' }],
 };
 
@@ -44,6 +49,45 @@ async function captureError(fetchTimeoutMs: number, timeoutMs?: number): Promise
     return e as Error;
   }
 }
+
+/**
+ * EVERY verb that takes a per-call `timeoutMs` hits the same cap.
+ *
+ * The first pass threaded two of them and the PR said "both verbs that take a
+ * per-call timeout" — counted off the two call sites in view rather than off
+ * the type, which is exactly the shape of mistake that leaves one behind
+ * (#279). There are three: capture_request_header, capture_redirect, download.
+ */
+async function errorFor(
+  verb: 'capture' | 'redirect' | 'download',
+  fetchTimeoutMs: number,
+  timeoutMs: number,
+): Promise<Error> {
+  const s = new FetchproxyServer({ ...baseOpts, fetchTimeoutMs });
+  installFakeHost(s);
+  try {
+    if (verb === 'capture') {
+      await s.captureRequestHeader({ host: 'example.com', path: '/x*', headerName: 'Authorization', timeoutMs });
+    } else if (verb === 'redirect') {
+      await s.captureRedirect({ host: 'example.com', path: '/x*', timeoutMs });
+    } else {
+      await s.download({ url: 'https://example.com/x', timeoutMs });
+    }
+    throw new Error('expected a timeout');
+  } catch (e) {
+    return e as Error;
+  }
+}
+
+describe('every per-call timeout verb explains the cap (#279)', () => {
+  for (const verb of ['capture', 'redirect', 'download'] as const) {
+    it(`${verb} names fetchTimeoutMs when the call asked for more`, async () => {
+      const e = await errorFor(verb, 5, 150_000);
+      expect(e.message, verb).toMatch(/fetchTimeoutMs/);
+      expect(e.message, verb).toMatch(/150000/);
+    });
+  }
+});
 
 describe('captureRequestHeader timeout vs fetchTimeoutMs (#277)', () => {
   it('names fetchTimeoutMs as the binding constraint when the call asked for more', async () => {
