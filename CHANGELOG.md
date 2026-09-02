@@ -1,5 +1,19 @@
 # Changelog
 
+## [2.4.0](https://github.com/chrischall/fetchproxy/compare/v2.3.2...v2.4.0) (2026-09-02)
+
+
+### Features
+
+* **extension:** add fetch_in_page for requests the isolated world can't make ([#267](https://github.com/chrischall/fetchproxy/issues/267)) ([2436aec](https://github.com/chrischall/fetchproxy/commit/2436aec638e37fb86b71ae6f28ecf86f9dc73db7))
+
+
+### Bug Fixes
+
+* **extension:** capture the page's own load-time GraphQL query ([#262](https://github.com/chrischall/fetchproxy/issues/262)) ([31990af](https://github.com/chrischall/fetchproxy/commit/31990afe9ee981cef025e8422fb47ff30e47a64a))
+* **extension:** keep the Apollo accessor symmetric and re-wrap replaced clients ([#264](https://github.com/chrischall/fetchproxy/issues/264)) ([24bb28c](https://github.com/chrischall/fetchproxy/commit/24bb28ca1ee63ae590ee2c938f2074d05396ec78))
+* **extension:** try every matching tab when a graphql op is unobserved ([#257](https://github.com/chrischall/fetchproxy/issues/257)) ([f62e3d9](https://github.com/chrischall/fetchproxy/commit/f62e3d9e447e23f0387a4d6752ec8c4abc1ddb81))
+
 ## [2.3.2](https://github.com/chrischall/fetchproxy/compare/v2.3.1...v2.3.2) (2026-08-31)
 
 
