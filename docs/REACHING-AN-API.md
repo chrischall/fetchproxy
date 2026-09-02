@@ -129,6 +129,17 @@ through the page:
 - no cross-origin request is attempted, so the block above never applies;
 - it works with what ships today.
 
+**Give it a window, and set the deadline to match.** `captureRequestHeader`'s
+per-call `timeoutMs` is forwarded to the extension but does NOT raise the
+transport's `fetchTimeoutMs` (default 30s), and the shorter one wins. Since
+2.4.2 the timeout says so; before that it reported only its own number, so a
+call asking for 150s failed at 30s citing `30000ms`. Set both:
+
+```ts
+createFetchproxyTransport({ ...opts, fetchTimeoutMs: 150_000 });
+await server.captureRequestHeader({ host, path, headerName, timeoutMs: 150_000 });
+```
+
 The trade is that capture is **opportunistic**: it resolves when the page next
 makes a matching request, so an idle tab yields nothing and a reload is
 sometimes the trigger. Pair it with a persistent `$HOME` so the captured
