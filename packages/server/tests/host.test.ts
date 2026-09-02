@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import { WebSocket } from 'ws';
 import type { AddressInfo } from 'node:net';
 import { mkdtempSync } from 'node:fs';
@@ -88,7 +88,32 @@ describe('host (concentrator)', () => {
     expect(ownHello.domains).toEqual(['opentable.com']);
     expect(() => validateFrame(ownHello)).not.toThrow();
 
+    // 2.5.0: the handle reports the extension link for bridgeHealth().session
+    // — attached (its hello landed), but no session until a ready arrives.
+    expect(host.extensionConnected()).toBe(true);
+    expect(host.sessionLinked()).toBe(false);
+
     ws.close();
+    await new Promise<void>((r) => ws.once('close', () => r()));
+    await vi.waitFor(() => expect(host!.extensionConnected()).toBe(false));
+  });
+
+  it('reports the extension link as unattached before any extension dials in', async () => {
+    const el = await electRole({ host: '127.0.0.1', port: 0 });
+    if (el.role !== 'host') throw new Error('expected host');
+    const idDir = mkdtempSync(join(tmpdir(), 'fp-host-'));
+    const id = await loadOrCreateIdentity('opentable-mcp', idDir);
+    host = await startHost({
+      httpServer: el.server,
+      ownIdentity: id,
+      ownMcpId: 'opentable-mcp:0.9.1:abc1234567890def',
+      ownServerName: 'opentable-mcp',
+      ownVersion: '0.9.1',
+      ownDomains: ['opentable.com'],
+      extensionTrust: blankTrust(),
+    });
+    expect(host.extensionConnected()).toBe(false);
+    expect(host.sessionLinked()).toBe(false);
   });
 
   it('rejects WS upgrades with public Origin header', async () => {

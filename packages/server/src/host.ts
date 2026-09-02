@@ -93,6 +93,10 @@ export interface HostHandle {
   onPendingPair: (cb: (pairCode: string) => void) => void;
   /** The most recent pair code received via pair-pending, or null if none. */
   pendingPairCode: () => string | null;
+  /** 2.5.0: whether an extension socket is attached right now. */
+  extensionConnected: () => boolean;
+  /** 2.5.0: whether a session key exists — the extension's ready landed and verified. */
+  sessionLinked: () => boolean;
 }
 
 interface PeerSlot {
@@ -544,5 +548,7 @@ export async function startHost(opts: HostOpts): Promise<HostHandle> {
     onExtensionDisconnect: (cb) => { disconnectListeners.push(cb); },
     onPendingPair: (cb) => { pendingPairListeners.push(cb); },
     pendingPairCode: () => ownPendingPairCode,
+    extensionConnected: () => extensionWs !== null,
+    sessionLinked: () => ownSession !== null,
   };
 }

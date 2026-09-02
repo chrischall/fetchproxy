@@ -104,6 +104,14 @@ export interface PeerHandle {
   /** The most recent pair code received via pair-pending, or null if none. */
   pendingPairCode: () => string | null;
   /**
+   * 2.5.0: whether the extension is known to be attached to the host. A
+   * peer learns this from the extension hello the host relays (1.12.0+), so
+   * against an older concentrator it stays false even while linked.
+   */
+  extensionConnected: () => boolean;
+  /** 2.5.0: whether a session key exists — the first ready landed. */
+  sessionLinked: () => boolean;
+  /**
    * 0.13.0+: fires when the WebSocket to the host closes — most importantly
    * when the host process dies, stranding this peer. The owning
    * `FetchproxyServer` uses this to tear down the dead peer handle and
@@ -461,6 +469,8 @@ export async function startPeer(opts: PeerOpts): Promise<InternalPeerHandle> {
       pendingPairListeners.push(cb);
     },
     pendingPairCode: () => pendingPairCode,
+    extensionConnected: () => extensionHello !== null,
+    sessionLinked: () => session !== null,
     onClose: (cb) => {
       closeListeners.push(cb);
     },

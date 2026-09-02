@@ -145,8 +145,21 @@ top-level fields so cohort healthcheck tools can drop their local
 `DEFAULT_FETCH_TIMEOUT_MS` / `DEFAULT_BRIDGE_REVIVE_DELAY_MS`
 constants and read the resolved value directly:
 
+As of 2.5.0 `h.session` says where the extension link stands, so a
+healthcheck can name the missing leg instead of showing a bare
+session-ready timeout: `'not_listening'` (no `listen()`), `'linked'`
+(session key derived), `'pair_pending'` (the user has yet to approve
+`pairCode` in the popup), `'extension_disconnected'` (port bound, no
+extension attached), or `'no_session'` (extension attached, hello sent,
+nothing came back — the hello was dropped somewhere).
+
 ```ts
 const h = fp.bridgeHealth();
+// h.session: {
+//   state: 'not_listening' | 'linked' | 'pair_pending' | 'extension_disconnected' | 'no_session';
+//   pairCode: string | null;       // set while state === 'pair_pending'
+//   extensionConnected: boolean;   // a peer only learns this from the host's relayed hello (1.12.0+)
+// };
 // h.fetchTimeoutMs: number;       // resolved (30_000 default, or override; 0 = disabled)
 // h.bridgeReviveDelayMs: number;  // resolved (2_000 default, or override; 0 = disabled)
 // h.keepAlive: {
@@ -262,8 +275,14 @@ Runs one healthcheck probe through the caller's `fetchFn`, measures elapsed ms, 
 
 ```ts
 const probe = await fp.runProbe((path) => client.fetchHtml(path), '/robots.txt');
-// { ok, elapsed_ms, bridge: { role, port, server_version, ... }, error?: { kind, message } }
+// { ok, elapsed_ms, bridge: { role, port, server_version, ..., session_state, pending_pair_code, extension_connected, last_extension_message_at }, error?: { kind, message } }
 ```
+
+As of 2.5.0 the `bridge` projection carries `session_state`,
+`pending_pair_code` and `extension_connected` (from `bridgeHealth().session`)
+and `last_extension_message_at`, and `error.kind` can be
+`'session_not_ready'` — `FetchproxySessionNotReadyError`, which used to
+fall through to `'other'`.
 
 `runProbe` only does probe execution + classification + the bridge projection. The healthcheck **tool registration and the site-specific hint text stay in the consumer**, which wraps this result with its own plain-English next-step guidance.
 

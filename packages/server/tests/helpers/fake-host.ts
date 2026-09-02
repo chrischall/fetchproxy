@@ -23,6 +23,9 @@ export function installFakeHost(server: FetchproxyServer): {
     // here are about post-handshake verb behavior, not the pairing UX.
     onPendingPair: (_cb: (code: string) => void) => undefined,
     pendingPairCode: (): string | null => null,
+    // 2.5.0: the fake is a linked host — bridgeHealth().session reads these.
+    extensionConnected: (): boolean => true,
+    sessionLinked: (): boolean => true,
   };
   (server as unknown as { hostHandle: typeof fakeHostHandle }).hostHandle = fakeHostHandle;
   // Mimic listen() resolving by setting the public `role` field too.

@@ -242,6 +242,27 @@ describe('peer client', () => {
     await peer.sendInner({ type: 'ping' });
     expect(sessionKey).not.toBeNull();
 
+    // 2.5.0: the handle reports the link for bridgeHealth().session. A peer
+    // only knows the extension is there once the host relays its hello
+    // (1.12.0+); this fake host has not, so linked-but-unseen is the
+    // honest answer here.
+    expect(peer.sessionLinked()).toBe(true);
+    expect(peer.extensionConnected()).toBe(false);
+    hostWs!.send(
+      JSON.stringify({
+        type: 'hello',
+        protocolVersion: 3,
+        role: 'extension',
+        platform: 'chrome',
+        extensionId: 'fetchproxy',
+        version: '0.4.0',
+        identityX25519Pub: 'AAAA',
+        identityEd25519Pub: 'AAAA',
+        sessionNonce: 'AAAA',
+      }),
+    );
+    await vi.waitFor(() => expect(peer!.extensionConnected()).toBe(true));
+
     // Send a frame that DECRYPTS FINE (real, current session key) but whose
     // plaintext fails schema validation — the download bytes:-1 class of
     // bug, reused here as a concrete, realistic example.
