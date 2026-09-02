@@ -98,6 +98,94 @@ describe('host (concentrator)', () => {
     await vi.waitFor(() => expect(host!.extensionConnected()).toBe(false));
   });
 
+  it('relays extension-disconnected to peers that accept it, and only to those (2.5.0)', async () => {
+    const el = await electRole({ host: '127.0.0.1', port: 0 });
+    if (el.role !== 'host') throw new Error('expected host');
+    const port = (el.server.address() as AddressInfo).port;
+    const idDir = mkdtempSync(join(tmpdir(), 'fp-host-'));
+    const ownId = await loadOrCreateIdentity('opentable-mcp', idDir);
+    const newPeerId = await loadOrCreateIdentity('resy-mcp', idDir);
+    const oldPeerId = await loadOrCreateIdentity('tock-mcp', idDir);
+
+    host = await startHost({
+      httpServer: el.server,
+      ownIdentity: ownId,
+      ownMcpId: 'opentable-mcp:0.9.1:abc1234567890de1',
+      ownServerName: 'opentable-mcp',
+      ownVersion: '0.9.1',
+      ownDomains: ['opentable.com'],
+      extensionTrust: blankTrust(),
+    });
+
+    const open = (ws: WebSocket) => new Promise<void>((r) => ws.once('open', () => r()));
+    const framesOf = (ws: WebSocket): string[] => {
+      const seen: string[] = [];
+      ws.on('message', (data: Buffer) => seen.push(JSON.parse(data.toString()).type));
+      return seen;
+    };
+
+    // A 2.5.0 peer advertises the frame; a pre-2.5 peer does not.
+    const newPeer = new WebSocket(`ws://127.0.0.1:${port}`);
+    await open(newPeer);
+    const newPeerSeen = framesOf(newPeer);
+    newPeer.send(
+      JSON.stringify(
+        await buildServerHello({
+          identity: newPeerId,
+          mcpId: 'resy-mcp:0.0.1:abc1234567890de2',
+          serverName: 'resy-mcp',
+          version: '0.0.1',
+          domains: ['resy.com'],
+          accepts: ['extension-disconnected'],
+        }),
+      ),
+    );
+    const oldPeer = new WebSocket(`ws://127.0.0.1:${port}`);
+    await open(oldPeer);
+    const oldPeerSeen = framesOf(oldPeer);
+    oldPeer.send(
+      JSON.stringify(
+        await buildServerHello({
+          identity: oldPeerId,
+          mcpId: 'tock-mcp:0.0.1:abc1234567890de3',
+          serverName: 'tock-mcp',
+          version: '0.0.1',
+          domains: ['exploretock.com'],
+        }),
+      ),
+    );
+
+    // Extension attaches (both peers get its hello relayed), then leaves.
+    const ext = new WebSocket(`ws://127.0.0.1:${port}`);
+    await open(ext);
+    ext.send(
+      JSON.stringify({
+        type: 'hello',
+        protocolVersion: 3,
+        role: 'extension',
+        platform: 'chrome',
+        extensionId: 'fetchproxy',
+        version: '0.4.0',
+        identityX25519Pub: 'AAAA',
+        identityEd25519Pub: 'AAAA',
+        sessionNonce: 'AAAA',
+      } satisfies HelloFrameFromExtension),
+    );
+    await vi.waitFor(() => expect(newPeerSeen).toContain('hello'));
+    await vi.waitFor(() => expect(oldPeerSeen).toContain('hello'));
+    expect(host.extensionConnected()).toBe(true);
+
+    ext.close();
+    await vi.waitFor(() => expect(newPeerSeen).toContain('extension-disconnected'));
+    expect(host.extensionConnected()).toBe(false);
+    // Give the host a beat: the old peer must NOT have been sent the frame.
+    await new Promise((r) => setTimeout(r, 50));
+    expect(oldPeerSeen).not.toContain('extension-disconnected');
+
+    newPeer.close();
+    oldPeer.close();
+  });
+
   it('reports the extension link as unattached before any extension dials in', async () => {
     const el = await electRole({ host: '127.0.0.1', port: 0 });
     if (el.role !== 'host') throw new Error('expected host');

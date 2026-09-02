@@ -507,6 +507,8 @@ export function validateFrame(raw: unknown): Frame {
   if (t === 'ready') return validateReady(raw);
   if (t === 'frame') return validateEncrypted(raw);
   if (t === 'pair-pending') return validatePairPending(raw);
+  // 2.5.0: payload-free host→peer notice (see ExtensionDisconnectedFrame).
+  if (t === 'extension-disconnected') return { type: 'extension-disconnected' };
   throw new ProtocolError(`unknown frame type: ${String(t)}`);
 }
 
@@ -594,6 +596,20 @@ function validateHello(raw: Record<string, unknown>): HelloFrame {
     }
     if (raw.domSelectors !== undefined) {
       assertDomSelectorsArray(raw.domSelectors, 'hello.domSelectors');
+    }
+    // 2.5.0: optional list of extra frame types this server accepts from a
+    // host. Entries are free strings on purpose — a value this validator
+    // has never heard of is a newer peer talking to an older host, not an
+    // error — so only the shape is checked.
+    if (raw.accepts !== undefined) {
+      if (!Array.isArray(raw.accepts)) {
+        throw new ProtocolError('hello.accepts: expected array');
+      }
+      for (const a of raw.accepts) {
+        if (typeof a !== 'string') {
+          throw new ProtocolError(`hello.accepts: entry must be string, got ${typeof a}`);
+        }
+      }
     }
     if (raw.graphqlOps !== undefined) {
       assertGraphqlOpsArray(raw.graphqlOps, 'hello.graphqlOps');

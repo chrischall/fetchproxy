@@ -491,6 +491,15 @@ export async function startHost(opts: HostOpts): Promise<HostHandle> {
         ownSession = null;
         resetSessionPromise();
         disconnectListeners.forEach((cb) => cb());
+        // 2.5.0: tell the peers that can take it. A peer before 2.5.0 would
+        // refuse the frame type in its validator, so it is gated on what the
+        // peer's hello advertised — those peers keep their last-known view.
+        const notice = JSON.stringify({ type: 'extension-disconnected' });
+        for (const slot of peers.values()) {
+          if (slot.helloFrame.accepts?.includes('extension-disconnected')) {
+            try { slot.ws.send(notice); } catch { /* peer already gone */ }
+          }
+        }
       }
       if (identified === 'peer' && peerMcpId) {
         // FP-B1: a peer whose WS dropped may have already re-dialed with the

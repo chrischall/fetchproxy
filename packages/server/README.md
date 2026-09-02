@@ -158,7 +158,7 @@ const h = fp.bridgeHealth();
 // h.session: {
 //   state: 'not_listening' | 'linked' | 'pair_pending' | 'extension_disconnected' | 'no_session';
 //   pairCode: string | null;       // set while state === 'pair_pending'
-//   extensionConnected: boolean;   // a peer only learns this from the host's relayed hello (1.12.0+)
+//   extensionConnected: boolean;   // a peer learns arrivals from the host's relayed hello (1.12.0+) and departures from its extension-disconnected notice (2.5.0+)
 // };
 // h.fetchTimeoutMs: number;       // resolved (30_000 default, or override; 0 = disabled)
 // h.bridgeReviveDelayMs: number;  // resolved (2_000 default, or override; 0 = disabled)

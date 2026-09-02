@@ -314,5 +314,27 @@ describe('peer client', () => {
 
     await vi.waitFor(() => expect(received).toHaveLength(2));
     expect(received[1]).toMatchObject({ type: 'response', id: 88, ok: true, status: 200 });
+
+    // 2.5.0: the host says the extension left — both go back to false, and
+    // stay there until the extension is seen again. The session key is
+    // kept (sendInner's invariant), only the report changes. Last in this
+    // test on purpose: the re-link below mints a new key, and the sealed
+    // frames above were built under the first one.
+    hostWs!.send(JSON.stringify({ type: 'extension-disconnected' }));
+    await vi.waitFor(() => expect(peer!.extensionConnected()).toBe(false));
+    expect(peer.sessionLinked()).toBe(false);
+    // It comes back: a fresh ready re-links (the extension hello is not yet
+    // relayed here, so the ready goes through the pre-1.12 unverifiable path).
+    const ephemeral2 = await generateX25519();
+    hostWs!.send(
+      JSON.stringify({
+        type: 'ready',
+        mcpId,
+        extensionSessionPub: Buffer.from(ephemeral2.publicKey).toString('base64'),
+        sessionSig: Buffer.from('placeholder-sig').toString('base64'),
+      } satisfies ReadyFrame),
+    );
+    await vi.waitFor(() => expect(peer!.sessionLinked()).toBe(true));
+    expect(peer.extensionConnected()).toBe(false);
   });
 });

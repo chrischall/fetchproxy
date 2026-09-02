@@ -105,8 +105,10 @@ export interface PeerHandle {
   pendingPairCode: () => string | null;
   /**
    * 2.5.0: whether the extension is known to be attached to the host. A
-   * peer learns this from the extension hello the host relays (1.12.0+), so
-   * against an older concentrator it stays false even while linked.
+   * peer learns arrivals from the extension hello the host relays (1.12.0+)
+   * and departures from `extension-disconnected` (host 2.5.0+); against an
+   * older concentrator it stays false even while linked, and against a
+   * 1.12–2.4 host it is last-known — it cannot see the extension leave.
    */
   extensionConnected: () => boolean;
   /** 2.5.0: whether a session key exists — the first ready landed. */
@@ -164,6 +166,9 @@ export async function startPeer(opts: PeerOpts): Promise<InternalPeerHandle> {
     localStoragePointers: opts.localStoragePointers,
     sessionStoragePointers: opts.sessionStoragePointers,
     graphqlOps: opts.graphqlOps,
+    // 2.5.0: let a host ≥2.5.0 tell us when the extension leaves, so
+    // `extensionConnected()` / `sessionLinked()` can go back to false.
+    accepts: ['extension-disconnected'],
   });
   const sessionNonce = fromB64(hello.sessionNonce);
   ws.send(JSON.stringify(hello));
@@ -198,6 +203,11 @@ export async function startPeer(opts: PeerOpts): Promise<InternalPeerHandle> {
   // 1.12.0 (#208): the extension hello, once the host has relayed it. Null
   // means "this host does not relay it" — an older concentrator.
   let extensionHello: HelloFrameFromExtension | null = null;
+  // 2.5.0: set when the host relays `extension-disconnected`; cleared by the
+  // next `ready`. `session` itself is left in place — `sendInner` relies on
+  // it never returning to null once set — so this flag is what keeps
+  // `sessionLinked()` honest across an extension flap.
+  let extensionGone = false;
   let warnedUnverifiable = false;
   // `undefined` = not read yet; `null` = read, nothing pinned. See the note in
   // `authenticateExtension` for why this is cached rather than re-read.
@@ -311,6 +321,14 @@ export async function startPeer(opts: PeerOpts): Promise<InternalPeerHandle> {
         extensionHello = frame;
         return;
       }
+      // 2.5.0: the extension's socket to the host closed. Forget what we
+      // knew of it; the host relays a fresh hello (and the extension a fresh
+      // ready) when it comes back.
+      if (frame.type === 'extension-disconnected') {
+        extensionHello = null;
+        extensionGone = true;
+        return;
+      }
       if (frame.type === 'ready' && frame.mcpId === opts.mcpId) {
         // #208: authenticate the extension BEFORE deriving anything from a
         // key it supplied. Without this, anything that could reach us could BE
@@ -341,6 +359,7 @@ export async function startPeer(opts: PeerOpts): Promise<InternalPeerHandle> {
         );
         const isRenegotiation = session !== null;
         session = new SessionState(sessionKey);
+        extensionGone = false;
         // 0.5.2+: ready means the user approved; the pair-pending hint is
         // no longer actionable. Clear so subsequent `pendingPairCode()`
         // queries don't return a stale code from before this approval.
@@ -470,7 +489,7 @@ export async function startPeer(opts: PeerOpts): Promise<InternalPeerHandle> {
     },
     pendingPairCode: () => pendingPairCode,
     extensionConnected: () => extensionHello !== null,
-    sessionLinked: () => session !== null,
+    sessionLinked: () => session !== null && !extensionGone,
     onClose: (cb) => {
       closeListeners.push(cb);
     },
