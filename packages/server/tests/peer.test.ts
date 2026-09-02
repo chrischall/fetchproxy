@@ -242,6 +242,27 @@ describe('peer client', () => {
     await peer.sendInner({ type: 'ping' });
     expect(sessionKey).not.toBeNull();
 
+    // 2.5.0: the handle reports the link for bridgeHealth().session. A peer
+    // only knows the extension is there once the host relays its hello
+    // (1.12.0+); this fake host has not, so linked-but-unseen is the
+    // honest answer here.
+    expect(peer.sessionLinked()).toBe(true);
+    expect(peer.extensionConnected()).toBe(false);
+    hostWs!.send(
+      JSON.stringify({
+        type: 'hello',
+        protocolVersion: 3,
+        role: 'extension',
+        platform: 'chrome',
+        extensionId: 'fetchproxy',
+        version: '0.4.0',
+        identityX25519Pub: 'AAAA',
+        identityEd25519Pub: 'AAAA',
+        sessionNonce: 'AAAA',
+      }),
+    );
+    await vi.waitFor(() => expect(peer!.extensionConnected()).toBe(true));
+
     // Send a frame that DECRYPTS FINE (real, current session key) but whose
     // plaintext fails schema validation — the download bytes:-1 class of
     // bug, reused here as a concrete, realistic example.
@@ -293,5 +314,27 @@ describe('peer client', () => {
 
     await vi.waitFor(() => expect(received).toHaveLength(2));
     expect(received[1]).toMatchObject({ type: 'response', id: 88, ok: true, status: 200 });
+
+    // 2.5.0: the host says the extension left — both go back to false, and
+    // stay there until the extension is seen again. The session key is
+    // kept (sendInner's invariant), only the report changes. Last in this
+    // test on purpose: the re-link below mints a new key, and the sealed
+    // frames above were built under the first one.
+    hostWs!.send(JSON.stringify({ type: 'extension-disconnected' }));
+    await vi.waitFor(() => expect(peer!.extensionConnected()).toBe(false));
+    expect(peer.sessionLinked()).toBe(false);
+    // It comes back: a fresh ready re-links (the extension hello is not yet
+    // relayed here, so the ready goes through the pre-1.12 unverifiable path).
+    const ephemeral2 = await generateX25519();
+    hostWs!.send(
+      JSON.stringify({
+        type: 'ready',
+        mcpId,
+        extensionSessionPub: Buffer.from(ephemeral2.publicKey).toString('base64'),
+        sessionSig: Buffer.from('placeholder-sig').toString('base64'),
+      } satisfies ReadyFrame),
+    );
+    await vi.waitFor(() => expect(peer!.sessionLinked()).toBe(true));
+    expect(peer.extensionConnected()).toBe(false);
   });
 });

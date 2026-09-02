@@ -93,6 +93,10 @@ export interface HostHandle {
   onPendingPair: (cb: (pairCode: string) => void) => void;
   /** The most recent pair code received via pair-pending, or null if none. */
   pendingPairCode: () => string | null;
+  /** 2.5.0: whether an extension socket is attached right now. */
+  extensionConnected: () => boolean;
+  /** 2.5.0: whether a session key exists — the extension's ready landed and verified. */
+  sessionLinked: () => boolean;
 }
 
 interface PeerSlot {
@@ -487,6 +491,15 @@ export async function startHost(opts: HostOpts): Promise<HostHandle> {
         ownSession = null;
         resetSessionPromise();
         disconnectListeners.forEach((cb) => cb());
+        // 2.5.0: tell the peers that can take it. A peer before 2.5.0 would
+        // refuse the frame type in its validator, so it is gated on what the
+        // peer's hello advertised — those peers keep their last-known view.
+        const notice = JSON.stringify({ type: 'extension-disconnected' });
+        for (const slot of peers.values()) {
+          if (slot.helloFrame.accepts?.includes('extension-disconnected')) {
+            try { slot.ws.send(notice); } catch { /* peer already gone */ }
+          }
+        }
       }
       if (identified === 'peer' && peerMcpId) {
         // FP-B1: a peer whose WS dropped may have already re-dialed with the
@@ -544,5 +557,7 @@ export async function startHost(opts: HostOpts): Promise<HostHandle> {
     onExtensionDisconnect: (cb) => { disconnectListeners.push(cb); },
     onPendingPair: (cb) => { pendingPairListeners.push(cb); },
     pendingPairCode: () => ownPendingPairCode,
+    extensionConnected: () => extensionWs !== null,
+    sessionLinked: () => ownSession !== null,
   };
 }

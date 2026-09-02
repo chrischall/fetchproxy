@@ -47,6 +47,8 @@ function installRecordingHost(server: FetchproxyServer): RecordingHost {
     onExtensionDisconnect: (_cb: () => void) => undefined,
     onPendingPair: (_cb: (code: string) => void) => undefined,
     pendingPairCode: (): string | null => null,
+    extensionConnected: () => true,
+    sessionLinked: () => true,
   };
   (server as unknown as { hostHandle: typeof fakeHostHandle }).hostHandle = fakeHostHandle;
   (server as unknown as { role: 'host' | 'peer' | null }).role = 'host';

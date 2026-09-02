@@ -4,11 +4,18 @@ import {
   FetchproxyHttpError,
   FetchproxyProtocolError,
 } from './ws-server.js';
+import { FetchproxySessionNotReadyError } from './session-ready.js';
 
 /**
  * 0.8.0+: discriminator for the typed-error hierarchy a downstream
  * MCP catches at the boundary of a tool handler. Returns one of:
  *
+ * - `'session_not_ready'` — 2.5.0: `FetchproxySessionNotReadyError` — the extension
+ *                        never confirmed a session within the session-ready
+ *                        timeout; `.reason` is `'pair-required'` (a code waits
+ *                        in the popup — `.pairCode`) or `'not-ready'` (attached
+ *                        but silent). Before 2.5.0 this fell through to `'other'`
+ *                        and no healthcheck could name it.
  * - `'timeout'`        — `FetchproxyTimeoutError` (server's `fetchTimeoutMs` fired)
  * - `'bridge_down'`    — `FetchproxyBridgeDownError` (SW eviction; check `retryAttempted`)
  * - `'http'`           — `FetchproxyHttpError` (upstream status outside `expectStatus`)
@@ -37,9 +44,16 @@ import {
  *     }
  *   }
  */
-export type BridgeError = 'timeout' | 'bridge_down' | 'http' | 'protocol' | 'other';
+export type BridgeError =
+  | 'session_not_ready'
+  | 'timeout'
+  | 'bridge_down'
+  | 'http'
+  | 'protocol'
+  | 'other';
 
 export function classifyBridgeError(err: unknown): BridgeError {
+  if (err instanceof FetchproxySessionNotReadyError) return 'session_not_ready';
   if (err instanceof FetchproxyTimeoutError) return 'timeout';
   if (err instanceof FetchproxyBridgeDownError) return 'bridge_down';
   if (err instanceof FetchproxyHttpError) return 'http';

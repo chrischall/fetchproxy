@@ -41,6 +41,8 @@ export interface BuildServerHelloOpts {
   domSelectors?: DomSelectorDecl[];
   /** 1.x+: declared GraphQL operations for the `graphql` capability. */
   graphqlOps?: GraphqlOpDeclaration[];
+  /** 2.5.0: extra host→peer frame types this server accepts (peers only). */
+  accepts?: string[];
 }
 
 /**
@@ -76,6 +78,10 @@ export async function buildServerHello(
     sessionNonce: toB64(sessionNonce),
     sessionSig: toB64(sig),
   };
+  // 2.5.0: a peer advertises the host→peer frames it can take. Emitted
+  // only when non-empty — the host's own hello (and every pre-2.5 peer)
+  // carries no such field.
+  if (opts.accepts && opts.accepts.length > 0) hello.accepts = [...opts.accepts];
   // Only emit non-empty scope fields. Keeps the wire compact for the
   // fetch-only common case and makes the security-significant decls
   // (which the popup shows the user) obvious by their presence.

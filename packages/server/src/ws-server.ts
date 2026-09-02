@@ -858,6 +858,31 @@ export class FetchproxyTimeoutError extends FetchproxyProtocolError {
  * this to power their `healthcheck` tools without re-tracking the
  * same counters in their transport adapters.
  */
+/**
+ * 2.5.0: where this bridge's link to the extension stands, so a healthcheck
+ * can name the missing leg instead of showing a bare timeout. In precedence
+ * order:
+ *
+ * - `'not_listening'`          — `listen()` never ran (or the peer link dropped).
+ * - `'linked'`                 — a session key exists; calls can be sealed.
+ * - `'pair_pending'`           — the extension is waiting on the user to approve
+ *                                `pairCode` in the popup.
+ * - `'extension_disconnected'` — the port is bound but no extension is attached
+ *                                (host: no socket; peer: the host has relayed no
+ *                                extension hello).
+ * - `'no_session'`             — the extension is attached and this bridge's
+ *                                hello went out, but neither a ready nor a
+ *                                pair-pending has come back. The hello was
+ *                                dropped somewhere between here and the popup.
+ */
+export interface BridgeSessionState {
+  state: 'not_listening' | 'linked' | 'pair_pending' | 'extension_disconnected' | 'no_session';
+  /** The pair code awaiting approval, when `state` is `'pair_pending'`. */
+  pairCode: string | null;
+  /** Whether an extension is known to be attached (see `state` for the peer caveat). */
+  extensionConnected: boolean;
+}
+
 export interface BridgeHealth {
   /** Bridge role at snapshot time; `null` if `listen()` never connected. */
   role: 'host' | 'peer' | null;
@@ -928,6 +953,8 @@ export interface BridgeHealth {
    * still answering?" liveness. Null until the first frame arrives.
    */
   lastExtensionMessageAt: number | null;
+  /** 2.5.0: the extension link — see {@link BridgeSessionState}. */
+  session: BridgeSessionState;
   /**
    * 0.10.0+ (#73): keep-alive observability surface for downstream
    * healthcheck tools. `enabled` mirrors the `> 0` interval guard;
@@ -994,6 +1021,14 @@ export interface BridgeProbeResult {
     last_failure_at: number | null;
     last_failure_reason: string | null;
     consecutive_failures: number;
+    /** 2.5.0: `BridgeHealth.session.state`. */
+    session_state: BridgeSessionState['state'];
+    /** 2.5.0: `BridgeHealth.session.pairCode`. */
+    pending_pair_code: string | null;
+    /** 2.5.0: `BridgeHealth.session.extensionConnected`. */
+    extension_connected: boolean;
+    /** 2.5.0: `BridgeHealth.lastExtensionMessageAt` (epoch ms), projected here so consumers stop lifting it separately. */
+    last_extension_message_at: number | null;
   };
   /**
    * Present only when `ok` is false. `kind` is `classifyBridgeError`'s
@@ -1655,6 +1690,7 @@ export class FetchproxyServer {
       lastFailureReason: this.lastFailureReason,
       consecutiveFailures: this.consecutiveFailures,
       lastExtensionMessageAt: this.lastExtensionMessageAt,
+      session: this.sessionSnapshot(),
       keepAlive: {
         enabled: intervalMs > 0,
         intervalMs,
@@ -2267,6 +2303,10 @@ export class FetchproxyServer {
         last_failure_at: health.lastFailureAt,
         last_failure_reason: health.lastFailureReason,
         consecutive_failures: health.consecutiveFailures,
+        session_state: health.session.state,
+        pending_pair_code: health.session.pairCode,
+        extension_connected: health.session.extensionConnected,
+        last_extension_message_at: health.lastExtensionMessageAt,
       },
       ...(error ? { error } : {}),
     };
@@ -3368,6 +3408,30 @@ export class FetchproxyServer {
     if (this.hostHandle) return this.hostHandle.pendingPairCode();
     if (this.peerHandle) return this.peerHandle.pendingPairCode();
     return null;
+  }
+
+  /**
+   * 2.5.0: the extension link as {@link BridgeSessionState}, read off
+   * whichever handle is live. A pending pair code outranks "extension not
+   * seen" because the code could only have come from the extension — a
+   * peer behind an older host never sees the extension hello but does see
+   * pair-pending frames.
+   */
+  private sessionSnapshot(): BridgeSessionState {
+    const handle = this.hostHandle ?? this.peerHandle;
+    const pairCode = this.currentPendingPairCode();
+    if (!handle || this.role === null) {
+      return { state: 'not_listening', pairCode, extensionConnected: false };
+    }
+    const extensionConnected = handle.extensionConnected();
+    const state: BridgeSessionState['state'] = handle.sessionLinked()
+      ? 'linked'
+      : pairCode !== null
+        ? 'pair_pending'
+        : !extensionConnected
+          ? 'extension_disconnected'
+          : 'no_session';
+    return { state, pairCode, extensionConnected };
   }
 
   /**

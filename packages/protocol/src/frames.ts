@@ -336,6 +336,15 @@ export interface HelloFrameFromServer {
    */
   capabilities?: Capability[];
   /**
+   * 2.5.0: host→peer frame types this server understands beyond the base
+   * set (`hello` / `ready` / `frame` / `pair-pending`). A host relays such
+   * a frame only to peers that listed it, so an older peer — whose
+   * validator would refuse the type — never sees one. Unknown entries are
+   * accepted and ignored, so a newer peer can advertise to an older host.
+   * Today: `'extension-disconnected'`.
+   */
+  accepts?: string[];
+  /**
    * 0.3.0+: declared cookie names the MCP is allowed to read via
    * `read_cookies`. The extension refuses requests for any key outside
    * this set. Empty/absent means no cookie reads are permitted even if
@@ -462,7 +471,24 @@ export interface PairPendingFrame {
   pairCode: string;               // formatted "XXX-XXX"
 }
 
-export type Frame = HelloFrame | ReadyFrame | EncryptedFrame | PairPendingFrame;
+/**
+ * 2.5.0: host → peer, when the extension's socket to the host closes. Sent
+ * only to peers whose hello `accepts` it. A peer clears what it knew of
+ * the extension so its `bridgeHealth().session` can report the link as
+ * gone instead of staying `linked` forever; the next relayed extension
+ * hello and `ready` bring it back. Carries nothing — the extension is
+ * a singleton on the host, so there is only one thing it could mean.
+ */
+export interface ExtensionDisconnectedFrame {
+  type: 'extension-disconnected';
+}
+
+export type Frame =
+  | HelloFrame
+  | ReadyFrame
+  | EncryptedFrame
+  | PairPendingFrame
+  | ExtensionDisconnectedFrame;
 
 // --- Inner frames (inside ciphertext) ---
 

@@ -26,6 +26,22 @@ describe('validateFrame', () => {
       expect(() => validateFrame(validHello)).not.toThrow();
     });
 
+    it('accepts an `accepts` list, including entries it has never heard of (2.5.0)', () => {
+      expect(() =>
+        validateFrame({ ...validHello, accepts: ['extension-disconnected', 'something-newer'] }),
+      ).not.toThrow();
+      expect(() => validateFrame({ ...validHello, accepts: [] })).not.toThrow();
+    });
+
+    it('rejects a malformed `accepts`', () => {
+      expect(() => validateFrame({ ...validHello, accepts: 'extension-disconnected' })).toThrow(
+        /hello\.accepts: expected array/,
+      );
+      expect(() => validateFrame({ ...validHello, accepts: [1] })).toThrow(
+        /hello\.accepts: entry must be string/,
+      );
+    });
+
     it('accepts multiple domains', () => {
       expect(() => validateFrame({ ...validHello, domains: ['a.com', 'b.com'] })).not.toThrow();
     });
@@ -532,6 +548,12 @@ describe('validateFrame', () => {
   });
 
   describe('defensive', () => {
+    it('accepts extension-disconnected (2.5.0, host → peer, payload-free)', () => {
+      expect(validateFrame({ type: 'extension-disconnected' })).toEqual({
+        type: 'extension-disconnected',
+      });
+    });
+
     it('rejects unknown frame type', () => {
       expect(() => validateFrame({ type: 'mystery' })).toThrow(/unknown frame type/);
     });
