@@ -244,16 +244,40 @@ export function interceptClientAssignment(
     if (prior && prior.configurable === false) return false;
     const priorGet = prior && typeof prior.get === 'function' ? prior.get : undefined;
     const priorSet = prior && typeof prior.set === 'function' ? prior.set : undefined;
-    let stored: unknown = prior && 'value' in prior ? prior.value : undefined;
+    // Reads and writes must land in the SAME place. Delegating the getter while
+    // owning the setter (the shape a prior getter-only accessor produces) would
+    // strand every client the page assigns: written to `stored`, read back from
+    // theirs — leaving `__APOLLO_CLIENT__` permanently undefined, which breaks
+    // the page, devtools, and this bridge's own read of it.
+    const delegate = priorGet !== undefined && priorSet !== undefined;
+    let stored: unknown;
+    if (prior && 'value' in prior) stored = prior.value;
+    else if (priorGet !== undefined) {
+      // Seed from the prior getter so a value that already exists behind it
+      // survives the swap.
+      try {
+        stored = priorGet.call(win);
+      } catch {
+        stored = undefined;
+      }
+    }
     Object.defineProperty(win, '__APOLLO_CLIENT__', {
       configurable: true,
       enumerable: prior ? prior.enumerable !== false : true,
       get(this: unknown): unknown {
-        return priorGet ? priorGet.call(this) : stored;
+        return delegate ? (priorGet as () => unknown).call(this) : stored;
       },
       set(this: unknown, value: unknown): void {
-        if (priorSet) priorSet.call(this, value);
-        else stored = value;
+        if (!delegate) stored = value;
+        // Run any prior setter either way, so another extension's side effects
+        // still fire even when we own the storage.
+        if (priorSet !== undefined) {
+          try {
+            priorSet.call(this, value);
+          } catch {
+            // Their setter throwing is their problem, not the page's.
+          }
+        }
         try {
           onAssigned();
         } catch {
@@ -282,14 +306,19 @@ export function interceptClientAssignment(
  */
 export function installApolloBridge(win: ApolloBridgeWindow): void {
   const docsByOp = new Map<string, unknown>();
-  let wrapped = false;
+  // The client that is currently instrumented — NOT a boolean. An app that
+  // re-creates its Apollo client (route change, auth refresh) assigns a fresh
+  // one whose link has never been wrapped; latching on "we wrapped something
+  // once" would leave the bridge deaf to every operation after that swap.
+  // `docsByOp` is deliberately shared, so documents survive the swap.
+  let wrappedClient: unknown = null;
 
   const tryWrap = (): boolean => {
-    if (wrapped) return true;
     const client = win.__APOLLO_CLIENT__ as ApolloClientLike | undefined;
     if (!client) return false;
+    if (client === wrappedClient) return true;
     if (recordDocsFromLink(client, docsByOp)) {
-      wrapped = true;
+      wrappedClient = client;
       return true;
     }
     return false;

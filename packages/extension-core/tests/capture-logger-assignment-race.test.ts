@@ -88,6 +88,10 @@ function makeClient(data: unknown) {
 
 const DOC = { kind: 'Document', __id: 'RestaurantsAvailability-doc' };
 
+/** Whether the bridge has instrumented this client's link. */
+const wrapFlag = (c: { link: { request: unknown } }): boolean =>
+  (c.link.request as { __fetchproxyWrapped?: boolean }).__fetchproxyWrapped === true;
+
 describe('installApolloBridge — client assigned after install (#261)', () => {
   it('captures the page’s FIRST query, dispatched right after assignment', async () => {
     const { win, posted, dispatch } = makeFakeWindow();
@@ -131,18 +135,20 @@ describe('installApolloBridge — client assigned after install (#261)', () => {
     const { win } = makeFakeWindow();
     installApolloBridge(win);
 
-    const client = makeClient({});
-    win.__APOLLO_CLIENT__ = client;
+    const first = makeClient({});
+    win.__APOLLO_CLIENT__ = first;
 
     // Devtools and the page itself read this back; it must be the same object.
-    expect(win.__APOLLO_CLIENT__).toBe(client);
+    expect(win.__APOLLO_CLIENT__).toBe(first);
 
-    // Reassignment (SPA re-creating its client) must re-wrap the new one.
+    // Reassignment (SPA re-creating its client) must re-wrap the NEW client's
+    // link. Asserting the mock "was called" would pass without any wrapping at
+    // all — the wrap flag is the thing that actually proves re-instrumentation.
     const second = makeClient({});
     win.__APOLLO_CLIENT__ = second;
     expect(win.__APOLLO_CLIENT__).toBe(second);
-    second.link.request({ operationName: 'SecondOp', query: DOC });
-    expect(second.link.request).toHaveBeenCalled();
+    expect(wrapFlag(second)).toBe(true);
+    expect(wrapFlag(first)).toBe(true);
   });
 
   it('still wraps a client that already exists at install time', () => {
@@ -156,6 +162,105 @@ describe('installApolloBridge — client assigned after install (#261)', () => {
     expect((client.link.request as unknown as { __fetchproxyWrapped?: boolean }).__fetchproxyWrapped).toBe(
       true,
     );
+  });
+
+  it('serves an op recorded through a REPLACED client (docs survive the swap)', async () => {
+    const { win, posted, dispatch } = makeFakeWindow();
+    installApolloBridge(win);
+
+    const first = makeClient({ from: 'first' });
+    win.__APOLLO_CLIENT__ = first;
+    first.link.request({ operationName: 'FirstOp', query: DOC });
+
+    // The app re-creates its client (route change / auth refresh).
+    const second = makeClient({ from: 'second' });
+    win.__APOLLO_CLIENT__ = second;
+    const SECOND_DOC = { kind: 'Document', __id: 'second-doc' };
+    second.link.request({ operationName: 'SecondOp', query: SECOND_DOC });
+
+    // An op seen only through the NEW client must be answerable...
+    dispatch({ __fetchproxy: 'graphql-req', reqId: 21, operationName: 'SecondOp', variables: {} });
+    await flush();
+    expect(second.query).toHaveBeenCalledWith({
+      query: SECOND_DOC,
+      variables: {},
+      fetchPolicy: 'no-cache',
+      errorPolicy: 'all',
+    });
+    expect(posted).toContainEqual({
+      __fetchproxy: 'graphql-res',
+      reqId: 21,
+      ok: true,
+      data: { from: 'second' },
+    });
+
+    // ...and one recorded before the swap must not be lost.
+    dispatch({ __fetchproxy: 'graphql-req', reqId: 22, operationName: 'FirstOp', variables: {} });
+    await flush();
+    expect(second.query).toHaveBeenCalledWith({
+      query: DOC,
+      variables: {},
+      fetchPolicy: 'no-cache',
+      errorPolicy: 'all',
+    });
+  });
+
+  it('stays readable when a prior GETTER exists but no setter', () => {
+    const { win } = makeFakeWindow();
+    // A devtools hook or another extension installed a read-only accessor.
+    // Chaining the getter while owning the setter would strand every value
+    // the page assigns: written to our storage, read back from theirs.
+    let theirs: unknown = undefined;
+    Object.defineProperty(win, '__APOLLO_CLIENT__', {
+      configurable: true,
+      get: () => theirs,
+    });
+
+    installApolloBridge(win);
+
+    const client = makeClient({});
+    win.__APOLLO_CLIENT__ = client;
+
+    expect(win.__APOLLO_CLIENT__).toBe(client);
+    expect(wrapFlag(client)).toBe(true);
+  });
+
+  it('delegates to a prior getter+setter pair and stays readable', () => {
+    const { win } = makeFakeWindow();
+    let theirs: unknown = undefined;
+    const seen: unknown[] = [];
+    Object.defineProperty(win, '__APOLLO_CLIENT__', {
+      configurable: true,
+      get: () => theirs,
+      set: (v) => {
+        seen.push(v);
+        theirs = v;
+      },
+    });
+
+    installApolloBridge(win);
+
+    const client = makeClient({});
+    win.__APOLLO_CLIENT__ = client;
+
+    // Their setter still runs (side effects preserved) and the value reads back.
+    expect(seen).toEqual([client]);
+    expect(win.__APOLLO_CLIENT__).toBe(client);
+    expect(wrapFlag(client)).toBe(true);
+  });
+
+  it('preserves a value already present behind a prior getter', () => {
+    const { win } = makeFakeWindow();
+    const existing = makeClient({});
+    Object.defineProperty(win, '__APOLLO_CLIENT__', {
+      configurable: true,
+      get: () => existing,
+    });
+
+    installApolloBridge(win);
+
+    // Nothing assigned yet — the pre-existing value must not vanish.
+    expect(win.__APOLLO_CLIENT__).toBe(existing);
   });
 
   it('falls back to polling when the property cannot be redefined', () => {
