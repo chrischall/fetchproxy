@@ -1,6 +1,6 @@
 /**
- * `graphql_query` verb handler plus its two pure gate helpers, moved verbatim
- * out of `background.ts`.
+ * `graphql_query` verb handler plus its three pure gate helpers, moved
+ * verbatim out of `background.ts`.
  *
  * The only handler that reads TWO scope Maps (`mcpGraphqlOps` and
  * `mcpCapabilities`). Its `'graphql'` capability re-check duplicates the gate
@@ -92,8 +92,12 @@ export function graphqlTabMatcher(
  * the outcome for every call: a dashboard or confirmation tab left open ahead
  * of the restaurant tab shadows it permanently, and no amount of reloading the
  * *right* page helps, because that page is never asked.
+ *
+ * Exported for the same reason as the two gate helpers above: so the tests
+ * exercise THIS predicate rather than a hand-rolled copy that can agree with
+ * a stale idea of the miss while the real one drifts.
  */
-function isGraphqlSoftMiss(response: unknown): boolean {
+export function isGraphqlSoftMiss(response: unknown): boolean {
   if (!response || typeof response !== 'object') return false;
   const r = response as { ok?: unknown; error?: unknown };
   return r.ok === false && isNotYetObservedError(r.error);
