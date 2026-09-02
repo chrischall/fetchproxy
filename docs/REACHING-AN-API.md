@@ -1,7 +1,7 @@
 # Reaching an API through the bridge
 
 Four ways a request can leave the browser, and how to tell which one you need.
-Written after `resy-mcp`'s token bootstrap failed three times in a row, each
+Written after `resy-mcp`'s token bootstrap failed four times in a row, each
 time for a different reason, each with an error that named a symptom rather
 than the cause.
 
