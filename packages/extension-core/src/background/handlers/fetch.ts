@@ -12,6 +12,7 @@
 import type { InnerRequestFetch } from '@fetchproxy/protocol';
 
 import { isUrlAllowedForAnyDomain, isTabUrlMatch } from '../../lib/url-match.js';
+import { isCsrfSoftMiss, prefersCsrfTab } from '../../lib/csrf-soft-miss.js';
 import { sendToFirstResponsiveTab } from '../../lib/send-to-responsive-tab.js';
 import { sendInner } from '../send-inner.js';
 import { mcpCapabilities } from '../session-scope.js';
@@ -59,14 +60,30 @@ export async function handleFetchRequest(
   // returned by `chrome.tabs.query` would shadow any subsequent
   // freshly-loaded tab that DOES have the content script, and every
   // fetch failed even though a working tab existed.
-  const result = await sendToFirstResponsiveTab(
-    (tabUrl) => isTabUrlMatch(tabUrl, req.init.tabUrl),
-    (tabUrl) => ({
+  //
+  // #286: a write additionally prefers a tab that can inject `x-csrf-token`.
+  // First pass asks every matching tab with `requireCsrf`; a tab with no
+  // token soft-misses and the walk continues. Only if EVERY tab misses (the
+  // site exposes no `__CSRF_TOKEN__` at all) does the second pass re-send
+  // without the marker, so the first responsive tab serves it as before.
+  // GETs skip both — they never need the header.
+  const matcher = (tabUrl: string): boolean => isTabUrlMatch(tabUrl, req.init.tabUrl);
+  const build =
+    (requireCsrf: boolean) =>
+    (tabUrl: string): unknown => ({
       kind: 'fetchproxy-fetch',
-      init: { ...req.init, tabUrl },
-    }),
+      init: { ...req.init, tabUrl, ...(requireCsrf ? { requireCsrf: true } : {}) },
+    });
+  const preferCsrf = prefersCsrfTab(req.init.method);
+  let result = await sendToFirstResponsiveTab(
+    matcher,
+    build(preferCsrf),
     req.init.tabUrl,
+    preferCsrf ? isCsrfSoftMiss : undefined,
   );
+  if (preferCsrf && result.kind === 'response' && isCsrfSoftMiss(result.response)) {
+    result = await sendToFirstResponsiveTab(matcher, build(false), req.init.tabUrl);
+  }
   if (result.kind === 'no-tab') {
     await sendInner(mcpId, {
       type: 'response',
