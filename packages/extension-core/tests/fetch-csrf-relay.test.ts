@@ -127,6 +127,39 @@ describe('fetch handler: CSRF-bearing relay tab preference (#286)', () => {
     expect(sent[0]!.inner).toMatchObject({ ok: true, url: 'served-by-1' });
   });
 
+  it('strips a forged requireCsrf from the inbound frame — a GET is served, never walked', async () => {
+    // validate.ts's fetch branch doesn't reject unknown init keys, so a
+    // hand-crafted wire frame can carry `requireCsrf: true`. It must not
+    // survive into the tab message: the background alone decides the marker.
+    const messages = installTabs(
+      [
+        { id: 1, url: HOME },
+        { id: 2, url: RESTAURANT },
+      ],
+      [2],
+    );
+    const forged = req('GET');
+    (forged.init as { requireCsrf?: boolean }).requireCsrf = true;
+    await handleFetchRequest(MCP_ID, forged, DOMAINS);
+
+    expect(messages.map((m) => [m.tabId, 'requireCsrf' in m.init])).toEqual([[1, false]]);
+    expect(sent[0]!.inner).toMatchObject({ ok: true, url: 'served-by-1' });
+  });
+
+  it('strips a forged requireCsrf on the no-marker fallback pass too', async () => {
+    const messages = installTabs([{ id: 1, url: HOME }], []);
+    const forged = req('POST');
+    (forged.init as { requireCsrf?: boolean }).requireCsrf = true;
+    await handleFetchRequest(MCP_ID, forged, DOMAINS);
+
+    expect(messages.map((m) => [m.tabId, m.init.requireCsrf])).toEqual([
+      [1, true],
+      [1, undefined],
+    ]);
+    expect(messages[1]!.init).not.toHaveProperty('requireCsrf');
+    expect(sent[0]!.inner).toMatchObject({ ok: true, url: 'served-by-1' });
+  });
+
   it('still reports no-tab when nothing matches', async () => {
     installTabs([], []);
     await handleFetchRequest(MCP_ID, req('POST'), DOMAINS);

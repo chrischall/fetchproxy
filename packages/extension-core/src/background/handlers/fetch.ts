@@ -67,22 +67,31 @@ export async function handleFetchRequest(
   // site exposes no `__CSRF_TOKEN__` at all) does the second pass re-send
   // without the marker, so the first responsive tab serves it as before.
   // GETs skip both — they never need the header.
-  const matcher = (tabUrl: string): boolean => isTabUrlMatch(tabUrl, req.init.tabUrl);
+  //
+  // The marker is the background's decision alone. `validateInnerRequest`'s
+  // fetch branch doesn't reject unknown `init` keys, so a hand-crafted wire
+  // frame could carry its own `requireCsrf`; strip it here so neither a GET
+  // nor the no-marker fallback pass can inherit it.
+  const { requireCsrf: _inbound, ...init } = req.init as typeof req.init & {
+    requireCsrf?: unknown;
+  };
+  void _inbound;
+  const matcher = (tabUrl: string): boolean => isTabUrlMatch(tabUrl, init.tabUrl);
   const build =
     (requireCsrf: boolean) =>
     (tabUrl: string): unknown => ({
       kind: 'fetchproxy-fetch',
-      init: { ...req.init, tabUrl, ...(requireCsrf ? { requireCsrf: true } : {}) },
+      init: { ...init, tabUrl, ...(requireCsrf ? { requireCsrf: true } : {}) },
     });
-  const preferCsrf = prefersCsrfTab(req.init.method);
+  const preferCsrf = prefersCsrfTab(init.method);
   let result = await sendToFirstResponsiveTab(
     matcher,
     build(preferCsrf),
-    req.init.tabUrl,
+    init.tabUrl,
     preferCsrf ? isCsrfSoftMiss : undefined,
   );
   if (preferCsrf && result.kind === 'response' && isCsrfSoftMiss(result.response)) {
-    result = await sendToFirstResponsiveTab(matcher, build(false), req.init.tabUrl);
+    result = await sendToFirstResponsiveTab(matcher, build(false), init.tabUrl);
   }
   if (result.kind === 'no-tab') {
     await sendInner(mcpId, {
