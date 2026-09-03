@@ -226,6 +226,19 @@ MCP tool call is the integration test.
   Canvas's `*.instructure.com`) require the extension to accept any
   tab on the declared apex. `isTabUrlOnOrigin()` (added in PR #4)
   is the right helper.
+- **Writes prefer a relay tab that can inject `x-csrf-token`** (#286).
+  The content script injects the header from `data-fetchproxy-csrf`,
+  copied from `window.__CSRF_TOKEN__` by the MAIN-world logger — and
+  only a site's *app* pages define that global (OpenTable's homepage
+  doesn't; its `/r/`, `/booking/`, `/user/` pages do). Because the
+  relay walk takes tabs in `chrome.tabs.query` order, a homepage tab
+  opened first used to 403 every write while a usable tab sat open.
+  `handleFetchRequest` now sends non-GETs with `requireCsrf` first;
+  a token-less tab answers the typed soft miss (`lib/csrf-soft-miss.ts`)
+  and the walk continues; only if EVERY tab misses does a second pass
+  re-send without the marker. GETs never walk. If a site 403s writes
+  through the bridge, check which tab relayed them before suspecting
+  the isolated world — that was the #267 misdiagnosis.
 - **TODOs about multi-domain tab opening.** `ensureDomainTab(domains[0])`
   is called on pair approval — only opens a tab for the FIRST declared
   domain. HoneyBook spans two; only `honeybook.com` gets a tab. The

@@ -12,6 +12,7 @@
 import type { InnerRequestFetch } from '@fetchproxy/protocol';
 
 import { isUrlAllowedForAnyDomain, isTabUrlMatch } from '../../lib/url-match.js';
+import { isCsrfSoftMiss, prefersCsrfTab } from '../../lib/csrf-soft-miss.js';
 import { sendToFirstResponsiveTab } from '../../lib/send-to-responsive-tab.js';
 import { sendInner } from '../send-inner.js';
 import { mcpCapabilities } from '../session-scope.js';
@@ -59,14 +60,39 @@ export async function handleFetchRequest(
   // returned by `chrome.tabs.query` would shadow any subsequent
   // freshly-loaded tab that DOES have the content script, and every
   // fetch failed even though a working tab existed.
-  const result = await sendToFirstResponsiveTab(
-    (tabUrl) => isTabUrlMatch(tabUrl, req.init.tabUrl),
-    (tabUrl) => ({
+  //
+  // #286: a write additionally prefers a tab that can inject `x-csrf-token`.
+  // First pass asks every matching tab with `requireCsrf`; a tab with no
+  // token soft-misses and the walk continues. Only if EVERY tab misses (the
+  // site exposes no `__CSRF_TOKEN__` at all) does the second pass re-send
+  // without the marker, so the first responsive tab serves it as before.
+  // GETs skip both — they never need the header.
+  //
+  // The marker is the background's decision alone. `validateInnerRequest`'s
+  // fetch branch doesn't reject unknown `init` keys, so a hand-crafted wire
+  // frame could carry its own `requireCsrf`; strip it here so neither a GET
+  // nor the no-marker fallback pass can inherit it.
+  const { requireCsrf: _inbound, ...init } = req.init as typeof req.init & {
+    requireCsrf?: unknown;
+  };
+  void _inbound;
+  const matcher = (tabUrl: string): boolean => isTabUrlMatch(tabUrl, init.tabUrl);
+  const build =
+    (requireCsrf: boolean) =>
+    (tabUrl: string): unknown => ({
       kind: 'fetchproxy-fetch',
-      init: { ...req.init, tabUrl },
-    }),
-    req.init.tabUrl,
+      init: { ...init, tabUrl, ...(requireCsrf ? { requireCsrf: true } : {}) },
+    });
+  const preferCsrf = prefersCsrfTab(init.method);
+  let result = await sendToFirstResponsiveTab(
+    matcher,
+    build(preferCsrf),
+    init.tabUrl,
+    preferCsrf ? isCsrfSoftMiss : undefined,
   );
+  if (preferCsrf && result.kind === 'response' && isCsrfSoftMiss(result.response)) {
+    result = await sendToFirstResponsiveTab(matcher, build(false), init.tabUrl);
+  }
   if (result.kind === 'no-tab') {
     await sendInner(mcpId, {
       type: 'response',

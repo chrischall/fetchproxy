@@ -1,4 +1,5 @@
 import { evalJsonPointer } from '@fetchproxy/protocol';
+import { csrfSoftMiss } from './lib/csrf-soft-miss.js';
 
 /**
  * Content script (isolated world). Listens for fetch RPC messages
@@ -36,6 +37,13 @@ interface FetchInit {
    * arrives — the content script does not re-decide, it only routes.
    */
   inPage?: boolean;
+  /**
+   * First pass of a write (#286): only serve this request if THIS tab can
+   * inject `x-csrf-token`; otherwise answer with the typed soft miss so the
+   * background walks on to a tab that can. Internal to the extension — the
+   * background sets it, the MCP never sees it.
+   */
+  requireCsrf?: boolean;
 }
 
 /**
@@ -632,7 +640,9 @@ export function runInPageFetch(
   });
 }
 
-async function runFetch(init: FetchInit): Promise<FetchResponse | FetchError> {
+// Exported for unit tests; production callers reach it only via the
+// `fetchproxy-fetch` message above.
+export async function runFetch(init: FetchInit): Promise<FetchResponse | FetchError> {
   if (init.body && init.body.length > MAX_REQUEST_BODY_BYTES) {
     return { ok: false, error: `request body too large: ${init.body.length} bytes` };
   }
@@ -641,6 +651,12 @@ async function runFetch(init: FetchInit): Promise<FetchResponse | FetchError> {
   // explicitly. Sites that don't expose a CSRF on window.__CSRF_TOKEN__
   // just won't have anything to forward — dataset is empty, header omitted.
   const csrf = document.documentElement.dataset.fetchproxyCsrf;
+  // A write's first pass asks for a tab that can inject the token. This tab
+  // can't — say so (typed, so the background keeps walking) rather than send
+  // a request the site will 403. See lib/csrf-soft-miss.ts.
+  if (init.requireCsrf === true && !csrf) {
+    return csrfSoftMiss(init.tabUrl);
+  }
   const headers: Record<string, string> = { ...(init.headers ?? {}) };
   if (csrf && !('x-csrf-token' in headers) && !('X-CSRF-Token' in headers)) {
     headers['x-csrf-token'] = csrf;
