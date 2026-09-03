@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.5.1](https://github.com/chrischall/fetchproxy/compare/v2.5.0...v2.5.1) (2026-09-03)
+
+
+### Bug Fixes
+
+* **extension:** relay writes through a tab that can inject x-csrf-token ([#287](https://github.com/chrischall/fetchproxy/issues/287)) ([bc471a2](https://github.com/chrischall/fetchproxy/commit/bc471a2b8890ec2ae84d67525c8f131a468e0114))
+
 ## [2.5.0](https://github.com/chrischall/fetchproxy/compare/v2.4.2...v2.5.0) (2026-09-02)
 
 
