@@ -1,2 +1,2 @@
 // Managed by release-please (generic updater) — do not hand-edit.
-export const VERSION = '2.5.1'; // x-release-please-version
+export const VERSION = '2.5.2'; // x-release-please-version
