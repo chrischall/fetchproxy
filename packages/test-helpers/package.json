@@ -27,7 +27,7 @@
   },
   "license": "MIT",
   "peerDependencies": {
-    "@fetchproxy/server": "^2.5.2",
+    "@fetchproxy/server": "^2.5.3",
     "vitest": ">=1.0.0"
   }
 }
