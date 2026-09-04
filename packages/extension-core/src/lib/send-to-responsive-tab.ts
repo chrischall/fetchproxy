@@ -5,13 +5,42 @@
  * It lives under `src/lib/` rather than beside any one handler because it
  * has six callers spread across every tab-driven verb (fetch, legacy
  * read_cookies, read_storage, read_indexed_db, read_dom, graphql_query).
- * It holds no module state and reaches nothing but `chrome.tabs`, so it is
- * a leaf: importable from any handler without creating an edge between them.
+ * It holds no module state of its own and reaches nothing but `chrome.tabs`
+ * and the cold-open registry, so it stays a leaf: importable from any handler
+ * without creating an edge between them, and — this is the reason the registry
+ * is its own module rather than a function on `ensure-domain-tab.ts` — without
+ * an edge to the code that opens tabs either.
  */
 
 import type { ChromeApi } from '../chrome-api.js';
+import { coldOpenInFlight, coldOpenTiming } from './cold-open.js';
 
 declare const chrome: ChromeApi;
+
+/** Wait, in a form that does not need `chrome.alarms` or a timer permission. */
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * The one wording that says a tab for this host is arriving.
+ *
+ * It keeps the `no tab matching ` prefix on purpose. `@fetchproxy/server`
+ * routes extension rejections to a typed error by matching that prefix, and an
+ * older server than the extension is the normal state of a browser add-on the
+ * person updates on their own schedule — so a message that dropped the prefix
+ * would be classified `protocol` and answered with "extension/server version
+ * mismatch, update both", which is #204's failure exactly. Current servers tell
+ * this apart by the `one is still opening` marker, the same way they tell the
+ * unreachable-content-script variant apart by its own.
+ */
+function stillOpeningError(tabUrlForError: string): string {
+  return (
+    `no tab matching ${tabUrlForError} answered yet — one is still opening. ` +
+    `The extension opened it moments ago and it has not finished loading; ` +
+    `retry in a few seconds rather than opening one yourself.`
+  );
+}
 
 /**
  * 0.5.2+: walk every tab whose URL passes `matcher`, send the built
@@ -57,6 +86,38 @@ export type SendToFirstResponsiveTabResult =
 // reason to invoke it directly — the handlers in this file are the
 // only callsites.
 export async function sendToFirstResponsiveTab(
+  matcher: (tabUrl: string) => boolean,
+  buildMessage: (matchedTabUrl: string) => unknown,
+  tabUrlForError: string,
+  isSoftMiss?: (response: unknown) => boolean,
+): Promise<SendToFirstResponsiveTabResult> {
+  const first = await attemptSend(matcher, buildMessage, tabUrlForError, isSoftMiss);
+  // Only a miss is worth a second look, and only while a tab this extension
+  // opened is still loading. Both guards matter: without the first, every
+  // answered request pays a registry check it cannot benefit from; without the
+  // second, a request for a host nobody is opening waits out the whole budget
+  // to reach the same answer it already had.
+  if (first.kind !== 'no-tab') return first;
+  if (!(await coldOpenInFlight())) return first;
+
+  const { budgetMs, pollMs } = coldOpenTiming();
+  const deadline = Date.now() + budgetMs;
+  for (;;) {
+    if (Date.now() >= deadline) {
+      return { kind: 'no-tab', error: stillOpeningError(tabUrlForError) };
+    }
+    await delay(pollMs);
+    const again = await attemptSend(matcher, buildMessage, tabUrlForError, isSoftMiss);
+    if (again.kind !== 'no-tab') return again;
+    // The open settled and this host still has nothing: "open a tab on that
+    // host" is once again the true remedy, so hand back the ordinary wording
+    // rather than blaming a load that has finished.
+    if (!(await coldOpenInFlight())) return again;
+  }
+}
+
+/** One pass over the currently open tabs. The retry above calls it repeatedly. */
+async function attemptSend(
   matcher: (tabUrl: string) => boolean,
   buildMessage: (matchedTabUrl: string) => unknown,
   tabUrlForError: string,
