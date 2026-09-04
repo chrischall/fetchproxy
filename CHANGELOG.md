@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.5.3](https://github.com/chrischall/fetchproxy/compare/v2.5.2...v2.5.3) (2026-09-04)
+
+
+### Bug Fixes
+
+* **extension:** scope the cold-open wait to the host that is opening ([#295](https://github.com/chrischall/fetchproxy/issues/295)) ([2c95a06](https://github.com/chrischall/fetchproxy/commit/2c95a060b8a6aab12dc30281f1c52ac015a7af54))
+
 ## [2.5.2](https://github.com/chrischall/fetchproxy/compare/v2.5.1...v2.5.2) (2026-09-04)
 
 

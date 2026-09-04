@@ -1,6 +1,6 @@
 {
   "name": "@fetchproxy/server",
-  "version": "2.5.2",
+  "version": "2.5.3",
   "description": "Localhost WebSocket bridge an MCP server uses to relay fetches through the user's signed-in browser via the fetchproxy extension.",
   "type": "module",
   "main": "./dist/index.js",
