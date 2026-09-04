@@ -727,10 +727,12 @@ export class FetchproxyScopeError extends FetchproxyHintedError {
  * "extension/server version mismatch — update both", so a user whose versions
  * were entirely current got sent to update them (#204).
  *
- * Deliberately NOT applied to the "matched a tab, but its content script never
- * answered" wording. That has a different remedy — refresh the page rather
- * than open one — and the extension's own message already spells it out, so
- * retyping it here would staple contradictory advice onto it.
+ * Deliberately NOT applied to two sibling wordings that share its prefix. The
+ * "matched a tab, but its content script never answered" one has a different
+ * remedy — refresh the page rather than open one — and the extension's own
+ * message already spells it out, so retyping it here would staple
+ * contradictory advice onto it. The "one is still opening" one belongs to
+ * {@link FetchproxyTabOpeningError} below.
  */
 export class FetchproxyNoTabError extends FetchproxyHintedError {
   constructor(originalError: string) {
@@ -740,6 +742,39 @@ export class FetchproxyNoTabError extends FetchproxyHintedError {
         'version problem and does not need an update.',
     );
     this.name = 'FetchproxyNoTabError';
+  }
+}
+
+/**
+ * 2.6.0+: the extension is opening a tab for that host right now (#291).
+ *
+ * `ensureDomainTab` opens one relay tab per declared domain at server-hello
+ * and does not await the page load, so an MCP's first request routinely
+ * arrives before the tab exists. The extension now waits on its own open
+ * before answering; this error is what survives that wait — the open was still
+ * in flight when the budget ran out.
+ *
+ * Typed apart from {@link FetchproxyNoTabError} because the remedies are
+ * opposites. "Open a tab on that host" asks the person to do the thing the
+ * extension is already doing, and it is wrong in the way that costs the most:
+ * three identical calls in a row produced this rejection, then a transport
+ * failure, then a 69 KB success, and the advice on the first one pointed away
+ * from the retry that fixed it.
+ *
+ * The rejection still starts `no tab matching `, so a server OLDER than the
+ * extension keeps classifying it in the no-tab family. That skew is the normal
+ * state of a browser add-on the person updates on their own schedule, and
+ * landing there is merely unhelpful, where losing the prefix would land it in
+ * the blanket "extension/server version mismatch" advice of #204.
+ */
+export class FetchproxyTabOpeningError extends FetchproxyHintedError {
+  constructor(originalError: string) {
+    super(
+      originalError,
+      'the extension is opening that tab now — retry in a few seconds. You do ' +
+        'not need to open one yourself, and this is not a version problem.',
+    );
+    this.name = 'FetchproxyTabOpeningError';
   }
 }
 
@@ -763,7 +798,17 @@ const SCOPE_REJECTION = /not in declared/;
  * start `no tab matching `, so matching that prefix alone would give the
  * unreachable-content-script case advice that cannot fix it.
  */
-const NO_TAB_REJECTION = /no tab matching (?!.*content script loaded)/;
+const NO_TAB_REJECTION = /no tab matching (?!.*(content script loaded|one is still opening))/;
+
+/**
+ * "A tab for that host is arriving; wait for it."
+ *
+ * Its own marker rather than a shape teased out of the sentence: the wording
+ * is prose the extension may reword, and the whole family shares the `no tab
+ * matching ` prefix, so the thing worth matching is the clause that says which
+ * of the three states this is.
+ */
+const TAB_OPENING_REJECTION = /no tab matching .*one is still opening/;
 
 /**
  * Build the right error for an extension rejection.
@@ -774,6 +819,10 @@ const NO_TAB_REJECTION = /no tab matching (?!.*content script loaded)/;
  */
 export function protocolErrorFrom(error: string): FetchproxyProtocolError {
   if (SCOPE_REJECTION.test(error)) return new FetchproxyScopeError(error);
+  // Before the no-tab check as well as excluded from it. The lookahead is what
+  // makes the two independent; the order is what keeps a future edit to either
+  // pattern from silently making them overlap again.
+  if (TAB_OPENING_REJECTION.test(error)) return new FetchproxyTabOpeningError(error);
   if (NO_TAB_REJECTION.test(error)) return new FetchproxyNoTabError(error);
   return new FetchproxyProtocolError(error);
 }

@@ -19,6 +19,7 @@ export {
   FetchproxyHintedError,
   FetchproxyScopeError,
   FetchproxyNoTabError,
+  FetchproxyTabOpeningError,
   protocolErrorFrom,
   FetchproxyTimeoutError,
 } from './ws-server.js';

@@ -22,6 +22,25 @@ goes to are two different things, and neither of them is "the API host".**
 Work down. Each error is what you see *after* fixing the one above it, which
 is why they are easy to mistake for one problem that keeps coming back.
 
+### `no tab matching https://example.com/ answered yet — one is still opening`
+
+Not a rung of the ladder — a stopwatch. The extension opens one relay tab per
+declared domain when the MCP says hello and does **not** wait for the page to
+load, so an MCP's first call can arrive before its tab exists.
+
+The extension waits out its own open before answering, so you should rarely see
+this. When you do, the open was still in flight after that wait: **retry**.
+Opening a tab yourself is the one thing that does not help, because the
+extension is already doing it.
+
+It is distinct from every other wording here in that nothing is wrong. A real
+sequence from three identical calls in a row (#291), before the wait existed:
+
+1. `no tab matching https://www.zillow.com/` — the tab was mid-open.
+2. `fetch threw: Failed to fetch` — the tab existed but had not finished
+   loading, so the rung below applies for a moment.
+3. 69 KB of results.
+
 ### `no tab matching https://api.example.com/`
 
 `request()` derives the relaying tab from the **request's** host. `api.` hosts

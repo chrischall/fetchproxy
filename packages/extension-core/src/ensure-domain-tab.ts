@@ -15,9 +15,15 @@
  * Fire-and-forget from the caller's perspective — the returned promise
  * resolves once chrome.tabs.create returns, but the tab's actual page-load
  * is not awaited (it would race the ready frame anyway).
+ *
+ * What the caller does NOT have to do is tell the request path about that
+ * gap: a tab opened here is recorded in the cold-open registry
+ * (`lib/cold-open.ts`), and `sendToFirstResponsiveTab` waits on it rather than
+ * reporting that no tab is open on a host it is at that moment opening (#291).
  */
 
 import { HOSTNAME_RE } from '@fetchproxy/protocol';
+import { noteColdOpen } from './lib/cold-open.js';
 
 /** Title of the tab group relay tabs are collected into. */
 export const RELAY_TAB_GROUP_TITLE = 'fetchproxy';
@@ -108,6 +114,10 @@ export async function ensureDomainTab(domain: string): Promise<EnsureDomainTabRe
   const tabs = await chrome.tabs.query({ url: patterns });
   if (tabs.length > 0) return { opened: false };
   const tab = await chrome.tabs.create({ url: `https://${domain}/`, active: false });
+  // Registered BEFORE the grouping, which is cosmetic and may fail: the race
+  // this closes is against the page load, and it starts the moment the tab
+  // exists.
+  if (typeof tab.id === 'number') noteColdOpen(tab.id);
   const groupId = typeof tab.id === 'number' ? await fileInRelayGroup(tab.id) : undefined;
   return { opened: true, ...(groupId !== undefined ? { groupId } : {}) };
 }
