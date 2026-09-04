@@ -267,20 +267,39 @@ describe('the reverse subdomain relation (#296)', () => {
     expect(result.kind).toBe('response');
   });
 
-  it('does not treat a shared suffix as a relation', async () => {
-    // `endsWith` on its own would call `evilzillow.com` a subdomain of
-    // `zillow.com`. The dot is what makes the check a label boundary, and
-    // without this case nothing would notice it going missing.
+  /**
+   * The label boundary, mutation-checked in BOTH directions.
+   *
+   * `couldServe` asks two suffix questions — `host.endsWith('.' + domain)` via
+   * `isUrlAllowedForDomain`, and `domain.endsWith('.' + host)` for the reverse
+   * — and each is one missing dot away from calling `notzillow.com` a
+   * subdomain of `zillow.com`. The direction matters and the first version of
+   * these cases got it backwards: with the OPENING domain as the longer name,
+   * neither `endsWith` fires whether the dot is there or not, so the case
+   * passed identically against the bug it was named for.
+   *
+   * The requested host has to be the longer name for the forward branch, and
+   * the opening domain for the reverse. Drop either `.` in `cold-open.ts` and
+   * exactly one of these two fails.
+   */
+  it.each([
+    ['forward: an opening apex must not claim a look-alike host', 'zillow.com', 'https://notzillow.com/'],
+    ['reverse: an opening look-alike must not claim the apex', 'notzillow.com', 'https://zillow.com/'],
+  ])('%s', async (_label, opening, requested) => {
     const fake = installFakeChrome([]);
-    await ensureDomainTab('notzillow.com');
+    await ensureDomainTab(opening);
     for (const t of fake.tabs) t.url = 'about:blank';
 
     const started = Date.now();
-    const result = await sendToFirstResponsiveTab(matchZillow, () => ({}), ZILLOW);
+    const matcher = (tabUrl: string) => tabUrl.startsWith(requested);
+    const result = await sendToFirstResponsiveTab(matcher, () => ({}), requested);
     expect(result.kind).toBe('no-tab');
+    // Waiting here is not a wrong answer, only a slow one — which is why a
+    // regression would be silent, and why the elapsed time is asserted too.
     expect(result.kind === 'no-tab' && result.error).not.toContain('still opening');
     expect(Date.now() - started).toBeLessThan(200);
   });
+
 });
 
 describe('an unreachable content script keeps its own remedy (#293)', () => {
