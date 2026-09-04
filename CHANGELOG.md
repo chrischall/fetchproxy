@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.5.2](https://github.com/chrischall/fetchproxy/compare/v2.5.1...v2.5.2) (2026-09-04)
+
+
+### Bug Fixes
+
+* **extension:** wait out a tab it is opening before reporting none ([#292](https://github.com/chrischall/fetchproxy/issues/292)) ([c6882bd](https://github.com/chrischall/fetchproxy/commit/c6882bde3439f094a45b5ff8b1e6a6bb371699da))
+
 ## [2.5.1](https://github.com/chrischall/fetchproxy/compare/v2.5.0...v2.5.1) (2026-09-03)
 
 
