@@ -23,18 +23,6 @@ function delay(ms: number): Promise<void> {
 }
 
 /**
- * The one wording that says a tab for this host is arriving.
- *
- * It keeps the `no tab matching ` prefix on purpose. `@fetchproxy/server`
- * routes extension rejections to a typed error by matching that prefix, and an
- * older server than the extension is the normal state of a browser add-on the
- * person updates on their own schedule — so a message that dropped the prefix
- * would be classified `protocol` and answered with "extension/server version
- * mismatch, update both", which is #204's failure exactly. Current servers tell
- * this apart by the `one is still opening` marker, the same way they tell the
- * unreachable-content-script variant apart by its own.
- */
-/**
  * One pass's outcome plus how many tabs matched by URL.
  *
  * The count is what makes the cold-open substitution safe (#293). A miss with
@@ -49,6 +37,18 @@ interface Attempt {
   urlMatches: number;
 }
 
+/**
+ * The one wording that says a tab for this host is arriving.
+ *
+ * It keeps the `no tab matching ` prefix on purpose. `@fetchproxy/server`
+ * routes extension rejections to a typed error by matching that prefix, and an
+ * older server than the extension is the normal state of a browser add-on the
+ * person updates on their own schedule — so a message that dropped the prefix
+ * would be classified `protocol` and answered with "extension/server version
+ * mismatch, update both", which is #204's failure exactly. Current servers tell
+ * this apart by the `one is still opening` marker, the same way they tell the
+ * unreachable-content-script variant apart by its own.
+ */
 function stillOpeningError(tabUrlForError: string): string {
   return (
     `no tab matching ${tabUrlForError} answered yet — one is still opening. ` +

@@ -246,6 +246,43 @@ describe('a cold open only makes its OWN host wait (#293)', () => {
   });
 });
 
+describe('the reverse subdomain relation (#296)', () => {
+  it('waits when the opening tab is a SUBDOMAIN of the requested host', async () => {
+    // The other direction of `couldServe`, and the one no case covered. A
+    // profile may declare `www.zillow.com` while a request targets the apex —
+    // rarer than the apex-declared shape, but the same failure if unhandled:
+    // the retry is skipped and the person is told to open a tab that is
+    // already opening.
+    const fake = installFakeChrome([]);
+    await ensureDomainTab('www.zillow.com');
+    const cold = fake.tabs.find((t) => t.id !== undefined)!;
+    cold.url = 'about:blank';
+    setTimeout(() => {
+      cold.url = 'https://zillow.com/';
+      fake.responsive.add(cold.id!);
+    }, 50);
+
+    const matchApex = (tabUrl: string) => tabUrl.startsWith('https://zillow.com');
+    const result = await sendToFirstResponsiveTab(matchApex, () => ({}), 'https://zillow.com/');
+    expect(result.kind).toBe('response');
+  });
+
+  it('does not treat a shared suffix as a relation', async () => {
+    // `endsWith` on its own would call `evilzillow.com` a subdomain of
+    // `zillow.com`. The dot is what makes the check a label boundary, and
+    // without this case nothing would notice it going missing.
+    const fake = installFakeChrome([]);
+    await ensureDomainTab('notzillow.com');
+    for (const t of fake.tabs) t.url = 'about:blank';
+
+    const started = Date.now();
+    const result = await sendToFirstResponsiveTab(matchZillow, () => ({}), ZILLOW);
+    expect(result.kind).toBe('no-tab');
+    expect(result.kind === 'no-tab' && result.error).not.toContain('still opening');
+    expect(Date.now() - started).toBeLessThan(200);
+  });
+});
+
 describe('an unreachable content script keeps its own remedy (#293)', () => {
   it('does not overwrite the reload advice with the still-opening wording', async () => {
     // A tab DID match and never answered. That is fixed by reloading the page,
