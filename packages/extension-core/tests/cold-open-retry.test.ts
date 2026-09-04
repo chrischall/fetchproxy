@@ -79,6 +79,7 @@ function installFakeChrome(tabs: FakeTab[]): {
 }
 
 const matchZillow = (tabUrl: string) => tabUrl.startsWith('https://www.zillow.com');
+const ZILLOW = 'https://www.zillow.com/';
 
 beforeEach(() => {
   __resetColdOpenForTests();
@@ -96,27 +97,27 @@ afterEach(() => {
 describe('cold-open registry', () => {
   it('records the tab ensureDomainTab opened, and nothing when one already existed', async () => {
     installFakeChrome([]);
-    expect(await coldOpenInFlight()).toBe(false);
+    expect(await coldOpenInFlight(ZILLOW)).toBe(false);
 
     const opened = await ensureDomainTab('zillow.com');
     expect(opened.opened).toBe(true);
-    expect(await coldOpenInFlight()).toBe(true);
+    expect(await coldOpenInFlight(ZILLOW)).toBe(true);
   });
 
   it('reports nothing in flight once the opened tab finishes loading', async () => {
     const fake = installFakeChrome([]);
     await ensureDomainTab('zillow.com');
-    expect(await coldOpenInFlight()).toBe(true);
+    expect(await coldOpenInFlight(ZILLOW)).toBe(true);
 
     for (const t of fake.tabs) t.status = 'complete';
-    expect(await coldOpenInFlight()).toBe(false);
+    expect(await coldOpenInFlight(ZILLOW)).toBe(false);
   });
 
   it('does not register a tab when a matching one was already open', async () => {
     installFakeChrome([{ id: 1, url: 'https://www.zillow.com/homes' }]);
     const result = await ensureDomainTab('zillow.com');
     expect(result.opened).toBe(false);
-    expect(await coldOpenInFlight()).toBe(false);
+    expect(await coldOpenInFlight(ZILLOW)).toBe(false);
   });
 });
 
@@ -202,5 +203,71 @@ describe('sendToFirstResponsiveTab through a cold open', () => {
     // the correct advice — the cold-open wording would now be a lie.
     expect(result.kind === 'no-tab' && result.error).not.toContain('still opening');
     expect(elapsed).toBeLessThan(280);
+  });
+});
+
+describe('a cold open only makes its OWN host wait (#293)', () => {
+  it('does not stall, or claim to be opening, a host nothing is opening', async () => {
+    // `ensureDomainTab` runs once per DECLARED domain, so a multi-domain MCP
+    // routinely has one host opening while a request goes to another. Keyed by
+    // tab id alone, the registry answered "something is opening" to every
+    // caller: the request paid the full budget and was then told a tab was on
+    // its way for a host nobody had asked for — which is not a slow truth, it
+    // is a false statement, and it also suppressed `fpx health`'s
+    // `--subdomain www` hint.
+    const fake = installFakeChrome([]);
+    await ensureDomainTab('alltrails.com');
+    for (const t of fake.tabs) t.url = 'about:blank';
+
+    const started = Date.now();
+    const result = await sendToFirstResponsiveTab(matchZillow, () => ({}), ZILLOW);
+    expect(result.kind).toBe('no-tab');
+    const error = result.kind === 'no-tab' ? result.error : '';
+    expect(error).not.toContain('still opening');
+    expect(Date.now() - started).toBeLessThan(200);
+  });
+
+  it('still waits when the open is the apex of the requested subdomain', async () => {
+    // The motivating case: a profile declares `zillow.com`, so the relay tab
+    // opens on the apex while the request is for `www.`. Matching by the
+    // request's own tab-matcher would refuse this — `zillow.com` is not on
+    // origin `https://www.zillow.com` — and would put the original bug back.
+    const fake = installFakeChrome([]);
+    await ensureDomainTab('zillow.com');
+    const cold = fake.tabs.find((t) => t.id !== undefined)!;
+    cold.url = 'about:blank';
+    setTimeout(() => {
+      cold.url = 'https://www.zillow.com/';
+      fake.responsive.add(cold.id!);
+    }, 50);
+
+    const result = await sendToFirstResponsiveTab(matchZillow, () => ({}), ZILLOW);
+    expect(result.kind).toBe('response');
+  });
+});
+
+describe('an unreachable content script keeps its own remedy (#293)', () => {
+  it('does not overwrite the reload advice with the still-opening wording', async () => {
+    // A tab DID match and never answered. That is fixed by reloading the page,
+    // and the server routes it to `content_script_unreachable`, which is what
+    // triggers its lazy-revive retry. Substituting the cold-open wording drops
+    // the remedy AND takes the request off that path — so the substitution
+    // applies only where nothing matched by URL at all.
+    const fake = installFakeChrome([]);
+    // A real cold open IS in flight — otherwise the retry never runs and this
+    // case would pass without exercising the substitution at all.
+    await ensureDomainTab('zillow.com');
+    for (const t of fake.tabs) t.url = 'about:blank';
+    // ...and a tab that matches by URL but never answers, which is the state
+    // the sibling wording describes. `installFakeChrome` throws "Receiving end
+    // does not exist" for any tab not in `responsive`.
+    fake.tabs.push({ id: 7, url: 'https://www.zillow.com/homes', status: 'complete' });
+
+    const result = await sendToFirstResponsiveTab(matchZillow, () => ({}), ZILLOW);
+    expect(result.kind).toBe('no-tab');
+    const error = result.kind === 'no-tab' ? result.error : '';
+    expect(error).toContain('content script loaded');
+    expect(error).toContain('Receiving end does not exist');
+    expect(error).not.toContain('still opening');
   });
 });

@@ -71,6 +71,13 @@ export interface ChromeApi {
     query: (q: { url?: string | string[] }) => Promise<{ id?: number; url?: string }[]>;
     create: (props: { url: string }) => Promise<{ id?: number; url?: string }>;
     sendMessage: (tabId: number, message: unknown) => Promise<unknown>;
+    /**
+     * Optional like the namespaces above, and for the same kind of reason: it
+     * is a core API on any real Chrome, but the fakes in tests do not all
+     * provide it and the cold-open registry must degrade rather than throw
+     * where it is absent (`lib/cold-open.ts`).
+     */
+    get?: (tabId: number) => Promise<{ status?: string } | undefined>;
   };
   cookies?: {
     get: (details: { url: string; name: string }) => Promise<ChromeCookie | null>;

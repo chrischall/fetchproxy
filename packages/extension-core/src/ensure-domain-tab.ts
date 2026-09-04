@@ -117,7 +117,7 @@ export async function ensureDomainTab(domain: string): Promise<EnsureDomainTabRe
   // Registered BEFORE the grouping, which is cosmetic and may fail: the race
   // this closes is against the page load, and it starts the moment the tab
   // exists.
-  if (typeof tab.id === 'number') noteColdOpen(tab.id);
+  if (typeof tab.id === 'number') noteColdOpen(tab.id, domain);
   const groupId = typeof tab.id === 'number' ? await fileInRelayGroup(tab.id) : undefined;
   return { opened: true, ...(groupId !== undefined ? { groupId } : {}) };
 }
