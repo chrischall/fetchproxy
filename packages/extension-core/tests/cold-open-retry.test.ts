@@ -246,6 +246,62 @@ describe('a cold open only makes its OWN host wait (#293)', () => {
   });
 });
 
+describe('the reverse subdomain relation (#296)', () => {
+  it('waits when the opening tab is a SUBDOMAIN of the requested host', async () => {
+    // The other direction of `couldServe`, and the one no case covered. A
+    // profile may declare `www.zillow.com` while a request targets the apex —
+    // rarer than the apex-declared shape, but the same failure if unhandled:
+    // the retry is skipped and the person is told to open a tab that is
+    // already opening.
+    const fake = installFakeChrome([]);
+    await ensureDomainTab('www.zillow.com');
+    const cold = fake.tabs.find((t) => t.id !== undefined)!;
+    cold.url = 'about:blank';
+    setTimeout(() => {
+      cold.url = 'https://zillow.com/';
+      fake.responsive.add(cold.id!);
+    }, 50);
+
+    const matchApex = (tabUrl: string) => tabUrl.startsWith('https://zillow.com');
+    const result = await sendToFirstResponsiveTab(matchApex, () => ({}), 'https://zillow.com/');
+    expect(result.kind).toBe('response');
+  });
+
+  /**
+   * The label boundary, mutation-checked in BOTH directions.
+   *
+   * `couldServe` asks two suffix questions — `host.endsWith('.' + domain)` via
+   * `isUrlAllowedForDomain`, and `domain.endsWith('.' + host)` for the reverse
+   * — and each is one missing dot away from calling `notzillow.com` a
+   * subdomain of `zillow.com`. The direction matters and the first version of
+   * these cases got it backwards: with the OPENING domain as the longer name,
+   * neither `endsWith` fires whether the dot is there or not, so the case
+   * passed identically against the bug it was named for.
+   *
+   * The requested host has to be the longer name for the forward branch, and
+   * the opening domain for the reverse. Drop either `.` in `cold-open.ts` and
+   * exactly one of these two fails.
+   */
+  it.each([
+    ['forward: an opening apex must not claim a look-alike host', 'zillow.com', 'https://notzillow.com/'],
+    ['reverse: an opening look-alike must not claim the apex', 'notzillow.com', 'https://zillow.com/'],
+  ])('%s', async (_label, opening, requested) => {
+    const fake = installFakeChrome([]);
+    await ensureDomainTab(opening);
+    for (const t of fake.tabs) t.url = 'about:blank';
+
+    const started = Date.now();
+    const matcher = (tabUrl: string) => tabUrl.startsWith(requested);
+    const result = await sendToFirstResponsiveTab(matcher, () => ({}), requested);
+    expect(result.kind).toBe('no-tab');
+    // Waiting here is not a wrong answer, only a slow one — which is why a
+    // regression would be silent, and why the elapsed time is asserted too.
+    expect(result.kind === 'no-tab' && result.error).not.toContain('still opening');
+    expect(Date.now() - started).toBeLessThan(200);
+  });
+
+});
+
 describe('an unreachable content script keeps its own remedy (#293)', () => {
   it('does not overwrite the reload advice with the still-opening wording', async () => {
     // A tab DID match and never answered. That is fixed by reloading the page,
