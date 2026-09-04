@@ -239,11 +239,15 @@ MCP tool call is the integration test.
   re-send without the marker. GETs never walk. If a site 403s writes
   through the bridge, check which tab relayed them before suspecting
   the isolated world — that was the #267 misdiagnosis.
-- **TODOs about multi-domain tab opening.** `ensureDomainTab(domains[0])`
-  is called on pair approval — only opens a tab for the FIRST declared
-  domain. HoneyBook spans two; only `honeybook.com` gets a tab. The
-  user usually has a vendor portal tab already, so the limitation
-  hasn't bitten anyone. Two TODOs marked in `background.ts`.
+- **Multi-domain tab opening — every declared domain, one tab each.**
+  `background/server-hello.ts` and `background/approval.ts` both loop over
+  `result.domains` calling `ensureDomainTab(d)` fire-and-forget, so a
+  two-domain profile like HoneyBook gets a tab per domain. (This entry
+  used to say `ensureDomainTab(domains[0])` opened only the FIRST — that
+  was true of an older `background.ts` and has not been for some time.)
+  The fan-out is why the cold-open registry is keyed by HOST rather than
+  by "something is opening": one domain loading must not make a request
+  for a different one wait, or be told a tab is arriving for it (#293).
 
 ## What to *not* do
 

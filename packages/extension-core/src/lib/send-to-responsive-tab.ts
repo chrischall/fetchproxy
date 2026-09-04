@@ -34,6 +34,21 @@ function delay(ms: number): Promise<void> {
  * this apart by the `one is still opening` marker, the same way they tell the
  * unreachable-content-script variant apart by its own.
  */
+/**
+ * One pass's outcome plus how many tabs matched by URL.
+ *
+ * The count is what makes the cold-open substitution safe (#293). A miss with
+ * matches is the "a tab is there and its content script never answered"
+ * state — fixed by RELOADING the page, and routed by `@fetchproxy/server` to
+ * `content_script_unreachable`, which is what arms its lazy-revive retry.
+ * Overwriting that with the cold-open wording drops the remedy and takes the
+ * request off that path, so only a miss with ZERO matches may be reworded.
+ */
+interface Attempt {
+  result: SendToFirstResponsiveTabResult;
+  urlMatches: number;
+}
+
 function stillOpeningError(tabUrlForError: string): string {
   return (
     `no tab matching ${tabUrlForError} answered yet — one is still opening. ` +
@@ -91,28 +106,33 @@ export async function sendToFirstResponsiveTab(
   tabUrlForError: string,
   isSoftMiss?: (response: unknown) => boolean,
 ): Promise<SendToFirstResponsiveTabResult> {
-  const first = await attemptSend(matcher, buildMessage, tabUrlForError, isSoftMiss);
-  // Only a miss is worth a second look, and only while a tab this extension
-  // opened is still loading. Both guards matter: without the first, every
+  let last = await attemptSend(matcher, buildMessage, tabUrlForError, isSoftMiss);
+  // Only a miss is worth a second look, and only while a tab that could serve
+  // THIS host is still loading. Both guards matter: without the first, every
   // answered request pays a registry check it cannot benefit from; without the
   // second, a request for a host nobody is opening waits out the whole budget
   // to reach the same answer it already had.
-  if (first.kind !== 'no-tab') return first;
-  if (!(await coldOpenInFlight())) return first;
+  if (last.result.kind !== 'no-tab') return last.result;
+  if (!(await coldOpenInFlight(tabUrlForError))) return last.result;
 
   const { budgetMs, pollMs } = coldOpenTiming();
   const deadline = Date.now() + budgetMs;
   for (;;) {
     if (Date.now() >= deadline) {
-      return { kind: 'no-tab', error: stillOpeningError(tabUrlForError) };
+      // Reworded only where nothing matched by URL. With matches, the miss is
+      // the unreachable-content-script one, which carries its own remedy and
+      // its own server-side handling.
+      return last.urlMatches === 0
+        ? { kind: 'no-tab', error: stillOpeningError(tabUrlForError) }
+        : last.result;
     }
     await delay(pollMs);
-    const again = await attemptSend(matcher, buildMessage, tabUrlForError, isSoftMiss);
-    if (again.kind !== 'no-tab') return again;
+    last = await attemptSend(matcher, buildMessage, tabUrlForError, isSoftMiss);
+    if (last.result.kind !== 'no-tab') return last.result;
     // The open settled and this host still has nothing: "open a tab on that
     // host" is once again the true remedy, so hand back the ordinary wording
     // rather than blaming a load that has finished.
-    if (!(await coldOpenInFlight())) return again;
+    if (!(await coldOpenInFlight(tabUrlForError))) return last.result;
   }
 }
 
@@ -122,7 +142,7 @@ async function attemptSend(
   buildMessage: (matchedTabUrl: string) => unknown,
   tabUrlForError: string,
   isSoftMiss?: (response: unknown) => boolean,
-): Promise<SendToFirstResponsiveTabResult> {
+): Promise<Attempt> {
   const tabs = await chrome.tabs.query({});
   // Fold the ID check into the filter so `matches.length` accurately
   // reflects the count of tabs we'll actually try — without this, a tab
@@ -133,7 +153,7 @@ async function attemptSend(
     (t) => typeof t.id === 'number' && t.url && matcher(t.url),
   );
   if (matches.length === 0) {
-    return { kind: 'no-tab', error: `no tab matching ${tabUrlForError}` };
+    return { result: { kind: 'no-tab', error: `no tab matching ${tabUrlForError}` }, urlMatches: 0 };
   }
   // "Receiving end does not exist" surfaces when a tab matches the URL
   // but has no content script (typically post-reload pages that pre-date
@@ -161,31 +181,37 @@ async function attemptSend(
         if (firstSoftMiss === null) firstSoftMiss = { response, tabUrl };
         continue;
       }
-      return { kind: 'response', response, tabUrl };
+      return { result: { kind: 'response', response, tabUrl }, urlMatches: matches.length };
     } catch (e) {
       const msg = String(e);
       if (msg.includes('Receiving end does not exist')) {
         lastNoListener = msg;
         continue;
       }
-      return { kind: 'throw', error: msg };
+      return { result: { kind: 'throw', error: msg }, urlMatches: matches.length };
     }
   }
   if (firstSoftMiss !== null) {
     return {
-      kind: 'response',
-      response: firstSoftMiss.response,
-      tabUrl: firstSoftMiss.tabUrl,
+      result: {
+        kind: 'response',
+        response: firstSoftMiss.response,
+        tabUrl: firstSoftMiss.tabUrl,
+      },
+      urlMatches: matches.length,
     };
   }
   return {
-    kind: 'no-tab',
-    error:
-      `no tab matching ${tabUrlForError} has the fetchproxy content script loaded ` +
-      `(${matches.length} URL match${matches.length === 1 ? '' : 'es'}, none responded). ` +
-      `Reload that tab in your browser to inject the content script, then retry. ` +
-      `This is the expected state right after the extension updates: Chrome removes the ` +
-      `content script from tabs that were already open and does not replace it.` +
-      (lastNoListener ? ` Last error: ${lastNoListener}` : ''),
+    result: {
+      kind: 'no-tab',
+      error:
+        `no tab matching ${tabUrlForError} has the fetchproxy content script loaded ` +
+        `(${matches.length} URL match${matches.length === 1 ? '' : 'es'}, none responded). ` +
+        `Reload that tab in your browser to inject the content script, then retry. ` +
+        `This is the expected state right after the extension updates: Chrome removes the ` +
+        `content script from tabs that were already open and does not replace it.` +
+        (lastNoListener ? ` Last error: ${lastNoListener}` : ''),
+    },
+    urlMatches: matches.length,
   };
 }
