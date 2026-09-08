@@ -186,6 +186,101 @@ describe('host (concentrator)', () => {
     oldPeer.close();
   });
 
+  // Same gate as the sibling frame above, one hop further along. #303 shipped
+  // the extension-side gate and forgot this one — an ungated relay would have
+  // an older peer refuse the type in its validator and close the socket,
+  // turning a diagnosable refusal into a dropped connection. That is the exact
+  // failure the gate exists to prevent.
+  it('relays hello-rejected only to peers that accept it (2.6.0)', async () => {
+    const el = await electRole({ host: '127.0.0.1', port: 0 });
+    if (el.role !== 'host') throw new Error('expected host');
+    const port = (el.server.address() as AddressInfo).port;
+    const idDir = mkdtempSync(join(tmpdir(), 'fp-host-'));
+    const ownId = await loadOrCreateIdentity('opentable-mcp', idDir);
+    const newPeerId = await loadOrCreateIdentity('resy-mcp', idDir);
+    const oldPeerId = await loadOrCreateIdentity('tock-mcp', idDir);
+
+    host = await startHost({
+      httpServer: el.server,
+      ownIdentity: ownId,
+      ownMcpId: 'opentable-mcp:0.9.1:abc1234567890de1',
+      ownServerName: 'opentable-mcp',
+      ownVersion: '0.9.1',
+      ownDomains: ['opentable.com'],
+      extensionTrust: blankTrust(),
+    });
+
+    const open = (ws: WebSocket) => new Promise<void>((r) => ws.once('open', () => r()));
+    const framesOf = (ws: WebSocket): string[] => {
+      const seen: string[] = [];
+      ws.on('message', (data: Buffer) => seen.push(JSON.parse(data.toString()).type));
+      return seen;
+    };
+
+    const newPeer = new WebSocket(`ws://127.0.0.1:${port}`);
+    await open(newPeer);
+    const newPeerSeen = framesOf(newPeer);
+    newPeer.send(
+      JSON.stringify(
+        await buildServerHello({
+          identity: newPeerId,
+          mcpId: 'resy-mcp:0.0.1:abc1234567890de2',
+          serverName: 'resy-mcp',
+          version: '0.0.1',
+          domains: ['resy.com'],
+          accepts: ['hello-rejected'],
+        }),
+      ),
+    );
+    const oldPeer = new WebSocket(`ws://127.0.0.1:${port}`);
+    await open(oldPeer);
+    const oldPeerSeen = framesOf(oldPeer);
+    oldPeer.send(
+      JSON.stringify(
+        await buildServerHello({
+          identity: oldPeerId,
+          mcpId: 'tock-mcp:0.0.1:abc1234567890de3',
+          serverName: 'tock-mcp',
+          version: '0.0.1',
+          domains: ['exploretock.com'],
+        }),
+      ),
+    );
+
+    const ext = new WebSocket(`ws://127.0.0.1:${port}`);
+    await open(ext);
+    ext.send(
+      JSON.stringify({
+        type: 'hello',
+        protocolVersion: 3,
+        role: 'extension',
+        platform: 'chrome',
+        extensionId: 'fetchproxy',
+        version: '0.4.0',
+        identityX25519Pub: 'AAAA',
+        identityEd25519Pub: 'AAAA',
+        sessionNonce: 'AAAA',
+      } satisfies HelloFrameFromExtension),
+    );
+    await vi.waitFor(() => expect(newPeerSeen).toContain('hello'));
+    await vi.waitFor(() => expect(oldPeerSeen).toContain('hello'));
+
+    const reject = (mcpId: string): string =>
+      JSON.stringify({ type: 'hello-rejected', mcpId, reason: 'sessionSig invalid' });
+    ext.send(reject('resy-mcp:0.0.1:abc1234567890de2'));
+    ext.send(reject('tock-mcp:0.0.1:abc1234567890de3'));
+
+    await vi.waitFor(() => expect(newPeerSeen).toContain('hello-rejected'));
+    // A beat, then the peer that never advertised it must still not have one.
+    await new Promise((r) => setTimeout(r, 50));
+    expect(oldPeerSeen).not.toContain('hello-rejected');
+    // …and its socket is still up, which is the whole point of gating.
+    expect(oldPeer.readyState).toBe(WebSocket.OPEN);
+
+    newPeer.close();
+    oldPeer.close();
+  });
+
   it('forgets an unapproved pair code when the extension closes (#283)', async () => {
     const el = await electRole({ host: '127.0.0.1', port: 0 });
     if (el.role !== 'host') throw new Error('expected host');

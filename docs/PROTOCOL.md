@@ -212,11 +212,18 @@ being signed out or a changed scope, causes that may both already be
 satisfied. With it the MCP fails immediately and reports the real reason
 (`FetchproxyHelloRejectedError`).
 
-**Gated on `accepts`.** The extension sends it only to a server whose `hello`
-listed `"hello-rejected"`, because `validateFrame` on a server older than
-2.6.0 throws `unknown frame type` and its caller closes the socket — sending
-it unconditionally would turn a diagnosable refusal into a dropped
-connection, which is worse than the silence it replaces.
+**Gated on `accepts`, at BOTH hops.** The extension sends it only to a server
+whose `hello` listed `"hello-rejected"`, and a host relays it onward only to a
+peer that listed it — the same two-sided rule `extension-disconnected`
+follows. `validateFrame` on a server older than 2.6.0 throws `unknown frame
+type` and its caller closes the socket, so an ungated send at either hop would
+turn a diagnosable refusal into a dropped connection, which is worse than the
+silence it replaces. A server that cannot hear it keeps the old behaviour and
+times out.
+
+**Classified.** `classifyBridgeError` returns `'hello_rejected'`, distinct
+from `'session_not_ready'`: the latter is a timeout that can only guess, this
+one is the extension's own answer and will be identical on retry.
 
 **Diagnostic only.** It carries no authority and grants nothing; a forged one
 can make a session fail, which a silent peer could do anyway by never

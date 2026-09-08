@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
+  FetchproxyHelloRejectedError,
   FetchproxyServer,
   FetchproxySessionNotReadyError,
   classifyBridgeError,
@@ -128,5 +129,25 @@ describe('classifyBridgeError() and session readiness', () => {
     expect(
       classifyBridgeError(new FetchproxySessionNotReadyError({ mcpId: 'x', pairCode: '123-456' })),
     ).toBe('session_not_ready');
+  });
+});
+
+describe('classifyBridgeError() and an explicit refusal (2.6.0)', () => {
+  // Exported and classified, or a consumer cannot tell the two apart — which
+  // is the whole point. `session_not_ready` means "waited and heard nothing,
+  // here are some guesses"; `hello_rejected` means "the extension answered,
+  // and this is why". A caller that conflates them tells the user to wait or
+  // re-check a sign-in for something that will be refused identically forever.
+  it('classifies a refusal as hello_rejected, not session_not_ready', () => {
+    const err = new FetchproxyHelloRejectedError({
+      mcpId: 'resy-mcp:0.13.1:2259288954ecdf3d',
+      reason: 'sessionSig invalid',
+    });
+    expect(classifyBridgeError(err)).toBe('hello_rejected');
+    expect(classifyBridgeError(new FetchproxySessionNotReadyError({ mcpId: 'x', pairCode: null })))
+      .toBe('session_not_ready');
+    // It must not fall through to the catch-all it landed in before being
+    // wired up — `other` is where a consumer gives up and rethrows.
+    expect(classifyBridgeError(err)).not.toBe('other');
   });
 });

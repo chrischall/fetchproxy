@@ -4,7 +4,10 @@ import {
   FetchproxyHttpError,
   FetchproxyProtocolError,
 } from './ws-server.js';
-import { FetchproxySessionNotReadyError } from './session-ready.js';
+import {
+  FetchproxyHelloRejectedError,
+  FetchproxySessionNotReadyError,
+} from './session-ready.js';
 
 /**
  * 0.8.0+: discriminator for the typed-error hierarchy a downstream
@@ -16,6 +19,13 @@ import { FetchproxySessionNotReadyError } from './session-ready.js';
  *                        in the popup — `.pairCode`) or `'not-ready'` (attached
  *                        but silent). Before 2.5.0 this fell through to `'other'`
  *                        and no healthcheck could name it.
+ * - `'hello_rejected'` — 2.6.0: `FetchproxyHelloRejectedError` — the extension
+ *                        REFUSED the hello and said why (`.reason`). Distinct
+ *                        from `'session_not_ready'`, which is a timeout and can
+ *                        only guess: this one is authoritative, arrives at once,
+ *                        and retrying unchanged will be refused identically —
+ *                        so a caller should surface `.reason` rather than
+ *                        advise waiting or re-checking a sign-in.
  * - `'timeout'`        — `FetchproxyTimeoutError` (server's `fetchTimeoutMs` fired)
  * - `'bridge_down'`    — `FetchproxyBridgeDownError` (SW eviction; check `retryAttempted`)
  * - `'http'`           — `FetchproxyHttpError` (upstream status outside `expectStatus`)
@@ -46,6 +56,7 @@ import { FetchproxySessionNotReadyError } from './session-ready.js';
  */
 export type BridgeError =
   | 'session_not_ready'
+  | 'hello_rejected'
   | 'timeout'
   | 'bridge_down'
   | 'http'
@@ -53,6 +64,7 @@ export type BridgeError =
   | 'other';
 
 export function classifyBridgeError(err: unknown): BridgeError {
+  if (err instanceof FetchproxyHelloRejectedError) return 'hello_rejected';
   if (err instanceof FetchproxySessionNotReadyError) return 'session_not_ready';
   if (err instanceof FetchproxyTimeoutError) return 'timeout';
   if (err instanceof FetchproxyBridgeDownError) return 'bridge_down';

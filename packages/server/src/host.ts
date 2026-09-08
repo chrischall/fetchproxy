@@ -474,8 +474,17 @@ export async function startHost(opts: HostOpts): Promise<HostHandle> {
               new FetchproxyHelloRejectedError({ mcpId: frame.mcpId, reason: frame.reason }),
             );
           } else {
+            // Gated exactly like `extension-disconnected` above, and for the
+            // same reason: a peer older than 2.6.0 refuses the type in its
+            // validator and closes the socket. Forwarding ungated would turn
+            // a diagnosable refusal into a dropped connection — the very
+            // failure the extension-side gate exists to prevent, one hop
+            // further along. A peer that cannot hear it keeps today's
+            // behaviour and times out.
             const slot = peers.get(frame.mcpId);
-            if (slot) slot.ws.send(JSON.stringify(frame));
+            if (slot?.helloFrame.accepts?.includes('hello-rejected')) {
+              slot.ws.send(JSON.stringify(frame));
+            }
           }
         }
 
