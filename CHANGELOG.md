@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.6.0](https://github.com/chrischall/fetchproxy/compare/v2.5.4...v2.6.0) (2026-09-08)
+
+
+### Features
+
+* **protocol:** tell the server why its hello was refused ([#303](https://github.com/chrischall/fetchproxy/issues/303)) ([2403770](https://github.com/chrischall/fetchproxy/commit/24037704b1fdb2e81f532469981be2a58dba57eb))
+
 ## [2.5.4](https://github.com/chrischall/fetchproxy/compare/v2.5.3...v2.5.4) (2026-09-08)
 
 
