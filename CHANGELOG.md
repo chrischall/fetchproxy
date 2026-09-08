@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.6.1](https://github.com/chrischall/fetchproxy/compare/v2.6.0...v2.6.1) (2026-09-08)
+
+
+### Bug Fixes
+
+* **extension:** deliver the pair code from the value in hand, and say when it cannot ([#306](https://github.com/chrischall/fetchproxy/issues/306)) ([4c7695b](https://github.com/chrischall/fetchproxy/commit/4c7695b5daca2ea9d0927921c7c92de861764ad3))
+
 ## [2.6.0](https://github.com/chrischall/fetchproxy/compare/v2.5.4...v2.6.0) (2026-09-08)
 
 
