@@ -170,8 +170,8 @@ Label conventions for release notes (`.github/release.yml`) — apply one per PR
 
 | Label | Section |
 |---|---|
-| `enhancement` / `feature` | Features |
-| `bug` / `fix` | Bug Fixes |
+| `enhancement` | Features |
+| `bug` | Bug Fixes |
 | `security` | Security |
 | `refactor` | Refactor |
 | `documentation` | Documentation |
