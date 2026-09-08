@@ -302,22 +302,39 @@ export async function onServerHello(link: Link, hello: HelloFrameFromServer): Pr
   // host needs to know its own pairing is pending. Best-effort: if the WS
   // dropped between the hello and here, the next reconnect triggers a fresh
   // pair-pending.
+  //
+  // Sent from `result.pairCode`, NOT re-read from storage. It used to fetch
+  // back the record it had just written purely to get a value already in
+  // scope, and a miss for any reason produced no frame and no log — while the
+  // popup went on showing the code. `pendingKey` is
+  // `${identityHash}:${scopeHash}`, so anything at that key carries this same
+  // identity and therefore this same code; a stored one can only be equal, or
+  // STALE if it was written under a previous extension identity. Reading it
+  // back was pure downside, and it is the class of silent failure behind
+  // chrischall/mcp-host#639, where four attempts each showed a code on screen
+  // and reported `pairCode: null` to the MCP.
   try {
-    // Look up the (possibly just-updated) entry to get the pairCode.
-    const got = await chrome.storage.local.get(PENDING_PAIR_KEY);
-    const dict = mergePending(got[PENDING_PAIR_KEY]);
-    const entry = dict[pendingKey];
-    if (entry && entry.kind === 'pair') {
-      sendOnLink(
-        link,
-        JSON.stringify({
-          type: 'pair-pending',
-          mcpId: result.mcpId,
-          pairCode: entry.pairCode,
-        }),
+    const delivered = sendOnLink(
+      link,
+      JSON.stringify({
+        type: 'pair-pending',
+        mcpId: result.mcpId,
+        pairCode: result.pairCode,
+      }),
+    );
+    if (!delivered) {
+      // `sendOnLink` answers false on a socket that is not OPEN, and the
+      // caller used to discard that. An undelivered code left no trace
+      // anywhere, so the MCP's timeout — whose hint blames a missing sign-in
+      // — was the only thing anyone had to go on. Say it instead: this is the
+      // one line that separates "the extension never asked" from "the user
+      // never approved".
+      console.warn(
+        `[fetchproxy] pair-pending for ${result.mcpId} not delivered on ${link.label}: link not open. ` +
+          `The pair code is in the popup; the MCP will report a timeout until it reconnects.`,
       );
     }
   } catch (e) {
-    console.warn('[fetchproxy] pair-pending send failed:', e);
+    console.warn(`[fetchproxy] pair-pending send failed for ${result.mcpId}:`, e);
   }
 }

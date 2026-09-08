@@ -407,6 +407,99 @@ describe('two bridges at once', () => {
   });
 });
 
+describe('pair-pending delivery (mcp-host#639)', () => {
+  // The MCP learns a pair code exists ONLY from this frame. When it does not
+  // arrive, `awaitSessionReady` times out and reports the `not-ready` branch,
+  // whose hint says "sign in to the target site" — so the user is sent to
+  // check a browser session that is fine while a live XXX-XXX sits in the
+  // popup. That is the shape observed on resy-mcp#166: a code on screen, and
+  // `pairCode: null` at the MCP on every one of four attempts.
+  it('sends the code to an untrusted MCP that needs pairing', async () => {
+    FakeSocket.opened = [];
+    unbindAll();
+    links.clear();
+    reconcileRemoteLinks([REMOTE]);
+    const localWs = FakeSocket.opened.find((s) => s.url.startsWith('ws://127.0.0.1'))!;
+    localWs.open();
+
+    const mcp = await scriptedMcp('alltrails-mcp:2.1.3:cccccccccccccccc');
+    localWs.message(await helloFrom(mcp)); // no trust record → needs-pair
+    await new Promise((r) => setTimeout(r, 30));
+
+    const pending = localWs.frames<{ mcpId: string; pairCode: string }>('pair-pending');
+    expect(pending).toHaveLength(1);
+    expect(pending[0]!.mcpId).toBe(mcp.mcpId);
+    expect(pending[0]!.pairCode).toMatch(/^[0-9]{3}-[0-9]{3}$/);
+    expect(localWs.frames('ready')).toHaveLength(0);
+  });
+
+  // The regression this fix is really about. The code was being re-read from
+  // chrome.storage after being written, purely to fetch a value already in
+  // hand — so any storage miss silently produced NO frame and NO log. The
+  // key is `${identityHash}:${scopeHash}`, so a record there always carries
+  // the same identity and therefore the same code; a stored one can only be
+  // equal or STALE (written under a previous extension identity), never
+  // better. Reading it back was pure downside.
+  it('still sends the code when the pending-pair store reads back empty', async () => {
+    FakeSocket.opened = [];
+    unbindAll();
+    links.clear();
+    reconcileRemoteLinks([REMOTE]);
+    const localWs = FakeSocket.opened.find((s) => s.url.startsWith('ws://127.0.0.1'))!;
+    localWs.open();
+
+    const mcp = await scriptedMcp('alltrails-mcp:2.1.3:dddddddddddddddd');
+    const realGet = chrome.storage.local.get;
+    // Everything else still reads normally; only the pending-pair dict comes
+    // back empty, which is what a miss looks like from the send's point of view.
+    (chrome.storage.local as { get: unknown }).get = async (k: string | string[]) => {
+      const out = (await realGet(k)) as Record<string, unknown>;
+      const keys = Array.isArray(k) ? k : [k];
+      for (const key of keys) if (key === 'pendingPair') delete out[key];
+      return out;
+    };
+    try {
+      localWs.message(await helloFrom(mcp));
+      await new Promise((r) => setTimeout(r, 30));
+    } finally {
+      (chrome.storage.local as { get: unknown }).get = realGet;
+    }
+
+    const pending = localWs.frames<{ pairCode: string }>('pair-pending');
+    expect(pending).toHaveLength(1);
+    expect(pending[0]!.pairCode).toMatch(/^[0-9]{3}-[0-9]{3}$/);
+  });
+
+  // `sendOnLink` returns false on a closed socket and the caller discarded it,
+  // so an undelivered code left no trace anywhere. It has to be loud: this is
+  // the one signal that separates "the extension never asked" from "the user
+  // never approved", and without it the MCP's misleading hint is all anyone
+  // has to go on.
+  it('warns when the code could not be delivered', async () => {
+    FakeSocket.opened = [];
+    unbindAll();
+    links.clear();
+    reconcileRemoteLinks([REMOTE]);
+    const localWs = FakeSocket.opened.find((s) => s.url.startsWith('ws://127.0.0.1'))!;
+    localWs.open();
+
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const mcp = await scriptedMcp('alltrails-mcp:2.1.3:eeeeeeeeeeeeeeee');
+    const hello = await helloFrom(mcp);
+    // Deliver the hello, then close the socket before the async write finishes,
+    // so the send finds the link gone — the real-world case is the WS dropping
+    // between the hello and the store write.
+    localWs.message(hello);
+    localWs.readyState = 3;
+    await new Promise((r) => setTimeout(r, 30));
+
+    const said = warn.mock.calls.map((c) => c.join(' ')).join('\n');
+    warn.mockRestore();
+    expect(said).toContain('pair-pending');
+    expect(said).toContain(mcp.mcpId);
+  });
+});
+
 describe('telling the server why (#300)', () => {
   // The expensive half of #300: a refusal used to be indistinguishable from
   // silence. The extension console.warned in a service worker nobody has open
