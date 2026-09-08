@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.5.4](https://github.com/chrischall/fetchproxy/compare/v2.5.3...v2.5.4) (2026-09-08)
+
+
+### Bug Fixes
+
+* **extension:** a changed domain set must prompt, not fail silently ([#301](https://github.com/chrischall/fetchproxy/issues/301)) ([e00de7e](https://github.com/chrischall/fetchproxy/commit/e00de7e1c333e891fe4aeefb99f5927fe853d4fc))
+
 ## [2.5.3](https://github.com/chrischall/fetchproxy/compare/v2.5.2...v2.5.3) (2026-09-04)
 
 
