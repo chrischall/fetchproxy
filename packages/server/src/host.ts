@@ -25,7 +25,7 @@ import {
 } from '@fetchproxy/protocol';
 import { buildServerHello } from './build-server-hello.js';
 import { SessionState } from './session.js';
-import { awaitSessionReady } from './session-ready.js';
+import { awaitSessionReady, FetchproxyHelloRejectedError } from './session-ready.js';
 import type { Identity } from './identity.js';
 import { decideExtensionTrust, type ExtensionTrustPort } from './extension-trust.js';
 
@@ -124,6 +124,9 @@ export async function startHost(opts: HostOpts): Promise<HostHandle> {
   // recover it from the frame rather than threading it as a second
   // return value from the helper.
   const ownHello: HelloFrameFromServer = await buildServerHello({
+    // 2.6.0: tell the extension it can say WHY it refused a hello, instead of
+    // leaving us to time out and guess.
+    accepts: ['hello-rejected'],
     identity: opts.ownIdentity,
     mcpId: opts.ownMcpId,
     serverName: opts.ownServerName,
@@ -459,6 +462,23 @@ export async function startHost(opts: HostOpts): Promise<HostHandle> {
         // 0.5.2+: pair-pending dispatch. Only the extension sends these
         // (one per MCP whose hello triggered a needs-pair queue). Route
         // by mcpId: own → record + fire onPairCode; peer → forward.
+        // 2.6.0: the extension refused a hello and said why. Route exactly
+        // like pair-pending — own → fail our own wait now; peer → forward —
+        // so a refusal reaches whichever process was waiting on it.
+        if (frame.type === 'hello-rejected' && identified === 'extension') {
+          if (frame.mcpId === opts.ownMcpId) {
+            // Fail FAST with the real reason rather than letting
+            // `awaitSessionReady` time out and report a guess. A rejection of
+            // this promise propagates through it unchanged.
+            rejectOwnSession(
+              new FetchproxyHelloRejectedError({ mcpId: frame.mcpId, reason: frame.reason }),
+            );
+          } else {
+            const slot = peers.get(frame.mcpId);
+            if (slot) slot.ws.send(JSON.stringify(frame));
+          }
+        }
+
         if (frame.type === 'pair-pending' && identified === 'extension') {
           if (frame.mcpId === opts.ownMcpId) {
             ownPendingPairCode = frame.pairCode;

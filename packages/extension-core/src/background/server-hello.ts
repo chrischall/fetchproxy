@@ -66,6 +66,26 @@ import {
 
 declare const chrome: ChromeApi;
 
+/**
+ * Tell the server WHY its hello was refused, when it said it can hear that
+ * (`accepts`). Gated because `validateFrame` on a server older than 2.6.0
+ * throws `unknown frame type` and the caller closes the socket — so sending
+ * this unconditionally would turn a diagnosable refusal into a dropped
+ * connection, which is strictly worse than the silence it replaces.
+ *
+ * Best-effort and fire-and-forget: this is a diagnostic. It grants nothing
+ * and carries no authority, and a refusal that cannot be delivered still has
+ * to leave the session unestablished.
+ */
+function tellServerWhy(link: Link, hello: HelloFrameFromServer, reason: string): void {
+  if (!hello.accepts?.includes('hello-rejected')) return;
+  try {
+    sendOnLink(link, JSON.stringify({ type: 'hello-rejected', mcpId: hello.mcpId, reason }));
+  } catch (e) {
+    console.warn('[fetchproxy] hello-rejected send failed:', e);
+  }
+}
+
 export async function onServerHello(link: Link, hello: HelloFrameFromServer): Promise<void> {
   if (!state.trust || !state.sessions || !state.extIdentity || !link.sessionNonce) return;
   // Bind before deciding anything. An mcpId another live link already holds is
@@ -75,6 +95,7 @@ export async function onServerHello(link: Link, hello: HelloFrameFromServer): Pr
     console.warn(
       `[fetchproxy] dropped hello for ${hello.mcpId} on ${link.label}: that id is already bound to another bridge`,
     );
+    tellServerWhy(link, hello, 'that mcpId is already bound to another bridge');
     return;
   }
   const result = await handleServerHello(hello, {
@@ -89,6 +110,7 @@ export async function onServerHello(link: Link, hello: HelloFrameFromServer): Pr
     // block a legitimate re-hello of the same id behind a rejection.
     unbindMcp(hello.mcpId, link);
     console.warn(`[fetchproxy] rejected hello for ${hello.mcpId}: ${result.reason}`);
+    tellServerWhy(link, hello, result.reason);
     return;
   }
   if (result.kind === 'auto-trust') {

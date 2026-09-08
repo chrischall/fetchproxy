@@ -1,6 +1,6 @@
 # fetchproxy protocol (v1, ships with 0.2.0+)
 
-The wire format between MCP servers and the browser extension. JSON-over-WebSocket. Three top-level frame types; all data frames after the handshake are AES-256-GCM encrypted end-to-end between each MCP and the extension.
+The wire format between MCP servers and the browser extension. JSON-over-WebSocket. A small set of top-level frame types; all data frames after the handshake are AES-256-GCM encrypted end-to-end between each MCP and the extension.
 
 `PROTOCOL_VERSION` is `3`. The `hello` frame carries it explicitly; mismatches are rejected.
 
@@ -191,6 +191,37 @@ After `ready`, every data frame is encrypted:
 `ciphertext` includes the 16-byte GCM tag. The host routes by `mcpId` and never decrypts.
 
 Replay protection: the receiving side rejects any `seq <= lastInbound` (per direction, per session). WS guarantees ordering, so gaps from out-of-order arrival are not a concern.
+
+#### `hello-rejected` (extension → host → server), 2.6.0+
+
+Sent when the extension refuses a `hello` before any session exists — a bad
+`sessionSig`, or an `mcpId` already bound to another bridge.
+
+```jsonc
+{
+  "type": "hello-rejected",
+  "mcpId": "resy-mcp:0.13.1:2259288954ecdf3d",
+  "reason": "serverName/domains mismatch with trust record"
+}
+```
+
+Without it a refusal is indistinguishable from silence: the extension logs to
+a service worker nobody has open, and the MCP waits out
+`SESSION_READY_TIMEOUT_MS` before throwing `not-ready` — whose hint blames
+being signed out or a changed scope, causes that may both already be
+satisfied. With it the MCP fails immediately and reports the real reason
+(`FetchproxyHelloRejectedError`).
+
+**Gated on `accepts`.** The extension sends it only to a server whose `hello`
+listed `"hello-rejected"`, because `validateFrame` on a server older than
+2.6.0 throws `unknown frame type` and its caller closes the socket — sending
+it unconditionally would turn a diagnosable refusal into a dropped
+connection, which is worse than the silence it replaces.
+
+**Diagnostic only.** It carries no authority and grants nothing; a forged one
+can make a session fail, which a silent peer could do anyway by never
+answering. `reason` is capped at 200 characters because it lands verbatim in
+an error message a caller may log.
 
 ### Inner frames (inside ciphertext)
 
