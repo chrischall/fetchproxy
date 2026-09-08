@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.6.2](https://github.com/chrischall/fetchproxy/compare/v2.6.1...v2.6.2) (2026-09-08)
+
+
+### Documentation
+
+* drop feature/fix from the release-notes label table ([#312](https://github.com/chrischall/fetchproxy/issues/312)) ([8f43727](https://github.com/chrischall/fetchproxy/commit/8f437274a9dbc09c34e64aba3ccdf0e8e543c1ec))
+
 ## [2.6.1](https://github.com/chrischall/fetchproxy/compare/v2.6.0...v2.6.1) (2026-09-08)
 
 
