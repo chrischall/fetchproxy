@@ -20,7 +20,7 @@ import {
 } from '@fetchproxy/protocol';
 import { buildServerHello } from './build-server-hello.js';
 import { SessionState } from './session.js';
-import { awaitSessionReady } from './session-ready.js';
+import { awaitSessionReady, FetchproxyHelloRejectedError } from './session-ready.js';
 import type { Identity } from './identity.js';
 import {
   decideExtensionTrust,
@@ -168,7 +168,8 @@ export async function startPeer(opts: PeerOpts): Promise<InternalPeerHandle> {
     graphqlOps: opts.graphqlOps,
     // 2.5.0: let a host ≥2.5.0 tell us when the extension leaves, so
     // `extensionConnected()` / `sessionLinked()` can go back to false.
-    accepts: ['extension-disconnected'],
+    // 2.6.0: `hello-rejected` for the same reason, from the extension.
+    accepts: ['extension-disconnected', 'hello-rejected'],
   });
   const sessionNonce = fromB64(hello.sessionNonce);
   ws.send(JSON.stringify(hello));
@@ -383,6 +384,14 @@ export async function startPeer(opts: PeerOpts): Promise<InternalPeerHandle> {
       // the upstream caller can include the code in tool errors instead of
       // hanging on a session promise that will never resolve until the user
       // approves the popup.
+      // 2.6.0: a refusal relayed by the host. Same reasoning as on the host:
+      // fail this peer's wait now, with the extension's own reason.
+      if (frame.type === 'hello-rejected' && frame.mcpId === opts.mcpId) {
+        rejectFirstReady(
+          new FetchproxyHelloRejectedError({ mcpId: frame.mcpId, reason: frame.reason }),
+        );
+      }
+
       if (frame.type === 'pair-pending' && frame.mcpId === opts.mcpId) {
         pendingPairCode = frame.pairCode;
         pendingPairListeners.forEach((cb) => cb(frame.pairCode));

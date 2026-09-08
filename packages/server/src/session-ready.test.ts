@@ -1,6 +1,10 @@
 import { describe, it, expect } from 'vitest';
 import type { SessionState } from './session.js';
-import { awaitSessionReady, FetchproxySessionNotReadyError } from './session-ready.js';
+import {
+  awaitSessionReady,
+  FetchproxyHelloRejectedError,
+  FetchproxySessionNotReadyError,
+} from './session-ready.js';
 
 const fakeSession = {} as SessionState;
 const never = (): Promise<SessionState> => new Promise<SessionState>(() => {});
@@ -64,5 +68,36 @@ describe('awaitSessionReady', () => {
       timeoutMs: 0,
     });
     expect(s).toBe(fakeSession);
+  });
+});
+
+describe('FetchproxyHelloRejectedError', () => {
+  // The point of the frame behind it (#300): a refusal must arrive as itself
+  // rather than as the timeout that used to stand in for it. A timeout can
+  // only guess, and its hint guessed wrong — naming "signed out" and "scope
+  // changed" for a connection whose real problem was neither.
+  it('beats the timeout, carrying the extension\'s own reason', async () => {
+    const rejected = Promise.reject(
+      new FetchproxyHelloRejectedError({
+        mcpId: 'resy-mcp:0.13.1:2259288954ecdf3d',
+        reason: 'serverName/domains mismatch with trust record',
+      }),
+    );
+    const err = await awaitSessionReady(rejected, {
+      mcpId: 'resy-mcp:0.13.1:2259288954ecdf3d',
+      pendingPairCode: () => null,
+      timeoutMs: 30_000,
+    }).catch((e: unknown) => e);
+
+    // Not the timeout error, and not after 30 s.
+    expect(err).toBeInstanceOf(FetchproxyHelloRejectedError);
+    expect(err).not.toBeInstanceOf(FetchproxySessionNotReadyError);
+    const e = err as FetchproxyHelloRejectedError;
+    expect(e.reason).toBe('serverName/domains mismatch with trust record');
+    expect(e.message).toContain('serverName/domains mismatch with trust record');
+    // It must not repeat the timeout's guesses — that wording is what sent
+    // people to check a sign-in and a scope that were both already fine.
+    expect(e.message).not.toContain('sign in to the target site');
+    expect(e.message).toContain('not a timeout');
   });
 });

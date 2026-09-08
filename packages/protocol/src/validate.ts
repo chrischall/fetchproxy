@@ -507,6 +507,8 @@ export function validateFrame(raw: unknown): Frame {
   if (t === 'ready') return validateReady(raw);
   if (t === 'frame') return validateEncrypted(raw);
   if (t === 'pair-pending') return validatePairPending(raw);
+  // 2.6.0: extension → server refusal notice (see HelloRejectedFrame).
+  if (t === 'hello-rejected') return validateHelloRejected(raw);
   // 2.5.0: payload-free host→peer notice (see ExtensionDisconnectedFrame).
   if (t === 'extension-disconnected') return { type: 'extension-disconnected' };
   throw new ProtocolError(`unknown frame type: ${String(t)}`);
@@ -670,6 +672,21 @@ function validatePairPending(raw: Record<string, unknown>): import('./frames.js'
     throw new ProtocolError(`pair-pending.pairCode: must match XXX-XXX, got ${String(raw.pairCode)}`);
   }
   return { type: 'pair-pending', mcpId: raw.mcpId, pairCode: raw.pairCode };
+}
+
+function validateHelloRejected(
+  raw: Record<string, unknown>,
+): import('./frames.js').HelloRejectedFrame {
+  assertString(raw.mcpId, 'hello-rejected.mcpId');
+  if (!isValidMcpId(raw.mcpId)) throw new ProtocolError('hello-rejected.mcpId: invalid format');
+  assertString(raw.reason, 'hello-rejected.reason');
+  // Bounded because it lands verbatim in an error message a caller may log
+  // or surface. The extension's own reasons are short; anything long enough
+  // to matter is not a reason, it is a payload.
+  if (raw.reason.length > 200) {
+    throw new ProtocolError('hello-rejected.reason: must be at most 200 characters');
+  }
+  return { type: 'hello-rejected', mcpId: raw.mcpId, reason: raw.reason };
 }
 
 /**

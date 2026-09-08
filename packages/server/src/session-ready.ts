@@ -42,6 +42,29 @@ export class FetchproxySessionNotReadyError extends Error {
 }
 
 /**
+ * Thrown when the extension explicitly refuses a hello (2.6.0+). Distinct from
+ * {@link FetchproxySessionNotReadyError}, which is a TIMEOUT and can only
+ * guess: this one carries the extension's own reason, so the message names
+ * what actually happened instead of listing causes that may all be satisfied.
+ */
+export class FetchproxyHelloRejectedError extends Error {
+  readonly mcpId: string;
+  readonly reason: string;
+
+  constructor(info: { mcpId: string; reason: string }) {
+    super(
+      `fetchproxy: the extension refused the connection for "${info.mcpId}": ${info.reason}. ` +
+        `This is the extension's own reason — it is not a timeout, and retrying ` +
+        `unchanged will be refused the same way.`,
+    );
+    this.name = 'FetchproxyHelloRejectedError';
+    this.mcpId = info.mcpId;
+    this.reason = info.reason;
+    Object.setPrototypeOf(this, new.target.prototype);
+  }
+}
+
+/**
  * Await a session-ready promise, but reject with a
  * {@link FetchproxySessionNotReadyError} if it hasn't settled within
  * `timeoutMs` — converting an indefinite hang into a bounded, differentiated

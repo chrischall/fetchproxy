@@ -407,6 +407,60 @@ describe('two bridges at once', () => {
   });
 });
 
+describe('telling the server why (#300)', () => {
+  // The expensive half of #300: a refusal used to be indistinguishable from
+  // silence. The extension console.warned in a service worker nobody has open
+  // and sent nothing, so the MCP waited out SESSION_READY_TIMEOUT_MS twice and
+  // threw `not-ready` — whose hint blames being signed out or a changed scope,
+  // causes that may both already be satisfied.
+  it('sends hello-rejected with the reason when the server accepts it', async () => {
+    FakeSocket.opened = [];
+    unbindAll();
+    links.clear();
+    reconcileRemoteLinks([REMOTE]);
+    const localWs = FakeSocket.opened.find((s) => s.url.startsWith('ws://127.0.0.1'))!;
+    localWs.open();
+
+    const mcp = await scriptedMcp('alltrails-mcp:2.1.3:aaaaaaaaaaaaaaaa');
+    const hello = await helloFrom(mcp);
+    // Broken signature → handleServerHello rejects.
+    localWs.message({
+      ...hello,
+      accepts: ['hello-rejected'],
+      sessionSig: toB64(new Uint8Array(64)),
+    });
+    await new Promise((r) => setTimeout(r, 20));
+
+    const rejected = localWs.frames<{ mcpId: string; reason: string }>('hello-rejected');
+    expect(rejected).toHaveLength(1);
+    expect(rejected[0]!.mcpId).toBe(mcp.mcpId);
+    expect(rejected[0]!.reason).toContain('sessionSig');
+    // Still refused — saying why grants nothing.
+    expect(localWs.frames('ready')).toHaveLength(0);
+  });
+
+  // The gate is load-bearing, not politeness. `validateFrame` on a server
+  // older than 2.6.0 throws `unknown frame type` and its caller closes the
+  // socket with 1002 — so sending this unconditionally would turn a
+  // diagnosable refusal into a dropped connection, which is worse than the
+  // silence it replaces.
+  it('stays silent toward a server that did not advertise it', async () => {
+    FakeSocket.opened = [];
+    unbindAll();
+    links.clear();
+    reconcileRemoteLinks([REMOTE]);
+    const localWs = FakeSocket.opened.find((s) => s.url.startsWith('ws://127.0.0.1'))!;
+    localWs.open();
+
+    const mcp = await scriptedMcp('alltrails-mcp:2.1.3:bbbbbbbbbbbbbbbb');
+    const hello = await helloFrom(mcp); // no `accepts`
+    localWs.message({ ...hello, sessionSig: toB64(new Uint8Array(64)) });
+    await new Promise((r) => setTimeout(r, 20));
+
+    expect(localWs.frames('hello-rejected')).toHaveLength(0);
+  });
+});
+
 describe('a refused hello', () => {
   it('gives its binding back, so the id is not held until the link drops', async () => {
     FakeSocket.opened = [];

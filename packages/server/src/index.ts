@@ -23,7 +23,11 @@ export {
   protocolErrorFrom,
   FetchproxyTimeoutError,
 } from './ws-server.js';
-export { FetchproxySessionNotReadyError, SESSION_READY_TIMEOUT_MS } from './session-ready.js';
+export {
+  FetchproxyHelloRejectedError,
+  FetchproxySessionNotReadyError,
+  SESSION_READY_TIMEOUT_MS,
+} from './session-ready.js';
 export { classifyFetchError } from './error-kind.js';
 export type { FetchErrorKind } from './error-kind.js';
 export { classifyBridgeError } from './classify-bridge-error.js';

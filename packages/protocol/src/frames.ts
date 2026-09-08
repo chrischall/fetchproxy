@@ -341,7 +341,8 @@ export interface HelloFrameFromServer {
    * a frame only to peers that listed it, so an older peer — whose
    * validator would refuse the type — never sees one. Unknown entries are
    * accepted and ignored, so a newer peer can advertise to an older host.
-   * Today: `'extension-disconnected'`.
+   * Today: `'extension-disconnected'` (host→peer) and
+   * `'hello-rejected'` (extension→server).
    */
   accepts?: string[];
   /**
@@ -472,6 +473,28 @@ export interface PairPendingFrame {
 }
 
 /**
+ * 2.6.0: extension → server, when a hello is refused before any session
+ * exists. Sent only to servers whose hello `accepts` it.
+ *
+ * Without it a refusal is indistinguishable from silence: the extension
+ * `console.warn`s in a service worker nobody has open, and the MCP waits out
+ * `SESSION_READY_TIMEOUT_MS` before throwing `not-ready`, whose hint then
+ * blames being signed out or a changed scope — causes that may both already
+ * be satisfied. `reason` is the extension's own refusal string, so the MCP
+ * can fail immediately and say the true thing instead.
+ *
+ * Diagnostic only: it carries no authority and grants nothing. A forged one
+ * can make a session fail, which a silent peer could do anyway by never
+ * answering.
+ */
+export interface HelloRejectedFrame {
+  type: 'hello-rejected';
+  mcpId: string;
+  /** Short machine-ish reason, e.g. `serverName/domains mismatch with trust record`. */
+  reason: string;
+}
+
+/**
  * 2.5.0: host → peer, when the extension's socket to the host closes. Sent
  * only to peers whose hello `accepts` it. A peer clears what it knew of
  * the extension so its `bridgeHealth().session` can report the link as
@@ -488,6 +511,7 @@ export type Frame =
   | ReadyFrame
   | EncryptedFrame
   | PairPendingFrame
+  | HelloRejectedFrame
   | ExtensionDisconnectedFrame;
 
 // --- Inner frames (inside ciphertext) ---
