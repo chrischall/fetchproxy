@@ -427,4 +427,37 @@ describe('a refused hello', () => {
     // same id behind a rejection.
     expect(linkForMcp(mcp.mcpId)).toBeNull();
   });
+
+  // The end-to-end shape of chrischall/fetchproxy#300. A trusted MCP that
+  // widens its declared domains used to be REFUSED here — no `ready`, no
+  // `pair-pending`, only a console.warn — so the MCP waited out
+  // SESSION_READY_TIMEOUT_MS twice and threw `not-ready` with `pairCode: null`,
+  // whose hint blames being signed out or a changed scope. The user was told
+  // to fix things that were already fine, was never offered the approval that
+  // would have worked, and could not reach one from the popup either.
+  it('sends a pair code, not silence, when a trusted MCP widens its domains', async () => {
+    FakeSocket.opened = [];
+    unbindAll();
+    links.clear();
+    reconcileRemoteLinks([REMOTE]);
+    const localWs = FakeSocket.opened.find((s) => s.url.startsWith('ws://127.0.0.1'))!;
+    localWs.open();
+
+    const mcp = await scriptedMcp('alltrails-mcp:2.1.3:1234567890abcdef');
+    await trustMcp(mcp); // approved for ['alltrails.com'] only
+    const hello = await helloFrom(mcp);
+    localWs.message({ ...hello, domains: ['alltrails.com', 'alltrails.co.uk'] });
+    await new Promise((r) => setTimeout(r, 20));
+
+    // Not auto-trusted: the widened set was never approved, so nothing is
+    // served for it — the security property the old `reject` was protecting.
+    expect(localWs.frames('ready')).toHaveLength(0);
+
+    // But the MCP is TOLD, with the code that fixes it. This is the whole
+    // difference between a 60-second silence and one actionable line.
+    const pending = localWs.frames<{ mcpId: string; pairCode: string }>('pair-pending');
+    expect(pending).toHaveLength(1);
+    expect(pending[0]!.mcpId).toBe(mcp.mcpId);
+    expect(pending[0]!.pairCode).toMatch(/^[A-Z0-9]{3}-[A-Z0-9]{3}$/);
+  });
 });

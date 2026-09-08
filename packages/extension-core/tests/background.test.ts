@@ -245,7 +245,14 @@ describe('handleServerHello', () => {
     expect(result.kind).toBe('reject');
   });
 
-  it('rejects auto-trust if serverName changed since pair', async () => {
+  // A changed serverName or domain set must NOT auto-trust — but it must stay
+  // RECOVERABLE. `reject` sent no `ready` and issued no pair code, so the MCP
+  // sat out two SESSION_READY_TIMEOUT_MS windows and threw `not-ready` with
+  // `pairCode: null`, whose hint blames being signed out or a changed scope.
+  // The user could not approve their way out of it from the popup at all; the
+  // only escape was deleting the trust row by hand. The neighbouring comment
+  // in hello.ts always said this case should "force needs-pair" — now it does.
+  it('offers a re-pair (not a dead end) if serverName changed since pair', async () => {
     const hello = await buildServerHello(
       'opentable-mcp:0.9.1:a3f7c91d2e8b4f56',
       'opentable-mcp',
@@ -266,10 +273,14 @@ describe('handleServerHello', () => {
       extensionIdentityEd25519Pub: FAKE_EXT_X25519_PUB_B64,
     });
     const result = await handleServerHello(hello, { trust, extensionIdentityX25519Pub: FAKE_EXT_X25519_PUB });
-    expect(result.kind).toBe('reject');
+    expect(result.kind).toBe('needs-pair');
+    if (result.kind !== 'needs-pair') throw new Error('unreachable');
+    expect(result.pairCode).toBeTruthy();
+    // Prompted with what the MCP is asking for NOW, not the stale record.
+    expect(result.serverName).toBe('opentable-mcp');
   });
 
-  it('rejects auto-trust if domains set changed since pair', async () => {
+  it('offers a re-pair (not a dead end) if the domains set changed since pair', async () => {
     const hello = await buildServerHello(
       'honeybook-mcp:0.0.1:abcdef1234567890',
       'honeybook-mcp',
@@ -291,7 +302,79 @@ describe('handleServerHello', () => {
       extensionIdentityEd25519Pub: FAKE_EXT_X25519_PUB_B64,
     });
     const result = await handleServerHello(hello, { trust, extensionIdentityX25519Pub: FAKE_EXT_X25519_PUB });
-    expect(result.kind).toBe('reject');
+    expect(result.kind).toBe('needs-pair');
+    if (result.kind !== 'needs-pair') throw new Error('unreachable');
+    expect(result.pairCode).toBeTruthy();
+    // The user is shown the EXPANDED set they are being asked to approve —
+    // showing the old one would ask them to consent to the wrong thing.
+    expect([...result.domains].sort()).toEqual(['honeybook.com', 'hbsplit.com'].sort());
+  });
+
+  // The half that makes it a fix rather than a relabelling: approving the new
+  // set has to actually restore service, without the MCP restarting.
+  it('auto-trusts on the next hello once the widened domain set is approved', async () => {
+    const hello = await buildServerHello(
+      'honeybook-mcp:0.0.1:abcdef1234567890',
+      'honeybook-mcp',
+      ['honeybook.com', 'hbsplit.com'],
+    );
+    const trust = new TrustStore('0.2.0');
+    const idHash = Buffer.from(
+      await sha256(new Uint8Array(Buffer.from(hello.identityX25519Pub, 'base64'))),
+    ).toString('hex');
+    await trust.put(idHash, {
+      serverName: 'honeybook-mcp',
+      domains: ['honeybook.com'],
+      capabilities: ['fetch'],
+      identityX25519Pub: hello.identityX25519Pub,
+      identityEd25519Pub: hello.identityEd25519Pub,
+      extensionIdentityX25519Pub: FAKE_EXT_X25519_PUB_B64,
+      extensionIdentityEd25519Pub: FAKE_EXT_X25519_PUB_B64,
+    });
+    expect(
+      (await handleServerHello(hello, { trust, extensionIdentityX25519Pub: FAKE_EXT_X25519_PUB })).kind,
+    ).toBe('needs-pair');
+
+    // What approving from the popup writes.
+    await trust.put(idHash, {
+      serverName: 'honeybook-mcp',
+      domains: ['honeybook.com', 'hbsplit.com'],
+      capabilities: ['fetch'],
+      identityX25519Pub: hello.identityX25519Pub,
+      identityEd25519Pub: hello.identityEd25519Pub,
+      extensionIdentityX25519Pub: FAKE_EXT_X25519_PUB_B64,
+      extensionIdentityEd25519Pub: FAKE_EXT_X25519_PUB_B64,
+    });
+    const after = await handleServerHello(hello, { trust, extensionIdentityX25519Pub: FAKE_EXT_X25519_PUB });
+    expect(after.kind).toBe('auto-trust');
+  });
+
+  // The security property this must not lose: an unapproved change still
+  // serves NOTHING. `needs-pair` hands back no session key, so the widened
+  // domain set is unreachable until the user says yes — the change is to
+  // whether they are ASKED, never to what is granted before they answer.
+  it('grants no session key while the widened set is unapproved', async () => {
+    const hello = await buildServerHello(
+      'honeybook-mcp:0.0.1:abcdef1234567890',
+      'honeybook-mcp',
+      ['honeybook.com', 'evil.example'],
+    );
+    const trust = new TrustStore('0.2.0');
+    const idHash = Buffer.from(
+      await sha256(new Uint8Array(Buffer.from(hello.identityX25519Pub, 'base64'))),
+    ).toString('hex');
+    await trust.put(idHash, {
+      serverName: 'honeybook-mcp',
+      domains: ['honeybook.com'],
+      capabilities: ['fetch'],
+      identityX25519Pub: hello.identityX25519Pub,
+      identityEd25519Pub: hello.identityEd25519Pub,
+      extensionIdentityX25519Pub: FAKE_EXT_X25519_PUB_B64,
+      extensionIdentityEd25519Pub: FAKE_EXT_X25519_PUB_B64,
+    });
+    const result = await handleServerHello(hello, { trust, extensionIdentityX25519Pub: FAKE_EXT_X25519_PUB });
+    expect(result.kind).toBe('needs-pair');
+    expect(result).not.toHaveProperty('sessionKey');
   });
 
   describe('capabilities', () => {

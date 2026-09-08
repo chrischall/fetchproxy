@@ -241,18 +241,35 @@ export async function handleServerHello(
   const scope = declaredScope(hello);
 
   if (record) {
-    if (
+    // A changed serverName or domain set must not auto-trust — the record
+    // approved neither — but it must FALL THROUGH to needs-pair rather than
+    // reject.
+    //
+    // Rejecting made the state unrecoverable. `onServerHello` answers a
+    // reject with a `console.warn` and nothing else: no `ready`, and no pair
+    // code. The MCP then waits out `SESSION_READY_TIMEOUT_MS` and throws
+    // `not-ready` with `pairCode: null`, whose hint blames being signed out
+    // or a changed scope — so the user is told to fix two things that may
+    // both be fine, is offered no prompt to approve the actual change, and
+    // has no way out of the popup at all. The only escape was deleting the
+    // trust row by hand.
+    //
+    // Nothing is granted before consent: needs-pair returns no session key,
+    // so the widened set stays unreachable until the user approves it. The
+    // change is to whether they are ASKED, never to what is served while
+    // they have not answered.
+    const scopeIdentityChanged =
       record.serverName !== hello.serverName ||
-      !sameDomainSet(record.domains, hello.domains)
-    ) {
-      return { kind: 'reject', reason: 'serverName/domains mismatch with trust record' };
-    }
+      !sameDomainSet(record.domains, hello.domains);
     // 0.4.0: if the stored trust record's extension identity differs
     // from this extension's current identity, force re-pair. This
     // catches a wholesale extension reinstall as well as legacy 0.3.0
     // records (no extensionIdentityX25519Pub field, normalised to '').
     const recordedExtPubB64 = record.extensionIdentityX25519Pub ?? '';
-    if (recordedExtPubB64 !== toB64(deps.extensionIdentityX25519Pub)) {
+    if (
+      scopeIdentityChanged ||
+      recordedExtPubB64 !== toB64(deps.extensionIdentityX25519Pub)
+    ) {
       // Fall through to needs-pair path.
     } else {
       // Part 2 (scope-growth): instead of blocking on any scope change,
@@ -261,7 +278,7 @@ export async function handleServerHello(
       // If declared GROWS beyond approved, serve the intersection (approved
       // ∩ declared) so the MCP keeps working, and queue a non-blocking
       // `scope-update` offer so the user can grant the wider scope later.
-      // Only changes to domains/serverName still force needs-pair (above).
+      // Changes to domains/serverName force needs-pair (above).
       const approvedScope = {
         capabilities: [...record.capabilities],
         cookieKeys: [...(record.cookieKeys ?? [])],
