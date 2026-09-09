@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.8.0](https://github.com/chrischall/fetchproxy/compare/v2.7.0...v2.8.0) (2026-09-09)
+
+
+### Features
+
+* **server:** export the identity format, so a host can provision one ([#320](https://github.com/chrischall/fetchproxy/issues/320)) ([c67696b](https://github.com/chrischall/fetchproxy/commit/c67696be2b0ed79192ae3963e9a5910ebe812ec8))
+
 ## [2.7.0](https://github.com/chrischall/fetchproxy/compare/v2.6.2...v2.7.0) (2026-09-09)
 
 
