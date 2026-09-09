@@ -50,6 +50,27 @@ describe('the identity file format', () => {
     expect(serializeIdentity(fromFixture())).toBe(JSON.stringify(FIXTURE.identity, null, 2));
   });
 
+  /**
+   * THE LENGTHS, because a vector that misrepresents the shape is worse than
+   * no vector — it teaches a consumer the wrong thing with a passing test.
+   *
+   * All four are 32 bytes: `generateX25519` and `generateEd25519` in
+   * @fetchproxy/protocol both `slice(-32)` their pkcs8 export. Ed25519 private
+   * keys are often written as 64 (seed || public), and an earlier draft of this
+   * fixture used 64 for exactly that reason — it round-tripped perfectly and
+   * described a file this package never writes.
+   */
+  it('the vector has the byte lengths this package actually produces', async () => {
+    const fixture = fromFixture();
+    for (const field of ['x25519Priv', 'x25519Pub', 'ed25519Priv', 'ed25519Pub'] as const) {
+      expect(fixture[field].length, field).toBe(32);
+    }
+    const minted = await generateIdentity();
+    for (const field of ['x25519Priv', 'x25519Pub', 'ed25519Priv', 'ed25519Pub'] as const) {
+      expect(minted[field].length, `minted ${field}`).toBe(fixture[field].length);
+    }
+  });
+
   it('round-trips through parse', () => {
     const id = fromFixture();
     expect(parseIdentity(serializeIdentity(id))).toEqual(id);

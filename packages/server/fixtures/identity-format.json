@@ -1,9 +1,9 @@
 {
-  "note": "Not a real key. A constant, so a consumer can prove it round-trips this exact shape.",
+  "note": "Not a real key. A constant, so a consumer can prove it round-trips this exact shape. Every field is 32 bytes because that is what @fetchproxy/protocol's generateX25519 and generateEd25519 return \u2014 both slice(-32) the pkcs8 export \u2014 so a vector with a 64-byte ed25519Priv would misrepresent the format it exists to pin.",
   "identity": {
     "x25519Priv": "ERERERERERERERERERERERERERERERERERERERERERE=",
     "x25519Pub": "IiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiI=",
-    "ed25519Priv": "MzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMw==",
+    "ed25519Priv": "MzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzM=",
     "ed25519Pub": "REREREREREREREREREREREREREREREREREREREREREQ=",
     "createdAt": 1757000000000
   }
