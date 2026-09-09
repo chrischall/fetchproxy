@@ -75,4 +75,18 @@ export {
   TRUST_NEW_EXTENSION_ENV,
 } from './extension-trust.js';
 export type { ExtensionPin, ExtensionTrustPort, TrustOutcome } from './extension-trust.js';
-export { defaultIdentityDir, safeIdentityFileBase } from './identity.js';
+// The on-disk identity format, exported as a CONTRACT rather than as an
+// implementation detail (#319): a host that runs one child per caller has to
+// provision the identity so every child of one registration presents the same
+// one, which means writing these bytes from another repo.
+// `fixtures/identity-format.json` is the vector to vendor alongside them.
+export {
+  defaultIdentityDir,
+  generateIdentity,
+  identityFilePath,
+  parseIdentity,
+  safeIdentityFileBase,
+  serializeIdentity,
+  writeIdentityFile,
+} from './identity.js';
+export type { Identity } from './identity.js';

@@ -1,0 +1,10 @@
+{
+  "note": "Not a real key. A constant, so a consumer can prove it round-trips this exact shape.",
+  "identity": {
+    "x25519Priv": "ERERERERERERERERERERERERERERERERERERERERERE=",
+    "x25519Pub": "IiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiI=",
+    "ed25519Priv": "MzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMw==",
+    "ed25519Pub": "REREREREREREREREREREREREREREREREREREREREREQ=",
+    "createdAt": 1757000000000
+  }
+}

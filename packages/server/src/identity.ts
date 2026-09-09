@@ -95,46 +95,100 @@ export function safeIdentityFileBase(serverName: string): string {
  * `serverName` — scoped packages like `@fetchproxy/example-mcp` are OK
  * and get their `/` translated to `_` for the filename.
  */
-export async function loadOrCreateIdentity(
-  serverName: string,
-  dir: string = defaultIdentityDir(),
-): Promise<Identity> {
-  const safeFile = safeIdentityFileBase(serverName);
-  const path = join(dir, `${safeFile}.json`);
-  await mkdir(dir, { recursive: true, mode: 0o700 });
-  try {
-    const raw = await readFile(path, 'utf8');
-    const j = JSON.parse(raw);
-    return {
-      x25519Priv: fromB64(j.x25519Priv),
-      x25519Pub: fromB64(j.x25519Pub),
-      ed25519Priv: fromB64(j.ed25519Priv),
-      ed25519Pub: fromB64(j.ed25519Pub),
-      createdAt: j.createdAt,
-    };
-  } catch (e: unknown) {
-    if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e;
-  }
-  // Doesn't exist — generate fresh keypair.
+/**
+ * The path this package stores `serverName`'s identity at, under `dir`.
+ *
+ * Exported because a host that PROVISIONS an identity (#319) has to write the
+ * same path this package will later read, and deriving it by string-joining
+ * `${serverName}.json` would skip `safeIdentityFileBase` — which is where the
+ * scoped-package translation and the traversal refusal live.
+ */
+export function identityFilePath(dir: string, serverName: string): string {
+  return join(dir, `${safeIdentityFileBase(serverName)}.json`);
+}
+
+/** A fresh long-term identity. Keygen only — nothing is written. */
+export async function generateIdentity(): Promise<Identity> {
   const x = await generateX25519();
   const ed = await generateEd25519();
-  const id: Identity = {
+  return {
     x25519Priv: x.privateKey,
     x25519Pub: x.publicKey,
     ed25519Priv: ed.privateKey,
     ed25519Pub: ed.publicKey,
     createdAt: Date.now(),
   };
-  const j = {
-    x25519Priv: toB64(id.x25519Priv),
-    x25519Pub: toB64(id.x25519Pub),
-    ed25519Priv: toB64(id.ed25519Priv),
-    ed25519Pub: toB64(id.ed25519Pub),
-    createdAt: id.createdAt,
+}
+
+/**
+ * The exact bytes this package writes. THE format, not a description of it.
+ *
+ * `serializeIdentity` and `parseIdentity` are inverses and both are exported,
+ * so a host provisioning an identity is held to the same shape rather than
+ * copying it out of this file — which is the coupling #319 exists to move from
+ * the consumer to here. `tests/identity-format.test.ts` pins the bytes against
+ * a committed vector, so changing the shape is a decision with a failing test
+ * attached rather than a silent break in somebody else's repo.
+ */
+export function serializeIdentity(id: Identity): string {
+  return JSON.stringify(
+    {
+      x25519Priv: toB64(id.x25519Priv),
+      x25519Pub: toB64(id.x25519Pub),
+      ed25519Priv: toB64(id.ed25519Priv),
+      ed25519Pub: toB64(id.ed25519Pub),
+      createdAt: id.createdAt,
+    },
+    null,
+    2,
+  );
+}
+
+/** The inverse of {@link serializeIdentity}. */
+export function parseIdentity(text: string): Identity {
+  const j = JSON.parse(text);
+  return {
+    x25519Priv: fromB64(j.x25519Priv),
+    x25519Pub: fromB64(j.x25519Pub),
+    ed25519Priv: fromB64(j.ed25519Priv),
+    ed25519Pub: fromB64(j.ed25519Pub),
+    createdAt: j.createdAt,
   };
-  await writeFile(path, JSON.stringify(j, null, 2), { mode: 0o600 });
-  // Belt-and-suspenders on umask-affected systems where {mode} on writeFile
-  // may not produce 0600 reliably.
+}
+
+/**
+ * Write `id` where this package will find it, and return the path.
+ *
+ * 0600 twice over: `writeFile`'s mode is subject to the umask on some systems,
+ * so the explicit `chmod` is what actually guarantees it. The directory is
+ * 0700 for the same reason it always was.
+ */
+export async function writeIdentityFile(
+  dir: string,
+  serverName: string,
+  id: Identity,
+): Promise<string> {
+  const path = identityFilePath(dir, serverName);
+  await mkdir(dir, { recursive: true, mode: 0o700 });
+  await writeFile(path, serializeIdentity(id), { mode: 0o600 });
   await chmod(path, 0o600);
+  return path;
+}
+
+export async function loadOrCreateIdentity(
+  serverName: string,
+  dir: string = defaultIdentityDir(),
+): Promise<Identity> {
+  const path = identityFilePath(dir, serverName);
+  await mkdir(dir, { recursive: true, mode: 0o700 });
+  try {
+    return parseIdentity(await readFile(path, 'utf8'));
+  } catch (e: unknown) {
+    if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e;
+  }
+  // Doesn't exist — generate fresh keypair. Built FROM the exported pieces, so
+  // there is one definition of the format rather than two that can drift.
+  const id = await generateIdentity();
+  await writeIdentityFile(dir, serverName, id);
   return id;
 }
