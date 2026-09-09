@@ -1,5 +1,5 @@
 import { readFile, writeFile, mkdir, chmod } from 'node:fs/promises';
-import { join } from 'node:path';
+import { isAbsolute, join } from 'node:path';
 import { homedir } from 'node:os';
 import {
   generateX25519,
@@ -27,9 +27,45 @@ export interface Identity {
 const SAFE_PLAIN = /^[A-Za-z0-9._-]+$/;
 const SAFE_SCOPED = /^@[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/;
 
-/** `$HOME/.fetchproxy/identity`. Override via the `dir` arg or `identityDir`. */
+/**
+ * The `FETCHPROXY_IDENTITY_DIR` fallback for `FetchproxyServerOpts.identityDir`.
+ *
+ * Honours an ABSOLUTE path and nothing else. A relative one is ignored, not
+ * resolved: it would land against the child's working directory, which is not
+ * a place the operator wrote down and can differ between the process that
+ * minted the identity and the next one to look for it — which is the whole
+ * failure this variable exists to fix, reintroduced by the fix. As with
+ * `envWsPort` and `envWsHost` in ws-server.ts, `undefined` — not the default —
+ * is returned for anything unusable, so a stray or mistyped variable falls
+ * through to `$HOME` and the identity lands exactly where it always has,
+ * rather than in a directory nobody chose.
+ *
+ * The variable exists for ONE topology (#316): a host that runs a separate
+ * child per CALLER, because a stdio MCP reads its credentials from the
+ * environment and an environment belongs to a process. Each such child gets
+ * its own `$HOME`, so without this it gets its own identity — and the
+ * extension, whose trust store is keyed by the sha256 of that identity, asks
+ * to pair with every one of them. The identity answers "which MCP is the
+ * browser talking to", which is a property of the server and not of the
+ * caller, so a host that knows the two are different needs somewhere to say
+ * so. It is not a knob for a laptop.
+ */
+function envIdentityDir(): string | undefined {
+  const raw = process.env.FETCHPROXY_IDENTITY_DIR;
+  if (raw === undefined) return undefined;
+  const dir = raw.trim();
+  if (dir === '' || !isAbsolute(dir)) return undefined;
+  return dir;
+}
+
+/**
+ * `$HOME/.fetchproxy/identity`, or `FETCHPROXY_IDENTITY_DIR` when it names an
+ * absolute path. Override in code via the `dir` arg or `identityDir`, which
+ * both still win — an explicit option beats an ambient one, as it does for the
+ * host and port.
+ */
 export function defaultIdentityDir(): string {
-  return join(homedir(), '.fetchproxy', 'identity');
+  return envIdentityDir() ?? join(homedir(), '.fetchproxy', 'identity');
 }
 
 /**
