@@ -107,6 +107,20 @@ describe('the identity file format', () => {
     expect(await readFile(path, 'utf8')).toBe(serializeIdentity(provisioned));
   });
 
+  /**
+   * THE VECTOR MUST EXERCISE THE ALPHABET, or it cannot pin it.
+   *
+   * The first draft used uniform fill bytes, whose base64 contains neither `+`
+   * nor `/` — so a consumer that used base64URL round-tripped it perfectly and
+   * would have written files this package's `atob` refuses. A vector that
+   * cannot distinguish the two encodings is not pinning the encoding.
+   */
+  it('exercises both characters that distinguish base64 from base64url', () => {
+    const encoded = serializeIdentity(fromFixture());
+    expect(encoded).toContain('+');
+    expect(encoded).toContain('/');
+  });
+
   /** A provisioned file is as private as a minted one. */
   it('writes 0600, whatever the umask', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'fp-fmt-mode-'));
