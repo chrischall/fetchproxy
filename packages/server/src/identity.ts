@@ -89,13 +89,6 @@ export function safeIdentityFileBase(serverName: string): string {
 }
 
 /**
- * Read the identity for `serverName` from `dir`, generating + persisting
- * a fresh X25519/Ed25519 keypair if no file exists. The file is written
- * with mode 0o600 (single-user only). Callers must use a safe
- * `serverName` — scoped packages like `@fetchproxy/example-mcp` are OK
- * and get their `/` translated to `_` for the filename.
- */
-/**
  * The path this package stores `serverName`'s identity at, under `dir`.
  *
  * Exported because a host that PROVISIONS an identity (#319) has to write the
@@ -175,6 +168,18 @@ export async function writeIdentityFile(
   return path;
 }
 
+/**
+ * Read the identity for `serverName` from `dir`, generating and persisting a
+ * fresh X25519/Ed25519 keypair if no file exists. The file is written mode
+ * 0600 (single-user only). Callers must use a safe `serverName` — scoped
+ * packages like `@fetchproxy/example-mcp` are OK and get their `/` translated
+ * to `_` for the filename.
+ *
+ * Since #319 this is a composition of the exported pieces rather than the place
+ * the format is defined: `identityFilePath`, `parseIdentity`,
+ * `generateIdentity` and `writeIdentityFile` each do one part, so a host that
+ * provisions an identity is held to the same shape this reads.
+ */
 export async function loadOrCreateIdentity(
   serverName: string,
   dir: string = defaultIdentityDir(),
