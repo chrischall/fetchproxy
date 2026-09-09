@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.7.0](https://github.com/chrischall/fetchproxy/compare/v2.6.2...v2.7.0) (2026-09-09)
+
+
+### Features
+
+* **server:** read identityDir from FETCHPROXY_IDENTITY_DIR ([#317](https://github.com/chrischall/fetchproxy/issues/317)) ([aca6e80](https://github.com/chrischall/fetchproxy/commit/aca6e80ba9e21b275e371aa28183919a38d86652))
+
 ## [2.6.2](https://github.com/chrischall/fetchproxy/compare/v2.6.1...v2.6.2) (2026-09-08)
 
 
