@@ -114,6 +114,29 @@ describe('fpx graphql', () => {
     expect(listenCalls(server)).toBe(0);
   });
 
+  // #209's regression class: the server guards --via-tab too, but only after
+  // the bridge is up, so a typo becomes exit 2 "bridge error" instead of a
+  // usage error — after making the user wait on a connection. Adding a second
+  // call site for the flag without the check is how that comes back.
+  it('refuses a --via-tab outside the declared domains, before dialling', async () => {
+    const server = stubServer();
+    await expect(
+      runGraphql(cmd({ viaTab: 'https://evil.test/' }), granted(), memIo(), () => server),
+    ).rejects.toThrow(UsageError);
+    expect(listenCalls(server)).toBe(0);
+  });
+
+  it('accepts a --via-tab on a declared domain and passes it as tabUrl', async () => {
+    const server = stubServer();
+    await runGraphql(
+      cmd({ viaTab: 'https://www.example.com/' }), granted(), memIo(), () => server,
+    );
+    const s = server as unknown as { graphqlQuery: { mock: { calls: unknown[][] } } };
+    expect(s.graphqlQuery.mock.calls[0]![0]).toMatchObject({
+      tabUrl: 'https://www.example.com/',
+    });
+  });
+
   it('passes the handle and variables through and prints the result', async () => {
     const server = stubServer();
     const io = memIo();

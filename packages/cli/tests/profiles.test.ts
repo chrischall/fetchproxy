@@ -101,3 +101,37 @@ describe('profiles', () => {
     expect(() => loadProfiles(home)).toThrow(/must be an object/);
   });
 });
+
+describe('graphqlOps element validation', () => {
+  // Shape of each ENTRY, not just "is an array". A malformed one reaches the
+  // extension as a declared operation and is refused there, long after the
+  // profile that produced it looked fine — the sibling declarations are
+  // validated the same way.
+  it('rejects entries that are not {name, operationName} strings', () => {
+    for (const bad of [
+      [{ name: 'a' }],
+      [{ operationName: 'Op' }],
+      [{ name: '', operationName: 'Op' }],
+      [{ name: 'a', operationName: '' }],
+      [{ name: 1, operationName: 'Op' }],
+      ['a=Op'],
+      [null],
+      'not-an-array',
+    ]) {
+      saveProfiles({ p: { ...emptyProfile(['x.com']), graphqlOps: bad } as never }, home);
+      expect(() => loadProfiles(home), JSON.stringify(bad)).toThrow(UsageError);
+    }
+  });
+
+  it('accepts an empty list and a well-formed one', () => {
+    saveProfiles({ p: { ...emptyProfile(['x.com']), graphqlOps: [] } }, home);
+    expect(loadProfiles(home).p.graphqlOps).toEqual([]);
+    saveProfiles({
+      p: {
+        ...emptyProfile(['x.com']),
+        graphqlOps: [{ name: 'avail', operationName: 'RestaurantsAvailability' }],
+      },
+    }, home);
+    expect(loadProfiles(home).p.graphqlOps).toHaveLength(1);
+  });
+});

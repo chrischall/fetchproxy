@@ -3,7 +3,12 @@ import type { Profile } from '../profiles.js';
 import { serverOptsFor } from '../server-opts.js';
 import { EXIT, UsageError, printJson, type Io } from '../output.js';
 import { mapBridgeError } from '../bridge-errors.js';
-import { defaultServerFactory, pairCodePrinter, type VerbServerFactory } from './fetch.js';
+import {
+  assertUrlOnProfile,
+  defaultServerFactory,
+  pairCodePrinter,
+  type VerbServerFactory,
+} from './fetch.js';
 import { VERSION } from '../version.js';
 
 /**
@@ -41,6 +46,14 @@ export async function runGraphql(
       `declared: ${declared.join(', ')}`,
     );
   }
+
+  // Checked the same way, and at the same time, as `fpx get --via-tab`. The
+  // server guards it too, but that guard only fires after the bridge is up,
+  // turning a typo into exit 2 ("bridge error") when it is plainly a usage
+  // error — and making the user wait on a connection to be told so (#209).
+  // Adding a second call site for this flag without the check is how that
+  // regression comes back.
+  if (cmd.viaTab !== undefined) assertUrlOnProfile(cmd.viaTab, profile);
 
   const server = makeServer({
     ...serverOptsFor(cmd.profile, profile, VERSION),

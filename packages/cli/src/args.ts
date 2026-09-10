@@ -105,6 +105,21 @@ function parseVarFlag(raw: string): [string, unknown] {
   }
 }
 
+/**
+ * `--capture-timeout`, in SECONDS on the command line and milliseconds
+ * everywhere inside. Shared by `capture` and `capture-redirect` rather than
+ * copied: two parsers for one flag drift, and the direction that hurts is one
+ * of them silently accepting a value the other rejects.
+ */
+function parseCaptureTimeoutFlag(raw: string | undefined): number | undefined {
+  if (raw === undefined) return undefined;
+  const secs = Number(raw);
+  if (!Number.isFinite(secs) || secs <= 0) {
+    throw new UsageError(`--capture-timeout expects seconds, got ${JSON.stringify(raw)}`);
+  }
+  return Math.round(secs * 1000);
+}
+
 function resolveBody(raw: string, readFile: (p: string) => string): string {
   return raw.startsWith('@') ? readFile(raw.slice(1)) : raw;
 }
@@ -259,15 +274,7 @@ export function parseCliArgs(
     };
   }
   if (cmd === 'capture') {
-    const raw = values['capture-timeout'];
-    let timeoutMs: number | undefined;
-    if (raw !== undefined) {
-      const secs = Number(raw);
-      if (!Number.isFinite(secs) || secs <= 0) {
-        throw new UsageError(`--capture-timeout expects seconds, got ${JSON.stringify(raw)}`);
-      }
-      timeoutMs = Math.round(secs * 1000);
-    }
+    const timeoutMs = parseCaptureTimeoutFlag(values['capture-timeout']);
     return {
       kind: 'capture', profile: requireProfile(values.profile), names: rest,
       ...(timeoutMs !== undefined ? { timeoutMs } : {}),
@@ -283,15 +290,7 @@ export function parseCliArgs(
     if (host.length === 0) {
       throw new UsageError(`fpx capture-redirect: no host in ${JSON.stringify(target)}`);
     }
-    const raw = values['capture-timeout'];
-    let timeoutMs: number | undefined;
-    if (raw !== undefined) {
-      const secs = Number(raw);
-      if (!Number.isFinite(secs) || secs <= 0) {
-        throw new UsageError(`--capture-timeout expects seconds, got ${JSON.stringify(raw)}`);
-      }
-      timeoutMs = Math.round(secs * 1000);
-    }
+    const timeoutMs = parseCaptureTimeoutFlag(values['capture-timeout']);
     return {
       kind: 'capture-redirect', profile: requireProfile(values.profile), host,
       ...(path !== undefined ? { path } : {}),

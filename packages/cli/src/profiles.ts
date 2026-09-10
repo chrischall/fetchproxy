@@ -179,7 +179,26 @@ function validateProfile(name: string, raw: unknown): Profile {
   if (p.captureRedirect !== undefined && typeof p.captureRedirect !== 'boolean') {
     fail('captureRedirect');
   }
-  if (p.graphqlOps !== undefined && !Array.isArray(p.graphqlOps)) fail('graphqlOps');
+  if (p.graphqlOps !== undefined) {
+    // ELEMENT shape, not just "is an array". A malformed entry reaches the
+    // extension as a declared operation and is refused there, long after the
+    // profile that produced it looked fine — the sibling declarations
+    // (`captureHeaders`, `domSelectors`) are validated the same way.
+    if (
+      !Array.isArray(p.graphqlOps) ||
+      !p.graphqlOps.every(
+        (op) =>
+          op !== null &&
+          typeof op === 'object' &&
+          typeof (op as { name?: unknown }).name === 'string' &&
+          (op as { name: string }).name.length > 0 &&
+          typeof (op as { operationName?: unknown }).operationName === 'string' &&
+          (op as { operationName: string }).operationName.length > 0,
+      )
+    ) {
+      fail('graphqlOps');
+    }
+  }
   return { ...emptyProfile(p.domains as string[]), ...(p as Partial<Profile>) } as Profile;
 }
 
