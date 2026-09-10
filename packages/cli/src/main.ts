@@ -22,9 +22,9 @@ const USAGE = `fpx ${VERSION} — fetchproxy CLI: authenticated fetches through 
   fpx pair -p <name> [--domain <apex>] [--subdomain <label>]
   fpx health -p <name>
   fpx trust list | clear <server-name> | clear --all
-  fpx get <url> -p <name> [--json] [-H 'K: V']… [--via-tab <url>] [--in-page]
-  fpx post-json <url> <body|@file> -p <name> [--json] [-H …]… [--via-tab <url>] [--in-page]
-  fpx request <url> -p <name> [-X METHOD] [-H …]… [-d body|@file] [--json] [--via-tab <url>] [--in-page]
+  fpx get <url> -p <name> [--json] [-H 'K: V']… [--via-tab <url>] [--in-page] [--no-credentials]
+  fpx post-json <url> <body|@file> -p <name> [--json] [-H …]… [--via-tab <url>] [--in-page] [--no-credentials]
+  fpx request <url> -p <name> [-X METHOD] [-H …]… [-d body|@file] [--json] [--via-tab <url>] [--in-page] [--no-credentials]
   fpx cookies|local-storage|session-storage|indexeddb [keys…] -p <name> [--storage-domain d] [--storage-subdomain s]
   fpx session -p <name> [--storage-domain d] [--storage-subdomain s]
   fpx dom <name…> -p <name> [--storage-domain d] [--storage-subdomain s]

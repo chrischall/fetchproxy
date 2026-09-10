@@ -512,7 +512,6 @@ describe('a CSP block is not a network failure', () => {
     const m = makeCspWin();
     installFetchBridge(m.win as never);
     m.dispatch({ __fetchproxy: 'fetch-req', reqId: 5, url: 'https://api.github.com/' });
-    for (const fn of [] as unknown[]) void fn;
     m.violateWith('img-src', 'https://api.github.com');
     await settle();
 
@@ -521,11 +520,116 @@ describe('a CSP block is not a network failure', () => {
     expect(err).toContain('real network failure');
   });
 
+  // #337: prefix matching attributed a look-alike host's violation to us.
+  it('ignores a violation from a look-alike origin', async () => {
+    const m = makeCspWin();
+    installFetchBridge(m.win as never);
+    m.dispatch({ __fetchproxy: 'fetch-req', reqId: 6, url: 'https://api.github.com/' });
+    m.violate('https://api.github.com.evil.test/x');
+    await settle();
+
+    const err = String(m.posted[0]!.error);
+    expect(err, 'a different host must not be read as this one').not.toContain('Content-Security-Policy');
+  });
+
+  it('matches when the engine reports the full URL rather than the origin', async () => {
+    const m = makeCspWin();
+    installFetchBridge(m.win as never);
+    m.dispatch({ __fetchproxy: 'fetch-req', reqId: 7, url: 'https://api.github.com/' });
+    m.violate('https://api.github.com/some/path?q=1');
+    await settle();
+
+    expect(String(m.posted[0]!.error)).toContain('Content-Security-Policy');
+  });
+
   it('removes its listener, so a long-lived page does not accrue them', async () => {
     const m = makeCspWin();
     installFetchBridge(m.win as never);
     m.dispatch({ __fetchproxy: 'fetch-req', reqId: 4, url: 'https://api.github.com/' });
     await settle();
     expect(m.listeners()).toBe(0);
+  });
+});
+
+describe('selectable credentials (#324)', () => {
+  function mainWin(fetchImpl: unknown): { win: Record<string, unknown>;
+    posted: Record<string, unknown>[]; dispatch: (d: unknown) => void } {
+    const listeners: ((e: unknown) => void)[] = [];
+    const posted: Record<string, unknown>[] = [];
+    const win: Record<string, unknown> = {
+      fetch: fetchImpl,
+      addEventListener: (_t: string, fn: (e: unknown) => void) => void listeners.push(fn),
+      postMessage: (m: unknown) => void posted.push(m as Record<string, unknown>),
+      location: { origin: 'https://resy.com' },
+    };
+    return { win, posted, dispatch: (data) => { for (const fn of listeners) fn({ source: win, data }); } };
+  }
+  const settle = (): Promise<void> => new Promise((r) => setTimeout(r, 0));
+  const ok = () => vi.fn(async () => ({ status: 200, url: 'u', text: async () => 'B' }));
+  /**
+   * A wildcard-CORS host as the browser presents it: the real request is
+   * refused before JS sees it, while the `no-cors` probe to the ORIGIN
+   * succeeds opaquely. Failing both would be an unreachable host, which is a
+   * different diagnosis.
+   */
+  const refusesButAnswersProbe = (target: string) =>
+    vi.fn(async (u: string, init?: Record<string, unknown>) => {
+      if (init?.mode === 'no-cors') return { status: 0, url: u, text: async () => '' };
+      if (u === target) throw new TypeError('Failed to fetch');
+      throw new TypeError('Failed to fetch');
+    });
+
+  it("sends credentials: 'omit' when the request asked for it", async () => {
+    const f = ok();
+    const m = mainWin(f);
+    installFetchBridge(m.win as never);
+    m.dispatch({ __fetchproxy: 'fetch-req', reqId: 1, url: 'https://x.test/', credentials: 'omit' });
+    await settle();
+    expect((f.mock.calls[0] as unknown[])[1]).toMatchObject({ credentials: 'omit' });
+  });
+
+  it("defaults to 'include', so every existing caller is unchanged", async () => {
+    const f = ok();
+    const m = mainWin(f);
+    installFetchBridge(m.win as never);
+    m.dispatch({ __fetchproxy: 'fetch-req', reqId: 2, url: 'https://x.test/' });
+    await settle();
+    expect((f.mock.calls[0] as unknown[])[1]).toMatchObject({ credentials: 'include' });
+  });
+
+  // Page script shares this bus. Anything but the one accepted override must
+  // stay credentialed rather than being quietly downgraded.
+  it('treats an unrecognised value as include', async () => {
+    const f = ok();
+    const m = mainWin(f);
+    installFetchBridge(m.win as never);
+    m.dispatch({ __fetchproxy: 'fetch-req', reqId: 3, url: 'https://x.test/', credentials: 'same-origin' });
+    await settle();
+    expect((f.mock.calls[0] as unknown[])[1]).toMatchObject({ credentials: 'include' });
+  });
+
+  it('names the credentialed-wildcard trap on a cross-origin failure', async () => {
+    const m = mainWin(refusesButAnswersProbe('https://cdn.other.test/x'));
+    installFetchBridge(m.win as never);
+    m.dispatch({ __fetchproxy: 'fetch-req', reqId: 4, url: 'https://cdn.other.test/x' });
+    await settle();
+    expect(String(m.posted[0]!.error)).toContain("credentials: 'omit'");
+  });
+
+  it('does not name it when the caller already omitted credentials', async () => {
+    const m = mainWin(refusesButAnswersProbe('https://cdn.other.test/x'));
+    installFetchBridge(m.win as never);
+    m.dispatch({ __fetchproxy: 'fetch-req', reqId: 5, url: 'https://cdn.other.test/x', credentials: 'omit' });
+    await settle();
+    expect(String(m.posted[0]!.error)).not.toContain("credentials: 'omit'");
+  });
+
+  // Same-origin can use credentials freely; the hint would be noise.
+  it('does not name it for a same-origin failure', async () => {
+    const m = mainWin(refusesButAnswersProbe('https://resy.com/x'));
+    installFetchBridge(m.win as never);
+    m.dispatch({ __fetchproxy: 'fetch-req', reqId: 6, url: 'https://resy.com/x' });
+    await settle();
+    expect(String(m.posted[0]!.error)).not.toContain("credentials: 'omit'");
   });
 });

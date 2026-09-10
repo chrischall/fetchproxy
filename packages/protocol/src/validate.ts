@@ -733,6 +733,17 @@ function validateInnerRequest(raw: Record<string, unknown>): InnerFrame {
       // "run this in the page", which is a privilege decision.
       assertBoolean(raw.init.inPage, 'inner.init.inPage');
     }
+    if (raw.init.credentials !== undefined) {
+      // Closed set, not just "a string": this value is handed to `fetch`,
+      // and the isolated world passes it through as given. `same-origin`
+      // would silently drop the page's cookies on a cross-origin call and
+      // present as an unexplained failure; anything else is a `TypeError`
+      // inside the content script. Absent means the default, so a sender
+      // that omits it is unaffected.
+      if (raw.init.credentials !== 'include' && raw.init.credentials !== 'omit') {
+        throw new ProtocolError("inner.init.credentials: must be 'include' or 'omit'");
+      }
+    }
     return raw as unknown as InnerFrame;
   }
   if (raw.op === 'read_cookies') {

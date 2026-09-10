@@ -44,6 +44,8 @@ interface FetchInit {
    * background sets it, the MCP never sees it.
    */
   requireCsrf?: boolean;
+  /** See `FetchInit.credentials` in @fetchproxy/protocol. Default 'include'. */
+  credentials?: 'include' | 'omit';
 }
 
 /**
@@ -631,6 +633,7 @@ export function runInPageFetch(
           method: init.method,
           headers: init.headers ?? {},
           body: init.body,
+          credentials: init.credentials,
         },
         win.location?.origin ?? '*',
       );
@@ -676,7 +679,9 @@ export async function runFetch(init: FetchInit): Promise<FetchResponse | FetchEr
       method: init.method,
       headers,
       body: init.body,
-      credentials: 'include',
+      // Default preserved: every request before 2.9.2 was credentialed, and
+      // an authenticated fetch is what the bridge exists for.
+      credentials: init.credentials ?? 'include',
     });
   } catch (e) {
     return { ok: false, error: `fetch threw: ${(e as Error).message}` };

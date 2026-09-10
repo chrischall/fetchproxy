@@ -16,6 +16,7 @@ export interface VerbServer {
     opts?: {
       headers?: Record<string, string>; body?: string; domain?: string; viaTab?: string;
       inPage?: boolean;
+      credentials?: 'include' | 'omit';
     },
   ): Promise<{ status: number; body: string; url: string }>;
   readCookies(o: { keys: string[]; domain?: string; subdomain?: string }): Promise<string>;
@@ -106,6 +107,7 @@ export async function runFetch(
       // own call site: the wire validator treats a present `false` differently
       // from an absent field.
       ...(cmd.inPage ? { inPage: true } : {}),
+      ...(cmd.noCredentials ? { credentials: 'omit' as const } : {}),
     });
     io.out(cmd.json ? fetchEnvelope(res) : res.body);
     const wall = classifyBotWall(res.body, res.status);

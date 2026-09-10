@@ -188,6 +188,21 @@ describe('--in-page', () => {
     );
   });
 
+  it("--no-credentials asks the server for credentials: 'omit'", async () => {
+    const server = stubServer();
+    await runFetch({ ...CMD, inPage: false, noCredentials: true } as never, PROFILE, memIo(), () => server);
+    expect(server.request).toHaveBeenCalledWith(
+      'GET', CMD.url, expect.objectContaining({ credentials: 'omit' }),
+    );
+  });
+
+  it('omits credentials entirely by default, so an ordinary fetch is unchanged', async () => {
+    const server = stubServer();
+    await runFetch({ ...CMD, inPage: false, noCredentials: false } as never, PROFILE, memIo(), () => server);
+    const opts = (server.request as unknown as { mock: { calls: unknown[][] } }).mock.calls[0]![2];
+    expect(Object.prototype.hasOwnProperty.call(opts, 'credentials')).toBe(false);
+  });
+
   // Absent, not `false`: the wire validator distinguishes the two, and the
   // server's own call site spreads for the same reason.
   it('omits inPage entirely on an ordinary fetch', async () => {
