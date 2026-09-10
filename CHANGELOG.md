@@ -1,5 +1,17 @@
 # Changelog
 
+## [2.11.2](https://github.com/chrischall/fetchproxy/compare/v2.11.1...v2.11.2) (2026-09-10)
+
+
+### Bug Fixes
+
+* **bootstrap:** clear the capture window so the useful rejection survives ([#348](https://github.com/chrischall/fetchproxy/issues/348)) ([675ce76](https://github.com/chrischall/fetchproxy/commit/675ce7698330284b26143627381d03d64c45e99c))
+
+
+### Documentation
+
+* **bootstrap:** put the new constant above bootstrap()'s doc comment, not inside it ([#351](https://github.com/chrischall/fetchproxy/issues/351)) ([8c877ba](https://github.com/chrischall/fetchproxy/commit/8c877baee72554cd6e7048e66176d67ffb2c1f04))
+
 ## [2.11.1](https://github.com/chrischall/fetchproxy/compare/v2.11.0...v2.11.1) (2026-09-10)
 
 
