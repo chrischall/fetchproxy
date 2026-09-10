@@ -1,6 +1,7 @@
 import type { Capability } from '@fetchproxy/server';
 import type {
   CaptureHeaderDecl, DomSelectorDecl, IndexedDbScopeDecl, StoragePointerDecl,
+  GraphqlOpDeclaration,
 } from '@fetchproxy/protocol';
 import type { Profile } from './profiles.js';
 
@@ -17,6 +18,7 @@ export interface DerivedServerOpts {
   localStoragePointers: StoragePointerDecl[];
   sessionStoragePointers: StoragePointerDecl[];
   domSelectors: DomSelectorDecl[];
+  graphqlOps: GraphqlOpDeclaration[];
 }
 
 /**
@@ -59,6 +61,8 @@ export function serverOptsFor(profileName: string, p: Profile, version: string):
   if (p.download === true) capabilities.push('download');
   if (p.cookieWrite === true) capabilities.push('write_cookies');
   if (p.inPage === true) capabilities.push('fetch_in_page');
+  if (p.captureRedirect === true) capabilities.push('capture_redirect');
+  if (p.graphqlOps.length > 0) capabilities.push('graphql');
 
   const localStorageKeys = new Set(p.localStorage);
   for (const ptr of p.localStoragePointers) localStorageKeys.add(ptr.storageKey);
@@ -88,5 +92,6 @@ export function serverOptsFor(profileName: string, p: Profile, version: string):
       jsonPointer: ptr.jsonPointer,
     })),
     domSelectors: p.domSelectors.map((d) => ({ ...d })),
+    graphqlOps: p.graphqlOps.map((d) => ({ ...d })),
   };
 }

@@ -28,6 +28,10 @@ export interface VerbServer {
   captureRequestHeader(o: {
     headerName: string; host: string; path?: string; timeoutMs?: number;
   }): Promise<string>;
+  captureRedirect(o: { host: string; path?: string; timeoutMs?: number }): Promise<string>;
+  graphqlQuery(o: {
+    name: string; variables: Record<string, unknown>; tabUrl?: string;
+  }): Promise<unknown>;
   writeCookies(o: {
     cookies: Record<string, string>; domain?: string; subdomain?: string; path?: string;
   }): Promise<string[]>;
