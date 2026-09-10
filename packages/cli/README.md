@@ -115,11 +115,13 @@ This split means `fpx get … | jq .` or `fpx cookies -p x > cookies.json` never
 |---|---|
 | `0` | Success. |
 | `1` | Usage error — bad flags, unknown command, unknown profile, undeclared scope, malformed body. |
-| `2` | Bridge unavailable — extension not connected, pairing still pending, or an unexpected bridge-level failure. |
+| `2` | The bridge could not deliver an answer — extension not connected, pairing still pending, an unexpected bridge-level failure, **or a healthy round trip that matched nothing** (see below). |
 | `3` | Bot wall detected in the response (Akamai/Cloudflare-style interstitial). |
 | `4` | Upstream HTTP error — the request reached the site but got a non-2xx response. |
 
 Exit codes 3 and 4 are emitted only by the fetch verbs (`get`, `post-json`, `request`); the `pair`, `health`, `session`, read verbs (`cookies`/`local-storage`/`session-storage`/`indexeddb`), `dom`, and `download` all return 0 on a successful bridge round-trip regardless of upstream status.
+
+`capture` and `capture-redirect` are the exception to "2 means unavailable": a window that closes with nothing matched is a **successful** round trip that found no answer, and it exits 2. That is the ordinary outcome against an idle tab, because the wait resolves on the next matching request the PAGE makes — so an exit 2 from these two verbs is far more often "nothing happened in the tab" than "the bridge is broken". The stderr line says which, and it never advises an update for this case.
 
 ## `FETCHPROXY_CLI_HOME`
 
