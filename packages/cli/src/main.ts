@@ -99,6 +99,7 @@ export async function runCli(argv: string[], io: Io, deps: CliDeps = {}): Promis
         }
         if (cmd.download) p.download = true;
         if (cmd.cookieWrite) p.cookieWrite = true;
+        if (cmd.inPage) p.inPage = true;
         saveProfiles(all, home);
         io.err(`profile "${cmd.name}" scope updated — the next connect will ask you to re-pair (scope diff)`);
         return EXIT.OK;
