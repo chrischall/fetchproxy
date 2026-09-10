@@ -102,10 +102,30 @@ export async function runCapture(
           ? r.value
           : null;
     });
+    if (Object.values(out).some((v) => v !== null)) {
+      // A partial answer is the useful one — a header the page did not send is
+      // genuinely `null`, and the ones it did send are still worth printing.
+      printJson(io, out);
+      return EXIT.OK;
+    }
+    // Nothing captured. `Promise.allSettled` has been holding the reason, and
+    // printing a wall of `null` throws it away: an unpaired extension, a
+    // bridge that is not running and a scope the profile does not cover all
+    // look identical to an idle tab. They are not — only the last one is
+    // "wait and retry".
+    //
+    // The catch below cannot do this. `listen()` performs no I/O (identity and
+    // mcpId only) and the connect is lazy INSIDE `captureRequestHeader`, so
+    // every bridge failure arrives here as a rejected element rather than a
+    // thrown one.
+    const firstRejection = settled.find((r) => r.status === 'rejected');
+    if (firstRejection !== undefined && firstRejection.status === 'rejected') {
+      return mapBridgeError(firstRejection.reason, io);
+    }
+    // Every capture RESOLVED but with nothing usable — the extension answered
+    // and the header simply was not on any request it saw.
     printJson(io, out);
-    // Nothing captured at all is a failure worth an exit code — it is the
-    // idle-tab case, and a script should be able to tell it from a hit.
-    return Object.values(out).some((v) => v !== null) ? EXIT.OK : EXIT.BRIDGE;
+    return EXIT.BRIDGE;
   } catch (err) {
     return mapBridgeError(err, io);
   } finally {
