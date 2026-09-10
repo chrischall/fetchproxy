@@ -422,3 +422,110 @@ describe('installFetchBridge (MAIN world)', () => {
     expect(posted).toHaveLength(0);
   });
 });
+
+describe('a CSP block is not a network failure', () => {
+  /**
+   * Measured on resy.com, whose `connect-src` allows api.resy.com and not
+   * api.github.com. A blocked request throws `Failed to fetch`, and the
+   * no-cors probe that classifies the throw is blocked by the SAME policy —
+   * so without this the reply says "did not answer … looks like a real
+   * network failure" about a host that is up. That wrong answer cost a wrong
+   * turn on chrischall/fetchproxy#324.
+   */
+  function makeCspWin(): { win: Record<string, unknown>; posted: Record<string, unknown>[];
+    dispatch: (d: unknown) => void; violate: (uri: string) => void;
+    violateWith: (directive: string, uri: string) => void; listeners: () => number } {
+    const winListeners: ((e: unknown) => void)[] = [];
+    const docListeners: ((e: unknown) => void)[] = [];
+    const posted: Record<string, unknown>[] = [];
+    const win: Record<string, unknown> = {
+      // Everything to this origin is refused, the probe included.
+      fetch: async () => { throw new TypeError('Failed to fetch'); },
+      addEventListener: (_t: string, fn: (e: unknown) => void) => void winListeners.push(fn),
+      postMessage: (m: unknown) => void posted.push(m as Record<string, unknown>),
+      location: { origin: 'https://resy.com' },
+      document: {
+        addEventListener: (_t: string, fn: (e: unknown) => void) => void docListeners.push(fn),
+        removeEventListener: (_t: string, fn: (e: unknown) => void) => {
+          const i = docListeners.indexOf(fn);
+          if (i >= 0) docListeners.splice(i, 1);
+        },
+      },
+    };
+    return {
+      win, posted,
+      dispatch: (data: unknown) => { for (const fn of winListeners) fn({ source: win, data }); },
+      violate: (uri: string) => {
+        for (const fn of [...docListeners]) {
+          fn({ effectiveDirective: 'connect-src', blockedURI: uri });
+        }
+      },
+      violateWith: (directive: string, uri: string) => {
+        for (const fn of [...docListeners]) {
+          fn({ effectiveDirective: directive, blockedURI: uri });
+        }
+      },
+      listeners: () => docListeners.length,
+    };
+  }
+
+  const settle = (): Promise<void> => new Promise((r) => setTimeout(r, 0));
+
+  it('names the policy instead of blaming the network', async () => {
+    const m = makeCspWin();
+    installFetchBridge(m.win as never);
+    m.dispatch({ __fetchproxy: 'fetch-req', reqId: 1, url: 'https://api.github.com/' });
+    m.violate('https://api.github.com');
+    await settle();
+
+    const err = String(m.posted[0]!.error);
+    expect(err).toContain('Content-Security-Policy connect-src');
+    expect(err).toContain('https://api.github.com');
+    expect(err, 'must not read as a network failure').not.toContain('real network failure');
+  });
+
+  it('still blames the network when no violation fired', async () => {
+    const m = makeCspWin();
+    installFetchBridge(m.win as never);
+    m.dispatch({ __fetchproxy: 'fetch-req', reqId: 2, url: 'https://api.github.com/' });
+    await settle();
+
+    const err = String(m.posted[0]!.error);
+    expect(err).toContain('real network failure');
+    expect(err).not.toContain('Content-Security-Policy');
+  });
+
+  // A violation for a different host must not be attributed to this request.
+  it('ignores a violation naming another origin', async () => {
+    const m = makeCspWin();
+    installFetchBridge(m.win as never);
+    m.dispatch({ __fetchproxy: 'fetch-req', reqId: 3, url: 'https://api.github.com/' });
+    m.violate('https://tracking.example.com');
+    await settle();
+
+    expect(String(m.posted[0]!.error)).not.toContain('Content-Security-Policy');
+  });
+
+  // Same origin, wrong directive: an image or frame the page blocked says
+  // nothing about whether THIS fetch was allowed to connect.
+  it('ignores a violation of a directive other than connect-src', async () => {
+    const m = makeCspWin();
+    installFetchBridge(m.win as never);
+    m.dispatch({ __fetchproxy: 'fetch-req', reqId: 5, url: 'https://api.github.com/' });
+    for (const fn of [] as unknown[]) void fn;
+    m.violateWith('img-src', 'https://api.github.com');
+    await settle();
+
+    const err = String(m.posted[0]!.error);
+    expect(err).not.toContain('Content-Security-Policy');
+    expect(err).toContain('real network failure');
+  });
+
+  it('removes its listener, so a long-lived page does not accrue them', async () => {
+    const m = makeCspWin();
+    installFetchBridge(m.win as never);
+    m.dispatch({ __fetchproxy: 'fetch-req', reqId: 4, url: 'https://api.github.com/' });
+    await settle();
+    expect(m.listeners()).toBe(0);
+  });
+});
