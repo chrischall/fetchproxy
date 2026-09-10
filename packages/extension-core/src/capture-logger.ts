@@ -312,6 +312,14 @@ export interface FetchBridgeWindow {
   addEventListener: (type: string, fn: (e: any) => void) => void;
   postMessage: (message: unknown, targetOrigin?: string) => void;
   location?: { origin?: string };
+  /**
+   * Only used to hear `securitypolicyviolation`. Optional so a test double —
+   * and any host without a document — stays valid without inventing one.
+   */
+  document?: {
+    addEventListener: (type: string, fn: (e: any) => void) => void;
+    removeEventListener: (type: string, fn: (e: any) => void) => void;
+  };
 }
 
 const FETCH_REQ_MARKER = 'fetch-req';
@@ -346,15 +354,86 @@ const FETCH_RES_MARKER = 'fetch-res';
  * because a diagnostic that can itself fail must never replace the diagnosis
  * it was decorating.
  */
-async function classifyFetchFailure(win: FetchBridgeWindow, url: string): Promise<string> {
+/**
+ * Watch for a Content-Security-Policy violation naming `url`, for the life of
+ * one request.
+ *
+ * The page's CSP `connect-src` bounds an in-page fetch exactly as it bounds
+ * the page's own — which is a property worth having, and was nowhere written
+ * down. What made it worth detecting is how it PRESENTS: a blocked request
+ * throws `Failed to fetch`, and the no-cors probe that classifies that
+ * throw is blocked by the same policy, so it reports "did not answer …
+ * looks like a real network failure" about a host that is up and reachable.
+ *
+ * Measured on resy.com, whose `connect-src` allows `api.resy.com` and not
+ * `api.github.com`: the second reads as a network failure and is a policy
+ * decision. Telling those apart is the difference between "retry" and "this
+ * host is not reachable from this page, ever" (chrischall/fetchproxy#324).
+ *
+ * Best-effort like everything else on this path: no document, no listener,
+ * no claim.
+ */
+function watchCspViolation(win: FetchBridgeWindow, url: string): { hit: () => boolean; stop: () => void } {
+  let blocked = false;
+  const doc = win.document;
+  if (!doc || typeof doc.addEventListener !== 'function') {
+    return { hit: () => false, stop: () => {} };
+  }
+  let origin: string;
   try {
-    if (typeof win.fetch !== 'function') return '';
+    origin = new URL(url).origin;
+  } catch {
+    return { hit: () => false, stop: () => {} };
+  }
+  const onViolation = (e: any): void => {
+    try {
+      const directive = String(e?.effectiveDirective ?? e?.violatedDirective ?? '');
+      if (!directive.startsWith('connect-src')) return;
+      // `blockedURI` is the full URL on some engines and the origin on others,
+      // so match by prefix rather than equality.
+      const blockedUri = String(e?.blockedURI ?? '');
+      if (blockedUri && (blockedUri.startsWith(origin) || origin.startsWith(blockedUri))) {
+        blocked = true;
+      }
+    } catch {
+      // A malformed event must not break the request it is annotating.
+    }
+  };
+  doc.addEventListener('securitypolicyviolation', onViolation);
+  return {
+    hit: () => blocked,
+    stop: () => {
+      try {
+        doc.removeEventListener('securitypolicyviolation', onViolation);
+      } catch {
+        // Nothing useful to do; the listener dies with the page.
+      }
+    },
+  };
+}
+
+async function classifyFetchFailure(
+  win: FetchBridgeWindow,
+  url: string,
+  cspBlocked = false,
+): Promise<string> {
+  try {
     let origin: string;
     try {
       origin = new URL(url).origin;
     } catch {
       return '';
     }
+    // Answered BEFORE the probe, because the probe is subject to the same
+    // policy: a CSP block makes it look like an unreachable host.
+    if (cspBlocked) {
+      return (
+        ` (the page's Content-Security-Policy connect-src does not allow ${origin},` +
+        ' so the request never left the page — a policy block, not a network failure;' +
+        ' only hosts the page itself may reach are reachable in-page)'
+      );
+    }
+    if (typeof win.fetch !== 'function') return '';
     const probe = win.fetch(origin, { method: 'GET', mode: 'no-cors', credentials: 'omit' });
     // CLEARED ON SETTLE, the pattern `runGraphqlQuery` and the download handler
     // already use. `Promise.race` abandons the loser, it does not cancel it, so
@@ -428,6 +507,9 @@ export function installFetchBridge(win: FetchBridgeWindow): void {
           }
         };
         let res: { status: number; url: string; text: () => Promise<string> };
+        // Armed before the fetch: the violation fires while it is in flight,
+        // and a listener installed in the catch would already have missed it.
+        const csp = watchCspViolation(win, data.url);
         try {
           res = await win.fetch(data.url, {
             method: typeof data.method === 'string' ? data.method : 'GET',
@@ -442,9 +524,11 @@ export function installFetchBridge(win: FetchBridgeWindow): void {
           // `fetch_in_page` exists to answer — did this actually run in the
           // page? — unanswerable from the error. Establishing that for one MCP
           // took reading this file and probing the API's CORS headers by hand.
-          const why = await classifyFetchFailure(win, data.url);
+          const why = await classifyFetchFailure(win, data.url, csp.hit());
           reply({ ok: false, error: `in-page fetch threw: ${(e as Error)?.message ?? String(e)}${why}` });
           return;
+        } finally {
+          csp.stop();
         }
         let body: string;
         try {
