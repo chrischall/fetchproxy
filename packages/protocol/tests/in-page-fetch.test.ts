@@ -63,3 +63,43 @@ describe('FetchInit.inPage validation', () => {
     }
   });
 });
+
+/**
+ * `FetchInit.credentials` (#324) — a closed set, not merely "a string".
+ *
+ * The value is handed to `fetch`, and the isolated world passes it through as
+ * given. `same-origin` would silently drop the page's cookies on a
+ * cross-origin call and present as an unexplained failure; anything else is a
+ * TypeError inside the content script. Both are worse than a refused frame.
+ */
+describe('FetchInit.credentials validation', () => {
+  const withCreds = (credentials: unknown) => ({
+    ...base,
+    init: { ...base.init, credentials },
+  });
+
+  it('accepts a fetch with no credentials — the default, unchanged senders', () => {
+    const f = validateInnerFrame(base) as typeof base;
+    expect(f.init).not.toHaveProperty('credentials');
+  });
+
+  it("accepts 'include' and 'omit'", () => {
+    for (const v of ['include', 'omit']) {
+      const f = validateInnerFrame(withCreds(v)) as { init: { credentials: string } };
+      expect(f.init.credentials).toBe(v);
+    }
+  });
+
+  // The dangerous one: a real fetch value that quietly changes behaviour.
+  it("refuses 'same-origin'", () => {
+    expect(() => validateInnerFrame(withCreds('same-origin'))).toThrow(ProtocolError);
+  });
+
+  it('refuses other types and junk', () => {
+    for (const v of [true, 1, null, {}, [], 'INCLUDE', '']) {
+      expect(() => validateInnerFrame(withCreds(v)), `accepted ${JSON.stringify(v)}`).toThrow(
+        ProtocolError,
+      );
+    }
+  });
+});
