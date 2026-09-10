@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.11.1](https://github.com/chrischall/fetchproxy/compare/v2.11.0...v2.11.1) (2026-09-10)
+
+
+### Documentation
+
+* **server:** say that the timeout bucket now holds two error shapes ([#346](https://github.com/chrischall/fetchproxy/issues/346)) ([030302c](https://github.com/chrischall/fetchproxy/commit/030302ce69752f26a34a7d2f5a55a9f70ab63019))
+
 ## [2.11.0](https://github.com/chrischall/fetchproxy/compare/v2.10.0...v2.11.0) (2026-09-10)
 
 
