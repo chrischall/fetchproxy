@@ -15,7 +15,7 @@ describe('parseCliArgs', () => {
       kind: 'profile-declare', name: 'trip', cookies: ['datadome'],
       localStorage: [], sessionStorage: [],
       captureHeaders: [{ headerName: 'x-csrf-token', host: 'www.tripadvisor.com', path: '/data/*' }],
-      domSelectors: [], download: false, cookieWrite: false,
+      domSelectors: [], download: false, cookieWrite: false, inPage: false,
     });
   });
 
@@ -25,7 +25,7 @@ describe('parseCliArgs', () => {
     expect(cmd).toEqual({
       kind: 'profile-declare', name: 'r', cookies: [], localStorage: [], sessionStorage: [],
       captureHeaders: [], domSelectors: [{ name: 'title', selector: 'h1.title' }], download: true,
-      cookieWrite: false,
+      cookieWrite: false, inPage: false,
     });
   });
 
@@ -65,6 +65,7 @@ describe('parseCliArgs', () => {
     expect(cmd).toEqual({
       kind: 'fetch', profile: 'trip', method: 'GET', url: 'https://www.tripadvisor.com/x',
       headers: { Accept: 'application/json' }, body: undefined, json: true,
+      inPage: false,
     });
   });
 
@@ -74,6 +75,7 @@ describe('parseCliArgs', () => {
     expect(cmd).toEqual({
       kind: 'fetch', profile: 'x', method: 'POST', url: 'https://x.com/api',
       headers: { 'Content-Type': 'application/json' }, body: '{"a":1}', json: false,
+      inPage: false,
     });
   });
 
@@ -127,5 +129,31 @@ describe('parseCliArgs — --via-tab', () => {
   it('is absent when not passed, so the request host stays the default', () => {
     const cmd = parseCliArgs(['get', 'https://api.x.com/v1', '-p', 'x']);
     expect((cmd as { viaTab?: string }).viaTab).toBeUndefined();
+  });
+});
+
+describe('--in-page', () => {
+  it('parses --in-page on get / post-json / request', () => {
+    for (const argv of [
+      ['get', 'https://x.com/a', '-p', 'x', '--in-page'],
+      ['post-json', 'https://x.com/a', '{"a":1}', '-p', 'x', '--in-page'],
+      ['request', 'https://x.com/a', '-p', 'x', '--in-page'],
+    ]) {
+      const cmd = parseCliArgs(argv) as Extract<ReturnType<typeof parseCliArgs>, { kind: 'fetch' }>;
+      expect(cmd.kind).toBe('fetch');
+      expect(cmd.inPage, `--in-page lost on: ${argv[0]}`).toBe(true);
+    }
+  });
+
+  it('defaults to false, so an ordinary fetch is byte-identical to before', () => {
+    const cmd = parseCliArgs(['get', 'https://x.com/a', '-p', 'x']) as
+      Extract<ReturnType<typeof parseCliArgs>, { kind: 'fetch' }>;
+    expect(cmd.inPage).toBe(false);
+  });
+
+  it('parses profile declare --allow-in-page', () => {
+    const cmd = parseCliArgs(['profile', 'declare', 'x', '--allow-in-page']) as
+      Extract<ReturnType<typeof parseCliArgs>, { kind: 'profile-declare' }>;
+    expect(cmd.inPage).toBe(true);
   });
 });

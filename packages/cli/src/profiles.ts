@@ -30,6 +30,20 @@ export interface Profile {
    * in the pair popup. It still cannot reach beyond the declared `cookies`.
    */
   cookieWrite: boolean;
+  /**
+   * 2.9.2+: may a fetch from this profile run in the page's MAIN world?
+   *
+   * Its own flag for the reason `cookieWrite` has one: routing a request
+   * through page script gives up fetchproxy's tamper resistance, so it is a
+   * separate line in the pair popup rather than something `fetch` implies.
+   *
+   * It exists on the CLI at all so this class of failure is reproducible from
+   * a shell against the real extension. chrischall/fetchproxy#324 spent two
+   * rounds on wrong answers because the only prober that could reach the MAIN
+   * world was a hosted MCP, and the browser harness reached for instead cannot
+   * make cross-origin requests at all.
+   */
+  inPage: boolean;
 }
 
 export function cliHome(env: Record<string, string | undefined> = process.env): string {
@@ -71,6 +85,7 @@ export function emptyProfile(domains: string[]): Profile {
     domSelectors: [],
     download: false,
     cookieWrite: false,
+    inPage: false,
   };
 }
 
@@ -131,6 +146,7 @@ function validateProfile(name: string, raw: unknown): Profile {
   }
   if (p.download !== undefined && typeof p.download !== 'boolean') fail('download');
   if (p.cookieWrite !== undefined && typeof p.cookieWrite !== 'boolean') fail('cookieWrite');
+  if (p.inPage !== undefined && typeof p.inPage !== 'boolean') fail('inPage');
   return { ...emptyProfile(p.domains as string[]), ...(p as Partial<Profile>) } as Profile;
 }
 

@@ -14,13 +14,15 @@ export type Command =
   | { kind: 'profile-add'; name: string; domains: string[] }
   | { kind: 'profile-declare'; name: string; cookies: string[]; localStorage: string[];
       sessionStorage: string[]; captureHeaders: CaptureHeaderDecl[];
-      domSelectors: DomSelectorDecl[]; download: boolean; cookieWrite: boolean }
+      domSelectors: DomSelectorDecl[]; download: boolean; cookieWrite: boolean;
+      inPage: boolean }
   | { kind: 'pair'; profile: string; domain?: string; subdomain?: string }
   | { kind: 'health'; profile: string }
   | { kind: 'trust'; action: 'list'; json: boolean }
   | { kind: 'trust'; action: 'clear'; serverName?: string; all?: boolean }
   | { kind: 'fetch'; profile: string; method: string; url: string;
-      headers: Record<string, string>; body?: string; json: boolean; viaTab?: string }
+      headers: Record<string, string>; body?: string; json: boolean; viaTab?: string;
+      inPage: boolean }
   | { kind: 'read'; profile: string; bucket: Bucket; keys: string[];
       storageDomain?: string; storageSubdomain?: string }
   | { kind: 'session'; profile: string; storageDomain?: string; storageSubdomain?: string }
@@ -96,10 +98,12 @@ export function parseCliArgs(
         'dom-selector': { type: 'string', multiple: true, default: [] },
         'allow-download': { type: 'boolean', default: false },
         'allow-cookie-write': { type: 'boolean', default: false },
+        'allow-in-page': { type: 'boolean', default: false },
         filename: { type: 'string' },
         'storage-domain': { type: 'string' },
         'storage-subdomain': { type: 'string' },
         'via-tab': { type: 'string' },
+        'in-page': { type: 'boolean', default: false },
         subdomain: { type: 'string' },
         help: { type: 'boolean', short: 'h', default: false },
         version: { type: 'boolean', short: 'v', default: false },
@@ -145,6 +149,7 @@ export function parseCliArgs(
         domSelectors: (values['dom-selector'] ?? []).map(parseDomSelectorFlag),
         download: values['allow-download'] ?? false,
         cookieWrite: values['allow-cookie-write'] ?? false,
+        inPage: values['allow-in-page'] ?? false,
       };
     }
     throw new UsageError(`unknown profile subcommand ${JSON.stringify(sub)}`,
@@ -231,7 +236,8 @@ export function parseCliArgs(
     const profile = requireProfile(values.profile);
     if (cmd === 'get') {
       return { kind: 'fetch', profile, method: 'GET', url, headers, body: undefined,
-        json: values.json ?? false, viaTab: values['via-tab'] };
+        json: values.json ?? false, viaTab: values['via-tab'],
+        inPage: values['in-page'] ?? false };
     }
     if (cmd === 'post-json') {
       const rawBody = rest[1];
@@ -247,11 +253,13 @@ export function parseCliArgs(
       const hasContentType = Object.keys(headers).some((k) => k.toLowerCase() === 'content-type');
       if (!hasContentType) headers['Content-Type'] = 'application/json';
       return { kind: 'fetch', profile, method: 'POST', url, headers, body,
-        json: values.json ?? false, viaTab: values['via-tab'] };
+        json: values.json ?? false, viaTab: values['via-tab'],
+        inPage: values['in-page'] ?? false };
     }
     const body = values.data === undefined ? undefined : resolveBody(values.data, readFile);
     return { kind: 'fetch', profile, method: (values.method ?? 'GET').toUpperCase(), url,
-      headers, body, json: values.json ?? false, viaTab: values['via-tab'] };
+      headers, body, json: values.json ?? false, viaTab: values['via-tab'],
+      inPage: values['in-page'] ?? false };
   }
 
   throw new UsageError(`unknown command ${JSON.stringify(cmd)}`, 'run: fpx --help');

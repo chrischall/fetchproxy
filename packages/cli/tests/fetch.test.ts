@@ -165,3 +165,35 @@ describe('runFetch — --via-tab is validated like the request URL', () => {
     expect(code).toBe(EXIT.OK);
   });
 });
+
+describe('--in-page', () => {
+  // The extension refuses an undeclared capability, but that refusal lands
+  // after the bridge is up and reads as a bridge error. #324 is the standing
+  // example of a misleading failure costing rounds, and --in-page exists to
+  // diagnose exactly that, so it must not add one of its own.
+  it('is a usage error when the profile does not declare it, before any dial', async () => {
+    const server = stubServer();
+    await expect(
+      runFetch({ ...CMD, inPage: true } as never, PROFILE, memIo(), () => server),
+    ).rejects.toThrow(UsageError);
+    expect(server.listen, 'must fail before opening the bridge').not.toHaveBeenCalled();
+  });
+
+  it('sets inPage on the request when the profile declares it', async () => {
+    const server = stubServer();
+    const profile = { ...PROFILE, inPage: true };
+    await runFetch({ ...CMD, inPage: true } as never, profile, memIo(), () => server);
+    expect(server.request).toHaveBeenCalledWith(
+      'GET', CMD.url, expect.objectContaining({ inPage: true }),
+    );
+  });
+
+  // Absent, not `false`: the wire validator distinguishes the two, and the
+  // server's own call site spreads for the same reason.
+  it('omits inPage entirely on an ordinary fetch', async () => {
+    const server = stubServer();
+    await runFetch({ ...CMD, inPage: false } as never, PROFILE, memIo(), () => server);
+    const opts = (server.request as unknown as { mock: { calls: unknown[][] } }).mock.calls[0]![2];
+    expect(Object.prototype.hasOwnProperty.call(opts, 'inPage')).toBe(false);
+  });
+});
