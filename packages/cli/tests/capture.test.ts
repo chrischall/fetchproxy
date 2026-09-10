@@ -3,6 +3,8 @@ import { describe, it, expect, vi } from 'vitest';
 import { runCapture } from '../src/verbs/capture.js';
 import { runWriteCookies } from '../src/verbs/write-cookies.js';
 import { emptyProfile } from '../src/profiles.js';
+import { FetchproxySessionNotReadyError } from '@fetchproxy/server';
+
 import { EXIT, UsageError, type Io } from '../src/output.js';
 
 /**
@@ -112,6 +114,51 @@ describe('fpx capture', () => {
       withCaptures(), io, () => server);
     expect(code).toBe(EXIT.OK);
     expect(JSON.parse(io.outs.join('\n'))['authorization@api.resy.com/*']).toBeNull();
+  });
+
+  /**
+   * A bridge failure must not be printed as `null`.
+   *
+   * `listen()` does no I/O — identity and mcpId only — and the connect is lazy
+   * inside `captureRequestHeader`, so an unpaired extension, a bridge that is
+   * not running and a scope the profile does not cover ALL arrive as rejected
+   * elements of the `allSettled`, never as a throw. Swallowing them made every
+   * one of those look like an idle tab, which is the only one that means
+   * "wait and retry".
+   */
+  it('reports a bridge failure on stderr instead of printing nulls', async () => {
+    const server = stubServer({
+      captureRequestHeader: vi.fn(async () => {
+        throw new FetchproxySessionNotReadyError({
+          mcpId: 'fpx-x:1.0.0:aaaaaaaaaaaaaaaa',
+          pairCode: '123-456',
+        });
+      }),
+    });
+    const io = memIo();
+    const code = await runCapture({ kind: 'capture', profile: 'p', names: [] } as never,
+      withCaptures(), io, () => server);
+    expect(code).toBe(EXIT.BRIDGE);
+    expect(io.errs.join('\n')).toMatch(/pair code 123-456/);
+    expect(io.outs.join('\n'), 'must not print a wall of nulls instead').toBe('');
+  });
+
+  // A partial answer is still the useful one, so a rejection alongside a hit
+  // must NOT hijack the output.
+  it('still prints partial results when something was captured', async () => {
+    let n = 0;
+    const server = stubServer({
+      captureRequestHeader: vi.fn(async () => {
+        n += 1;
+        if (n === 1) throw new FetchproxySessionNotReadyError({ mcpId: 'x:1:a', pairCode: '9' });
+        return 'VALUE';
+      }),
+    });
+    const io = memIo();
+    const code = await runCapture({ kind: 'capture', profile: 'p', names: [] } as never,
+      withCaptures(), io, () => server);
+    expect(code).toBe(EXIT.OK);
+    expect(JSON.parse(io.outs.join('\n'))['x-resy-auth-token@api.resy.com/*']).toBe('VALUE');
   });
 
   // The idle-tab case. A script must be able to tell "nothing arrived" from a hit.
