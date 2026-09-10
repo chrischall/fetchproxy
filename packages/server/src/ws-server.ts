@@ -793,16 +793,7 @@ export class FetchproxyTabOpeningError extends FetchproxyHintedError {
 }
 
 /**
- * Every gate-#2 rejection wording, in one place.
- *
- * Matching on "not in declared" rather than enumerating buckets is deliberate:
- * there are nine distinct phrasings (cookie / {local,session}Storage keys /
- * storage pointer / IndexedDB keys / read_dom names / captureHeaders /
- * indexedDbScopes / graphqlOps), and enumerating them is precisely how the
- * first cut of the CLI fix missed five of them.
- */
-/**
- * 2.11.0+: the extension waited for something that never arrived (#342).
+ * 2.10.0+: the extension waited for something that never arrived (#342).
  *
  * `capture_request_header`, `capture_redirect` and `download` all answer
  * `{ ok: false, error: 'timeout' }` when their window closes with nothing
@@ -849,6 +840,15 @@ function waitedHint(op?: WaitedOp): string {
   );
 }
 
+/**
+ * Every gate-#2 rejection wording, in one place.
+ *
+ * Matching on "not in declared" rather than enumerating buckets is deliberate:
+ * there are nine distinct phrasings (cookie / {local,session}Storage keys /
+ * storage pointer / IndexedDB keys / read_dom names / captureHeaders /
+ * indexedDbScopes / graphqlOps), and enumerating them is precisely how the
+ * first cut of the CLI fix missed five of them.
+ */
 const SCOPE_REJECTION = /not in declared/;
 
 /**

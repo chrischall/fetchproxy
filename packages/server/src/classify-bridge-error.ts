@@ -27,11 +27,21 @@ import {
  *                        and retrying unchanged will be refused identically —
  *                        so a caller should surface `.reason` rather than
  *                        advise waiting or re-checking a sign-in.
- * - `'timeout'`        — `FetchproxyTimeoutError` (server's `fetchTimeoutMs` fired)
+ * - `'timeout'`        — a wait ran out, from EITHER side of the bridge, so the
+ *                        bucket is not one class: `FetchproxyTimeoutError` when
+ *                        this server's own `fetchTimeoutMs` fired, and
+ *                        `FetchproxyWaitedError` (2.10.0+) when the EXTENSION
+ *                        closed a `capture_request_header` / `capture_redirect` /
+ *                        `download` window with nothing matched. Switching on
+ *                        the string is still the advice, but a caller reading
+ *                        `url` / `timeoutMs` / `elapsedMs` / `retryAttempted` off
+ *                        the result must narrow with `instanceof
+ *                        FetchproxyTimeoutError` first — the extension-side one
+ *                        carries none of them, only `.originalError` and `.hint`.
  * - `'bridge_down'`    — `FetchproxyBridgeDownError` (SW eviction; check `retryAttempted`)
  * - `'http'`           — `FetchproxyHttpError` (upstream status outside `expectStatus`)
  * - `'protocol'`       — base `FetchproxyProtocolError` not in the buckets above
- *                        (e.g. `no_tab`, `domain_denied`, generic bridge errors)
+ *                        (e.g. `domain_denied`, generic bridge errors)
  * - `'other'`          — anything not a `FetchproxyProtocolError` subclass
  *                        (programmer errors, unrelated runtime errors, non-Errors)
  *
