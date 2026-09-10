@@ -65,7 +65,7 @@ describe('parseCliArgs', () => {
     expect(cmd).toEqual({
       kind: 'fetch', profile: 'trip', method: 'GET', url: 'https://www.tripadvisor.com/x',
       headers: { Accept: 'application/json' }, body: undefined, json: true,
-      inPage: false,
+      inPage: false, noCredentials: false,
     });
   });
 
@@ -75,7 +75,7 @@ describe('parseCliArgs', () => {
     expect(cmd).toEqual({
       kind: 'fetch', profile: 'x', method: 'POST', url: 'https://x.com/api',
       headers: { 'Content-Type': 'application/json' }, body: '{"a":1}', json: false,
-      inPage: false,
+      inPage: false, noCredentials: false,
     });
   });
 
@@ -142,6 +142,17 @@ describe('--in-page', () => {
       const cmd = parseCliArgs(argv) as Extract<ReturnType<typeof parseCliArgs>, { kind: 'fetch' }>;
       expect(cmd.kind).toBe('fetch');
       expect(cmd.inPage, `--in-page lost on: ${argv[0]}`).toBe(true);
+    }
+  });
+
+  it('parses --no-credentials on every fetch command', () => {
+    for (const argv of [
+      ['get', 'https://x.com/a', '-p', 'x', '--no-credentials'],
+      ['post-json', 'https://x.com/a', '{"a":1}', '-p', 'x', '--no-credentials'],
+      ['request', 'https://x.com/a', '-p', 'x', '--no-credentials'],
+    ]) {
+      const cmd = parseCliArgs(argv) as Extract<ReturnType<typeof parseCliArgs>, { kind: 'fetch' }>;
+      expect(cmd.noCredentials, `--no-credentials lost on: ${argv[0]}`).toBe(true);
     }
   });
 

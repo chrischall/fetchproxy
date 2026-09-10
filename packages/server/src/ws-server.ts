@@ -549,6 +549,18 @@ export interface RequestOpts {
    * the typed error conversion.
    */
   inPage?: boolean;
+  /**
+   * Send the page's cookies with this request. Default `'include'`, which is
+   * what every fetch did unconditionally before 2.9.2.
+   *
+   * `'omit'` is the only way to reach a host that answers
+   * `Access-Control-Allow-Origin: *`, because CORS refuses a wildcard to a
+   * credentialed cross-origin request (chrischall/fetchproxy#324). It sends
+   * no cookies, so it is for public endpoints — an authenticated call that
+   * silently became anonymous is the failure this option must never cause,
+   * which is why nothing downgrades automatically.
+   */
+  credentials?: 'include' | 'omit';
 }
 
 /**
@@ -570,6 +582,8 @@ export interface BodylessRequestOpts {
   viaTab?: string;
   /** Same as `RequestOpts.inPage`. */
   inPage?: boolean;
+  /** Same as `RequestOpts.credentials`. */
+  credentials?: 'include' | 'omit';
 }
 
 /**
@@ -2143,6 +2157,10 @@ export class FetchproxyServer {
       // the key's PRESENCE as the request, and a literal `undefined` would
       // both serialize away inconsistently and read as "asked for" here.
       ...(opts.inPage === true ? { inPage: true } : {}),
+      // Spread for the reason `inPage` is: only a deliberate 'omit' goes on
+      // the wire, so an untouched request serialises byte-identically to
+      // every version before this option existed.
+      ...(opts.credentials === 'omit' ? { credentials: 'omit' as const } : {}),
     };
     const result = await this.fetch(init);
     if (!result.ok) {

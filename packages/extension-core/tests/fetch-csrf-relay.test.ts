@@ -228,3 +228,49 @@ describe('prefersCsrfTab', () => {
     expect(prefersCsrfTab('head')).toBe(false);
   });
 });
+
+/**
+ * The ISOLATED world honours `credentials` too (#324).
+ *
+ * Both worlds hardcoded `credentials: 'include'`, so a host answering
+ * `Access-Control-Allow-Origin: *` was unreachable from either — CORS refuses
+ * a wildcard to a credentialed cross-origin request. The MAIN world's half is
+ * covered in in-page-fetch-relay.test.ts; this is the other half.
+ */
+describe('runFetch credentials', () => {
+  const originalFetch = globalThis.fetch;
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  function spyFetch() {
+    const f = vi.fn(async () => ({
+      status: 200,
+      url: 'https://www.opentable.com/x',
+      text: async () => 'BODY',
+      headers: { get: () => null },
+    }));
+    (globalThis as { fetch?: unknown }).fetch = f;
+    (window as unknown as { fetch: unknown }).fetch = f;
+    return f;
+  }
+
+  const init = (extra: Record<string, unknown> = {}) => ({
+    url: 'https://www.opentable.com/x',
+    method: 'GET',
+    tabUrl: HOME,
+    ...extra,
+  });
+
+  it("defaults to 'include', unchanged from before the option existed", async () => {
+    const f = spyFetch();
+    await runFetch(init() as never);
+    expect((f.mock.calls[0] as unknown[])[1]).toMatchObject({ credentials: 'include' });
+  });
+
+  it("sends 'omit' when the caller asked for it", async () => {
+    const f = spyFetch();
+    await runFetch(init({ credentials: 'omit' }) as never);
+    expect((f.mock.calls[0] as unknown[])[1]).toMatchObject({ credentials: 'omit' });
+  });
+});

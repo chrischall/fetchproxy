@@ -535,6 +535,28 @@ export interface FetchInit {
    * gives up.
    */
   inPage?: boolean;
+  /**
+   * Whether the browser sends the page's cookies with this request.
+   *
+   * `'include'` is the default and what every fetch did unconditionally
+   * before 2.9.2 — it is the point of the bridge, since an authenticated
+   * request is the thing an MCP came here for.
+   *
+   * `'omit'` exists because a credentialed CROSS-ORIGIN request may not use
+   * a wildcard: CORS requires the response to name a specific origin AND
+   * carry `Access-Control-Allow-Credentials: true`, so a host answering
+   * `Access-Control-Allow-Origin: *` is rejected by the browser before any
+   * JS sees it — as `TypeError: Failed to fetch`, with no status and no
+   * body to explain itself. Measured on `cdn.amplitude.com` and
+   * `capture.trackjs.com`, neither behind a bot wall
+   * (chrischall/fetchproxy#324). Until this field existed, such a host was
+   * simply unreachable through the bridge.
+   *
+   * There is deliberately no automatic downgrade on a CORS failure: a
+   * request the caller believed was authenticated would silently become
+   * anonymous, and an anonymous 200 is worse than an honest failure.
+   */
+  credentials?: 'include' | 'omit';
 }
 
 export interface InnerPing {

@@ -389,12 +389,23 @@ function watchCspViolation(win: FetchBridgeWindow, url: string): { hit: () => bo
     try {
       const directive = String(e?.effectiveDirective ?? e?.violatedDirective ?? '');
       if (!directive.startsWith('connect-src')) return;
-      // `blockedURI` is the full URL on some engines and the origin on others,
-      // so match by prefix rather than equality.
-      const blockedUri = String(e?.blockedURI ?? '');
-      if (blockedUri && (blockedUri.startsWith(origin) || origin.startsWith(blockedUri))) {
-        blocked = true;
+      // `blockedURI` is the full URL on some engines and the bare origin on
+      // others, so normalise both sides to an ORIGIN and compare exactly.
+      // Prefix matching was the first cut and is wrong in the direction that
+      // matters: `https://api.example.com` is a prefix of
+      // `https://api.example.com.evil.test`, so a look-alike host's violation
+      // would be attributed to this request (#337).
+      const raw = String(e?.blockedURI ?? '');
+      if (!raw) return;
+      let blockedOrigin: string;
+      try {
+        blockedOrigin = new URL(raw).origin;
+      } catch {
+        // Not a URL — some engines report a keyword such as `inline`. Compare
+        // as given rather than guessing.
+        blockedOrigin = raw;
       }
+      if (blockedOrigin === origin) blocked = true;
     } catch {
       // A malformed event must not break the request it is annotating.
     }
@@ -416,6 +427,7 @@ async function classifyFetchFailure(
   win: FetchBridgeWindow,
   url: string,
   cspBlocked = false,
+  credentialed = true,
 ): Promise<string> {
   try {
     let origin: string;
@@ -455,10 +467,27 @@ async function classifyFetchFailure(
       if (timer !== undefined) clearTimeout(timer);
     }
     if (outcome === PROBE_TIMEOUT) return '';
-    return outcome === 'reached'
-      ? ` (${origin} answered a no-cors probe, so the request left this page and the response was withheld` +
-        ' — CORS refused it, or a WAF challenge answered without an Access-Control-Allow-Origin header)'
-      : ` (${origin} did not answer a no-cors probe either, so this looks like a real network failure)`;
+    if (outcome !== 'reached') {
+      return ` (${origin} did not answer a no-cors probe either, so this looks like a real network failure)`;
+    }
+    // A credentialed CROSS-ORIGIN request cannot use a wildcard: CORS wants a
+    // named origin plus `Access-Control-Allow-Credentials: true`, so a host
+    // answering `Access-Control-Allow-Origin: *` is refused before JS sees
+    // it. That is indistinguishable from a WAF here, and the remedy is
+    // completely different — `credentials: 'omit'` reaches such a host, and
+    // nothing reaches a challenged one. Naming it is the whole point (#324).
+    const sameOrigin = win.location?.origin !== undefined && win.location.origin === origin;
+    const wildcardHint =
+      credentialed && !sameOrigin
+        ? ' This request sent credentials, which cannot be used with a wildcard' +
+          ' Access-Control-Allow-Origin — if that host allows any origin, retry with' +
+          " credentials: 'omit'."
+        : '';
+    return (
+      ` (${origin} answered a no-cors probe, so the request left this page and the response was withheld` +
+      ' — CORS refused it, or a WAF challenge answered without an Access-Control-Allow-Origin header.' +
+      `${wildcardHint})`
+    );
   } catch {
     return '';
   }
@@ -515,7 +544,11 @@ export function installFetchBridge(win: FetchBridgeWindow): void {
             method: typeof data.method === 'string' ? data.method : 'GET',
             headers: data.headers && typeof data.headers === 'object' ? data.headers : {},
             body: typeof data.body === 'string' ? data.body : undefined,
-            credentials: 'include',
+            // Same default as the isolated world. Only 'omit' is accepted as
+            // an override — anything else on the bus is page script talking,
+            // and a request quietly downgraded to same-origin would look like
+            // a network failure rather than a refusal.
+            credentials: data.credentials === 'omit' ? 'omit' : 'include',
           });
         } catch (e) {
           // `in-page` prefix, and it is load-bearing rather than cosmetic: the
@@ -524,7 +557,12 @@ export function installFetchBridge(win: FetchBridgeWindow): void {
           // `fetch_in_page` exists to answer — did this actually run in the
           // page? — unanswerable from the error. Establishing that for one MCP
           // took reading this file and probing the API's CORS headers by hand.
-          const why = await classifyFetchFailure(win, data.url, csp.hit());
+          const why = await classifyFetchFailure(
+            win,
+            data.url,
+            csp.hit(),
+            data.credentials !== 'omit',
+          );
           reply({ ok: false, error: `in-page fetch threw: ${(e as Error)?.message ?? String(e)}${why}` });
           return;
         } finally {

@@ -22,7 +22,7 @@ export type Command =
   | { kind: 'trust'; action: 'clear'; serverName?: string; all?: boolean }
   | { kind: 'fetch'; profile: string; method: string; url: string;
       headers: Record<string, string>; body?: string; json: boolean; viaTab?: string;
-      inPage: boolean }
+      inPage: boolean; noCredentials: boolean }
   | { kind: 'read'; profile: string; bucket: Bucket; keys: string[];
       storageDomain?: string; storageSubdomain?: string }
   | { kind: 'session'; profile: string; storageDomain?: string; storageSubdomain?: string }
@@ -104,6 +104,7 @@ export function parseCliArgs(
         'storage-subdomain': { type: 'string' },
         'via-tab': { type: 'string' },
         'in-page': { type: 'boolean', default: false },
+        'no-credentials': { type: 'boolean', default: false },
         subdomain: { type: 'string' },
         help: { type: 'boolean', short: 'h', default: false },
         version: { type: 'boolean', short: 'v', default: false },
@@ -237,7 +238,8 @@ export function parseCliArgs(
     if (cmd === 'get') {
       return { kind: 'fetch', profile, method: 'GET', url, headers, body: undefined,
         json: values.json ?? false, viaTab: values['via-tab'],
-        inPage: values['in-page'] ?? false };
+        inPage: values['in-page'] ?? false,
+        noCredentials: values['no-credentials'] ?? false };
     }
     if (cmd === 'post-json') {
       const rawBody = rest[1];
@@ -254,12 +256,14 @@ export function parseCliArgs(
       if (!hasContentType) headers['Content-Type'] = 'application/json';
       return { kind: 'fetch', profile, method: 'POST', url, headers, body,
         json: values.json ?? false, viaTab: values['via-tab'],
-        inPage: values['in-page'] ?? false };
+        inPage: values['in-page'] ?? false,
+        noCredentials: values['no-credentials'] ?? false };
     }
     const body = values.data === undefined ? undefined : resolveBody(values.data, readFile);
     return { kind: 'fetch', profile, method: (values.method ?? 'GET').toUpperCase(), url,
       headers, body, json: values.json ?? false, viaTab: values['via-tab'],
-      inPage: values['in-page'] ?? false };
+      inPage: values['in-page'] ?? false,
+      noCredentials: values['no-credentials'] ?? false };
   }
 
   throw new UsageError(`unknown command ${JSON.stringify(cmd)}`, 'run: fpx --help');
