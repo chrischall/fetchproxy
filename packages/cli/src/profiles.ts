@@ -1,7 +1,12 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import type { CaptureHeaderDecl, DomSelectorDecl, IndexedDbScopeDecl } from '@fetchproxy/protocol';
+import type {
+  CaptureHeaderDecl,
+  DomSelectorDecl,
+  GraphqlOpDeclaration,
+  IndexedDbScopeDecl,
+} from '@fetchproxy/protocol';
 import { UsageError } from './output.js';
 
 export interface PointerDecl {
@@ -44,6 +49,28 @@ export interface Profile {
    * make cross-origin requests at all.
    */
   inPage: boolean;
+  /**
+   * 2.10.0+: may this profile snapshot a redirect TARGET?
+   *
+   * Its own flag rather than implied by `fetch`, because what it reads is a
+   * URL the page was sent to and never asked for — a presigned link behind a
+   * 302 is the motivating case, and it is exactly the kind of value worth
+   * approving deliberately. Scope is the profile's declared `domains`; unlike
+   * `captureHeaders` there is no per-entry declaration, so the flag is all
+   * there is to approve.
+   */
+  captureRedirect: boolean;
+  /**
+   * 2.10.0+: GraphQL operations this profile may invoke, as `name` →
+   * `operationName`.
+   *
+   * Declared per operation rather than granted wholesale: the extension
+   * resolves the name to a DocumentNode the page's own Apollo client already
+   * holds and runs it through the site's own client, so an undeclared name
+   * would be an arbitrary query on the user's session. An empty list means no
+   * operations, even with the capability present.
+   */
+  graphqlOps: GraphqlOpDeclaration[];
 }
 
 export function cliHome(env: Record<string, string | undefined> = process.env): string {
@@ -86,6 +113,8 @@ export function emptyProfile(domains: string[]): Profile {
     download: false,
     cookieWrite: false,
     inPage: false,
+    captureRedirect: false,
+    graphqlOps: [],
   };
 }
 
@@ -147,6 +176,10 @@ function validateProfile(name: string, raw: unknown): Profile {
   if (p.download !== undefined && typeof p.download !== 'boolean') fail('download');
   if (p.cookieWrite !== undefined && typeof p.cookieWrite !== 'boolean') fail('cookieWrite');
   if (p.inPage !== undefined && typeof p.inPage !== 'boolean') fail('inPage');
+  if (p.captureRedirect !== undefined && typeof p.captureRedirect !== 'boolean') {
+    fail('captureRedirect');
+  }
+  if (p.graphqlOps !== undefined && !Array.isArray(p.graphqlOps)) fail('graphqlOps');
   return { ...emptyProfile(p.domains as string[]), ...(p as Partial<Profile>) } as Profile;
 }
 

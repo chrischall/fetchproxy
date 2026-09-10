@@ -11,6 +11,8 @@ import { runSession } from './verbs/session.js';
 import { runDom } from './verbs/dom.js';
 import { runDownload } from './verbs/download.js';
 import { runCapture } from './verbs/capture.js';
+import { runCaptureRedirect } from './verbs/capture-redirect.js';
+import { runGraphql } from './verbs/graphql.js';
 import { runWriteCookies } from './verbs/write-cookies.js';
 import { runHealth, runPair } from './verbs/health.js';
 import { runTrust } from './verbs/trust.js';
@@ -19,7 +21,7 @@ import { VERSION } from './version.js';
 const USAGE = `fpx ${VERSION} — fetchproxy CLI: authenticated fetches through your signed-in browser tab
 
   fpx profile add <name> --domain <apex> [--domain <apex>]…
-  fpx profile declare <name> [--cookie k]… [--local-storage k]… [--session-storage k]… [--capture-header name@host[/path]]… [--dom-selector handle=css]… [--allow-download] [--allow-cookie-write] [--allow-in-page]
+  fpx profile declare <name> [--cookie k]… [--local-storage k]… [--session-storage k]… [--capture-header name@host[/path]]… [--dom-selector handle=css]… [--allow-download] [--allow-cookie-write] [--allow-in-page] [--allow-capture-redirect] [--graphql-op handle=OperationName]…
   fpx profile list | show <name> | remove <name>
   fpx pair -p <name> [--domain <apex>] [--subdomain <label>]
   fpx health -p <name>
@@ -30,6 +32,8 @@ const USAGE = `fpx ${VERSION} — fetchproxy CLI: authenticated fetches through 
   fpx cookies|local-storage|session-storage|indexeddb [keys…] -p <name> [--storage-domain d] [--storage-subdomain s]
   fpx capture [header@host…] -p <name> [--capture-timeout <s>]
   fpx write-cookies <name=value…> -p <name> [--storage-domain d] [--storage-subdomain s]
+  fpx capture-redirect <host>[/path] -p <name> [--capture-timeout <s>]
+  fpx graphql <handle> -p <name> [--var k=v]… [--via-tab <url>]
   fpx session -p <name> [--storage-domain d] [--storage-subdomain s]
   fpx dom <name…> -p <name> [--storage-domain d] [--storage-subdomain s]
   fpx download <url> -p <name> [--filename f]
@@ -130,6 +134,10 @@ export async function runCli(argv: string[], io: Io, deps: CliDeps = {}): Promis
         return await runDom(cmd, getProfile(cmd.profile, home), io, deps.makeServer);
       case 'capture':
         return await runCapture(cmd, getProfile(cmd.profile, home), io, deps.makeServer);
+      case 'capture-redirect':
+        return await runCaptureRedirect(cmd, getProfile(cmd.profile, home), io, deps.makeServer);
+      case 'graphql':
+        return await runGraphql(cmd, getProfile(cmd.profile, home), io, deps.makeServer);
       case 'write-cookies':
         return await runWriteCookies(cmd, getProfile(cmd.profile, home), io, deps.makeServer);
       case 'download':

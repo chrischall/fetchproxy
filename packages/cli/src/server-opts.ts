@@ -59,6 +59,8 @@ export function serverOptsFor(profileName: string, p: Profile, version: string):
   if (p.download === true) capabilities.push('download');
   if (p.cookieWrite === true) capabilities.push('write_cookies');
   if (p.inPage === true) capabilities.push('fetch_in_page');
+  if (p.captureRedirect === true) capabilities.push('capture_redirect');
+  if (p.graphqlOps.length > 0) capabilities.push('graphql');
 
   const localStorageKeys = new Set(p.localStorage);
   for (const ptr of p.localStoragePointers) localStorageKeys.add(ptr.storageKey);
