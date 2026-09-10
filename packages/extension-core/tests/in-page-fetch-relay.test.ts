@@ -339,6 +339,33 @@ describe('installFetchBridge (MAIN world)', () => {
     expect(seen[1]).toMatchObject({ url: 'https://api.example.com', method: 'GET' });
   });
 
+  /**
+   * `Promise.race` abandons the loser; it does not cancel it. A probe timer
+   * left armed keeps this content script's context alive for the rest of its
+   * budget — on every failed in-page fetch, in every tab the extension is
+   * injected into — and the probe normally settles in milliseconds.
+   */
+  it('clears the probe timer once the probe settles, rather than letting it run out', async () => {
+    const cleared: unknown[] = [];
+    const realClear = globalThis.clearTimeout;
+    const spy = vi.spyOn(globalThis, 'clearTimeout').mockImplementation(((id: never) => {
+      cleared.push(id);
+      return realClear(id);
+    }) as never);
+    try {
+      const { win, dispatch } = makeMainWin(async (url: string) => {
+        if (url === 'https://api.example.com') return { status: 0, url, text: async () => '' };
+        throw new Error('Failed to fetch');
+      });
+      installFetchBridge(win as never);
+      dispatch({ __fetchproxy: 'fetch-req', reqId: 25, url: 'https://api.example.com/x', method: 'GET' });
+      await flush();
+      expect(cleared.length).toBeGreaterThan(0);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
   it('adds nothing when the probe throws SYNCHRONOUSLY rather than rejecting', async () => {
     // A `fetch` that throws before returning a promise skips every `.then`
     // guard inside the classifier, so only the outer catch stands between it

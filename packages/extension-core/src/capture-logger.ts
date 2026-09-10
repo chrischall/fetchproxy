@@ -356,8 +356,25 @@ async function classifyFetchFailure(win: FetchBridgeWindow, url: string): Promis
       return '';
     }
     const probe = win.fetch(origin, { method: 'GET', mode: 'no-cors', credentials: 'omit' });
-    const timeout = new Promise((resolve) => setTimeout(() => resolve(PROBE_TIMEOUT), PROBE_TIMEOUT_MS));
-    const outcome = await Promise.race([probe.then(() => 'reached', () => 'unreachable'), timeout]);
+    // CLEARED ON SETTLE, the pattern `runGraphqlQuery` and the download handler
+    // already use. `Promise.race` abandons the loser, it does not cancel it, so
+    // a timer left armed keeps this content script's context alive for the rest
+    // of its budget — on every failed in-page fetch, in every tab the extension
+    // is injected into. The probe usually settles in milliseconds and the timer
+    // would outlive it by three seconds.
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise((resolve) => {
+      timer = setTimeout(() => resolve(PROBE_TIMEOUT), PROBE_TIMEOUT_MS);
+    });
+    let outcome: unknown;
+    try {
+      outcome = await Promise.race([probe.then(() => 'reached', () => 'unreachable'), timeout]);
+    } finally {
+      // `finally`, so the timer goes even if the race rejects — which it should
+      // not, both arms being settled above, but a leak that depends on that
+      // staying true is a leak waiting for an edit.
+      if (timer !== undefined) clearTimeout(timer);
+    }
     if (outcome === PROBE_TIMEOUT) return '';
     return outcome === 'reached'
       ? ` (${origin} answered a no-cors probe, so the request left this page and the response was withheld` +
