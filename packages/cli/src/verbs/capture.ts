@@ -128,8 +128,12 @@ export async function runCapture(
     if (firstRejection !== undefined && firstRejection.status === 'rejected') {
       return mapBridgeError(firstRejection.reason, io);
     }
-    // Every capture RESOLVED but with nothing usable — the extension answered
-    // and the header simply was not on any request it saw.
+    // Reaching here means every capture RESOLVED and none carried a usable
+    // value. That is NOT the idle-tab miss, which the extension reports as
+    // `{ok:false, error:'timeout'}` and therefore takes the rejection branch
+    // above — the comment here used to claim otherwise and described a path
+    // that cannot arrive (#342). Kept as the honest fallthrough for an
+    // extension that answers `ok:true` with nothing in it.
     printJson(io, out);
     return EXIT.BRIDGE;
   } catch (err) {

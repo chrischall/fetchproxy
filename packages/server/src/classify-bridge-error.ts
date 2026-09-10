@@ -3,6 +3,7 @@ import {
   FetchproxyTimeoutError,
   FetchproxyHttpError,
   FetchproxyProtocolError,
+  FetchproxyWaitedError,
 } from './ws-server.js';
 import {
   FetchproxyHelloRejectedError,
@@ -67,6 +68,11 @@ export function classifyBridgeError(err: unknown): BridgeError {
   if (err instanceof FetchproxyHelloRejectedError) return 'hello_rejected';
   if (err instanceof FetchproxySessionNotReadyError) return 'session_not_ready';
   if (err instanceof FetchproxyTimeoutError) return 'timeout';
+  // A window the EXTENSION closed with nothing matched is a timeout too, even
+  // though it arrives as a hinted protocol error. Classifying it as 'protocol'
+  // is what put the version-mismatch remedy on the most ordinary miss there is
+  // (#342). Ahead of the ProtocolError branch it subclasses, or it never runs.
+  if (err instanceof FetchproxyWaitedError) return 'timeout';
   if (err instanceof FetchproxyBridgeDownError) return 'bridge_down';
   if (err instanceof FetchproxyHttpError) return 'http';
   if (err instanceof FetchproxyProtocolError) return 'protocol';
