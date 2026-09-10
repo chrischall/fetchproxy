@@ -1,5 +1,13 @@
 # Changelog
 
+## [2.9.1](https://github.com/chrischall/fetchproxy/compare/v2.9.0...v2.9.1) (2026-09-10)
+
+
+### Bug Fixes
+
+* **extension:** reuse a tab from any group before opening a relay tab ([#330](https://github.com/chrischall/fetchproxy/issues/330)) ([989a60c](https://github.com/chrischall/fetchproxy/commit/989a60c143ed643623d7192d5284188ca92ef1cc))
+* **server:** a pairing refusal mid-send must not kill the process ([#332](https://github.com/chrischall/fetchproxy/issues/332)) ([a749c80](https://github.com/chrischall/fetchproxy/commit/a749c80315254b335bc5cd2af643c3c9eb0fb17b))
+
 ## [2.9.0](https://github.com/chrischall/fetchproxy/compare/v2.8.0...v2.9.0) (2026-09-10)
 
 
