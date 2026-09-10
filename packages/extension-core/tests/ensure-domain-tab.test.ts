@@ -233,3 +233,101 @@ describe('background tab + relay tab group', () => {
     for (const g of joined) expect(g.groupId).toBe(m.groups[0]!.id);
   });
 });
+
+describe('an existing tab anywhere in the browser wins', () => {
+  beforeEach(() => __resetRelayGroupForTests());
+
+  interface AnyTab {
+    id: number;
+    url?: string;
+    pendingUrl?: string;
+    groupId?: number;
+  }
+
+  /**
+   * Models the part of `chrome.tabs.query` that matters here: the `url` filter
+   * matches COMMITTED urls only, and no filter returns every tab in the
+   * profile regardless of which group or window it sits in.
+   */
+  function mockAnyTabs(initial: AnyTab[]) {
+    let nextId = 3000;
+    const tabs: AnyTab[] = [...initial];
+    const created: { url: string }[] = [];
+    (globalThis as { chrome?: unknown }).chrome = {
+      tabs: {
+        query: async (q: { url?: string | string[] }) => {
+          if (!q.url) return [...tabs];
+          const patterns = Array.isArray(q.url) ? q.url : [q.url];
+          return tabs.filter((t) => {
+            if (typeof t.url !== 'string') return false;
+            return patterns.some((p) => {
+              const host = p.replace(/^\*:\/\//, '').replace(/\/\*$/, '').toLowerCase();
+              try {
+                const h = new URL(t.url!).hostname.toLowerCase();
+                const bare = host.startsWith('*.') ? host.slice(2) : host;
+                return h === bare || h.endsWith('.' + bare);
+              } catch {
+                return false;
+              }
+            });
+          });
+        },
+        create: async (props: { url: string }) => {
+          created.push({ url: props.url });
+          const tab: AnyTab = { id: nextId++, url: props.url };
+          tabs.push(tab);
+          return tab;
+        },
+      },
+    };
+    return { created };
+  }
+
+  // The point of the change: the check is not scoped to the fetchproxy group.
+  it('reuses a tab that lives in someone else’s tab group', async () => {
+    const { created } = mockAnyTabs([
+      { id: 1, url: 'https://www.alltrails.com/explore', groupId: 77 },
+    ]);
+    const result = await ensureDomainTab('alltrails.com');
+    expect(result.opened).toBe(false);
+    expect(created).toEqual([]);
+  });
+
+  it('reuses a tab whose navigation has not committed yet', async () => {
+    // Chrome reports the destination in `pendingUrl` and leaves `url` unset
+    // until the navigation commits, so the url filter cannot see this tab.
+    const { created } = mockAnyTabs([{ id: 1, pendingUrl: 'https://resy.com/' }]);
+    const result = await ensureDomainTab('resy.com');
+    expect(result.opened).toBe(false);
+    expect(created).toEqual([]);
+  });
+
+  it('still opens when the only loading tab is for a different domain', async () => {
+    const { created } = mockAnyTabs([{ id: 1, pendingUrl: 'https://example.com/' }]);
+    const result = await ensureDomainTab('resy.com');
+    expect(result.opened).toBe(true);
+    expect(created).toEqual([{ url: 'https://resy.com/' }]);
+  });
+
+  // Both callers loop over the declared domains without awaiting, and a pair
+  // approval is followed by a server hello repeating the same list.
+  it('opens ONE tab when the same domain is requested concurrently', async () => {
+    const { created } = mockAnyTabs([]);
+    const results = await Promise.all([
+      ensureDomainTab('resy.com'),
+      ensureDomainTab('resy.com'),
+      ensureDomainTab('RESY.com'),
+    ]);
+    expect(created).toEqual([{ url: 'https://resy.com/' }]);
+    expect(results.every((r) => r.opened)).toBe(true);
+  });
+
+  it('opens again on a later call once the first has settled', async () => {
+    const { created } = mockAnyTabs([]);
+    await ensureDomainTab('resy.com');
+    // The first tab is now in the mock, so this is the ordinary reuse path.
+    const second = await ensureDomainTab('resy.com');
+    expect(second.opened).toBe(false);
+    expect(created).toHaveLength(1);
+  });
+});
