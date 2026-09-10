@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.11.0](https://github.com/chrischall/fetchproxy/compare/v2.10.0...v2.11.0) (2026-09-10)
+
+
+### Features
+
+* **cli:** fpx capture and write-cookies, closing two dead declarations ([#340](https://github.com/chrischall/fetchproxy/issues/340)) ([37fabb7](https://github.com/chrischall/fetchproxy/commit/37fabb7c258d9636f3a89e08622bf2799d7d0840))
+
 ## [2.10.0](https://github.com/chrischall/fetchproxy/compare/v2.9.1...v2.10.0) (2026-09-10)
 
 
