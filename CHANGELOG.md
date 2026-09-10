@@ -1,5 +1,17 @@
 # Changelog
 
+## [2.9.0](https://github.com/chrischall/fetchproxy/compare/v2.8.0...v2.9.0) (2026-09-10)
+
+
+### Features
+
+* **extension:** say which failure a MAIN-world fetch hit, not just that it failed ([#325](https://github.com/chrischall/fetchproxy/issues/325)) ([2c84eba](https://github.com/chrischall/fetchproxy/commit/2c84eba547405ad70f28edfe188b6e204309b11e)), closes [#324](https://github.com/chrischall/fetchproxy/issues/324)
+
+
+### Bug Fixes
+
+* **extension:** clear the probe timer instead of letting it run out ([#328](https://github.com/chrischall/fetchproxy/issues/328)) ([e8a4457](https://github.com/chrischall/fetchproxy/commit/e8a4457f37d90187ea156cf0e6581c65cea460a1)), closes [#326](https://github.com/chrischall/fetchproxy/issues/326)
+
 ## [2.8.0](https://github.com/chrischall/fetchproxy/compare/v2.7.0...v2.8.0) (2026-09-09)
 
 
