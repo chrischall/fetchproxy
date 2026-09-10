@@ -1,5 +1,18 @@
 # Changelog
 
+## [2.10.0](https://github.com/chrischall/fetchproxy/compare/v2.9.1...v2.10.0) (2026-09-10)
+
+
+### Features
+
+* **cli:** fpx --in-page, so a MAIN-world failure is reproducible from a shell ([#333](https://github.com/chrischall/fetchproxy/issues/333)) ([82d5906](https://github.com/chrischall/fetchproxy/commit/82d59066501bcbd737fca5a05ebbc594bfc10181))
+* **protocol:** selectable credentials, so a wildcard-CORS host is reachable ([#338](https://github.com/chrischall/fetchproxy/issues/338)) ([2353bcc](https://github.com/chrischall/fetchproxy/commit/2353bccf24e81097805c7c481f27b348a43270e8))
+
+
+### Bug Fixes
+
+* **extension:** a CSP block is a policy decision, not a network failure ([#335](https://github.com/chrischall/fetchproxy/issues/335)) ([0590f5b](https://github.com/chrischall/fetchproxy/commit/0590f5bbbc28df2bbf66720ae780ef8cf522d721))
+
 ## [2.9.1](https://github.com/chrischall/fetchproxy/compare/v2.9.0...v2.9.1) (2026-09-10)
 
 
