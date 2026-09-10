@@ -1903,9 +1903,11 @@ export class FetchproxyServer {
   ): Promise<FetchResult | FetchResultError> {
     const id = this.nextRequestId++;
     const inner: InnerFrame = { type: 'request', id, op: 'fetch', init };
-    const pending = new Promise<FetchResult | FetchResultError>((resolve) => {
-      this.pending.set(id, resolve);
-    });
+    const pending = this.guardPending(
+      new Promise<FetchResult | FetchResultError>((resolve) => {
+        this.pending.set(id, resolve);
+      }),
+    );
     await this.sendInnerFrame(inner);
     const timeoutMs = this.opts.fetchTimeoutMs;
     if (timeoutMs === undefined || timeoutMs <= 0) return pending;
@@ -1957,6 +1959,34 @@ export class FetchproxyServer {
    * already surface for fetch timeouts). `0`/unset opts out (unbounded),
    * matching the fetch path.
    */
+  /**
+   * Register a verb's pending promise and keep an early rejection from being
+   * fatal.
+   *
+   * Every verb stores its resolver, then AWAITS `sendInnerFrame` before the
+   * caller attaches a handler — and that send does real work (sealing, a
+   * socket write), so it yields across event-loop turns. Anything that drains
+   * the pending maps inside that window rejects a promise nothing is
+   * listening to yet: a refused pairing (`rejectAllPending(pairingErrorMessage
+   * (code))`), an extension disconnect, a `close()`. Under Node's default
+   * `--unhandled-rejections=throw` that ends the PROCESS, so an MCP that
+   * should have reported "approve pair code NNN-NN" dies instead, and each
+   * respawn mints a fresh code nobody can approve (#329).
+   *
+   * The no-op catch is a listener, not a swallow. `.catch()` derives a NEW
+   * promise and leaves this one's rejection intact, so `_withVerbTimeout` and
+   * the caller still see it — the only thing that changes is that the
+   * rejection is never unhandled.
+   *
+   * This is the same hazard `_withVerbTimeout`'s timer already guards against
+   * from the other side, where it drops the resolver "so a late bridge
+   * response doesn't become an unhandled promise that crashes the host".
+   */
+  private guardPending<T>(pending: Promise<T>): Promise<T> {
+    pending.catch(() => {});
+    return pending;
+  }
+
   private async _withVerbTimeout<T>(
     pending: Promise<T>,
     pendingMap: Map<number, unknown>,
@@ -2416,9 +2446,11 @@ export class FetchproxyServer {
       const tabUrl = `https://${host}/`;
       inner = { type: 'request', id, op: 'read_cookies', init: { tabUrl } };
     }
-    const pending = new Promise<ReadCookiesResult | ReadCookiesResultError>((resolve) => {
-      this.pendingReadCookies.set(id, resolve);
-    });
+    const pending = this.guardPending(
+      new Promise<ReadCookiesResult | ReadCookiesResultError>((resolve) => {
+        this.pendingReadCookies.set(id, resolve);
+      }),
+    );
     await this.sendInnerFrame(inner);
     const result = await this._withVerbTimeout(
       pending,
@@ -2488,9 +2520,11 @@ export class FetchproxyServer {
         ...(cookiePath !== undefined ? { path: cookiePath } : {}),
       },
     };
-    const pending = new Promise<string[]>((resolve, reject) => {
-      this.pendingWriteCookies.set(id, { resolve, reject });
-    });
+    const pending = this.guardPending(
+      new Promise<string[]>((resolve, reject) => {
+        this.pendingWriteCookies.set(id, { resolve, reject });
+      }),
+    );
     await this.sendInnerFrame(inner);
     return this._withVerbTimeout(pending, this.pendingWriteCookies, id, `https://${host}`);
   }
@@ -2598,9 +2632,11 @@ export class FetchproxyServer {
         ...(opts.pointers ? { pointers: { ...opts.pointers } } : {}),
       },
     };
-    const pending = new Promise<Record<string, string>>((resolve, reject) => {
-      this.pendingStorage.set(id, { resolve, reject });
-    });
+    const pending = this.guardPending(
+      new Promise<Record<string, string>>((resolve, reject) => {
+        this.pendingStorage.set(id, { resolve, reject });
+      }),
+    );
     await this.sendInnerFrame(inner);
     return this._withVerbTimeout(pending, this.pendingStorage, id, `https://${host}`);
   }
@@ -2755,9 +2791,11 @@ export class FetchproxyServer {
         ...(opts.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
       },
     };
-    const pending = new Promise<string>((resolve, reject) => {
-      this.pendingCapture.set(id, { resolve, reject });
-    });
+    const pending = this.guardPending(
+      new Promise<string>((resolve, reject) => {
+        this.pendingCapture.set(id, { resolve, reject });
+      }),
+    );
     await this.sendInnerFrame(inner);
     return this._withVerbTimeout(
       pending,
@@ -2868,9 +2906,11 @@ export class FetchproxyServer {
         ...(opts.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
       },
     };
-    const pending = new Promise<string>((resolve, reject) => {
-      this.pendingRedirect.set(id, { resolve, reject });
-    });
+    const pending = this.guardPending(
+      new Promise<string>((resolve, reject) => {
+        this.pendingRedirect.set(id, { resolve, reject });
+      }),
+    );
     await this.sendInnerFrame(inner);
     return this._withVerbTimeout(
       pending,
@@ -2977,9 +3017,11 @@ export class FetchproxyServer {
         ...(opts.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
       },
     };
-    const pending = new Promise<DownloadResult>((resolve, reject) => {
-      this.pendingDownload.set(id, { resolve, reject });
-    });
+    const pending = this.guardPending(
+      new Promise<DownloadResult>((resolve, reject) => {
+        this.pendingDownload.set(id, { resolve, reject });
+      }),
+    );
     await this.sendInnerFrame(inner);
     return this._withVerbTimeout(
       pending,
@@ -3050,9 +3092,11 @@ export class FetchproxyServer {
         keys: [...opts.keys],
       },
     };
-    const pending = new Promise<Record<string, unknown>>((resolve, reject) => {
-      this.pendingIdb.set(id, { resolve, reject });
-    });
+    const pending = this.guardPending(
+      new Promise<Record<string, unknown>>((resolve, reject) => {
+        this.pendingIdb.set(id, { resolve, reject });
+      }),
+    );
     await this.sendInnerFrame(inner);
     return this._withVerbTimeout(pending, this.pendingIdb, id, origin);
   }
@@ -3100,9 +3144,11 @@ export class FetchproxyServer {
       op: 'read_dom',
       init: { origin, names: [...opts.names] },
     };
-    const pending = new Promise<Record<string, string>>((resolve, reject) => {
-      this.pendingStorage.set(id, { resolve, reject });
-    });
+    const pending = this.guardPending(
+      new Promise<Record<string, string>>((resolve, reject) => {
+        this.pendingStorage.set(id, { resolve, reject });
+      }),
+    );
     await this.sendInnerFrame(inner);
     return this._withVerbTimeout(pending, this.pendingStorage, id, origin);
   }
@@ -3157,9 +3203,11 @@ export class FetchproxyServer {
         ...(opts.tabUrl !== undefined ? { tabUrl: opts.tabUrl } : {}),
       },
     };
-    const pending = new Promise<unknown>((resolve, reject) => {
-      this.pendingGraphql.set(id, { resolve, reject });
-    });
+    const pending = this.guardPending(
+      new Promise<unknown>((resolve, reject) => {
+        this.pendingGraphql.set(id, { resolve, reject });
+      }),
+    );
     await this.sendInnerFrame(inner);
     return this._withVerbTimeout(pending, this.pendingGraphql, id, opts.name);
   }
