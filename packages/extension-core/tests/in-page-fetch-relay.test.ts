@@ -277,6 +277,93 @@ describe('installFetchBridge (MAIN world)', () => {
     await flush();
     // The exact string the isolated world produces for the same failure is
     // `fetch threw: Failed to fetch` (content.ts). These must not collide.
+    // Asserted as a PREFIX rather than the whole string: the classifier
+    // appends which kind of failure it was, and the tag is what this case is
+    // about.
+    expect(String(posted[0]!.error)).toContain('in-page fetch threw: Failed to fetch');
+    expect(String(posted[0]!.error).startsWith('fetch threw:')).toBe(false);
+  });
+
+  /**
+   * WHICH FAILURE IT WAS, because `Failed to fetch` is three bugs wearing one
+   * message: an unreachable host, a CORS refusal, and a WAF challenge whose
+   * response carried no `Access-Control-Allow-Origin`. The remedies have
+   * nothing in common, and choosing between them took two rounds of wrong
+   * guesses on chrischall/resy-mcp#166 before anyone reached for `curl`.
+   */
+  it('says the request LEFT the page when a no-cors probe is answered', async () => {
+    // The caller's own URL fails; the origin answers. That is the shape of a
+    // response the browser withheld rather than one that never arrived.
+    const { win, posted, dispatch } = makeMainWin(async (url: string) => {
+      if (url === 'https://api.example.com') return { status: 0, url, text: async () => '' };
+      throw new Error('Failed to fetch');
+    });
+    installFetchBridge(win as never);
+    dispatch({ __fetchproxy: 'fetch-req', reqId: 20, url: 'https://api.example.com/3/auth/refresh', method: 'POST' });
+    await flush();
+    const err = String(posted[0]!.error);
+    expect(err).toContain('in-page fetch threw: Failed to fetch');
+    expect(err).toContain('answered a no-cors probe');
+    expect(err).toContain('Access-Control-Allow-Origin');
+  });
+
+  it('says it looks like a real network failure when nothing answers', async () => {
+    const { win, posted, dispatch } = makeMainWin(async () => {
+      throw new Error('Failed to fetch');
+    });
+    installFetchBridge(win as never);
+    dispatch({ __fetchproxy: 'fetch-req', reqId: 21, url: 'https://api.example.com/x', method: 'GET' });
+    await flush();
+    expect(String(posted[0]!.error)).toContain('did not answer a no-cors probe either');
+  });
+
+  it('probes the ORIGIN, never the URL that failed — a POST is not re-run to diagnose it', async () => {
+    const seen: { url: string; method: unknown }[] = [];
+    const { win, dispatch } = makeMainWin(async (url: string, init?: Record<string, unknown>) => {
+      seen.push({ url, method: init?.method });
+      if (url === 'https://api.example.com') return { status: 0, url, text: async () => '' };
+      throw new Error('Failed to fetch');
+    });
+    installFetchBridge(win as never);
+    dispatch({
+      __fetchproxy: 'fetch-req',
+      reqId: 22,
+      url: 'https://api.example.com/3/auth/refresh',
+      method: 'POST',
+      body: '{}',
+    });
+    await flush();
+    expect(seen).toHaveLength(2);
+    expect(seen[0]).toMatchObject({ url: 'https://api.example.com/3/auth/refresh', method: 'POST' });
+    // The probe: origin only, and never the caller's verb.
+    expect(seen[1]).toMatchObject({ url: 'https://api.example.com', method: 'GET' });
+  });
+
+  it('adds nothing when the probe throws SYNCHRONOUSLY rather than rejecting', async () => {
+    // A `fetch` that throws before returning a promise skips every `.then`
+    // guard inside the classifier, so only the outer catch stands between it
+    // and losing the real error entirely.
+    let call = 0;
+    const { win, posted, dispatch } = makeMainWin(((): never => {
+      call += 1;
+      if (call === 1) throw new Error('Failed to fetch');
+      throw new Error('probe exploded synchronously');
+    }) as never);
+    installFetchBridge(win as never);
+    dispatch({ __fetchproxy: 'fetch-req', reqId: 24, url: 'https://api.example.com/x', method: 'GET' });
+    await flush();
+    expect(String(posted[0]!.error)).toBe('in-page fetch threw: Failed to fetch');
+  });
+
+  it('adds nothing when the diagnosis itself cannot be made', async () => {
+    // A URL `new URL()` refuses. The reply must still carry the real failure —
+    // a diagnostic that can fail must never replace the diagnosis.
+    const { win, posted, dispatch } = makeMainWin(async () => {
+      throw new Error('Failed to fetch');
+    });
+    installFetchBridge(win as never);
+    dispatch({ __fetchproxy: 'fetch-req', reqId: 23, url: 'not-a-url', method: 'GET' });
+    await flush();
     expect(String(posted[0]!.error)).toBe('in-page fetch threw: Failed to fetch');
   });
 
