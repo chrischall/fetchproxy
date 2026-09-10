@@ -25,6 +25,12 @@ export interface VerbServer {
   readIndexedDb(o: {
     database: string; store: string; keys: string[]; domain?: string; subdomain?: string;
   }): Promise<Record<string, unknown>>;
+  captureRequestHeader(o: {
+    headerName: string; host: string; path?: string; timeoutMs?: number;
+  }): Promise<string>;
+  writeCookies(o: {
+    cookies: Record<string, string>; domain?: string; subdomain?: string; path?: string;
+  }): Promise<string[]>;
   readDom(o: { names: string[]; domain?: string; subdomain?: string }): Promise<Record<string, string>>;
   download(o: { url: string; filename?: string }): Promise<{
     path: string; bytes: number; mime?: string; finalUrl?: string;

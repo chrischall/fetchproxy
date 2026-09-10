@@ -10,6 +10,8 @@ import { runRead } from './verbs/read.js';
 import { runSession } from './verbs/session.js';
 import { runDom } from './verbs/dom.js';
 import { runDownload } from './verbs/download.js';
+import { runCapture } from './verbs/capture.js';
+import { runWriteCookies } from './verbs/write-cookies.js';
 import { runHealth, runPair } from './verbs/health.js';
 import { runTrust } from './verbs/trust.js';
 import { VERSION } from './version.js';
@@ -26,6 +28,8 @@ const USAGE = `fpx ${VERSION} — fetchproxy CLI: authenticated fetches through 
   fpx post-json <url> <body|@file> -p <name> [--json] [-H …]… [--via-tab <url>] [--in-page] [--no-credentials]
   fpx request <url> -p <name> [-X METHOD] [-H …]… [-d body|@file] [--json] [--via-tab <url>] [--in-page] [--no-credentials]
   fpx cookies|local-storage|session-storage|indexeddb [keys…] -p <name> [--storage-domain d] [--storage-subdomain s]
+  fpx capture [header@host…] -p <name> [--capture-timeout <s>]
+  fpx write-cookies <name=value…> -p <name> [--storage-domain d] [--storage-subdomain s]
   fpx session -p <name> [--storage-domain d] [--storage-subdomain s]
   fpx dom <name…> -p <name> [--storage-domain d] [--storage-subdomain s]
   fpx download <url> -p <name> [--filename f]
@@ -124,6 +128,10 @@ export async function runCli(argv: string[], io: Io, deps: CliDeps = {}): Promis
         return await runSession(cmd, getProfile(cmd.profile, home), io, deps.bootstrapFn);
       case 'dom':
         return await runDom(cmd, getProfile(cmd.profile, home), io, deps.makeServer);
+      case 'capture':
+        return await runCapture(cmd, getProfile(cmd.profile, home), io, deps.makeServer);
+      case 'write-cookies':
+        return await runWriteCookies(cmd, getProfile(cmd.profile, home), io, deps.makeServer);
       case 'download':
         return await runDownload(cmd, getProfile(cmd.profile, home), io, deps.makeServer);
       case 'health':

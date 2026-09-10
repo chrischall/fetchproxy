@@ -28,7 +28,12 @@ export type Command =
   | { kind: 'session'; profile: string; storageDomain?: string; storageSubdomain?: string }
   | { kind: 'dom'; profile: string; names: string[];
       storageDomain?: string; storageSubdomain?: string }
-  | { kind: 'download'; profile: string; url: string; filename?: string };
+  | { kind: 'download'; profile: string; url: string; filename?: string }
+  | { kind: 'capture'; profile: string; names: string[]; timeoutMs?: number }
+  | {
+      kind: 'write-cookies'; profile: string; cookies: Record<string, string>;
+      storageDomain?: string; storageSubdomain?: string;
+    };
 
 const READ_BUCKETS: Record<string, Bucket> = {
   cookies: 'cookies',
@@ -105,6 +110,8 @@ export function parseCliArgs(
         'via-tab': { type: 'string' },
         'in-page': { type: 'boolean', default: false },
         'no-credentials': { type: 'boolean', default: false },
+        // SECONDS on the command line, like every other timeout the CLI takes.
+        'capture-timeout': { type: 'string' },
         subdomain: { type: 'string' },
         help: { type: 'boolean', short: 'h', default: false },
         version: { type: 'boolean', short: 'v', default: false },
@@ -211,6 +218,39 @@ export function parseCliArgs(
       storageDomain: values['storage-domain'], storageSubdomain: values['storage-subdomain'],
     };
   }
+  if (cmd === 'capture') {
+    const raw = values['capture-timeout'];
+    let timeoutMs: number | undefined;
+    if (raw !== undefined) {
+      const secs = Number(raw);
+      if (!Number.isFinite(secs) || secs <= 0) {
+        throw new UsageError(`--capture-timeout expects seconds, got ${JSON.stringify(raw)}`);
+      }
+      timeoutMs = Math.round(secs * 1000);
+    }
+    return {
+      kind: 'capture', profile: requireProfile(values.profile), names: rest,
+      ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+    };
+  }
+
+  if (cmd === 'write-cookies') {
+    const cookies: Record<string, string> = {};
+    for (const pair of rest) {
+      const eq = pair.indexOf('=');
+      if (eq <= 0) {
+        throw new UsageError(
+          `fpx write-cookies expects name=value, got ${JSON.stringify(pair)}`,
+        );
+      }
+      cookies[pair.slice(0, eq)] = pair.slice(eq + 1);
+    }
+    return {
+      kind: 'write-cookies', profile: requireProfile(values.profile), cookies,
+      storageDomain: values['storage-domain'], storageSubdomain: values['storage-subdomain'],
+    };
+  }
+
   if (cmd === 'download') {
     const url = rest[0];
     if (!url) throw new UsageError('fpx download requires a URL');
