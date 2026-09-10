@@ -3,7 +3,10 @@ import type { Profile } from '../profiles.js';
 import { serverOptsFor } from '../server-opts.js';
 import { EXIT, UsageError, printJson, type Io } from '../output.js';
 import { mapBridgeError } from '../bridge-errors.js';
-import { defaultServerFactory, pairCodePrinter, type VerbServerFactory } from './fetch.js';
+import {
+  assertHostOnProfile, bridgeDeadlineFor, defaultServerFactory, pairCodePrinter,
+  type VerbServerFactory,
+} from './fetch.js';
 import { VERSION } from '../version.js';
 
 /**
@@ -17,8 +20,10 @@ import { VERSION } from '../version.js';
  * (chrischall/fetchproxy#341).
  *
  * Unlike `capture`, there is no per-entry declaration to narrow against —
- * scope is the profile's declared `domains`, so the host is checked against
- * those here, before the bridge is dialled.
+ * scope is the profile's declared `domains`, so the host goes through
+ * `assertHostOnProfile` before the bridge is dialled. That is the SAME
+ * function `fpx get` reaches through `assertUrlOnProfile`, so the refusal a
+ * user reads is one sentence with one place to change it.
  */
 export async function runCaptureRedirect(
   cmd: Extract<Command, { kind: 'capture-redirect' }>,
@@ -33,18 +38,13 @@ export async function runCaptureRedirect(
         '(re-pair once, since trust is keyed to the capability set)',
     );
   }
-  const onDomain = profile.domains.some(
-    (d) => cmd.host === d || cmd.host.endsWith(`.${d}`),
-  );
-  if (!onDomain) {
-    throw new UsageError(
-      `${cmd.host} is not on this profile's declared domains (${profile.domains.join(', ')})`,
-      'add a domain with: fpx profile add <name> --domain … (new profile) or edit profiles.json',
-    );
-  }
+  assertHostOnProfile(cmd.host, profile);
 
   const server = makeServer({
     ...serverOptsFor(cmd.profile, profile, VERSION),
+    // As in `capture`: the transport's 30s default silently caps a longer
+    // `--capture-timeout` (chrischall/fetchproxy#342).
+    fetchTimeoutMs: bridgeDeadlineFor(cmd.timeoutMs),
     onPairCode: pairCodePrinter(io),
   });
   try {

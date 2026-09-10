@@ -260,3 +260,49 @@ describe('fpx capture with paths', () => {
     expect(s.captureRequestHeader.mock.calls[0]![0]).toMatchObject({ path: '/4/*' });
   });
 });
+
+/**
+ * chrischall/fetchproxy#342 — the `capture` half of the same defect.
+ *
+ * `--capture-timeout` was forwarded to every declaration and then capped by the
+ * server's `fetchTimeoutMs` (default 30_000), which the CLI set nowhere. Both
+ * halves are asserted: the per-call window has to reach EVERY concurrent
+ * capture, and the transport deadline has to sit clear of it.
+ */
+describe('fpx capture timeouts', () => {
+  const calls = (s: unknown) =>
+    (s as { captureRequestHeader: { mock: { calls: Record<string, unknown>[][] } } })
+      .captureRequestHeader.mock.calls;
+
+  it('forwards the window to every concurrent capture', async () => {
+    const server = stubServer();
+    await runCapture(
+      { kind: 'capture', profile: 'p', names: [], timeoutMs: 120_000 } as never,
+      withCaptures(), memIo(), () => server,
+    );
+    expect(calls(server).map((c) => c[0]!.timeoutMs)).toEqual([120_000, 120_000]);
+  });
+
+  it('lifts the transport deadline clear of that window', async () => {
+    const server = stubServer();
+    const opts: Record<string, unknown>[] = [];
+    await runCapture(
+      { kind: 'capture', profile: 'p', names: [], timeoutMs: 120_000 } as never,
+      withCaptures(), memIo(),
+      (o) => { opts.push(o as unknown as Record<string, unknown>); return server; },
+    );
+    expect(opts[0]!.fetchTimeoutMs as number).toBeGreaterThan(120_000);
+  });
+
+  it('leaves an unflagged run on the transport default', async () => {
+    const server = stubServer();
+    const opts: Record<string, unknown>[] = [];
+    await runCapture(
+      { kind: 'capture', profile: 'p', names: [] } as never,
+      withCaptures(), memIo(),
+      (o) => { opts.push(o as unknown as Record<string, unknown>); return server; },
+    );
+    expect(opts[0]!.fetchTimeoutMs).toBe(30_000);
+    expect(calls(server)[0]![0]!.timeoutMs).toBeUndefined();
+  });
+});

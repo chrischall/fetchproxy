@@ -43,7 +43,17 @@ export interface VerbServer {
 }
 
 export type VerbServerFactory = (
-  opts: DerivedServerOpts & { onPairCode: (code: string) => void },
+  opts: DerivedServerOpts & {
+    onPairCode: (code: string) => void;
+    /**
+     * The transport deadline every verb's reply wait is raced against. Only
+     * the capture verbs set it — see `bridgeDeadlineFor`, which is the whole
+     * reason this field is on the factory's opts rather than on
+     * `DerivedServerOpts`: it is a per-CALL deadline, not something derived
+     * from the profile.
+     */
+    fetchTimeoutMs?: number;
+  },
 ) => VerbServer;
 
 export const defaultServerFactory: VerbServerFactory = (opts) =>
@@ -55,19 +65,15 @@ export function pairCodePrinter(io: Io): (code: string) => void {
 }
 
 /**
- * Assert the URL's host is on one of the profile's declared domains and return
- * the matching declared apex. `runFetch` threads that apex to `request()` as
- * `{ domain }`: the server calls `resolveBaseDomain(opts.domain)` eagerly (even
- * for absolute URLs) and throws when a profile declares >1 domain and none is
- * passed, so a multi-domain profile needs the resolved domain on every call.
+ * Assert a HOST is on one of the profile's declared domains and return the
+ * matching declared apex.
+ *
+ * Shared with `capture-redirect`, whose target is a bare host rather than a
+ * URL: that verb re-implemented this rule inline and copied this error text,
+ * so the two spellings of "not on this profile" could drift apart with nothing
+ * to catch it.
  */
-export function assertUrlOnProfile(url: string, profile: Profile): string {
-  let host: string;
-  try {
-    host = new URL(url).host;
-  } catch {
-    throw new UsageError(`not a valid URL: ${JSON.stringify(url)}`);
-  }
+export function assertHostOnProfile(host: string, profile: Profile): string {
   const matched = profile.domains.find((d) => host === d || host.endsWith(`.${d}`));
   if (matched === undefined) {
     throw new UsageError(
@@ -76,6 +82,43 @@ export function assertUrlOnProfile(url: string, profile: Profile): string {
     );
   }
   return matched;
+}
+
+/**
+ * The same rule for a URL, returning the matching declared apex.
+ *
+ * `runFetch` threads that apex to `request()` as `{ domain }`: the server calls
+ * `resolveBaseDomain(opts.domain)` eagerly (even for absolute URLs) and throws
+ * when a profile declares >1 domain and none is passed, so a multi-domain
+ * profile needs the resolved domain on every call.
+ */
+export function assertUrlOnProfile(url: string, profile: Profile): string {
+  let host: string;
+  try {
+    host = new URL(url).host;
+  } catch {
+    throw new UsageError(`not a valid URL: ${JSON.stringify(url)}`);
+  }
+  return assertHostOnProfile(host, profile);
+}
+
+/**
+ * The transport deadline a capture window needs.
+ *
+ * `FetchproxyServer.fetchTimeoutMs` (default 30_000) bounds EVERY verb's reply
+ * wait, and a per-call `timeoutMs` cannot raise it — the server says so in the
+ * timeout it throws: "A per-call timeoutMs cannot exceed it; raise
+ * fetchTimeoutMs on the transport to wait longer." The CLI set it nowhere, so
+ * `--capture-timeout` was inert above 30s: `_withVerbTimeout` fired at the
+ * default whatever the call asked for.
+ *
+ * The margin exists so the PER-CALL timer is the one that fires. That way the
+ * user is told the header never arrived in the window they asked for, rather
+ * than reading a transport timeout about a number they never typed. Same
+ * reasoning as resy-mcp's `BRIDGE_DEADLINE_MS`, and the same shape.
+ */
+export function bridgeDeadlineFor(timeoutMs: number | undefined): number {
+  return Math.max((timeoutMs ?? 0) + 15_000, 30_000);
 }
 
 export async function runFetch(
