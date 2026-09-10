@@ -303,6 +303,22 @@ export function createSessionLifter(opts: BootstrapOpts): SessionLifter {
 }
 
 /**
+ * The transport deadline `bootstrap` uses when captures are declared and the
+ * caller named none.
+ *
+ * 45 s = the extension's own 30 s capture default plus 15 s, the same margin
+ * `resy-mcp` and the `fpx` CLI each arrived at independently. The margin is the
+ * whole point: it leaves the EXTENSION's timer first, so a closed window
+ * answers with the rejection that explains itself rather than a bare transport
+ * deadline.
+ *
+ * It is deliberately not larger. This only breaks a tie; it does not decide how
+ * long anyone should wait, which is a caller's judgement and stays theirs
+ * through `fetchTimeoutMs`.
+ */
+export const CAPTURE_BOOTSTRAP_DEADLINE_MS = 45_000;
+
+/**
  * Bootstrap one MCP's session blob — a single lift, run immediately.
  *
  * Equivalent to `createSessionLifter(opts)()`. Kept as a first-class export
@@ -326,22 +342,6 @@ export function createSessionLifter(opts: BootstrapOpts): SessionLifter {
  * surface that error to the user (most often: "open <domain> in Chrome
  * and sign in, then retry").
  */
-/**
- * The transport deadline `bootstrap` uses when captures are declared and the
- * caller named none.
- *
- * 45 s = the extension's own 30 s capture default plus 15 s, the same margin
- * `resy-mcp` and the `fpx` CLI each arrived at independently. The margin is the
- * whole point: it leaves the EXTENSION's timer first, so a closed window
- * answers with the rejection that explains itself rather than a bare transport
- * deadline.
- *
- * It is deliberately not larger. This only breaks a tie; it does not decide how
- * long anyone should wait, which is a caller's judgement and stays theirs
- * through `fetchTimeoutMs`.
- */
-export const CAPTURE_BOOTSTRAP_DEADLINE_MS = 45_000;
-
 export async function bootstrap(opts: BootstrapOpts): Promise<Session> {
   return runOneLift(opts);
 }
