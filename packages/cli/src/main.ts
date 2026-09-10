@@ -17,14 +17,14 @@ import { VERSION } from './version.js';
 const USAGE = `fpx ${VERSION} — fetchproxy CLI: authenticated fetches through your signed-in browser tab
 
   fpx profile add <name> --domain <apex> [--domain <apex>]…
-  fpx profile declare <name> [--cookie k]… [--local-storage k]… [--session-storage k]… [--capture-header name@host[/path]]… [--dom-selector handle=css]… [--allow-download] [--allow-cookie-write]
+  fpx profile declare <name> [--cookie k]… [--local-storage k]… [--session-storage k]… [--capture-header name@host[/path]]… [--dom-selector handle=css]… [--allow-download] [--allow-cookie-write] [--allow-in-page]
   fpx profile list | show <name> | remove <name>
   fpx pair -p <name> [--domain <apex>] [--subdomain <label>]
   fpx health -p <name>
   fpx trust list | clear <server-name> | clear --all
-  fpx get <url> -p <name> [--json] [-H 'K: V']… [--via-tab <url>]
-  fpx post-json <url> <body|@file> -p <name> [--json] [-H …]… [--via-tab <url>]
-  fpx request <url> -p <name> [-X METHOD] [-H …]… [-d body|@file] [--json] [--via-tab <url>]
+  fpx get <url> -p <name> [--json] [-H 'K: V']… [--via-tab <url>] [--in-page]
+  fpx post-json <url> <body|@file> -p <name> [--json] [-H …]… [--via-tab <url>] [--in-page]
+  fpx request <url> -p <name> [-X METHOD] [-H …]… [-d body|@file] [--json] [--via-tab <url>] [--in-page]
   fpx cookies|local-storage|session-storage|indexeddb [keys…] -p <name> [--storage-domain d] [--storage-subdomain s]
   fpx session -p <name> [--storage-domain d] [--storage-subdomain s]
   fpx dom <name…> -p <name> [--storage-domain d] [--storage-subdomain s]
@@ -99,6 +99,7 @@ export async function runCli(argv: string[], io: Io, deps: CliDeps = {}): Promis
         }
         if (cmd.download) p.download = true;
         if (cmd.cookieWrite) p.cookieWrite = true;
+        if (cmd.inPage) p.inPage = true;
         saveProfiles(all, home);
         io.err(`profile "${cmd.name}" scope updated — the next connect will ask you to re-pair (scope diff)`);
         return EXIT.OK;

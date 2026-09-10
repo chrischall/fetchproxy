@@ -15,6 +15,7 @@ export interface VerbServer {
     path: string,
     opts?: {
       headers?: Record<string, string>; body?: string; domain?: string; viaTab?: string;
+      inPage?: boolean;
     },
   ): Promise<{ status: number; body: string; url: string }>;
   readCookies(o: { keys: string[]; domain?: string; subdomain?: string }): Promise<string>;
@@ -73,6 +74,18 @@ export async function runFetch(
   makeServer: VerbServerFactory = defaultServerFactory,
 ): Promise<number> {
   const domain = assertUrlOnProfile(cmd.url, profile);
+  // Same reasoning as the relay-tab check below: the extension refuses an
+  // undeclared capability, but that refusal arrives after the bridge is up and
+  // reads as a bridge error rather than the usage error it is. Worse here,
+  // because the whole point of --in-page is diagnosing a failure, and a
+  // misleading failure is what #324 already cost two rounds to.
+  if (cmd.inPage && profile.inPage !== true) {
+    throw new UsageError(
+      "--in-page needs a profile that declares it: this one does not",
+      'declare it with: fpx profile declare <name> --allow-in-page … ' +
+        '(re-pair once, since trust is keyed to the capability set)',
+    );
+  }
   // Check the relay tab the same way and at the same time as the request URL.
   // The server guards it too, but that guard only fires after the bridge is
   // up, turning a typo into exit 2 ("bridge error") when it is plainly a usage
@@ -89,6 +102,10 @@ export async function runFetch(
       body: cmd.body,
       domain,
       viaTab: cmd.viaTab,
+      // Spread rather than a bare `inPage: cmd.inPage`, matching the server's
+      // own call site: the wire validator treats a present `false` differently
+      // from an absent field.
+      ...(cmd.inPage ? { inPage: true } : {}),
     });
     io.out(cmd.json ? fetchEnvelope(res) : res.body);
     const wall = classifyBotWall(res.body, res.status);

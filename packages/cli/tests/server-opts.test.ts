@@ -85,3 +85,15 @@ describe('serverOptsFor', () => {
     expect(opts.sessionStoragePointers).toEqual([{ key: 'sess-blob', jsonPointer: '/s/id' }]);
   });
 });
+
+describe('fetch_in_page capability', () => {
+  it('is absent unless the profile declares inPage', () => {
+    const opts = serverOptsFor('resy', emptyProfile(['resy.com']), '2.9.1');
+    expect(opts.capabilities).not.toContain('fetch_in_page');
+  });
+
+  it('is derived from profile.inPage', () => {
+    const p = { ...emptyProfile(['resy.com']), inPage: true };
+    expect(serverOptsFor('resy', p, '2.9.1').capabilities).toContain('fetch_in_page');
+  });
+});

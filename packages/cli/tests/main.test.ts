@@ -46,6 +46,25 @@ describe('runCli', () => {
     expect(io.errs.join('\n')).toMatch(/re-pair/i);
   });
 
+  // Caught by using it, not by testing it: parsing and capability derivation
+  // were both covered while the handler that persists the flag was not, so
+  // `--allow-in-page` parsed, derived nothing, and wrote nothing.
+  it('profile declare --allow-in-page persists the flag', async () => {
+    const io = memIo();
+    await runCli(['profile', 'add', 'r', '--domain', 'resy.com'], io, { home });
+    expect(loadProfiles(home).r.inPage).toBe(false);
+    await runCli(['profile', 'declare', 'r', '--allow-in-page'], io, { home });
+    expect(loadProfiles(home).r.inPage).toBe(true);
+  });
+
+  it('profile declare without --allow-in-page leaves an existing grant alone', async () => {
+    const io = memIo();
+    await runCli(['profile', 'add', 'r', '--domain', 'resy.com'], io, { home });
+    await runCli(['profile', 'declare', 'r', '--allow-in-page'], io, { home });
+    await runCli(['profile', 'declare', 'r', '--cookie', 'tok'], io, { home });
+    expect(loadProfiles(home).r.inPage, 'declare merges, it does not reset').toBe(true);
+  });
+
   it('profile declare re-declaring a --dom-selector handle updates its selector (upsert)', async () => {
     const io = memIo();
     await runCli(['profile', 'add', 'r', '--domain', 'resy.com'], io, { home });
