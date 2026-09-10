@@ -326,6 +326,22 @@ export function createSessionLifter(opts: BootstrapOpts): SessionLifter {
  * surface that error to the user (most often: "open <domain> in Chrome
  * and sign in, then retry").
  */
+/**
+ * The transport deadline `bootstrap` uses when captures are declared and the
+ * caller named none.
+ *
+ * 45 s = the extension's own 30 s capture default plus 15 s, the same margin
+ * `resy-mcp` and the `fpx` CLI each arrived at independently. The margin is the
+ * whole point: it leaves the EXTENSION's timer first, so a closed window
+ * answers with the rejection that explains itself rather than a bare transport
+ * deadline.
+ *
+ * It is deliberately not larger. This only breaks a tie; it does not decide how
+ * long anyone should wait, which is a caller's judgement and stays theirs
+ * through `fetchTimeoutMs`.
+ */
+export const CAPTURE_BOOTSTRAP_DEADLINE_MS = 45_000;
+
 export async function bootstrap(opts: BootstrapOpts): Promise<Session> {
   return runOneLift(opts);
 }
@@ -403,9 +419,29 @@ async function runOneLift(opts: BootstrapOpts): Promise<Session> {
     onPairCode: opts.onPairCode,
     // 0.8.0+ pass-through. Only forwarded when the caller set them;
     // unset → server defaults apply (30000 / 2000 in 0.8.0).
+    //
+    // EXCEPT when captures are declared and the caller named no deadline of
+    // their own, where the default is a tie this side loses. `bootstrap` asks
+    // for no per-call `timeoutMs` below, so the capture runs for the
+    // EXTENSION's 30 s default — against a transport deadline that is also
+    // 30 s. Two timers armed for the same instant, and this one starts first,
+    // because its frame has yet to travel.
+    //
+    // The timing was never the problem; the MESSAGE was. Winning that race
+    // replaces the extension's rejection — which explains that a capture
+    // resolves on the next request the PAGE makes, so an idle tab times out —
+    // with a bare `did not respond within 30000ms`, naming a number the caller
+    // never chose about a mechanism it never mentions. Twelve MCPs reach
+    // captures only through here, so they all inherited it.
+    //
+    // Only when the caller set nothing: an explicit `fetchTimeoutMs` is a
+    // deliberate bound and stays exactly as given, even though it re-loses the
+    // race. Bounding is theirs to decide; this only fills a default.
     ...(opts.fetchTimeoutMs !== undefined
       ? { fetchTimeoutMs: opts.fetchTimeoutMs }
-      : {}),
+      : opts.declare.captureHeaders.length > 0
+        ? { fetchTimeoutMs: CAPTURE_BOOTSTRAP_DEADLINE_MS }
+        : {}),
     ...(opts.bridgeReviveDelayMs !== undefined
       ? { bridgeReviveDelayMs: opts.bridgeReviveDelayMs }
       : {}),
