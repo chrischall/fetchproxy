@@ -20,9 +20,11 @@ export {
   FetchproxyScopeError,
   FetchproxyNoTabError,
   FetchproxyTabOpeningError,
+  FetchproxyWaitedError,
   protocolErrorFrom,
   FetchproxyTimeoutError,
 } from './ws-server.js';
+export type { WaitedOp } from './ws-server.js';
 export {
   FetchproxyHelloRejectedError,
   FetchproxySessionNotReadyError,

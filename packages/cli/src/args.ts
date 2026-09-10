@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { parseArgs } from 'node:util';
-import type { CaptureHeaderDecl, DomSelectorDecl } from '@fetchproxy/protocol';
+import type { CaptureHeaderDecl, DomSelectorDecl, GraphqlOpDeclaration } from '@fetchproxy/protocol';
 import { UsageError } from './output.js';
 
 export type Bucket = 'cookies' | 'localStorage' | 'sessionStorage' | 'indexedDb';
@@ -15,7 +15,7 @@ export type Command =
   | { kind: 'profile-declare'; name: string; cookies: string[]; localStorage: string[];
       sessionStorage: string[]; captureHeaders: CaptureHeaderDecl[];
       domSelectors: DomSelectorDecl[]; download: boolean; cookieWrite: boolean;
-      inPage: boolean }
+      inPage: boolean; captureRedirect: boolean; graphqlOps: GraphqlOpDeclaration[] }
   | { kind: 'pair'; profile: string; domain?: string; subdomain?: string }
   | { kind: 'health'; profile: string }
   | { kind: 'trust'; action: 'list'; json: boolean }
@@ -28,7 +28,17 @@ export type Command =
   | { kind: 'session'; profile: string; storageDomain?: string; storageSubdomain?: string }
   | { kind: 'dom'; profile: string; names: string[];
       storageDomain?: string; storageSubdomain?: string }
-  | { kind: 'download'; profile: string; url: string; filename?: string };
+  | { kind: 'download'; profile: string; url: string; filename?: string }
+  | { kind: 'capture'; profile: string; names: string[]; timeoutMs?: number }
+  | {
+      kind: 'write-cookies'; profile: string; cookies: Record<string, string>;
+      storageDomain?: string; storageSubdomain?: string;
+    }
+  | { kind: 'capture-redirect'; profile: string; host: string; path?: string; timeoutMs?: number }
+  | {
+      kind: 'graphql'; profile: string; name: string;
+      variables: Record<string, unknown>; viaTab?: string;
+    };
 
 const READ_BUCKETS: Record<string, Bucket> = {
   cookies: 'cookies',
@@ -65,6 +75,51 @@ function parseDomSelectorFlag(raw: string): DomSelectorDecl {
   return { name: raw.slice(0, eq), selector: raw.slice(eq + 1) };
 }
 
+function parseGraphqlOpFlag(raw: string): GraphqlOpDeclaration {
+  const eq = raw.indexOf('=');
+  if (eq <= 0 || eq === raw.length - 1) {
+    throw new UsageError(
+      `--graphql-op expects 'handle=OperationName', got ${JSON.stringify(raw)}`,
+    );
+  }
+  return { name: raw.slice(0, eq), operationName: raw.slice(eq + 1) };
+}
+
+/**
+ * `--var k=v`, repeated. Values are parsed as JSON when they parse, and kept
+ * as a string when they do not — so `--var first=10` is the NUMBER a GraphQL
+ * variable usually wants, while `--var slug=idlewild` stays a string without
+ * anyone quoting it on the command line.
+ */
+function parseVarFlag(raw: string): [string, unknown] {
+  const eq = raw.indexOf('=');
+  if (eq <= 0) {
+    throw new UsageError(`--var expects 'name=value', got ${JSON.stringify(raw)}`);
+  }
+  const name = raw.slice(0, eq);
+  const text = raw.slice(eq + 1);
+  try {
+    return [name, JSON.parse(text)];
+  } catch {
+    return [name, text];
+  }
+}
+
+/**
+ * `--capture-timeout`, in SECONDS on the command line and milliseconds
+ * everywhere inside. Shared by `capture` and `capture-redirect` rather than
+ * copied: two parsers for one flag drift, and the direction that hurts is one
+ * of them silently accepting a value the other rejects.
+ */
+function parseCaptureTimeoutFlag(raw: string | undefined): number | undefined {
+  if (raw === undefined) return undefined;
+  const secs = Number(raw);
+  if (!Number.isFinite(secs) || secs <= 0) {
+    throw new UsageError(`--capture-timeout expects seconds, got ${JSON.stringify(raw)}`);
+  }
+  return Math.round(secs * 1000);
+}
+
 function resolveBody(raw: string, readFile: (p: string) => string): string {
   return raw.startsWith('@') ? readFile(raw.slice(1)) : raw;
 }
@@ -99,12 +154,17 @@ export function parseCliArgs(
         'allow-download': { type: 'boolean', default: false },
         'allow-cookie-write': { type: 'boolean', default: false },
         'allow-in-page': { type: 'boolean', default: false },
+        'allow-capture-redirect': { type: 'boolean', default: false },
+        'graphql-op': { type: 'string', multiple: true, default: [] },
+        var: { type: 'string', multiple: true, default: [] },
         filename: { type: 'string' },
         'storage-domain': { type: 'string' },
         'storage-subdomain': { type: 'string' },
         'via-tab': { type: 'string' },
         'in-page': { type: 'boolean', default: false },
         'no-credentials': { type: 'boolean', default: false },
+        // SECONDS on the command line, like every other timeout the CLI takes.
+        'capture-timeout': { type: 'string' },
         subdomain: { type: 'string' },
         help: { type: 'boolean', short: 'h', default: false },
         version: { type: 'boolean', short: 'v', default: false },
@@ -151,6 +211,8 @@ export function parseCliArgs(
         download: values['allow-download'] ?? false,
         cookieWrite: values['allow-cookie-write'] ?? false,
         inPage: values['allow-in-page'] ?? false,
+        captureRedirect: values['allow-capture-redirect'] ?? false,
+        graphqlOps: (values['graphql-op'] ?? []).map(parseGraphqlOpFlag),
       };
     }
     throw new UsageError(`unknown profile subcommand ${JSON.stringify(sub)}`,
@@ -211,6 +273,62 @@ export function parseCliArgs(
       storageDomain: values['storage-domain'], storageSubdomain: values['storage-subdomain'],
     };
   }
+  if (cmd === 'capture') {
+    const timeoutMs = parseCaptureTimeoutFlag(values['capture-timeout']);
+    return {
+      kind: 'capture', profile: requireProfile(values.profile), names: rest,
+      ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+    };
+  }
+
+  if (cmd === 'capture-redirect') {
+    const target = rest[0];
+    if (!target) throw new UsageError('fpx capture-redirect requires <host>[/path]');
+    const slash = target.indexOf('/');
+    const host = slash === -1 ? target : target.slice(0, slash);
+    const path = slash === -1 ? undefined : target.slice(slash);
+    if (host.length === 0) {
+      throw new UsageError(`fpx capture-redirect: no host in ${JSON.stringify(target)}`);
+    }
+    const timeoutMs = parseCaptureTimeoutFlag(values['capture-timeout']);
+    return {
+      kind: 'capture-redirect', profile: requireProfile(values.profile), host,
+      ...(path !== undefined ? { path } : {}),
+      ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+    };
+  }
+
+  if (cmd === 'graphql') {
+    const name = rest[0];
+    if (!name) throw new UsageError('fpx graphql requires a declared operation handle');
+    const variables: Record<string, unknown> = {};
+    for (const raw of values.var ?? []) {
+      const [k, v] = parseVarFlag(raw);
+      variables[k] = v;
+    }
+    return {
+      kind: 'graphql', profile: requireProfile(values.profile), name, variables,
+      viaTab: values['via-tab'],
+    };
+  }
+
+  if (cmd === 'write-cookies') {
+    const cookies: Record<string, string> = {};
+    for (const pair of rest) {
+      const eq = pair.indexOf('=');
+      if (eq <= 0) {
+        throw new UsageError(
+          `fpx write-cookies expects name=value, got ${JSON.stringify(pair)}`,
+        );
+      }
+      cookies[pair.slice(0, eq)] = pair.slice(eq + 1);
+    }
+    return {
+      kind: 'write-cookies', profile: requireProfile(values.profile), cookies,
+      storageDomain: values['storage-domain'], storageSubdomain: values['storage-subdomain'],
+    };
+  }
+
   if (cmd === 'download') {
     const url = rest[0];
     if (!url) throw new UsageError('fpx download requires a URL');

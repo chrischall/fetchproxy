@@ -801,6 +801,54 @@ export class FetchproxyTabOpeningError extends FetchproxyHintedError {
  * indexedDbScopes / graphqlOps), and enumerating them is precisely how the
  * first cut of the CLI fix missed five of them.
  */
+/**
+ * 2.11.0+: the extension waited for something that never arrived (#342).
+ *
+ * `capture_request_header`, `capture_redirect` and `download` all answer
+ * `{ ok: false, error: 'timeout' }` when their window closes with nothing
+ * matched (protocol `frames.ts`). That is the ORDINARY outcome against an idle
+ * tab, not a fault — measured on resy-mcp, where the capture leg times out on
+ * every unattended mint and the fallback does the work.
+ *
+ * It is typed for the reason the scope and no-tab errors are: an untyped
+ * `'timeout'` falls through to a plain `FetchproxyProtocolError`, every
+ * consumer classifies that as `protocol`, and the blanket protocol remedy is
+ * "extension/server version mismatch — update both". So the most common miss
+ * in the system told users to go update software that was working.
+ */
+export class FetchproxyWaitedError extends FetchproxyHintedError {
+  constructor(originalError: string, op?: WaitedOp) {
+    super(originalError, waitedHint(op));
+    this.name = 'FetchproxyWaitedError';
+  }
+}
+
+/** Which wait timed out, so the hint can name what would have ended it. */
+export type WaitedOp = 'capture' | 'capture_redirect' | 'download';
+
+function waitedHint(op?: WaitedOp): string {
+  const tail =
+    ' This is not a version problem and does not need an update.';
+  if (op === 'capture' || op === 'capture_redirect') {
+    return (
+      'nothing matched before the window closed. Is a tab open on the declared ' +
+      'domain and signed in? The wait resolves on the NEXT matching request the ' +
+      'PAGE makes, so an idle tab times out however long you wait — interact with ' +
+      'the page, or raise the window.' + tail
+    );
+  }
+  if (op === 'download') {
+    return (
+      'the download did not finish before the window closed. Is a tab open on the ' +
+      'declared domain and signed in, and is the file still transferring?' + tail
+    );
+  }
+  return (
+    'the extension waited and nothing arrived. Is a tab open on the declared ' +
+    'domain and signed in?' + tail
+  );
+}
+
 const SCOPE_REJECTION = /not in declared/;
 
 /**
@@ -831,7 +879,20 @@ const TAB_OPENING_REJECTION = /no tab matching .*one is still opening/;
  * turns an `ok:false` response into a throw, so rejections that know their own
  * remedy cannot silently lose it again at one forgotten call site.
  */
-export function protocolErrorFrom(error: string): FetchproxyProtocolError {
+export function protocolErrorFrom(
+  error: string,
+  /**
+   * The wait this rejection came from, when the caller knows it. Only read for
+   * a `'timeout'`, so every existing call site keeps its behaviour by omitting
+   * it.
+   */
+  op?: WaitedOp,
+): FetchproxyProtocolError {
+  // Exact, not a substring: 'timeout' is the extension's whole rejection for a
+  // closed window. A message that merely CONTAINS the word is some other
+  // failure describing itself, and stealing it would be the mis-hint this
+  // branch exists to remove, pointed the other way.
+  if (error === 'timeout') return new FetchproxyWaitedError(error, op);
   if (SCOPE_REJECTION.test(error)) return new FetchproxyScopeError(error);
   // Before the no-tab check as well as excluded from it. The lookahead is what
   // makes the two independent; the order is what keeps a future edit to either
@@ -3365,7 +3426,7 @@ export class FetchproxyServer {
           );
         }
       } else {
-        captureCb.reject(protocolErrorFrom(inner.error));
+        captureCb.reject(protocolErrorFrom(inner.error, 'capture'));
       }
       return;
     }
@@ -3383,7 +3444,7 @@ export class FetchproxyServer {
           );
         }
       } else {
-        redirectCb.reject(protocolErrorFrom(inner.error));
+        redirectCb.reject(protocolErrorFrom(inner.error, 'capture_redirect'));
       }
       return;
     }
@@ -3419,7 +3480,7 @@ export class FetchproxyServer {
           );
         }
       } else {
-        downloadCb.reject(protocolErrorFrom(inner.error));
+        downloadCb.reject(protocolErrorFrom(inner.error, 'download'));
       }
       return;
     }

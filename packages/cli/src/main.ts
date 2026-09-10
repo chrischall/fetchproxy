@@ -10,6 +10,10 @@ import { runRead } from './verbs/read.js';
 import { runSession } from './verbs/session.js';
 import { runDom } from './verbs/dom.js';
 import { runDownload } from './verbs/download.js';
+import { runCapture } from './verbs/capture.js';
+import { runCaptureRedirect } from './verbs/capture-redirect.js';
+import { runGraphql } from './verbs/graphql.js';
+import { runWriteCookies } from './verbs/write-cookies.js';
 import { runHealth, runPair } from './verbs/health.js';
 import { runTrust } from './verbs/trust.js';
 import { VERSION } from './version.js';
@@ -17,7 +21,7 @@ import { VERSION } from './version.js';
 const USAGE = `fpx ${VERSION} — fetchproxy CLI: authenticated fetches through your signed-in browser tab
 
   fpx profile add <name> --domain <apex> [--domain <apex>]…
-  fpx profile declare <name> [--cookie k]… [--local-storage k]… [--session-storage k]… [--capture-header name@host[/path]]… [--dom-selector handle=css]… [--allow-download] [--allow-cookie-write] [--allow-in-page]
+  fpx profile declare <name> [--cookie k]… [--local-storage k]… [--session-storage k]… [--capture-header name@host[/path]]… [--dom-selector handle=css]… [--allow-download] [--allow-cookie-write] [--allow-in-page] [--allow-capture-redirect] [--graphql-op handle=OperationName]…
   fpx profile list | show <name> | remove <name>
   fpx pair -p <name> [--domain <apex>] [--subdomain <label>]
   fpx health -p <name>
@@ -26,6 +30,10 @@ const USAGE = `fpx ${VERSION} — fetchproxy CLI: authenticated fetches through 
   fpx post-json <url> <body|@file> -p <name> [--json] [-H …]… [--via-tab <url>] [--in-page] [--no-credentials]
   fpx request <url> -p <name> [-X METHOD] [-H …]… [-d body|@file] [--json] [--via-tab <url>] [--in-page] [--no-credentials]
   fpx cookies|local-storage|session-storage|indexeddb [keys…] -p <name> [--storage-domain d] [--storage-subdomain s]
+  fpx capture [header@host…] -p <name> [--capture-timeout <s>]
+  fpx write-cookies <name=value…> -p <name> [--storage-domain d] [--storage-subdomain s]
+  fpx capture-redirect <host>[/path] -p <name> [--capture-timeout <s>]
+  fpx graphql <handle> -p <name> [--var k=v]… [--via-tab <url>]
   fpx session -p <name> [--storage-domain d] [--storage-subdomain s]
   fpx dom <name…> -p <name> [--storage-domain d] [--storage-subdomain s]
   fpx download <url> -p <name> [--filename f]
@@ -100,6 +108,12 @@ export async function runCli(argv: string[], io: Io, deps: CliDeps = {}): Promis
         if (cmd.download) p.download = true;
         if (cmd.cookieWrite) p.cookieWrite = true;
         if (cmd.inPage) p.inPage = true;
+        if (cmd.captureRedirect) p.captureRedirect = true;
+        for (const decl of cmd.graphqlOps) {
+          const existing = p.graphqlOps.find((d) => d.name === decl.name);
+          if (existing) Object.assign(existing, decl);
+          else p.graphqlOps.push(decl);
+        }
         saveProfiles(all, home);
         io.err(`profile "${cmd.name}" scope updated — the next connect will ask you to re-pair (scope diff)`);
         return EXIT.OK;
@@ -124,6 +138,14 @@ export async function runCli(argv: string[], io: Io, deps: CliDeps = {}): Promis
         return await runSession(cmd, getProfile(cmd.profile, home), io, deps.bootstrapFn);
       case 'dom':
         return await runDom(cmd, getProfile(cmd.profile, home), io, deps.makeServer);
+      case 'capture':
+        return await runCapture(cmd, getProfile(cmd.profile, home), io, deps.makeServer);
+      case 'capture-redirect':
+        return await runCaptureRedirect(cmd, getProfile(cmd.profile, home), io, deps.makeServer);
+      case 'graphql':
+        return await runGraphql(cmd, getProfile(cmd.profile, home), io, deps.makeServer);
+      case 'write-cookies':
+        return await runWriteCookies(cmd, getProfile(cmd.profile, home), io, deps.makeServer);
       case 'download':
         return await runDownload(cmd, getProfile(cmd.profile, home), io, deps.makeServer);
       case 'health':

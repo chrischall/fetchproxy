@@ -16,6 +16,7 @@ describe('parseCliArgs', () => {
       localStorage: [], sessionStorage: [],
       captureHeaders: [{ headerName: 'x-csrf-token', host: 'www.tripadvisor.com', path: '/data/*' }],
       domSelectors: [], download: false, cookieWrite: false, inPage: false,
+      captureRedirect: false, graphqlOps: [],
     });
   });
 
@@ -25,7 +26,7 @@ describe('parseCliArgs', () => {
     expect(cmd).toEqual({
       kind: 'profile-declare', name: 'r', cookies: [], localStorage: [], sessionStorage: [],
       captureHeaders: [], domSelectors: [{ name: 'title', selector: 'h1.title' }], download: true,
-      cookieWrite: false, inPage: false,
+      cookieWrite: false, inPage: false, captureRedirect: false, graphqlOps: [],
     });
   });
 
@@ -166,5 +167,121 @@ describe('--in-page', () => {
     const cmd = parseCliArgs(['profile', 'declare', 'x', '--allow-in-page']) as
       Extract<ReturnType<typeof parseCliArgs>, { kind: 'profile-declare' }>;
     expect(cmd.inPage).toBe(true);
+  });
+});
+
+describe('capture / write-cookies parsing', () => {
+  const asCapture = (argv: string[]) =>
+    parseCliArgs(argv) as Extract<ReturnType<typeof parseCliArgs>, { kind: 'capture' }>;
+  const asWrite = (argv: string[]) =>
+    parseCliArgs(argv) as Extract<ReturnType<typeof parseCliArgs>, { kind: 'write-cookies' }>;
+
+  it('parses capture with no names as "every declared header"', () => {
+    const cmd = asCapture(['capture', '-p', 'x']);
+    expect(cmd.names).toEqual([]);
+    expect(cmd.timeoutMs).toBeUndefined();
+  });
+
+  it('parses named captures', () => {
+    expect(asCapture(['capture', 'authorization@api.x.com', '-p', 'x']).names)
+      .toEqual(['authorization@api.x.com']);
+  });
+
+  // SECONDS on the command line, milliseconds internally — like every other
+  // timeout the CLI takes.
+  it('converts --capture-timeout from seconds to milliseconds', () => {
+    expect(asCapture(['capture', '-p', 'x', '--capture-timeout', '45']).timeoutMs).toBe(45_000);
+    expect(asCapture(['capture', '-p', 'x', '--capture-timeout', '2.5']).timeoutMs).toBe(2_500);
+  });
+
+  it('refuses a --capture-timeout that is not a positive number', () => {
+    for (const bad of ['0', '-5', 'soon', '']) {
+      expect(() => asCapture(['capture', '-p', 'x', '--capture-timeout', bad]), bad)
+        .toThrow(UsageError);
+    }
+  });
+
+  it('parses name=value pairs, keeping "=" inside the value', () => {
+    const cmd = asWrite(['write-cookies', 'sid=abc', 'tok=a=b=c', '-p', 'x']);
+    expect(cmd.cookies).toEqual({ sid: 'abc', tok: 'a=b=c' });
+  });
+
+  it('accepts an empty value but refuses a missing or empty name', () => {
+    expect(asWrite(['write-cookies', 'sid=', '-p', 'x']).cookies).toEqual({ sid: '' });
+    for (const bad of ['sid', '=abc', '']) {
+      expect(() => asWrite(['write-cookies', bad, '-p', 'x']), bad).toThrow(UsageError);
+    }
+  });
+
+  it('carries the storage scope through', () => {
+    const cmd = asWrite([
+      'write-cookies', 'sid=a', '-p', 'x', '--storage-domain', 'd.com', '--storage-subdomain', 's',
+    ]);
+    expect(cmd.storageDomain).toBe('d.com');
+    expect(cmd.storageSubdomain).toBe('s');
+  });
+});
+
+describe('capture-redirect / graphql parsing', () => {
+  const asRedirect = (argv: string[]) =>
+    parseCliArgs(argv) as Extract<ReturnType<typeof parseCliArgs>, { kind: 'capture-redirect' }>;
+  const asGraphql = (argv: string[]) =>
+    parseCliArgs(argv) as Extract<ReturnType<typeof parseCliArgs>, { kind: 'graphql' }>;
+  const asDeclare = (argv: string[]) =>
+    parseCliArgs(argv) as Extract<ReturnType<typeof parseCliArgs>, { kind: 'profile-declare' }>;
+
+  it('splits <host>/<path> at the FIRST slash, keeping the rest as the path', () => {
+    const cmd = asRedirect(['capture-redirect', 'api.x.com/dl/a/b', '-p', 'x']);
+    expect(cmd.host).toBe('api.x.com');
+    expect(cmd.path).toBe('/dl/a/b');
+  });
+
+  it('leaves the path undefined when only a host is given', () => {
+    expect(asRedirect(['capture-redirect', 'api.x.com', '-p', 'x']).path).toBeUndefined();
+  });
+
+  it('refuses a missing host or a leading slash', () => {
+    expect(() => asRedirect(['capture-redirect', '-p', 'x'])).toThrow(UsageError);
+    expect(() => asRedirect(['capture-redirect', '/nohost', '-p', 'x'])).toThrow(UsageError);
+  });
+
+  it('parses --allow-capture-redirect and --graphql-op', () => {
+    const cmd = asDeclare([
+      'profile', 'declare', 'x', '--allow-capture-redirect',
+      '--graphql-op', 'avail=RestaurantsAvailability',
+    ]);
+    expect(cmd.captureRedirect).toBe(true);
+    expect(cmd.graphqlOps).toEqual([{ name: 'avail', operationName: 'RestaurantsAvailability' }]);
+  });
+
+  it('refuses a malformed --graphql-op', () => {
+    for (const bad of ['avail', '=Op', 'avail=']) {
+      expect(() => asDeclare(['profile', 'declare', 'x', '--graphql-op', bad]), bad)
+        .toThrow(UsageError);
+    }
+  });
+
+  // JSON when it parses, string when it does not — so `first=10` is the NUMBER
+  // a GraphQL variable usually wants, and `slug=idlewild` needs no quoting.
+  it('types --var values as JSON where possible', () => {
+    const cmd = asGraphql([
+      'graphql', 'avail', '-p', 'x',
+      '--var', 'first=10', '--var', 'slug=idlewild', '--var', 'deep={"a":[1]}',
+      '--var', 'on=true', '--var', 'nil=null',
+    ]);
+    expect(cmd.variables).toEqual({
+      first: 10, slug: 'idlewild', deep: { a: [1] }, on: true, nil: null,
+    });
+  });
+
+  it('refuses a --var without a name', () => {
+    for (const bad of ['=1', 'novalue']) {
+      expect(() => asGraphql(['graphql', 'avail', '-p', 'x', '--var', bad]), bad)
+        .toThrow(UsageError);
+    }
+  });
+
+  it('requires an operation handle', () => {
+    expect(() => asGraphql(['graphql', '-p', 'x'])).toThrow(UsageError);
   });
 });

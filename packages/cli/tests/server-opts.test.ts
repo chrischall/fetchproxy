@@ -10,6 +10,7 @@ describe('serverOptsFor', () => {
       capabilities: ['fetch'], cookieKeys: [], localStorageKeys: [],
       sessionStorageKeys: [], captureHeaders: [], indexedDbScopes: [],
       localStoragePointers: [], sessionStoragePointers: [], domSelectors: [],
+      graphqlOps: [],
     });
   });
 

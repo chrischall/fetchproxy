@@ -100,3 +100,56 @@ describe('mapBridgeError — a missing tab is not a version mismatch', () => {
     expect(io.errs.join('\n')).toMatch(/Refresh the page/);
   });
 });
+
+/**
+ * chrischall/fetchproxy#342 — the most ordinary miss in the system told users
+ * to update working software.
+ *
+ * `capture_request_header`, `capture_redirect` and `download` answer
+ * `{ok:false, error:'timeout'}` when their window closes with nothing matched.
+ * That became a plain `FetchproxyProtocolError`, classified `protocol`, whose
+ * blanket remedy is "extension/server version mismatch — update both". It is
+ * not a version problem: resy-mcp's capture leg times out on EVERY unattended
+ * mint, by design, and the fallback does the work.
+ */
+describe('a closed extension window is a timeout, not a version problem', () => {
+  const thrown = (op?: 'capture' | 'capture_redirect' | 'download') =>
+    protocolErrorFrom('timeout', op);
+
+  it('never tells the user to update anything', () => {
+    const io = memIo();
+    mapBridgeError(thrown('capture'), io);
+    expect(io.errs.join(' ')).not.toMatch(/version mismatch|update both/i);
+  });
+
+  it('names the tab as the remedy, and says an idle one cannot resolve', () => {
+    const io = memIo();
+    mapBridgeError(thrown('capture'), io);
+    const line = io.errs.join(' ');
+    expect(line).toMatch(/signed in/);
+    expect(line).toMatch(/idle tab/);
+  });
+
+  it('classifies it as a timeout rather than a protocol fault', () => {
+    const io = memIo();
+    mapBridgeError(thrown('capture_redirect'), io);
+    expect(io.errs.join(' ')).toMatch(/^bridge error \(timeout\)/);
+  });
+
+  // A download's window closing means the transfer did not finish — telling
+  // that user to go interact with the page is the same class of wrong remedy.
+  it('gives download its own remedy', () => {
+    const io = memIo();
+    mapBridgeError(thrown('download'), io);
+    expect(io.errs.join(' ')).toMatch(/did not finish|still transferring/);
+  });
+
+  // Exact match, not a substring: a message that merely CONTAINS the word is
+  // some other failure describing itself, and stealing it would be this same
+  // mis-hint pointed the other way.
+  it('does not capture a different failure that mentions the word', () => {
+    const io = memIo();
+    mapBridgeError(protocolErrorFrom('handshake timeout budget exceeded'), io);
+    expect(io.errs.join(' ')).toMatch(/version mismatch|update both/i);
+  });
+});

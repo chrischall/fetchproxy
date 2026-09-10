@@ -72,7 +72,7 @@ Every verb takes `-p`/`--profile <name>` (except the `profile` subcommands thems
 | Command | What it does | Example |
 |---|---|---|
 | `fpx profile add <name> --domain <apex>…` | Create a profile with one or more declared domains. | `fpx profile add opentable --domain opentable.com` |
-| `fpx profile declare <name> [--cookie k]… [--local-storage k]… [--session-storage k]… [--capture-header name@host[/path]]… [--dom-selector handle=css]… [--allow-download]` | Widen a profile's scope. Merges with the existing declaration; forces a re-pair. | `fpx profile declare opentable --cookie oaid` |
+| `fpx profile declare <name> [--cookie k]… [--local-storage k]… [--session-storage k]… [--capture-header name@host[/path]]… [--dom-selector handle=css]… [--graphql-op handle=OperationName]… [--allow-download] [--allow-cookie-write] [--allow-in-page] [--allow-capture-redirect]` | Widen a profile's scope. Merges with the existing declaration; forces a re-pair. | `fpx profile declare opentable --cookie oaid` |
 | `fpx profile list` | List all profiles and their domains (tab-separated, one per line). | `fpx profile list` |
 | `fpx profile show <name>` | Print a profile's full JSON record. | `fpx profile show opentable` |
 | `fpx profile remove <name>` | Delete the profile and its identity file. | `fpx profile remove opentable` |
@@ -88,11 +88,19 @@ Every verb takes `-p`/`--profile <name>` (except the `profile` subcommands thems
 | `fpx session -p <name> [--storage-domain d] [--storage-subdomain s]` | Bootstrap-parity one-shot: pair (if needed), read every declared bucket, close, print the combined session JSON. | `fpx session -p opentable` |
 | `fpx dom <name…> -p <name> [--storage-domain d] [--storage-subdomain s]` | Read declared DOM selector values (all declared selectors if no names given). Requires `--dom-selector` declarations. | `fpx dom title -p opentable` |
 | `fpx download <url> -p <name> [--filename f]` | Download a URL through the browser's own network stack (`chrome.downloads` — real cookies + TLS fingerprint); prints `{path, bytes, mime?, finalUrl?}` for the saved local file. Requires `--allow-download`. | `fpx download https://www.opentable.com/f.pdf -p opentable` |
+| `fpx capture [header@host[/path]…] -p <name> [--capture-timeout <s>]` | Snapshot declared request headers off the next matching request the PAGE makes (all declared captures if none named). Requires `--capture-header`. | `fpx capture authorization@api.resy.com -p resy` |
+| `fpx capture-redirect <host>[/path] -p <name> [--capture-timeout <s>]` | Report where the next matching request gets redirected to — the target a page-level fetch only ever sees as opaque. Requires `--allow-capture-redirect`. | `fpx capture-redirect api.resy.com/download -p resy` |
+| `fpx graphql <handle> -p <name> [--var k=v]… [--via-tab <url>]` | Run a declared GraphQL operation by handle, with typed variables. Requires `--graphql-op`. | `fpx graphql autocomplete -p opentable --var term=sushi` |
+| `fpx write-cookies <name=value…> -p <name> [--storage-domain d] [--storage-subdomain s]` | Write cookies into the profile's tab and print the names that landed. Requires `--allow-cookie-write`. | `fpx write-cookies sid=abc123 -p opentable` |
 | `fpx --version` (or `-v`) | Print the CLI version to stdout. The version also appears in the `fpx` / `fpx --help` header. | `fpx --version` |
 
 `--storage-domain` / `--storage-subdomain` (on the storage-read verbs, `session`, and `dom`) select which declared domain to read from when a profile declares more than one — required only in that case, same as the underlying library.
 
 `--dom-selector <handle>=<css>` (on `profile declare`) declares a named DOM read: `<handle>` is the logical name `fpx dom` references, `<css>` is the `document.querySelector` CSS selector the extension reads (first match only, no page-JS execution). `--allow-download` grants the profile the `download` capability, letting `fpx download` save a declared-domain URL through the browser's own network stack.
+
+`--capture-timeout <s>` (on `capture` and `capture-redirect`) is how long to hold the window open, in SECONDS. It also raises the transport deadline these two verbs run under, because that deadline bounds every reply wait and a per-call timeout cannot exceed it — without the lift, asking for more than 30 seconds got you 30.
+
+The four `--allow-*` flags and `--graphql-op` each grant one capability, and each is what its verb needs: `--allow-cookie-write` for `write-cookies`, `--allow-in-page` for `--in-page` on the fetch verbs, `--allow-capture-redirect` for `capture-redirect`, and a `--graphql-op handle=OperationName` declaration per operation `fpx graphql` may run. A capability the profile has not declared is refused before the bridge is dialled, not after.
 
 ## Output contract
 
