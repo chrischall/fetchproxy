@@ -84,6 +84,10 @@ the bind fails with `EADDRINUSE`, the MCP dials the existing host as a
    on a mismatch. The mirror of `trustedMcps`. Ways out:
    `fpx trust list|clear <server>`, or
    `FETCHPROXY_TRUST_NEW_EXTENSION=1` for an MCP you don't own.
+   `FETCHPROXY_TRUST_DIR` / `trustDir` moves the pin off the identity
+   directory — a host that PROVISIONS the identity mounts it read-only,
+   and the pin is the one file this package writes, so without it the
+   write is logged and every boot is first-use.
    The same change makes PEERS verify the ready signature — until
    1.12.0 they verified nothing at all. The host now relays the
    extension hello to peers so they CAN check; a peer behind a

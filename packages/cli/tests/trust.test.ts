@@ -214,6 +214,38 @@ describe('fpx trust', () => {
     expect(rec2.out.join('\n')).toMatch(/no extension pins/i);
   });
 
+  /**
+   * `fpx trust` looks where the pins actually ARE. A host that mounts the
+   * identity read-only points `FETCHPROXY_TRUST_DIR` at a writable volume, and
+   * an operator staring at a refusal must not be told "no extension pins" by
+   * the one command that exists to show them.
+   */
+  it('reads the same directory the server pins into, FETCHPROXY_TRUST_DIR included', async () => {
+    await writeFile(join(dir, 'opentable-mcp.extension-trust.json'), PIN);
+    // Point the identity elsewhere and leave it EMPTY, so a listing that finds
+    // the pin can only have looked in the trust dir — and so this test can
+    // never read the developer's own `$HOME`.
+    const idDir = await mkdtemp(join(tmpdir(), 'fpx-trust-id-'));
+    process.env.FETCHPROXY_IDENTITY_DIR = idDir;
+    try {
+      const control = io();
+      await runTrust({ kind: 'trust', action: 'list', json: false }, ioAdapter(control));
+      expect(control.out.join('\n')).toMatch(/no extension pins/i);
+
+      process.env.FETCHPROXY_TRUST_DIR = dir;
+      const rec = io();
+      // No directory argument: the verb resolves it exactly as the server does.
+      expect(await runTrust({ kind: 'trust', action: 'list', json: false }, ioAdapter(rec))).toBe(
+        EXIT.OK,
+      );
+      expect(rec.out.join('\n')).toContain('opentable-mcp');
+    } finally {
+      delete process.env.FETCHPROXY_TRUST_DIR;
+      delete process.env.FETCHPROXY_IDENTITY_DIR;
+      await rm(idDir, { recursive: true, force: true });
+    }
+  });
+
   it('leaves the other MCPs pins alone', async () => {
     await writeFile(join(dir, 'opentable-mcp.extension-trust.json'), PIN);
     await writeFile(join(dir, 'resy-mcp.extension-trust.json'), PIN);

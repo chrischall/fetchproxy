@@ -243,6 +243,26 @@ export interface FetchproxyServerOpts {
    */
   identityDir?: string;
   /**
+   * Where this MCP's pin on the EXTENSION's identity is kept, when that must
+   * not be the identity directory.
+   *
+   * The pin has always been written beside the identity, and on a laptop that
+   * is right. It stops being right when a host PROVISIONS the identity: it
+   * writes `<identityDir>/<serverName>.json` so every child presents one
+   * identity to the extension, and mounts that directory read-only. The
+   * identity is read there; the pin is the one file this package writes, and a
+   * failed write is not fatal — it is logged and the MCP trusts on first use
+   * again next boot, which is the pin closing nothing at all. Point this at a
+   * writable directory that persists and the two lifetimes stop fighting.
+   *
+   * Falls back to `FETCHPROXY_TRUST_DIR` (an absolute path only) and then to
+   * `identityDir`, so a deployment that sets neither is byte for byte where it
+   * has always been.
+   *
+   * @default `identityDir`
+   */
+  trustDir?: string;
+  /**
    * 1.12.0+ (#208): accept an extension identity that is NOT the one this MCP
    * pinned, replacing the pin with it.
    *
@@ -1259,6 +1279,7 @@ interface ResolvedOpts {
   keepAliveIntervalMs: number;
   keepAliveMaxIdleMs: number;
   identityDir?: string;
+  trustDir?: string;
   allowNewExtensionIdentity?: boolean;
   requireExtensionIdentity?: boolean;
   onPairCode?: (code: string) => void;
@@ -1513,6 +1534,7 @@ export class FetchproxyServer {
       keepAliveIntervalMs: opts.keepAliveIntervalMs ?? 20_000,
       keepAliveMaxIdleMs: opts.keepAliveMaxIdleMs ?? 5 * 60 * 1000,
       identityDir: opts.identityDir,
+      trustDir: opts.trustDir,
       allowNewExtensionIdentity: opts.allowNewExtensionIdentity,
       requireExtensionIdentity: opts.requireExtensionIdentity,
       onPairCode: opts.onPairCode,
@@ -1858,7 +1880,9 @@ export class FetchproxyServer {
 
   /**
    * #208: this MCP's pin on the extension's identity, stored beside its own
-   * identity key and so following `identityDir` wherever the caller put it.
+   * identity key and so following `identityDir` wherever the caller put it —
+   * unless `trustDir` (or `FETCHPROXY_TRUST_DIR`) says otherwise, which is
+   * what a host that provisions the identity read-only has to say.
    *
    * `allowNewExtensionIdentity` falls back to an environment variable when the
    * caller expressed no opinion, because the thirteen MCPs that construct this
@@ -1870,6 +1894,7 @@ export class FetchproxyServer {
     return fileExtensionTrust({
       serverName: this.opts.serverName,
       dir: this.opts.identityDir,
+      trustDir: this.opts.trustDir,
       allowNew: allowNewExtensionIdentity(this.opts.allowNewExtensionIdentity),
     });
   }

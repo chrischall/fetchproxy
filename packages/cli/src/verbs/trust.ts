@@ -1,6 +1,6 @@
 import { readdir, readFile, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
-import { clearExtensionPin, defaultIdentityDir, safeIdentityFileBase } from '@fetchproxy/server';
+import { clearExtensionPin, defaultTrustDir, safeIdentityFileBase } from '@fetchproxy/server';
 import type { Command } from '../args.js';
 import { EXIT, printJson, UsageError, type Io } from '../output.js';
 
@@ -14,9 +14,13 @@ import { EXIT, printJson, UsageError, type Io } from '../output.js';
  * with a way to look at the state first, because "delete a file you cannot see
  * the contents of" is a poor answer to a security prompt.
  *
- * It works directly on the identity directory rather than through a bridge
+ * It works directly on the trust directory rather than through a bridge
  * connection: an operator reaching for this has an MCP that is refusing to
- * connect, so requiring a connection would be circular.
+ * connect, so requiring a connection would be circular. That directory is
+ * `FETCHPROXY_TRUST_DIR` when it names an absolute path and the identity
+ * directory otherwise — resolved by `@fetchproxy/server` rather than
+ * re-derived here, because a listing that looks somewhere the MCPs do not
+ * write reports "nothing pinned" to the one person who needs the opposite.
  */
 
 const SUFFIX = '.extension-trust.json';
@@ -106,7 +110,7 @@ async function listPins(dir: string): Promise<PinnedEntry[]> {
  * accepts — a scoped name whose stem is ambiguous would otherwise be legible
  * and unusable at the same time.
  */
-async function clearPin(nameOrStem: string, identityDir: string): Promise<boolean> {
+async function clearPin(nameOrStem: string, trustDir: string): Promise<boolean> {
   // Ask FIRST whether this is a legal server name, rather than trying and
   // treating any throw as "must have been a stem". A `catch` here swallows
   // real filesystem failures — an EACCES on the identity directory would come
@@ -118,11 +122,11 @@ async function clearPin(nameOrStem: string, identityDir: string): Promise<boolea
   } catch {
     isServerName = false;
   }
-  if (isServerName) return clearExtensionPin(nameOrStem, identityDir);
+  if (isServerName) return clearExtensionPin(nameOrStem, trustDir);
 
   // Otherwise it can only be the stem the listing printed for a name it could
   // not recover. Anything that goes wrong from here is reported as itself.
-  const pins = await listPins(identityDir);
+  const pins = await listPins(trustDir);
   const match = pins.find((p) => p.pinFile === nameOrStem);
   if (!match) throw new UsageError(`no extension pin for ${nameOrStem}`);
   await unlink(match.file);
@@ -132,12 +136,12 @@ async function clearPin(nameOrStem: string, identityDir: string): Promise<boolea
 export async function runTrust(
   cmd: Extract<Command, { kind: 'trust' }>,
   io: Io,
-  identityDir: string = defaultIdentityDir(),
+  trustDir: string = defaultTrustDir(),
 ): Promise<number> {
   if (cmd.action === 'list') {
-    const pins = await listPins(identityDir);
+    const pins = await listPins(trustDir);
     if (pins.length === 0) {
-      io.out(`no extension pins in ${identityDir}`);
+      io.out(`no extension pins in ${trustDir}`);
       return EXIT.OK;
     }
     if (cmd.json) {
@@ -154,9 +158,9 @@ export async function runTrust(
   }
 
   if (cmd.all) {
-    const pins = await listPins(identityDir);
+    const pins = await listPins(trustDir);
     if (pins.length === 0) {
-      io.err(`nothing pinned in ${identityDir}`);
+      io.err(`nothing pinned in ${trustDir}`);
       return EXIT.OK;
     }
     // Delete by PATH, not by re-deriving one from the file stem: a scoped
@@ -182,19 +186,19 @@ export async function runTrust(
       // Say which ones survived rather than reporting a clean sweep: an
       // operator who thinks the fleet is cleared and finds one MCP still
       // refusing has no way to tell that from a new attack.
-      io.err(`could not clear: ${failed.join(', ')} — delete them by hand in ${identityDir}`);
+      io.err(`could not clear: ${failed.join(', ')} — delete them by hand in ${trustDir}`);
     }
     return EXIT.OK;
   }
 
-  const had = await clearPin(cmd.serverName!, identityDir);
+  const had = await clearPin(cmd.serverName!, trustDir);
   if (had) {
     io.err(
       `cleared the extension pin for ${cmd.serverName} — the next browser to complete a ` +
         `handshake with it becomes the pinned one`,
     );
   } else {
-    io.err(`nothing pinned for ${cmd.serverName} in ${identityDir}`);
+    io.err(`nothing pinned for ${cmd.serverName} in ${trustDir}`);
   }
   return EXIT.OK;
 }
