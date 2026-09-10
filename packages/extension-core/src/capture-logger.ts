@@ -50,6 +50,11 @@ declare global {
 
 const SYNC_INTERVAL_MS = 2000;
 const DATASET_KEY = 'fetchproxyCsrf';
+/** Sentinel for a probe that outran its budget; `''` and `false` are both real answers. */
+const PROBE_TIMEOUT = Symbol('probe-timeout');
+/** Short on purpose: this runs on a path that has ALREADY failed, and the
+ *  caller is waiting on the reply it annotates. */
+const PROBE_TIMEOUT_MS = 3000;
 
 function syncCsrf(): void {
   const token = window.__CSRF_TOKEN__;
@@ -313,6 +318,57 @@ const FETCH_REQ_MARKER = 'fetch-req';
 const FETCH_RES_MARKER = 'fetch-res';
 
 /**
+ * Say WHICH kind of failure a MAIN-world `fetch` rejection was.
+ *
+ * `fetch` rejects with a bare `TypeError: Failed to fetch` for three causes a
+ * caller must treat differently, and the message is identical for all three:
+ *
+ *   1. the host is genuinely unreachable;
+ *   2. CORS refused the response — it arrived and the browser withheld it;
+ *   3. a WAF challenged the request, and its challenge response carried no
+ *      `Access-Control-Allow-Origin`, which the browser reports as (2).
+ *
+ * The remedies diverge completely — retry, fix the origin, or get past a bot
+ * wall — and picking between them cost two rounds of wrong guesses on
+ * chrischall/resy-mcp#166 before anyone reached for `curl`. api.resy.com
+ * answers the PREFLIGHT with `access-control-allow-origin` and
+ * `access-control-allow-credentials: true`, then serves the request itself
+ * from Imperva as a 419 with the origin header absent. Perfectly configured
+ * CORS, an invisible response, and `Failed to fetch` either way.
+ *
+ * A `no-cors` probe separates (1) from (2)/(3): it succeeds opaquely whenever
+ * the request left and something answered, and rejects when nothing did. It is
+ * issued to the ORIGIN, never to the failed URL — repeating the caller's own
+ * request would re-run a POST nobody asked to retry — and it is bounded, so a
+ * hung probe cannot outlive the reply it is annotating.
+ *
+ * Best-effort by construction: every failure inside returns the empty string,
+ * because a diagnostic that can itself fail must never replace the diagnosis
+ * it was decorating.
+ */
+async function classifyFetchFailure(win: FetchBridgeWindow, url: string): Promise<string> {
+  try {
+    if (typeof win.fetch !== 'function') return '';
+    let origin: string;
+    try {
+      origin = new URL(url).origin;
+    } catch {
+      return '';
+    }
+    const probe = win.fetch(origin, { method: 'GET', mode: 'no-cors', credentials: 'omit' });
+    const timeout = new Promise((resolve) => setTimeout(() => resolve(PROBE_TIMEOUT), PROBE_TIMEOUT_MS));
+    const outcome = await Promise.race([probe.then(() => 'reached', () => 'unreachable'), timeout]);
+    if (outcome === PROBE_TIMEOUT) return '';
+    return outcome === 'reached'
+      ? ` (${origin} answered a no-cors probe, so the request left this page and the response was withheld` +
+        ' — CORS refused it, or a WAF challenge answered without an Access-Control-Allow-Origin header)'
+      : ` (${origin} did not answer a no-cors probe either, so this looks like a real network failure)`;
+  } catch {
+    return '';
+  }
+}
+
+/**
  * Install the MAIN-world fetch bridge: runs one `fetch` in the page's own
  * world on behalf of the isolated-world content script, which relays a
  * request here only when the MCP flagged it `inPage` AND holds the
@@ -369,7 +425,8 @@ export function installFetchBridge(win: FetchBridgeWindow): void {
           // `fetch_in_page` exists to answer — did this actually run in the
           // page? — unanswerable from the error. Establishing that for one MCP
           // took reading this file and probing the API's CORS headers by hand.
-          reply({ ok: false, error: `in-page fetch threw: ${(e as Error)?.message ?? String(e)}` });
+          const why = await classifyFetchFailure(win, data.url);
+          reply({ ok: false, error: `in-page fetch threw: ${(e as Error)?.message ?? String(e)}${why}` });
           return;
         }
         let body: string;
