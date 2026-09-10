@@ -8,8 +8,18 @@ import { mapBridgeError } from '../bridge-errors.js';
 import { defaultServerFactory, pairCodePrinter, type VerbServerFactory } from './fetch.js';
 import { VERSION } from '../version.js';
 
-/** `header@host` — how a declaration is written on the command line and keyed in output. */
-export const captureKey = (d: CaptureHeaderDecl): string => `${d.headerName}@${d.host}`;
+/**
+ * `header@host[/path]` — byte for byte how the declaration is written on the
+ * command line, and how it is keyed in output.
+ *
+ * The PATH is part of the key, not decoration. `--capture-header` accepts a
+ * path, so a profile may legitimately declare the same header on the same host
+ * twice with different paths — and keying on `header@host` alone collapsed
+ * them, so the second result overwrote the first and one capture vanished from
+ * the JSON with nothing to say it had.
+ */
+export const captureKey = (d: CaptureHeaderDecl): string =>
+  `${d.headerName}@${d.host}${d.path ?? ''}`;
 
 function narrowCaptures(requested: string[], declared: CaptureHeaderDecl[]): CaptureHeaderDecl[] {
   if (declared.length === 0) {
@@ -19,12 +29,18 @@ function narrowCaptures(requested: string[], declared: CaptureHeaderDecl[]): Cap
     );
   }
   if (requested.length === 0) return declared;
-  // Accept either `header@host` or the bare header name, since a profile
-  // rarely declares the same header on two hosts and typing the pair is noise.
-  const picked = declared.filter(
-    (d) => requested.includes(captureKey(d)) || requested.includes(d.headerName),
-  );
-  const matched = new Set(picked.flatMap((d) => [captureKey(d), d.headerName]));
+  // Three spellings accepted, narrowest to broadest: the full key, the
+  // `header@host` pair, or the bare header name. Typing the path is noise when
+  // nothing is ambiguous, and a broader spelling selecting SEVERAL declarations
+  // is the useful behaviour rather than an error — that is what asking for a
+  // header on a host means.
+  const spellings = (d: CaptureHeaderDecl): string[] => [
+    captureKey(d),
+    `${d.headerName}@${d.host}`,
+    d.headerName,
+  ];
+  const picked = declared.filter((d) => spellings(d).some((sp) => requested.includes(sp)));
+  const matched = new Set(picked.flatMap(spellings));
   const unknown = requested.filter((r) => !matched.has(r));
   if (unknown.length > 0) {
     throw new UsageError(

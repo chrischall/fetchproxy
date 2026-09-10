@@ -55,8 +55,8 @@ describe('fpx capture', () => {
     const s = server as unknown as { captureRequestHeader: { mock: { calls: unknown[][] } } };
     expect(s.captureRequestHeader.mock.calls).toHaveLength(2);
     expect(JSON.parse(io.outs.join('\n'))).toEqual({
-      'authorization@api.resy.com': 'VALUE',
-      'x-resy-auth-token@api.resy.com': 'VALUE',
+      'authorization@api.resy.com/*': 'VALUE',
+      'x-resy-auth-token@api.resy.com/*': 'VALUE',
     });
   });
 
@@ -111,7 +111,7 @@ describe('fpx capture', () => {
     const code = await runCapture({ kind: 'capture', profile: 'p', names: [] } as never,
       withCaptures(), io, () => server);
     expect(code).toBe(EXIT.OK);
-    expect(JSON.parse(io.outs.join('\n'))['authorization@api.resy.com']).toBeNull();
+    expect(JSON.parse(io.outs.join('\n'))['authorization@api.resy.com/*']).toBeNull();
   });
 
   // The idle-tab case. A script must be able to tell "nothing arrived" from a hit.
@@ -162,5 +162,54 @@ describe('fpx write-cookies', () => {
     const code = await runWriteCookies(cmd({ sid: 'a' }), writable(), io, () => server);
     expect(code).toBe(EXIT.OK);
     expect(JSON.parse(io.outs.join('\n'))).toEqual({ written: ['sid'] });
+  });
+});
+
+/**
+ * Two declarations differing only by PATH are legitimate — `--capture-header`
+ * takes a path — and keying output on `header@host` collapsed them, so the
+ * second overwrote the first and one capture vanished with nothing to say it
+ * had.
+ */
+describe('fpx capture with paths', () => {
+  const BY_PATH = [
+    { headerName: 'authorization', host: 'api.resy.com', path: '/3/*' },
+    { headerName: 'authorization', host: 'api.resy.com', path: '/4/*' },
+  ];
+  const profileByPath = () => ({ ...emptyProfile(['resy.com']), captureHeaders: BY_PATH });
+
+  it('keeps both results rather than collapsing them', async () => {
+    let n = 0;
+    const server = stubServer({
+      captureRequestHeader: vi.fn(async () => `VALUE${(n += 1)}`),
+    });
+    const io = memIo();
+    await runCapture({ kind: 'capture', profile: 'p', names: [] } as never,
+      profileByPath(), io, () => server);
+    const out = JSON.parse(io.outs.join('\n'));
+    expect(Object.keys(out)).toEqual([
+      'authorization@api.resy.com/3/*',
+      'authorization@api.resy.com/4/*',
+    ]);
+    expect(new Set(Object.values(out)).size, 'both values must survive').toBe(2);
+  });
+
+  it('a bare header name selects every declaration that shares it', async () => {
+    const server = stubServer();
+    await runCapture({ kind: 'capture', profile: 'p', names: ['authorization'] } as never,
+      profileByPath(), memIo(), () => server);
+    const s = server as unknown as { captureRequestHeader: { mock: { calls: unknown[][] } } };
+    expect(s.captureRequestHeader.mock.calls).toHaveLength(2);
+  });
+
+  it('the full key narrows to exactly one', async () => {
+    const server = stubServer();
+    await runCapture(
+      { kind: 'capture', profile: 'p', names: ['authorization@api.resy.com/4/*'] } as never,
+      profileByPath(), memIo(), () => server,
+    );
+    const s = server as unknown as { captureRequestHeader: { mock: { calls: unknown[][] } } };
+    expect(s.captureRequestHeader.mock.calls).toHaveLength(1);
+    expect(s.captureRequestHeader.mock.calls[0]![0]).toMatchObject({ path: '/4/*' });
   });
 });

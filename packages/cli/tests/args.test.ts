@@ -168,3 +168,55 @@ describe('--in-page', () => {
     expect(cmd.inPage).toBe(true);
   });
 });
+
+describe('capture / write-cookies parsing', () => {
+  const asCapture = (argv: string[]) =>
+    parseCliArgs(argv) as Extract<ReturnType<typeof parseCliArgs>, { kind: 'capture' }>;
+  const asWrite = (argv: string[]) =>
+    parseCliArgs(argv) as Extract<ReturnType<typeof parseCliArgs>, { kind: 'write-cookies' }>;
+
+  it('parses capture with no names as "every declared header"', () => {
+    const cmd = asCapture(['capture', '-p', 'x']);
+    expect(cmd.names).toEqual([]);
+    expect(cmd.timeoutMs).toBeUndefined();
+  });
+
+  it('parses named captures', () => {
+    expect(asCapture(['capture', 'authorization@api.x.com', '-p', 'x']).names)
+      .toEqual(['authorization@api.x.com']);
+  });
+
+  // SECONDS on the command line, milliseconds internally — like every other
+  // timeout the CLI takes.
+  it('converts --capture-timeout from seconds to milliseconds', () => {
+    expect(asCapture(['capture', '-p', 'x', '--capture-timeout', '45']).timeoutMs).toBe(45_000);
+    expect(asCapture(['capture', '-p', 'x', '--capture-timeout', '2.5']).timeoutMs).toBe(2_500);
+  });
+
+  it('refuses a --capture-timeout that is not a positive number', () => {
+    for (const bad of ['0', '-5', 'soon', '']) {
+      expect(() => asCapture(['capture', '-p', 'x', '--capture-timeout', bad]), bad)
+        .toThrow(UsageError);
+    }
+  });
+
+  it('parses name=value pairs, keeping "=" inside the value', () => {
+    const cmd = asWrite(['write-cookies', 'sid=abc', 'tok=a=b=c', '-p', 'x']);
+    expect(cmd.cookies).toEqual({ sid: 'abc', tok: 'a=b=c' });
+  });
+
+  it('accepts an empty value but refuses a missing or empty name', () => {
+    expect(asWrite(['write-cookies', 'sid=', '-p', 'x']).cookies).toEqual({ sid: '' });
+    for (const bad of ['sid', '=abc', '']) {
+      expect(() => asWrite(['write-cookies', bad, '-p', 'x']), bad).toThrow(UsageError);
+    }
+  });
+
+  it('carries the storage scope through', () => {
+    const cmd = asWrite([
+      'write-cookies', 'sid=a', '-p', 'x', '--storage-domain', 'd.com', '--storage-subdomain', 's',
+    ]);
+    expect(cmd.storageDomain).toBe('d.com');
+    expect(cmd.storageSubdomain).toBe('s');
+  });
+});
