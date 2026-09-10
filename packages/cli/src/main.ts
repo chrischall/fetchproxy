@@ -108,6 +108,12 @@ export async function runCli(argv: string[], io: Io, deps: CliDeps = {}): Promis
         if (cmd.download) p.download = true;
         if (cmd.cookieWrite) p.cookieWrite = true;
         if (cmd.inPage) p.inPage = true;
+        if (cmd.captureRedirect) p.captureRedirect = true;
+        for (const decl of cmd.graphqlOps) {
+          const existing = p.graphqlOps.find((d) => d.name === decl.name);
+          if (existing) Object.assign(existing, decl);
+          else p.graphqlOps.push(decl);
+        }
         saveProfiles(all, home);
         io.err(`profile "${cmd.name}" scope updated — the next connect will ask you to re-pair (scope diff)`);
         return EXIT.OK;

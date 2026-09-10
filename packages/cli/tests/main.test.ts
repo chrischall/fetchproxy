@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { runCli } from '../src/main.js';
 import { EXIT, type Io } from '../src/output.js';
+import { serverOptsFor } from '../src/server-opts.js';
 import { loadProfiles } from '../src/profiles.js';
 import { VERSION } from '../src/version.js';
 
@@ -143,5 +144,61 @@ describe('runCli', () => {
     const io = memIo();
     await runCli([], io, { home }); // no args → help
     expect(io.errs.join('\n')).toContain(VERSION);
+  });
+});
+
+/**
+ * declare → persist → derive, end to end.
+ *
+ * Both halves of this were tested alone and BOTH were broken: the handler
+ * never wrote `captureRedirect`/`graphqlOps`, and `serverOptsFor` derived the
+ * `graphql` capability while dropping the operations the extension needs to
+ * resolve a handle. Each unit test passed; the feature did not exist. The seam
+ * is what has to be asserted, and it is the same regression class as the
+ * `--allow-in-page` one directly above.
+ */
+describe('declared scope survives the whole path', () => {
+  it('persists --allow-capture-redirect and --graphql-op, and derives both', async () => {
+    const io = memIo();
+    await runCli(['profile', 'add', 'r', '--domain', 'resy.com'], io, { home });
+    await runCli([
+      'profile', 'declare', 'r',
+      '--allow-capture-redirect', '--graphql-op', 'avail=RestaurantsAvailability',
+    ], io, { home });
+
+    const p = loadProfiles(home).r;
+    expect(p.captureRedirect, 'flag must reach the stored profile').toBe(true);
+    expect(p.graphqlOps).toEqual([{ name: 'avail', operationName: 'RestaurantsAvailability' }]);
+
+    const opts = serverOptsFor('r', p, '2.10.0');
+    expect(opts.capabilities).toContain('capture_redirect');
+    expect(opts.capabilities).toContain('graphql');
+    // The capability alone is not enough: `graphqlQuery` rejects every
+    // operation and the server hello omits the allowlist without these.
+    expect(opts.graphqlOps, 'operations must reach the server').toEqual([
+      { name: 'avail', operationName: 'RestaurantsAvailability' },
+    ]);
+  });
+
+  it('re-declaring a --graphql-op handle updates it rather than duplicating', async () => {
+    const io = memIo();
+    await runCli(['profile', 'add', 'r', '--domain', 'resy.com'], io, { home });
+    await runCli(['profile', 'declare', 'r', '--graphql-op', 'avail=Old'], io, { home });
+    await runCli(['profile', 'declare', 'r', '--graphql-op', 'avail=New'], io, { home });
+    expect(loadProfiles(home).r.graphqlOps).toEqual([
+      { name: 'avail', operationName: 'New' },
+    ]);
+  });
+
+  it('a later unrelated declare leaves both alone', async () => {
+    const io = memIo();
+    await runCli(['profile', 'add', 'r', '--domain', 'resy.com'], io, { home });
+    await runCli([
+      'profile', 'declare', 'r', '--allow-capture-redirect', '--graphql-op', 'avail=Op',
+    ], io, { home });
+    await runCli(['profile', 'declare', 'r', '--cookie', 'sid'], io, { home });
+    const p = loadProfiles(home).r;
+    expect(p.captureRedirect, 'declare merges, it does not reset').toBe(true);
+    expect(p.graphqlOps).toHaveLength(1);
   });
 });

@@ -1,6 +1,7 @@
 import type { Capability } from '@fetchproxy/server';
 import type {
   CaptureHeaderDecl, DomSelectorDecl, IndexedDbScopeDecl, StoragePointerDecl,
+  GraphqlOpDeclaration,
 } from '@fetchproxy/protocol';
 import type { Profile } from './profiles.js';
 
@@ -17,6 +18,7 @@ export interface DerivedServerOpts {
   localStoragePointers: StoragePointerDecl[];
   sessionStoragePointers: StoragePointerDecl[];
   domSelectors: DomSelectorDecl[];
+  graphqlOps: GraphqlOpDeclaration[];
 }
 
 /**
@@ -90,5 +92,6 @@ export function serverOptsFor(profileName: string, p: Profile, version: string):
       jsonPointer: ptr.jsonPointer,
     })),
     domSelectors: p.domSelectors.map((d) => ({ ...d })),
+    graphqlOps: p.graphqlOps.map((d) => ({ ...d })),
   };
 }
