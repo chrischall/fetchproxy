@@ -398,9 +398,20 @@ export async function startPeer(opts: PeerOpts): Promise<InternalPeerHandle> {
         return;
       }
       if (frame.type === 'frame' && frame.mcpId === opts.mcpId) {
-        if (!session) return; // ignore encrypted frames before handshake
-        if (!session.acceptInboundSeq(frame.seq)) return;
-        const result = await openEncryptedFrameDetailed(session.sessionKey, frame);
+        // Captured, not re-read after the await: the seq belongs to the
+        // session whose key opened the frame, and a renegotiation during the
+        // open would otherwise commit it against the new one.
+        const inboundSession = session;
+        if (!inboundSession) return; // ignore encrypted frames before handshake
+        if (!inboundSession.isFreshInboundSeq(frame.seq)) return;
+        const result = await openEncryptedFrameDetailed(inboundSession.sessionKey, frame);
+        // The counter moves for a frame that AUTHENTICATED, which is both
+        // outcomes below except `decrypt-failed` — a validation failure
+        // decrypted under the live key, so its seq is genuinely spent and
+        // replaying it must still be refused. Advancing before the open let
+        // one unauthenticated frame with a high seq wedge the session: every
+        // genuine frame afterwards carries a lower number and was dropped.
+        if (result.stage !== 'decrypt-failed') inboundSession.commitInboundSeq(frame.seq);
         if (result.stage === 'ok') {
           innerListeners.forEach((cb) => cb(result.inner));
         } else if (result.stage === 'decrypt-failed') {

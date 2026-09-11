@@ -325,7 +325,7 @@ Two MCPs both send `{ id: 1, ... }`. Could responses route to the wrong server? 
 
 **Defense — per-session keying.** Each MCP has its own `sessionKey` (different per-connection because of the fresh `sessionNonce`). Frames addressed to MCP A cannot be decrypted by MCP B even if the host misroutes them. The host routes by `mcpId`; within an `mcpId`, request `id`s are scoped per-connection.
 
-**Replay defense — monotonic seq.** Receivers reject any frame whose `seq` is `<= lastInbound`. WS guarantees ordering, so legitimate frames always increase. A replayed frame from earlier in the session is dropped.
+**Replay defense — monotonic seq.** Receivers reject any frame whose `seq` is `<= lastInbound`. WS guarantees ordering, so legitimate frames always increase. A replayed frame from earlier in the session is dropped. `lastInbound` moves only once a frame has AUTHENTICATED — every receiver asks `isFreshInboundSeq` before the AES-GCM open and records `commitInboundSeq` after it succeeds — because advancing on the way IN lets anything that can put bytes on the socket name a `seq` without holding the session key, and every genuine frame behind it carries a lower number and is then dropped as a replay.
 
 ### T10 — Update / supply chain on the extension itself
 

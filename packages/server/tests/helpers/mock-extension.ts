@@ -1,10 +1,13 @@
 import { WebSocket } from 'ws';
 import {
+  ecdhX25519,
   ed25519Sign,
   generateEd25519,
   generateX25519,
+  hkdfSha256,
   readySignaturePayload,
   validateFrame,
+  HKDF_SESSION_INFO,
   type HelloFrameFromExtension,
 } from '@fetchproxy/protocol';
 import type { ExtensionPin } from '../../src/extension-trust.js';
@@ -16,8 +19,16 @@ export interface MockExtension {
   hello: HelloFrameFromExtension;
   /** The pin this extension's hello would produce. */
   pin(pinnedAt?: number): ExtensionPin;
-  /** Wait for the server hello for `mcpId`, then answer with a signed ready. */
-  completeHandshake(mcpId: string, opts?: { forgeSignature?: boolean }): Promise<void>;
+  /**
+   * Wait for the server hello for `mcpId`, then answer with a signed ready.
+   *
+   * Resolves with the AES-256-GCM session key the two sides just agreed —
+   * derived exactly as the browser derives it (ECDH of this ready's ephemeral
+   * private key against the MCP's identity X25519 pub, salted with the MCP's
+   * own session nonce) — so a test can seal a frame the host will really
+   * open. Meaningless under `forgeSignature`, where no session is derived.
+   */
+  completeHandshake(mcpId: string, opts?: { forgeSignature?: boolean }): Promise<Uint8Array>;
   closed(): Promise<{ code: number; reason: string }>;
   close(): void;
 }
@@ -60,7 +71,7 @@ export async function connectMockExtension(
     /* expected on refusal */
   });
 
-  const serverHellos = new Map<string, { sessionNonce: string }>();
+  const serverHellos = new Map<string, { sessionNonce: string; identityX25519Pub: string }>();
   // Keyed by mcpId, because a concentrator announces every MCP on one socket.
   // Draining a flat list on each hello woke waiters for OTHER ids and dropped
   // them, so a caller waiting on two MCPs only ever settled by timing out —
@@ -70,7 +81,10 @@ export async function connectMockExtension(
     try {
       const frame = validateFrame(JSON.parse(data.toString()));
       if (frame.type === 'hello' && frame.role === 'server') {
-        serverHellos.set(frame.mcpId, { sessionNonce: frame.sessionNonce });
+        serverHellos.set(frame.mcpId, {
+          sessionNonce: frame.sessionNonce,
+          identityX25519Pub: frame.identityX25519Pub,
+        });
         for (const wake of helloWaiters.get(frame.mcpId) ?? []) wake();
         helloWaiters.delete(frame.mcpId);
       }
@@ -79,7 +93,9 @@ export async function connectMockExtension(
     }
   });
 
-  const waitForServerHello = async (mcpId: string): Promise<{ sessionNonce: string }> => {
+  const waitForServerHello = async (
+    mcpId: string,
+  ): Promise<{ sessionNonce: string; identityX25519Pub: string }> => {
     const seen = serverHellos.get(mcpId);
     if (seen) return seen;
     await new Promise<void>((resolve, reject) => {
@@ -105,7 +121,7 @@ export async function connectMockExtension(
       pinnedAt,
     }),
     completeHandshake: async (mcpId, opts = {}) => {
-      const { sessionNonce: mcpNonceB64 } = await waitForServerHello(mcpId);
+      const { sessionNonce: mcpNonceB64, identityX25519Pub } = await waitForServerHello(mcpId);
       const mcpNonce = new Uint8Array(Buffer.from(mcpNonceB64, 'base64'));
       const eph = await generateX25519();
       const payload = readySignaturePayload(mcpNonce, sessionNonce, eph.publicKey);
@@ -120,6 +136,11 @@ export async function connectMockExtension(
           sessionSig: b64(sig),
         }),
       );
+      const shared = await ecdhX25519(
+        eph.privateKey,
+        new Uint8Array(Buffer.from(identityX25519Pub, 'base64')),
+      );
+      return hkdfSha256(shared, mcpNonce, new TextEncoder().encode(HKDF_SESSION_INFO), 32);
     },
     closed: () =>
       new Promise((resolve) =>

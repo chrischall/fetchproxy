@@ -1,5 +1,17 @@
 import { describe, it, expect } from 'vitest';
-import { SessionKeys } from '../src/session-keys.js';
+import { SessionKeys, type SessionEntry } from '../src/session-keys.js';
+
+/**
+ * The inbound gate as `onEncryptedFrame` now spells it: ask, open the frame,
+ * commit. The two halves are separate so a frame that never authenticated
+ * cannot move the counter — see `session-keys.ts`.
+ */
+function accept(s: SessionEntry, seq: number): boolean {
+  if (!s.isFreshInboundSeq(seq)) return false;
+  // In the real caller the AES-GCM open happens here.
+  s.commitInboundSeq(seq);
+  return true;
+}
 
 describe('SessionKeys', () => {
   it('returns null for unknown mcpId', () => {
@@ -20,16 +32,39 @@ describe('SessionKeys', () => {
     const sk = new SessionKeys();
     sk.set('mcp:1.0.0:0000000000000000', new Uint8Array(32));
     const s = sk.get('mcp:1.0.0:0000000000000000')!;
-    expect(s.acceptInboundSeq(1)).toBe(true);
-    expect(s.acceptInboundSeq(1)).toBe(false);
+    expect(accept(s, 1)).toBe(true);
+    expect(accept(s, 1)).toBe(false);
   });
 
   it('rejects out-of-order inbound seq', () => {
     const sk = new SessionKeys();
     sk.set('mcp:1.0.0:0000000000000000', new Uint8Array(32));
     const s = sk.get('mcp:1.0.0:0000000000000000')!;
-    expect(s.acceptInboundSeq(5)).toBe(true);
-    expect(s.acceptInboundSeq(3)).toBe(false);
+    expect(accept(s, 5)).toBe(true);
+    expect(accept(s, 3)).toBe(false);
+  });
+
+  it('asking about an inbound seq does not advance the counter', () => {
+    // The property the split exists for: a frame that fails to authenticate
+    // is asked about and then dropped, and the genuine frames behind it —
+    // carrying LOWER seqs — must still be accepted.
+    const sk = new SessionKeys();
+    sk.set('mcp:1.0.0:0000000000000000', new Uint8Array(32));
+    const s = sk.get('mcp:1.0.0:0000000000000000')!;
+    expect(s.isFreshInboundSeq(9)).toBe(true);
+    expect(s.isFreshInboundSeq(9)).toBe(true);
+    expect(accept(s, 1)).toBe(true);
+    expect(accept(s, 1)).toBe(false);
+  });
+
+  it('committing never moves the counter backwards', () => {
+    const sk = new SessionKeys();
+    sk.set('mcp:1.0.0:0000000000000000', new Uint8Array(32));
+    const s = sk.get('mcp:1.0.0:0000000000000000')!;
+    s.commitInboundSeq(5);
+    s.commitInboundSeq(2);
+    expect(s.isFreshInboundSeq(5)).toBe(false);
+    expect(s.isFreshInboundSeq(6)).toBe(true);
   });
 
   it('issues monotonic outbound seq', () => {
@@ -49,8 +84,8 @@ describe('SessionKeys', () => {
     const b = sk.get('b:1.0.0:0000000000000000')!;
     expect(a.nextOutboundSeq()).toBe(1);
     expect(b.nextOutboundSeq()).toBe(1);
-    expect(a.acceptInboundSeq(1)).toBe(true);
-    expect(b.acceptInboundSeq(1)).toBe(true);
+    expect(accept(a, 1)).toBe(true);
+    expect(accept(b, 1)).toBe(true);
   });
 
   it('removes a session', () => {

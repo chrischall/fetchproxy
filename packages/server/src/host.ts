@@ -445,9 +445,18 @@ export async function startHost(opts: HostOpts): Promise<HostHandle> {
           if (identified === 'extension') {
             // Extension → server. Route by mcpId.
             if (frame.mcpId === opts.ownMcpId) {
-              if (!ownSession) return;
-              if (!ownSession.acceptInboundSeq(frame.seq)) return;
-              const inner = await openEncryptedFrame(ownSession.sessionKey, frame);
+              // Captured, not re-read after the await: the seq belongs to the
+              // session whose key opened the frame, and a renegotiation
+              // during the open would otherwise commit it against the new one.
+              const session = ownSession;
+              if (!session) return;
+              if (!session.isFreshInboundSeq(frame.seq)) return;
+              const inner = await openEncryptedFrame(session.sessionKey, frame);
+              // Only now. A frame that fails GCM authentication throws out of
+              // here and must leave the counter where it was — otherwise one
+              // forged frame with a high seq takes every genuine frame already
+              // in flight behind it down with the socket it tears up.
+              session.commitInboundSeq(frame.seq);
               ownInnerListeners.forEach((cb) => cb(inner));
             } else {
               const slot = peers.get(frame.mcpId);

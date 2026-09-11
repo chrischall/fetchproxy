@@ -263,7 +263,7 @@ async function onEncryptedFrame(link: Link, frame: EncryptedFrame): Promise<void
   if (linkForMcp(frame.mcpId) !== link) return;
   const entry = state.sessions.get(frame.mcpId);
   if (!entry) return;
-  if (!entry.acceptInboundSeq(frame.seq)) return;
+  if (!entry.isFreshInboundSeq(frame.seq)) return;
   flashActivity();
   let inner: InnerFrame;
   try {
@@ -272,6 +272,11 @@ async function onEncryptedFrame(link: Link, frame: EncryptedFrame): Promise<void
     console.warn('[fetchproxy] decrypt failed:', e);
     return;
   }
+  // Only now that the frame has AUTHENTICATED. Advancing on the way in meant
+  // anything able to reach this socket could name a seq without holding the
+  // key, and every genuine frame after it — all carrying lower numbers — was
+  // dropped as a replay while the socket stayed open and looked healthy.
+  entry.commitInboundSeq(frame.seq);
   if (inner.type === 'ping') {
     await sendInner(frame.mcpId, { type: 'pong' });
   } else if (inner.type === 'request') {
