@@ -43,6 +43,12 @@ and a party in the path can replay a recorded frame under a bumped counter, or
 reflect one back. v4 gives the MCP a per-session ephemeral X25519 covered by
 its hello signature, derives the session key ephemeral×ephemeral with
 identities authenticating only, and puts `mcpId ‖ seq ‖ direction` in the AAD.
+And because the identities then authenticate *only* — nothing else proves
+possession of them any more — v4 has to close the extension's half-pinned trust
+match in the same break (**L6**): the hello signature is verified against an
+Ed25519 key the trust record must now agree with, where under v3 it need not,
+because under v3 the ECDH itself was the proof. Skipping that half would make
+v4 an upgrade in confidentiality and a downgrade in authentication.
 `PROTOCOL_VERSION` 3 → 4; v3 is refused at the hello, with no negotiated
 downgrade, for the reason #222 already wrote down.
 
@@ -212,6 +218,52 @@ The ready payload gains `mcpSessionPub` so the transcript is bound
 symmetrically: after v4 neither side's contribution to the ECDH can be
 substituted without a signature from a long-term key the relay does not hold.
 
+**But a signature is worth only what its verifier pins, and today the extension
+pins the wrong half.** Under v3 the extension derives against
+`identityX25519Pub` — the very key its trust record is keyed on
+(`sha256(identityX25519Pub)`, `hello.ts:237-238`) — so *completing* a session is
+itself a proof that the far end holds the pinned private key. The hello
+signature is belt-and-braces on top of that, which is why `hello.ts:261-272`
+can get away
+with never comparing `record.identityEd25519Pub` against
+`hello.identityEd25519Pub`: a party that swapped the signing key still could
+not compute the session key. That is **L6**, and under v3 it is the harmless
+finding an earlier draft of this plan filed it as.
+
+**v4 inverts it.** The session key now comes from `sessionPub`, and the only
+thing binding `sessionPub` to a trusted identity is a signature under
+`identityEd25519Pub` — the half nothing checks. So under v4, with L6 still
+open, an attacker holding nothing but **public** values impersonates any
+trusted MCP:
+
+1. copy `identityX25519Pub` out of any recorded hello — it is plaintext on the
+   wire by construction, and on mcp-host the hosted relay sees every one;
+2. present it alongside an `identityEd25519Pub` and a `sessionPub` of their own;
+3. sign `helloSignaturePayload(mcpId, sessionNonce, sessionPub)` with their own
+   Ed25519 key — the extension verifies the signature against the key carried
+   in the *same frame*, so it is self-consistent and passes;
+4. the trust lookup on `sha256(identityX25519Pub)` hits the genuine record and
+   **auto-trusts**, with no pair prompt and no re-pair diff;
+5. the extension derives the session key against the attacker's ephemeral.
+
+The implicit proof of possession that v3 got for free from the ECDH has to be
+bought back explicitly, or **v4 is an upgrade in confidentiality and a
+downgrade in authentication** — a strictly worse trade than not shipping it. So
+L6 is not deferred to a later release: it is **Task 3.3**, and it ships inside
+this break because this break is what makes it exploitable.
+
+The other direction needs nothing, and the asymmetry is worth stating so no
+reviewer asks for a symmetric change that already exists. The MCP has never had
+implicit proof of possession of the *extension's* identity — the extension's
+contribution has been an ephemeral since 0.4.0 — so it already buys the proof
+explicitly, and `decideExtensionTrust` (`server/src/extension-trust.ts`)
+already compares **both** pinned keys, with the reason in its own comment:
+"Both keys, not either: a rotation of one is a different extension, and
+accepting a half-match would let an attacker keep the ECDH key it needs while
+swapping the signing key it doesn't hold, or the reverse." That is exactly the
+sentence the extension's trust match is missing. v4 makes the MCP's rule true
+of both ends.
+
 ### 3. The session key is derived from a transcript, ephemeral × ephemeral
 
 ```
@@ -320,7 +372,7 @@ construction.
 | Modify | `packages/server/src/host.ts` | per-connection hello, ephemeral derivation, widened ready verify, AAD, v3 extension refusal, zeroing on teardown |
 | Modify | `packages/server/src/peer.ts` | the same on the peer path |
 | Modify | `packages/server/src/frame-size.ts` | seal/measure signature follow-through |
-| Modify | `packages/extension-core/src/background/hello.ts` | verify the widened hello signature; derive against `sessionPub` |
+| Modify | `packages/extension-core/src/background/hello.ts` | verify the widened hello signature; derive against `sessionPub`; match the pinned `identityEd25519Pub` too (L6, Task 3.3) |
 | Modify | `packages/extension-core/src/background/approval.ts` | the same on the approval path |
 | Modify | `packages/extension-core/src/background/server-hello.ts` | sign the widened ready payload |
 | Modify | `packages/extension-core/src/background/socket.ts` | AAD on open; the v3-server refusal path |
@@ -408,16 +460,70 @@ hello from it; derive `X25519(sessionPriv, extSessionPub)`; salt with
 `transcriptHash`; pass `direction: 's2e'` on seal and `'e2s'` on open; zero and
 drop `sessionPriv` in the same statement that nulls `ownSession`.
 
-**Task 2.2 — the peer.** Where: `packages/server/src/peer.ts:153`, `:275`,
-`:385`, `frame-size.ts`.
+**Task 2.2 — the peer, whose "connection" is not a socket.** Where:
+`packages/server/src/peer.ts:181` (the hello), `:202` (the nonce), `:275`,
+`:350` (the relayed extension hello), `:357` (`extension-disconnected`), `:385`
+(derivation), `:392` (the renegotiation it already names), `frame-size.ts`; and
+`host.ts:370`, `:374-376`, `:411-420`, `:424`.
+
+**Do not copy Task 2.1 literally — on this path "per extension connection" has
+no socket to hang on.** The host gets one WebSocket per extension and can mint
+on its `open`. The peer's single socket goes to the *host*, and it outlives
+every extension session: the extension's MV3 evictions arrive as fresh `ready`
+frames on that same socket, which `peer.ts:392` already calls a renegotiation.
+A peer that mints in `startPeer` therefore holds a per-PROCESS ephemeral reused
+across every extension connection for the life of the MCP — on mcp-host up to
+ten idle minutes of real traffic per boot, on a laptop days. That is not an
+ephemeral, and it is the same "worth having, not worth claiming as forward
+secrecy" the hello section refuses for the host.
+
+**Lifetime, precisely.** It *begins* when the relayed extension hello arrives
+(`peer.ts:350`) — the only event on the peer path that marks a new extension
+session. Mint `{sessionNonce, sessionPub, sessionPriv}` there and send a
+**fresh server hello** to the host in the same handler. It *ends* at whichever
+comes first: `extension-disconnected` (`:357`), the next extension hello
+superseding it, or the socket to the host closing — zeroing and dropping
+`sessionPriv` in the same statement that clears `session`, exactly as Task 2.1
+does for the host.
+
+**Two consequences in the host, both required for that to work.**
+
+- The host caches each peer's hello (`peers.set(mcpId, {ws, helloFrame})`,
+  `:424`) and **replays it to every newly connected extension** (`:374-376`).
+  Under v4 the cached frame is stale by construction — the private half it
+  names is gone — so the extension would derive against a key nobody holds.
+  Drop the replay: the relay the host already performs at `:370` (extension
+  hello → every peer) is what prompts each peer to hello afresh, and the host
+  forwards those as they arrive. The cost is one round trip before a peer's
+  session opens, which the peer already pays waiting for `ready`.
+- A same-socket, same-identity re-hello must REPLACE the slot rather than be
+  refused. It already does — the squat guard at `:411-420` fires only when
+  `existing.ws !== ws` — but under v4 that is load-bearing rather than
+  incidental, so assert it.
+
+**The `warnedUnverifiable` branch dies, and must not be left looking alive.**
+`peer.ts:240-271` lets a peer proceed with a warning when the host never
+relayed an extension hello (a pre-1.12.0 host). Under v4 it *cannot*: the
+transcript salt is `SHA256(mcpNonce ‖ extNonce ‖ …)` and `extNonce` comes only
+from that hello, so a peer without it has nothing to derive from. Make the
+branch a hard refusal naming the reason, and retire
+`requireExtensionIdentity`'s "unless" — a v4 peer behind a v3 host is already
+refused at the hello by Task 4.2. (An earlier draft of this plan said to leave
+that branch alone and check its wording; that was written before the transcript
+salt made it uncomputable.)
+
 Test (`packages/server/tests/peer-hello-auth.test.ts` and the integration
-suites under `tests/integration/`, first): the peer path derives the same key
-the host path does against the same mock extension; a peer whose hello omits
-`sessionPub` is refused by the host at registration.
-Do: the same five changes. The peer's `requireExtensionIdentity` /
-`warnedUnverifiable` branch (`peer.ts:240-271`) is about a pre-1.12.0 *host*
-and is orthogonal — leave it, and check its wording still reads right beside a
-v4 refusal.
+suites under `tests/integration/`, first): two successive extension hellos
+relayed to one peer produce two hellos to the host with **different**
+`sessionPub` and `sessionNonce`; the peer derives the same key the host path
+does against the same mock extension; after `extension-disconnected` the peer
+holds no readable copy of the previous `sessionPriv` (through the exported
+surface or an injected zeroing hook, not an accessor that exists only for the
+test); a newly connected extension is **not** sent a cached peer hello; a peer
+whose hello omits `sessionPub` is refused by the host at registration; a peer
+that never receives an extension hello refuses rather than warning.
+Do: the five changes of Task 2.1, mounted on the mint point above rather than
+on `startPeer`.
 
 Commit: `feat(server)!: mint a session ephemeral per extension connection and authenticate every frame against its own identity`.
 
@@ -450,7 +556,34 @@ committing it, so the next genuine frame is still accepted (the `claimInboundSeq
 / `releaseInboundSeq` contract `socket.ts` already documents).
 Do: `'e2s'` on seal, `'s2e'` on open.
 
-Commit: `feat(extension)!: derive the session key against the MCP's ephemeral and bind every frame to its id, ordinal and direction`.
+**Task 3.3 — the identity that signs is the identity that is pinned (L6, which
+v4 makes load-bearing).** Where:
+`packages/extension-core/src/background/hello.ts:261-272`.
+Test (`packages/extension-core/tests/hello.test.ts`, first): a hello carrying a
+trusted record's `identityX25519Pub` but a **different** `identityEd25519Pub`,
+with a `sessionSig` that verifies under that different key, does **not**
+auto-trust — it falls through to needs-pair, returns no session key and writes
+no trust record. That is the impersonation set out in §2 above, and without
+this test nothing in the suite fails when the comparison is deleted, which is
+how it stayed absent for two majors. Also: the matching pair still auto-trusts,
+so no existing registration re-pairs because of this task (the same assertion
+Task 3.1 makes, for the same reason); and a legacy record whose
+`identityEd25519Pub` is absent or empty falls through to needs-pair rather than
+being read as a match.
+Do: add `record.identityEd25519Pub !== hello.identityEd25519Pub` to the
+`scopeIdentityChanged` disjunction at `:261-272` — one clause in the branch
+that is already there, so a mismatch takes the needs-pair path the user can
+answer rather than a `reject` the popup cannot show. Do **not** normalise an
+absent stored value with `?? hello.identityEd25519Pub`, which turns the check
+into a tautology; an absent one must mismatch. Nothing has to be migrated —
+`TrustRecord.identityEd25519Pub` is required (`trust-store.ts:115`) and written
+unconditionally (`:214`), and a record old enough to lack it is a 0.3.0
+leftover that `extensionIdentityX25519Pub ?? ''` already forces to re-pair, so
+its outcome is unchanged. Comment it with the `decideExtensionTrust` sentence
+quoted in §2 and a pointer to that function, because after this task the two
+halves of one rule live in two packages and only a comment says so.
+
+Commit: `feat(extension)!: derive the session key against the MCP's ephemeral, pin both halves of its identity, and bind every frame to its id, ordinal and direction`.
 
 ---
 
@@ -480,8 +613,9 @@ includes `hello-rejected`. Reason text, fixed and asserted:
 `1002 'protocol error'` today), the extension-hello branch below it, and the
 same two places in `peer.ts`.
 Test (`packages/server/tests/host.test.ts`, first): a socket that sends an
-extension hello with `protocolVersion: 3` is closed within one tick **with a
-reason naming both versions** (assert the reason string, not only the code);
+extension hello with `protocolVersion: 3` is closed within one tick with close
+code **1002** and **a reason naming both versions** (assert the reason string as
+well as the code);
 the pending `ownSessionReady` rejects immediately with an error whose message
 names both versions and the extension version to install — **not** after
 `SESSION_READY_TIMEOUT_MS` (assert against a fake clock); a `request()` issued
@@ -489,8 +623,14 @@ afterwards fails fast with the same message; a frame that is malformed for any
 *other* reason still closes with today's generic `1002 'protocol error'` and
 leaves the pending session alone, so the mismatch is the only case that gets
 the new treatment.
-Do: `peekHelloVersion` in that catch, the same shape as 4.1. Message text,
-fixed and asserted:
+Do: `peekHelloVersion` in that catch, the same shape as 4.1. **The close code
+stays `1002`** — the one already there (`host.ts:284`), and the right one:
+RFC 6455's 1002 is a protocol error, which a version mismatch exactly is, while
+this file spends 1008 on identity and authorization refusals (`:291`, `:314`,
+`:327`, `:403`, `:418`, `:474`). What changes is the reason and the immediate
+rejection, never the code — which is the same thing this task's paragraph above
+says when it calls the close "already there". Task 5.2 case 1 asserts the same
+`1002`. Message text, fixed and asserted:
 `protocol version mismatch: this MCP speaks fetchproxy protocol 4, the attached browser extension speaks 3 — update Transporter (the fetchproxy extension) to 3.0.0 or later`.
 Name the *extension* by its user-facing name, because the person reading this
 in a claude.ai tool error has a browser, not a package.
@@ -531,7 +671,7 @@ against too.
 `packages/server/tests/cross-version/refusal.test.ts`. Four cases, all
 asserting a *clean* outcome within a bounded time and never a timeout:
 
-1. **v3 mock extension → v4 host.** Host closes 1008, reason names both
+1. **v3 mock extension → v4 host.** Host closes **1002**, reason names both
    versions, `ownSessionReady` rejects immediately, elapsed time is far below
    `SESSION_READY_TIMEOUT_MS` (assert against a fake clock, not a wall-clock
    threshold).
@@ -549,11 +689,13 @@ asserting a *clean* outcome within a bounded time and never a timeout:
 **Task 5.3 — the mutation check.** Per
 `~/.claude/projects/.../mutation-testing-needs-a-rebuild.md`: cross-package
 tests run the built `dist/`, so a mutation without `npm run build` always
-survives. Build first, then mutate each of the four v4 facts in turn — drop
+survives. Build first, then mutate each of the five v4 facts in turn — drop
 `sessionPub` from the hello payload, drop `mcpSessionPub` from the ready
 payload, drop `direction` from the AAD, leave `HKDF_SESSION_INFO` at
-`1.0.0` — and confirm a test fails for each. Record the four results in the PR
-body. A fact with no failing test is a fact the next refactor removes.
+`1.0.0`, and delete the `identityEd25519Pub` comparison Task 3.3 adds — and
+confirm a test fails for each. Record the five results in the PR body. A fact
+with no failing test is a fact the next refactor removes, which is the whole
+history of the fifth one.
 
 Commit: `test(server,extension): prove a v3 peer meets a v4 host with a clean refusal, against frozen v3 bytes`.
 
@@ -568,7 +710,10 @@ this one — that the AAD does not change the wire size so `MAX_FRAME_BYTES` is
 unmoved. State the package-major off-by-one from decision 1 here, once.
 
 **Task 6.2 — `docs/PROTOCOL.md`.** The four wire facts above with their exact
-encodings, the two refusal paths and their message texts, and a table of
+encodings, the verification rule that goes with them (a hello is trusted only
+when **both** long-term keys match the pinned record — Task 3.3 — stated beside
+the signature it makes meaningful, not in a footnote), the two refusal paths and
+their message texts, and a table of
 `PROTOCOL_VERSION` → package major → what changed, so the off-by-one is
 readable rather than inferred.
 
@@ -577,7 +722,10 @@ the new residual precisely. Retract: `:236` "Hosting an MCP does not give the
 host the user's cookies, requests or responses" was **true only of a host that
 does not also hold the identity** — under v4 it is true of an identity holder
 too, and say what changed and when. `:197`/`:326` on replay: v4's AAD closes
-it; say so and stop overstating it as already closed. Add the new residuals
+it; say so and stop overstating it as already closed. Record Task 3.3: under v3
+the extension's trust match could omit the Ed25519 half because the ECDH proved
+possession of the pinned key, and under v4 it cannot — so the doc must not carry
+the old sentence into the new derivation. Add the new residuals
 (Group 7's list) rather than letting them be discovered.
 
 **Task 6.4 — `CLAUDE.md`.** §Security model summary items 2 and 3b get the v4
@@ -604,10 +752,22 @@ all of it is a sequence with a hand on it.
 
 | Population | Count (measured 2026-09-11) | How it moves | Latency |
 |---|---|---|---|
-| `@fetchproxy/*` packages | 6 (4 published, 2 private) | release-please, one combined PR, one `v3.0.0` tag, one publish job | minutes after the release PR merges |
+| `@fetchproxy/*` packages | **7 (5 published, 2 private)** | release-please, one combined PR, one `v3.0.0` tag, one publish job | minutes after the release PR merges |
 | Cohort npm consumers | **31 `*-mcp` repos** pinned at `^2.10.0` (moving to `^2.11.3` in PR H1), plus `@chrischall/mcp-utils`, whose declaration is a `*` **peer** and needs no range edit | 31 PRs, each `fix(deps):`, each its own release-please cycle, each its own npm publish | hours, and unattended it is days |
 | Bridged registrations on mcp-host | **~20** on the shared tier | a source PUT (or `mcp-host update-all`) per registration → new `configHash` → new install slot → builder artifact → restart | minutes if driven; **a night** if left to the `follow` cron |
 | The browser extension | effectively **one installed copy** today (see below) | rebuild `dist/`, reload at `chrome://extensions`, or install the GitHub-release `.zip` | seconds |
+
+The seven, counted from `packages/` on 2026-09-11 rather than from a doc:
+**published** — `@fetchproxy/protocol`, `@fetchproxy/server`,
+`@fetchproxy/bootstrap`, `@fetchproxy/test-helpers`, `@fetchproxy/cli`;
+**private** — `@fetchproxy/extension-core`, `@fetchproxy/extension-chrome`.
+`cli` is the one that gets missed: `CLAUDE.md`'s workspace table predates it
+and still lists six packages and "the other four publish to npm", which is
+where an earlier draft of this table got its numbers. It is not a spare part —
+Task 4.4 edits `packages/cli/src/bridge-errors.ts`, so `cli` ships a v4 change
+and `fpx` is how the operator debugs a straggler in step 5. Correct that table
+in Task 6.4 while you are in the file, and verify the count with
+`ls packages` before trusting either document.
 
 The exact cohort, so the executing session does not have to rediscover it:
 `alltrails angi artsonia booli canvas-parent compass creditkarma easytable etix
@@ -644,7 +804,8 @@ this paragraph in the answer.
 2. **fetchproxy 3.0.0.** Groups 1–6 merge; the release PR merges; the `v3.0.0`
    tag cuts; the publish job runs. Then, per the fleet rule that a green tag is
    not a green publish: `npm view @fetchproxy/protocol version` and the same
-   for `server`, `bootstrap`, `test-helpers` — all four must read `3.0.0`. If
+   for `server`, `bootstrap`, `test-helpers` and `cli` — all **five** must read
+   `3.0.0`. If
    any does not, re-run `release-please.yml` by `workflow_dispatch` with
    `republish_tag: v3.0.0`; the publish step is idempotent.
 3. **Build the extension now, before touching the cohort.** `npm run build
@@ -761,9 +922,11 @@ backing out is cheap.
 
 ## What this does NOT fix, stated plainly
 
-v4 closes H1 and M2. Everything below stays true the day it ships, and the
-`docs/SECURITY.md` rewrite in Task 6.3 must say so rather than let a reader
-infer that a version bump fixed the bridge.
+v4 closes H1, M2 and — because this break is precisely what would have made it
+exploitable — **L6**, which an earlier draft of this document deferred to the
+list below and which is now Task 3.3. Everything that remains stays true the day v4
+ships, and the `docs/SECURITY.md` rewrite in Task 6.3 must say so rather than
+let a reader infer that a version bump fixed the bridge.
 
 1. **The pair code an MCP shows its user is still the relay's number**
    (bridge report **M1**). `ws-server.ts`'s `pairingErrorMessage` (`:1728`,
@@ -809,12 +972,7 @@ infer that a version bump fixed the bridge.
    *second* wire change — deliberately not folded in, because it is additive
    work with a real design of its own and bundling it would put this break's
    schedule behind it.
-8. **`Ed25519` key confusion in the extension's trust match** (**L6**):
-   `hello.ts:261-272` matches on the X25519 hash, serverName, domains and the
-   extension's own identity, never `record.identityEd25519Pub ===
-   hello.identityEd25519Pub`. No confidentiality loss, and it is a one-line
-   comparison — but it is not in this plan, so it is not in this release.
-9. **mcp-host's F2 is still wanted.** v4 makes an identity holder unable to
+8. **mcp-host's F2 is still wanted.** v4 makes an identity holder unable to
    decrypt a transcript; F2 makes fewer parties identity holders. Landing v4 is
    not a reason to drop F2, and the two doc rewrites must not each claim the
    other's ground.
@@ -826,5 +984,6 @@ infer that a version bump fixed the bridge.
 `superpowers:finishing-a-development-branch`; watch the auto-review verdict and
 its `auto-review-followup` issue; address findings **on the open PR**; never add
 the arming label. When a PR merges, verify with `git diff main..<branch>` what
-actually landed, not what it intended to. After the release, `npm view` all four
-published packages before believing the tag.
+actually landed, not what it intended to. After the release, `npm view` all five
+published packages before believing the tag — `cli` included, which is the one a
+four-package habit drops.
