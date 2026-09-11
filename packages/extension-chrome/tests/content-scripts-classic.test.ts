@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { build } from 'esbuild';
+import { build, type BuildOptions } from 'esbuild';
 import { readFile } from 'node:fs/promises';
 import { contentScriptEntryOptions, moduleEntryOptions } from '../build.js';
 
@@ -31,7 +31,7 @@ const TOP_LEVEL_EXPORT = /^\s*export[\s{*]/m;
 // `import ...` / `import {` / `import "x"` statement is not.
 const TOP_LEVEL_IMPORT = /^\s*import[\s{'"*]/m;
 
-async function bundleText(options: typeof contentScriptEntryOptions) {
+async function bundleText(options: BuildOptions) {
   const result = await build({
     ...options,
     write: false,
@@ -42,7 +42,7 @@ async function bundleText(options: typeof contentScriptEntryOptions) {
 
 describe('content scripts build as classic (injectable) scripts', () => {
   it('emit no top-level import/export so Chrome MV3 injects them', async () => {
-    const files = await bundleText(contentScriptEntryOptions);
+    const files = await bundleText(contentScriptEntryOptions('release'));
     // Guard against the build silently producing nothing.
     expect(files.map((f) => f.path).join(',')).toMatch(/content\.js/);
     expect(files.map((f) => f.path).join(',')).toMatch(/capture-logger\.js/);
@@ -54,7 +54,7 @@ describe('content scripts build as classic (injectable) scripts', () => {
   });
 
   it('content.js still registers its onMessage listener (sanity)', async () => {
-    const files = await bundleText(contentScriptEntryOptions);
+    const files = await bundleText(contentScriptEntryOptions('release'));
     const content = files.find((f) => /content\.js$/.test(f.path));
     expect(content).toBeDefined();
     expect(content!.text).toContain('onMessage');
@@ -76,7 +76,7 @@ describe('module entries (background, popup) remain ES modules', () => {
       await readFile(new URL('../manifest.json', import.meta.url), 'utf8'),
     ) as { background: { service_worker: string; type?: string } };
 
-    const files = await bundleText(moduleEntryOptions);
+    const files = await bundleText(moduleEntryOptions('release'));
     const worker = files.find((f) =>
       f.path.endsWith('/' + manifest.background.service_worker),
     );
@@ -100,7 +100,9 @@ describe('module entries (background, popup) remain ES modules', () => {
   it('content scripts build to the opposite format from the service worker', async () => {
     // The pair matters more than either value alone: MV3 has no module content
     // scripts, so these two entries must never converge on one format.
-    expect(moduleEntryOptions.format).not.toBe(contentScriptEntryOptions.format);
-    expect(contentScriptEntryOptions.format).toBe('iife');
+    expect(moduleEntryOptions('release').format).not.toBe(
+      contentScriptEntryOptions('release').format,
+    );
+    expect(contentScriptEntryOptions('release').format).toBe('iife');
   });
 });

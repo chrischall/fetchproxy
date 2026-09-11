@@ -1661,6 +1661,13 @@ export class FetchproxyServer {
       // 0.5.2+: the extension queued us for pairing; fail in-flight tool
       // calls fast with an actionable error including the joint pair code
       // so the chat shows the same XXX-XXX the popup is displaying.
+      // M1 (bridge review 2026-09-10): `code` here is the handle's OWN
+      // derivation from the two identity pubs, never the number the
+      // `pair-pending` frame carried — the frame is checked against it and
+      // refused on a disagreement. That is what makes this display a second
+      // channel rather than an echo of the first: a party in the middle can
+      // choose what the frame says, and could otherwise make both "channels"
+      // the user compares agree.
       this.hostHandle.onPendingPair((code) => {
         this.rejectAllPending(this.pairingErrorMessage(code));
       });
@@ -1705,6 +1712,12 @@ export class FetchproxyServer {
       // 0.5.2+: invoke the caller's onPairCode for the peer path too, so
       // an MCP that wants to log the code to stderr (or surface it via an
       // MCP logging notification) gets the same hook on both roles.
+      // M1 (bridge review 2026-09-10): wiring this hook to `onPendingPair`
+      // used to hand the consumer the wire's number on the peer path while
+      // the host path handed it a self-derived one. Both are self-derived now
+      // — a peer that cannot derive (a pre-1.12.0 host relays no extension
+      // hello) fires nothing rather than passing on a code it cannot vouch
+      // for.
       if (this.opts.onPairCode) {
         const cb = this.opts.onPairCode;
         this.peerHandle.onPendingPair((code) => cb(code));
@@ -3614,11 +3627,21 @@ export class FetchproxyServer {
   /**
    * 2.5.0: the extension link as {@link BridgeSessionState}, read off
    * whichever handle is live. A pending pair code outranks "extension not
-   * seen" because the code could only have come from the extension — a
-   * peer behind an older host never sees the extension hello but does see
-   * pair-pending frames. Where the extension is KNOWN to be gone (a host's
+   * seen" because a code could only have come from a `pair-pending` frame
+   * the extension sent. Where the extension is KNOWN to be gone (a host's
    * socket closed, a peer told by a 2.5.0+ host) the handle has already
    * dropped the code, so the precedence never lies there (#283).
+   *
+   * M1 (bridge review 2026-09-10): a code is now only ever present when the
+   * handle DERIVED it from both identity pubs, and both handles set and clear
+   * that derivation in lockstep with the extension hello — so the precedence
+   * has nothing left to decide: a pair code implies the hello, which implies
+   * `extensionConnected`. A peer behind a pre-1.12.0 host is relayed no
+   * extension hello, cannot derive, and therefore reports
+   * `extension_disconnected` with a null code where it used to report the
+   * wire's number as `pair_pending` — the honest state for a peer that has
+   * never been told an extension is there. That is the trade: a number nobody
+   * can check is worse than no number.
    */
   private sessionSnapshot(): BridgeSessionState {
     const handle = this.hostHandle ?? this.peerHandle;

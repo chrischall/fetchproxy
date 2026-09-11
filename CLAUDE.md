@@ -43,7 +43,8 @@ the extension, never published to npm); the other four publish to npm.
 | `npm test` | `vitest run` across the whole monorepo (865 tests), all mocked, no network. Must stay green. `vitest.config.ts` excludes `**/.claude/**` and `**/dist/**` so stale agent worktrees don't poison discovery. |
 | `npm run build` | `npm run build --workspaces --if-present` — TS build (`tsc -b`) for protocol → server → bootstrap → extension-core → test-helpers, then extension-chrome's esbuild bundle (`tsx build.ts`). **Order matters** — downstream workspaces import `@fetchproxy/protocol` via its `exports`→`dist/`, so protocol/dist must exist first. |
 | `npm run typecheck` | `tsc -b` over protocol, server, bootstrap, extension-core, test-helpers. extension-chrome is typechecked by its esbuild build instead. |
-| `npm run build --workspace=@fetchproxy/extension-chrome` | Rebuild just the unpacked extension after a source edit. Drop into `chrome://extensions/` → fetchproxy → reload. |
+| `npm run build --workspace=@fetchproxy/extension-chrome` | Rebuild just the unpacked extension after a source edit. Drop into `chrome://extensions/` → fetchproxy → reload. **No sourcemaps** — this is the command the release workflow zips, so release is the default. |
+| `npm run build:dev --workspace=@fetchproxy/extension-chrome` | Same, with inline sourcemaps, for debugging the extension in DevTools. Never what ships. |
 | `npm test --workspace=@fetchproxy/<pkg>` | Run just one package's tests when iterating. |
 
 No top-level `npm run dev`; for a watch loop use `npm run test:watch` (root `vitest`) or vitest `--watch` per workspace.

@@ -86,7 +86,17 @@ describe('bridgeHealth().session', () => {
     });
   });
 
-  it('is pair_pending even when a peer cannot see the extension directly — the code proves it is there', () => {
+  it('ranks a pair code above "extension not seen" — precedence only, no live handle produces this', () => {
+    // A unit test of `sessionSnapshot()`'s precedence, and nothing more. It
+    // used to stand for a peer behind a pre-1.12.0 host, where the wire's
+    // number arrived without an extension hello — and since M1 (bridge review
+    // 2026-09-10) that peer reports `extension_disconnected` with a null code
+    // instead, because a code is only ever present when the handle DERIVED it
+    // from both identity pubs and the derivation is set and cleared in
+    // lockstep with the hello. So this combination is `installHandle`'s to
+    // make, not a real handle's; what it pins is the ordering of the
+    // branches, which is still load-bearing for #283's "the extension is
+    // gone" case.
     const s = new FetchproxyServer(baseOpts);
     installHandle(s, { extensionConnected: false, sessionLinked: false, pairCode: '457-035' });
     expect(s.bridgeHealth().session.state).toBe('pair_pending');

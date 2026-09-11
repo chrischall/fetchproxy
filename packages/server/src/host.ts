@@ -31,14 +31,124 @@ import { awaitSessionReady, FetchproxyHelloRejectedError } from './session-ready
 import type { Identity } from './identity.js';
 import { decideExtensionTrust, type ExtensionTrustPort } from './extension-trust.js';
 
-// Reject WS upgrades from public origins (drive-by webpage defense).
+// Reject WS upgrades from browsing contexts (drive-by webpage defense).
 // Browsers send Origin: <scheme>://<host>[:<port>] on WS upgrades from
-// pages. Extensions send chrome-extension:// or null/missing. We allow:
-// - Missing or null origin (extension)
-// - chrome-extension://, safari-extension://, moz-extension://
-// - http(s)://127.0.0.1 or localhost (dev tools / curl from same host)
-// Everything else (including https://evil.com) is rejected.
-const PUBLIC_ORIGIN_RE = /^https?:\/\/(?!(127\.0\.0\.1|localhost)(:|$))/i;
+// pages. Extensions send chrome-extension:// (moz-, safari-web-); a Node
+// peer dialing the concentrator sends no Origin header at all. We allow
+// exactly two things, and `originVerdict` below is an ALLOWLIST of them
+// rather than a list of refusals with everything else falling through:
+// - A missing Origin header (a peer, or curl)
+// - chrome-extension://, moz-extension://, safari-web-extension://
+// Every http(s) origin is a PAGE and is rejected, as is the opaque `null`
+// origin, and so is any other scheme — a packaged desktop or mobile app
+// (tauri://, capacitor://, app://) is a page with an origin of its own.
+const HTTP_ORIGIN_RE = /^https?:\/\//i;
+const PUBLIC_ORIGIN_RE = /^https?:\/\/(?!(127\.0\.0\.1|localhost|\[::1\])(:|$))/i;
+
+/**
+ * The origin a browser extension's own pages and service worker dial with.
+ *
+ * This is the whole of what the gate admits with an `Origin` header present,
+ * which is why it is a regex over named schemes and not "not one of the ones
+ * we refuse": the population this layer exists to keep out is every browsing
+ * context that is not the extension, and a browsing context does not have to
+ * be served over http to be one. A `tauri://`, `capacitor://`, `ionic://` or
+ * `app://` page is an installed app's UI, it can reach loopback, and it can
+ * raise a pair prompt under a name of its choosing exactly as a web page can.
+ *
+ * Adding a browser means adding its scheme here — which is the point. A
+ * fallthrough admits the next scheme nobody has thought of, silently.
+ */
+const EXTENSION_ORIGIN_RE = /^(chrome-extension|moz-extension|safari-web-extension):\/\//i;
+
+/**
+ * The literal value a browsing context with an OPAQUE origin sends: a
+ * sandboxed iframe, an `srcdoc` document, a `data:` URL, a `file://` page.
+ * The header is present and its value is the four characters `null`, which
+ * is not the same thing as the header being absent.
+ */
+const OPAQUE_ORIGIN = 'null';
+
+/**
+ * The one documented way to put `null` and `localhost` origins back.
+ *
+ * Both were accepted until this existed, and the comment above used to call
+ * `null` "the extension" — it is not. An extension's socket carries its own
+ * `chrome-extension://` origin; `null` is what a page with an opaque origin
+ * sends, and `http://localhost:<port>` is what a dev server, a notebook or
+ * any locally-served app sends. Admitting those means such a page, in a
+ * browser the user already has open, reaches the concentrator and is
+ * answered — and `docs/SECURITY.md` §T2 defence 2 is the layer that exists
+ * to stop exactly that. With those two through, it stopped `https://evil.com`
+ * and nothing else.
+ *
+ * They are still useful when somebody is BUILDING against the bridge from a
+ * local page, which is why this is an escape rather than a removal — and why
+ * it is an environment variable rather than an option: the packages that
+ * construct a `FetchproxyServer` are not edited to debug one of them.
+ * Exactly `1` turns it on. Anything else is a typo rather than an intention
+ * and is refused WITH A WARNING rather than read as "on", because a value
+ * that half works is how a development escape survives into a deployment.
+ */
+export const ALLOW_LOCAL_ORIGINS_ENV = 'FETCHPROXY_ALLOW_LOCAL_ORIGINS';
+
+function envAllowsLocalOrigins(env: Record<string, string | undefined> = process.env): boolean {
+  const raw = env[ALLOW_LOCAL_ORIGINS_ENV];
+  if (raw === undefined || raw.trim() === '') return false;
+  if (raw.trim() === '1') return true;
+  console.warn(
+    `[fetchproxy] ignoring ${ALLOW_LOCAL_ORIGINS_ENV}=${JSON.stringify(raw)}: the only value ` +
+      `that turns it on is 1. Upgrades from a null or localhost origin stay refused.`,
+  );
+  return false;
+}
+
+/** What the origin gate decided about one upgrade — see `originVerdict`. */
+export type OriginVerdict = { allow: true } | { allow: false; reason: string; escapable: boolean };
+
+/**
+ * Decide one upgrade's `Origin`.
+ *
+ * A refusal is either ESCAPABLE (a local page, which a developer may
+ * genuinely be holding) or not (a public page, which the escape deliberately
+ * does not admit — turning the gate off entirely is not on offer). "Local" is
+ * the complement of `PUBLIC_ORIGIN_RE` within http(s) rather than a second
+ * regex of its own, so the two cannot drift apart and leave an http origin
+ * that is neither and so falls through to the next branch.
+ *
+ * The allowed population is an extension scheme, or no `Origin` header at
+ * all. Everything else is refused, including a scheme this file does not
+ * name: the last branch is a refusal rather than an `allow`.
+ */
+export function originVerdict(origin: string | undefined, allowLocal: boolean): OriginVerdict {
+  // No Origin header: a Node peer dialing the concentrator, or curl. A page
+  // cannot get here — every browser sends one on a WS upgrade.
+  if (origin === undefined) return { allow: true };
+
+  if (HTTP_ORIGIN_RE.test(origin)) {
+    if (PUBLIC_ORIGIN_RE.test(origin)) {
+      return { allow: false, reason: 'origin not allowed', escapable: false };
+    }
+    return allowLocal
+      ? { allow: true }
+      : { allow: false, reason: 'localhost page origin not allowed', escapable: true };
+  }
+
+  if (origin.toLowerCase() === OPAQUE_ORIGIN) {
+    return allowLocal
+      ? { allow: true }
+      : { allow: false, reason: 'opaque (null) origin not allowed', escapable: true };
+  }
+
+  // chrome-extension:// and its siblings — the extension itself.
+  if (EXTENSION_ORIGIN_RE.test(origin)) return { allow: true };
+
+  // Anything else with an Origin header is a browsing context we have no
+  // reason to know: a packaged app's page, a scheme a future browser mints,
+  // or a present-but-empty header. Refused, and not escapable — the escape
+  // admits local ORIGINS, it does not widen what counts as the extension.
+  return { allow: false, reason: 'origin not allowed', escapable: false };
+}
 
 /**
  * How long a socket may sit on the port without identifying itself.
@@ -157,16 +267,50 @@ interface PeerSlot {
 const enc = new TextEncoder();
 
 export async function startHost(opts: HostOpts): Promise<HostHandle> {
+  // Read once, at boot: the answer cannot change while the process runs, and
+  // reading it here is what makes the warning below fire once rather than on
+  // every upgrade a port scanner attempts.
+  const allowLocalOrigins = envAllowsLocalOrigins();
+  if (allowLocalOrigins) {
+    console.warn(
+      `[fetchproxy] ${ALLOW_LOCAL_ORIGINS_ENV}=1: accepting WebSocket upgrades from null and ` +
+        `localhost page origins. This is a development escape — any local page the browser ` +
+        `has open can reach this concentrator while it is set.`,
+    );
+  }
+
+  /**
+   * Origins already named in a warning. Bounded because the thing on the
+   * other end of a refusal may be a page in a loop, and a log line per
+   * attempt is a way to fill a disk from outside.
+   */
+  const warnedOrigins = new Set<string>();
+
   const wss = new WebSocketServer({
     server: opts.httpServer,
     maxPayload: opts.maxPayloadBytes ?? MAX_PAYLOAD_BYTES,
     verifyClient: (info, cb) => {
       const origin = info.req.headers.origin;
-      if (origin && PUBLIC_ORIGIN_RE.test(origin)) {
-        cb(false, 403, 'origin not allowed');
+      const verdict = originVerdict(origin, allowLocalOrigins);
+      if (verdict.allow) {
+        cb(true);
         return;
       }
-      cb(true);
+      // Only the escapable refusals say anything. A developer holding a
+      // localhost page has a remedy and needs to be told it; a public page
+      // has none, so there is nothing to print and every reason not to —
+      // that refusal is the drive-by this gate exists for.
+      if (verdict.escapable && origin !== undefined && warnedOrigins.size < 8) {
+        if (!warnedOrigins.has(origin)) {
+          warnedOrigins.add(origin);
+          console.warn(
+            `[fetchproxy] refused a WebSocket upgrade from ${JSON.stringify(origin)}: ` +
+              `${verdict.reason}. If that is you, developing against the bridge, set ` +
+              `${ALLOW_LOCAL_ORIGINS_ENV}=1 on this MCP — never on a deployed one.`,
+          );
+        }
+      }
+      cb(false, 403, verdict.reason);
     },
   });
 
@@ -206,6 +350,8 @@ export async function startHost(opts: HostOpts): Promise<HostHandle> {
   // a `pair-pending` frame. Cleared when our session derives (the user
   // approved) and on host close. Surface to MCP-level callers so they can
   // include it in tool errors instead of hanging on a missing session.
+  // M1 (bridge review 2026-09-10): only ever set from `pairCodeFor` — the
+  // number on the wire is checked against that, never copied out of the frame.
   let ownPendingPairCode: string | null = null;
 
   let resolveOwnSession!: (s: SessionState) => void;
@@ -230,6 +376,36 @@ export async function startHost(opts: HostOpts): Promise<HostHandle> {
   // until it either becomes `extensionWs` or is refused, so the check-and-set
   // around an awaited pin read cannot interleave with a second hello.
   let extensionClaim: WebSocket | null = null;
+
+  /**
+   * The joint pair code for an extension hello — `SHA256(ownPub || extPub)`,
+   * the order the popup derives it in. The only code this MCP ever shows a
+   * user, and the value every `pair-pending` frame is judged against.
+   *
+   * M1 (bridge review 2026-09-10): computed FROM THE LIVE HELLO on demand
+   * rather than cached beside it, for the two reasons `peer.ts`'s twin gives —
+   * a `pair-pending` interleaved with the hello it belongs to is judged
+   * against that identity rather than against a derivation still in flight,
+   * and a code cannot outlive the pair of identities it commits to, because
+   * clearing `extensionHello` when the browser goes is the whole of retiring
+   * it. A stale code left behind here would be one identity's number
+   * vouching for the next connection's.
+   */
+  const pairCodeFor = async (
+    hello: HelloFrameFromExtension,
+  ): Promise<string | null> => {
+    try {
+      return await derivePairCodeFromIds(
+        opts.ownIdentity.x25519Pub,
+        fromB64(hello.identityX25519Pub),
+      );
+    } catch (e) {
+      // Nothing to compare against and nothing to show. Every caller fails
+      // closed on the null rather than falling back to the frame's number.
+      console.error('[fetchproxy] could not derive the pair code:', e);
+      return null;
+    }
+  };
 
   wss.on('connection', (ws) => {
     let identified: 'extension' | 'peer' | null = null;
@@ -353,13 +529,17 @@ export async function startHost(opts: HostOpts): Promise<HostHandle> {
           // identities. The popup is derived from the same inputs in
           // the same order, so the two codes match iff there's no
           // MITM between this MCP and the real extension.
-          if (opts.onPairCode) {
+          //
+          // M1 (bridge review 2026-09-10): the hook is handed OUR derivation
+          // and never the wire's number — a code taken off a `pair-pending`
+          // is the relay's claim about itself, which is precisely what the
+          // SAS comparison is supposed to catch. What the hook is shown and
+          // what a frame is judged against are the same function of the same
+          // hello, so a deployment with no hook is judged identically.
+          const helloPairCode = await pairCodeFor(frame);
+          if (opts.onPairCode && helloPairCode !== null) {
             try {
-              const code = await derivePairCodeFromIds(
-                opts.ownIdentity.x25519Pub,
-                fromB64(frame.identityX25519Pub),
-              );
-              opts.onPairCode(code);
+              opts.onPairCode(helloPairCode);
             } catch (e) {
               console.error('[fetchproxy] onPairCode threw:', e);
             }
@@ -422,10 +602,19 @@ export async function startHost(opts: HostOpts): Promise<HostHandle> {
           identified = 'peer';
           peerMcpId = frame.mcpId;
           peers.set(frame.mcpId, { ws, helloFrame: frame });
-          if (extensionWs) extensionWs.send(JSON.stringify(frame));
           // 1.12.0 (#208): a peer joining an already-connected extension needs
           // the same identity material a peer that was here first receives.
+          // Written to this peer BEFORE its hello goes the other way, to make
+          // the dependency explicit rather than incidental: the extension
+          // answers that hello with a `pair-pending`, and a peer judges one
+          // against a code derived from the extension hello (M1). The order is
+          // not what makes that safe — both sends are synchronous in one turn,
+          // and the answer costs a round trip through the extension, so the
+          // identity is on this socket long before it — but the two lines read
+          // in the order the peer consumes them, and nothing later can reorder
+          // them by accident.
           if (extensionHello) ws.send(JSON.stringify(extensionHello));
+          if (extensionWs) extensionWs.send(JSON.stringify(frame));
           return;
         }
 
@@ -591,8 +780,36 @@ export async function startHost(opts: HostOpts): Promise<HostHandle> {
 
         if (frame.type === 'pair-pending' && identified === 'extension') {
           if (frame.mcpId === opts.ownMcpId) {
-            ownPendingPairCode = frame.pairCode;
-            pendingPairListeners.forEach((cb) => cb(frame.pairCode));
+            // M1 (bridge review 2026-09-10): the code a user compares against
+            // the popup has to be the one this process derived from the two
+            // identity pubs. The frame is plaintext and unauthenticated, and
+            // it crosses whatever sits between us and the browser — so
+            // displaying ITS number lets an in-path party show each end a
+            // code of its own choosing and make the two "channels" agree. A
+            // disagreement is therefore an alarm and a closed socket, never a
+            // display value; there is no benign reading of it, since the real
+            // extension derives the same way from the same two keys. Taken
+            // from the hello that is live NOW and derived from it here, so
+            // this judgement never sees a code half-written by the hello
+            // handler it interleaves with, nor one left over from a browser
+            // that has gone (see `pairCodeFor`).
+            const hello = extensionHello;
+            const derived = hello === null ? null : await pairCodeFor(hello);
+            if (derived === null || frame.pairCode !== derived) {
+              console.error(
+                `[fetchproxy] ${opts.ownServerName}: the extension's pair code ` +
+                  `(${frame.pairCode}) does not match the one derived from both ` +
+                  `identities` +
+                  (derived === null
+                    ? ' (none — this MCP could not derive its own)'
+                    : ` (${derived})`) +
+                  ' — refusing to pair (possible MITM between this MCP and the extension)',
+              );
+              ws.close(1008, 'pair code mismatch');
+              return;
+            }
+            ownPendingPairCode = derived;
+            pendingPairListeners.forEach((cb) => cb(derived));
           } else {
             const slot = peers.get(frame.mcpId);
             if (slot) slot.ws.send(JSON.stringify(frame));
@@ -615,6 +832,11 @@ export async function startHost(opts: HostOpts): Promise<HostHandle> {
       if (extensionClaim === ws) extensionClaim = null;
       if (identified === 'extension' && extensionWs === ws) {
         extensionWs = null;
+        // M1 (bridge review 2026-09-10): dropping the hello is also what
+        // retires the joint code — it belongs to THIS pair of identities, and
+        // a stale one would let this browser's number vouch for whatever
+        // connects next. Nothing separate is cleared, because `pairCodeFor`
+        // keeps nothing separate to clear.
         extensionHello = null;
         if (!ownSession) {
           rejectOwnSession(new Error('extension disconnected before ready'));

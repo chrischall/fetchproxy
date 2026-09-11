@@ -1,10 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import type { SessionState } from './session.js';
+import type { SessionState } from '../src/session.js';
 import {
   awaitSessionReady,
   FetchproxyHelloRejectedError,
   FetchproxySessionNotReadyError,
-} from './session-ready.js';
+} from '../src/session-ready.js';
 
 const fakeSession = {} as SessionState;
 const never = (): Promise<SessionState> => new Promise<SessionState>(() => {});

@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   validateFrame,
+  derivePairCodeFromIds,
   ed25519Verify,
   generateX25519,
   ecdhX25519,
@@ -320,8 +321,15 @@ describe('peer client', () => {
     // kept (sendInner's invariant), only the report changes. Last in this
     // test on purpose: the re-link below mints a new key, and the sealed
     // frames above were built under the first one.
-    hostWs!.send(JSON.stringify({ type: 'pair-pending', mcpId, pairCode: '457-035' }));
-    await vi.waitFor(() => expect(peer!.pendingPairCode()).toBe('457-035'));
+    // M1: the peer surfaces only the code it derived from its own identity
+    // pub and the relayed extension hello's, so a frame must carry that
+    // number — one of its own would be an alarm and a closed upstream.
+    const pairCode = await derivePairCodeFromIds(
+      identity.x25519Pub,
+      new Uint8Array(Buffer.from('AAAA', 'base64')),
+    );
+    hostWs!.send(JSON.stringify({ type: 'pair-pending', mcpId, pairCode }));
+    await vi.waitFor(() => expect(peer!.pendingPairCode()).toBe(pairCode));
     hostWs!.send(JSON.stringify({ type: 'extension-disconnected' }));
     await vi.waitFor(() => expect(peer!.extensionConnected()).toBe(false));
     expect(peer.sessionLinked()).toBe(false);

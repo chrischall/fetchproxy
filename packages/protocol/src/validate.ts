@@ -2,6 +2,7 @@ import type { Capability, Frame, HelloFrame, ReadyFrame, EncryptedFrame, InnerFr
 import { KNOWN_CAPABILITIES, PROTOCOL_VERSION } from './frames.js';
 import { isValidMcpId } from './mcp-id.js';
 import { isValidJsonPointer } from './json-pointer.js';
+import { isPublicSuffix } from './public-suffix.js';
 
 /**
  * Thrown by `validateFrame` / `validateInnerFrame` when a structurally
@@ -536,6 +537,16 @@ function validateHello(raw: Record<string, unknown>): HelloFrame {
       }
       if (!HOSTNAME_RE.test(d)) {
         throw new ProtocolError(`hello.domains: invalid hostname ${JSON.stringify(d)}`);
+      }
+      // A `domains` entry is matched exact-or-subdomain on every side, so a
+      // public suffix claims every site anybody can register under it while
+      // the pair prompt shows one plausible string. Heuristic, not the PSL —
+      // a suffix this file has never heard of is still accepted; the coverage
+      // and its holes are spelled out in public-suffix.ts.
+      if (isPublicSuffix(d)) {
+        throw new ProtocolError(
+          `hello.domains: ${JSON.stringify(d)} is a public suffix — declare a registrable domain (e.g. "example.${d}"), not the suffix every site under it shares`,
+        );
       }
     }
     if (raw.capabilities !== undefined) {

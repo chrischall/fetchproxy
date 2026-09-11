@@ -227,6 +227,18 @@ A port *per MCP* is meaningful in exactly one topology, and it is not this one: 
 
 An explicit `port` option always wins; an unparseable value is ignored rather than binding something nobody wrote down.
 
+### Who may open the socket
+
+The concentrator answers the extension (which dials with an extension scheme — `chrome-extension://`, `moz-extension://`, `safari-web-extension://`) and other MCPs on this machine (which send no `Origin` header at all). That pair is the whole allowlist. Everything else that a browser could point at the port is a **page**, and every page is refused with 403 — one served from `http://localhost:<port>`, `http://127.0.0.1:<port>` or `http://[::1]:<port>`; one with the opaque `null` origin a sandboxed iframe, an `srcdoc` document or a `file://` page sends; and one on any other scheme, such as a Tauri or Capacitor app's own UI. The local two used to get through, and so did every unrecognised scheme; `docs/SECURITY.md` §T2 says what they could do with it.
+
+If you are developing against the bridge *from* a local page, the one way back is:
+
+```bash
+FETCHPROXY_ALLOW_LOCAL_ORIGINS=1 my-mcp
+```
+
+which admits `null` and loopback page origins (`localhost`, `127.0.0.1`, `[::1]`) and nothing else — a public origin, and a non-extension scheme, are still refused with it set. It is a development escape: any local page the browser has open can reach the concentrator while it is on, so do not set it on a deployed MCP.
+
 ### Remote bridge targets (2.1.0+)
 
 The extension can also dial a configured `wss://` relay, **in addition to** loopback — for an MCP that runs somewhere other than this laptop and still has to issue its requests from inside your signed-in tab. Add one in the popup's **Bridges** section: a URL plus a credential.
