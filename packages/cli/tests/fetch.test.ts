@@ -1,5 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
-import { runFetch, assertUrlOnProfile, type VerbServer } from '../src/verbs/fetch.js';
+import {
+  runFetch, assertHostOnProfile, assertUrlOnProfile, type VerbServer,
+} from '../src/verbs/fetch.js';
 import { emptyProfile } from '../src/profiles.js';
 import { EXIT, UsageError, type Io } from '../src/output.js';
 import { FetchproxySessionNotReadyError } from '@fetchproxy/server';
@@ -240,5 +242,61 @@ describe('assertUrlOnProfile — judged by hostname, as the server is', () => {
     // Not a suffix match on the raw string either: "notexample.com" ends with
     // "example.com" without being on it.
     expect(() => assertUrlOnProfile('https://notexample.com:8443/x', PROF)).toThrow(UsageError);
+  });
+});
+
+/**
+ * The same class of divergence as the port one above, from the same cause: a
+ * host name is case-insensitive, and the layer that ENFORCES this rule says so
+ * — the server's `assertUrlInDomains` lowercases the URL's hostname AND each
+ * declared domain before comparing. The CLI compared both raw, so a profile
+ * declaring `Example.com` refused `https://example.com/x` at the pre-flight
+ * while the bridge would have accepted it one hop later. The protocol's rule
+ * is the one that binds; the CLI's job is to report it early, not to add to
+ * it.
+ *
+ * `assertHostOnProfile` is tested directly as well as through the URL form,
+ * because `capture-redirect` hands it a BARE host off the command line — that
+ * name never passes through `new URL()` and so is never lowercased for it.
+ */
+describe('assertHostOnProfile — domain case is not a rule the server has', () => {
+  it('accepts a lower-case URL host on a mixed-case declared domain', () => {
+    expect(assertUrlOnProfile('https://example.com/x', emptyProfile(['Example.com'])))
+      .toBe('Example.com');
+  });
+
+  it('accepts a subdomain of a mixed-case declared domain', () => {
+    expect(assertUrlOnProfile('https://api.example.com/x', emptyProfile(['Example.COM'])))
+      .toBe('Example.COM');
+  });
+
+  // The reverse, which only a bare host can reach: `new URL()` lowercases a
+  // hostname, so `capture-redirect`'s argument is the one that arrives cased.
+  it('accepts a mixed-case bare host on a lower-case declared domain', () => {
+    const prof = emptyProfile(['example.com']);
+    expect(assertHostOnProfile('Example.com', prof)).toBe('example.com');
+    expect(assertHostOnProfile('API.Example.COM', prof)).toBe('example.com');
+  });
+
+  /**
+   * The DECLARED spelling comes back, never a lowercased copy: the return is
+   * threaded to `request()` as `{ domain }`, and the server's
+   * `resolveBaseDomain` checks it with an exact `domains.includes(domain)`
+   * against the same array the profile supplied. A normalised return would
+   * pass this gate and fail that one.
+   */
+  it('returns the declared spelling rather than a normalised one', () => {
+    expect(assertUrlOnProfile('https://example.com/x', emptyProfile(['Example.com'])))
+      .toBe('Example.com');
+    expect(assertHostOnProfile('EXAMPLE.COM', emptyProfile(['Example.com'])))
+      .toBe('Example.com');
+  });
+
+  it('refuses a host that is off the profile whatever the case', () => {
+    const prof = emptyProfile(['Example.com']);
+    expect(() => assertUrlOnProfile('https://evil.com/x', prof)).toThrow(UsageError);
+    expect(() => assertHostOnProfile('EVIL.COM', prof)).toThrow(UsageError);
+    // Still not a raw suffix match once case is out of the way.
+    expect(() => assertHostOnProfile('NotExample.com', prof)).toThrow(UsageError);
   });
 });

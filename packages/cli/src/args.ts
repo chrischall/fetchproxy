@@ -477,6 +477,14 @@ export function parseCliArgs(
   }
 
   if (cmd === 'write-cookies') {
+    // BEFORE either value source is touched. `requireProfile` used to sit in
+    // the returned object literal, which is evaluated last, so a missing
+    // `-p` was reported only after `readStdin()` had already drained the
+    // pipe — and stdin is one-shot: the cookie the user piped in was spent to
+    // produce a usage error that needed nothing from it, with the command
+    // doing nothing and no way to pipe the same value again. This check needs
+    // no input at all, so it is the first one made.
+    const profile = requireProfile(values.profile);
     let cookies: Record<string, string> = {};
     if (values['from-stdin']) {
       // Two sources for one set is two intentions in one command, and the
@@ -496,7 +504,7 @@ export function parseCliArgs(
       }
     }
     return {
-      kind: 'write-cookies', profile: requireProfile(values.profile), cookies,
+      kind: 'write-cookies', profile, cookies,
       storageDomain: values['storage-domain'], storageSubdomain: values['storage-subdomain'],
     };
   }

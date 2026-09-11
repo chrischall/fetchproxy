@@ -408,6 +408,37 @@ describe('write-cookies value sources', () => {
       expect(cmd.storageDomain).toBe('d.com');
     });
 
+    /**
+     * stdin is a ONE-SHOT pipe carrying a live session cookie: once drained it
+     * cannot be re-read, and the shell that produced it has already exited. So
+     * a check that needs nothing from it has to be made FIRST. Parsing used to
+     * read the pipe and only then evaluate `requireProfile`, which sits in the
+     * RETURNED object literal — so `--from-stdin` with no `-p` spent the
+     * user's secret to reach a usage error that could have been raised before
+     * the pipe was touched: the command did nothing and the cookie was gone.
+     * Asserting the error alone cannot see that, so the READER is what is
+     * asserted on.
+     */
+    it('refuses a missing profile before the one-shot pipe is drained', () => {
+      let reads = 0;
+      const drain = () => { reads += 1; return 'sid=abc\n'; };
+      expect(() => asWrite(['write-cookies', '--from-stdin'], undefined, drain))
+        .toThrow(UsageError);
+      expect(() => asWrite(['write-cookies', '--from-stdin'], undefined, drain))
+        .toThrow(/-p\/--profile/);
+      expect(reads).toBe(0);
+    });
+
+    // The same rule for the other indirection. `name=@file` is re-readable
+    // rather than one-shot, but a missing profile is knowable without the
+    // disk either way, and the two branches are one command's two spellings.
+    it('refuses a missing profile before an @file value is read', () => {
+      let reads = 0;
+      expect(() => asWrite(['write-cookies', 'sid=@/tmp/sid.txt'],
+        () => { reads += 1; return 'abc'; })).toThrow(UsageError);
+      expect(reads).toBe(0);
+    });
+
     // A terminal never reaches EOF on its own, so the default reader would
     // block with nothing on screen to say why. Refusing is the only outcome
     // that can be diagnosed from the scrollback.

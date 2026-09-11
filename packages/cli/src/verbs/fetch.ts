@@ -72,9 +72,28 @@ export function pairCodePrinter(io: Io): (code: string) => void {
  * URL: that verb re-implemented this rule inline and copied this error text,
  * so the two spellings of "not on this profile" could drift apart with nothing
  * to catch it.
+ *
+ * Case-INSENSITIVELY, because a host name is, and because the layer that
+ * ENFORCES this rule says so: the server's `assertUrlInDomains` lowercases the
+ * URL's hostname AND each declared domain before comparing. Compared raw, a
+ * profile declaring `Example.com` refused `https://example.com/x` here while
+ * the bridge would have accepted it one hop later — the same class of
+ * divergence as the port one below, with the same resolution: the protocol's
+ * rule binds and this pre-flight only reports it early. `capture-redirect`'s
+ * bare host is the argument that can arrive cased in either direction, since
+ * `new URL()` has already lowercased a hostname for `assertUrlOnProfile`.
+ *
+ * The DECLARED spelling comes back, never a normalised copy: the return is
+ * threaded to `request()` as `{ domain }`, which the server resolves with an
+ * exact `domains.includes(domain)` against the very array the profile
+ * supplied.
  */
 export function assertHostOnProfile(host: string, profile: Profile): string {
-  const matched = profile.domains.find((d) => host === d || host.endsWith(`.${d}`));
+  const needle = host.toLowerCase();
+  const matched = profile.domains.find((d) => {
+    const declared = d.toLowerCase();
+    return needle === declared || needle.endsWith(`.${declared}`);
+  });
   if (matched === undefined) {
     throw new UsageError(
       `${host} is not on this profile's declared domains (${profile.domains.join(', ')})`,
