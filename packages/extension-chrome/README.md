@@ -20,6 +20,13 @@ cd packages/extension-chrome
 npx tsx build.ts
 ```
 
+That is the **release** build: no sourcemaps, because the release workflow zips
+`dist/` with this same plain command, so whatever the default is, is what
+ships. For a debuggable bundle add `--dev` (or run
+`npm --workspace=@fetchproxy/extension-chrome run build:dev`), which inlines
+the sourcemaps and takes `background.js` from ~147 KB to ~790 KB. Both halves
+are pinned by `tests/release-bundle-sourcemaps.test.ts`.
+
 Output lands in `packages/extension-chrome/dist/`:
 
 ```

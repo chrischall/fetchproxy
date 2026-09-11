@@ -4,7 +4,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "tsx build.ts"
+    "build": "tsx build.ts",
+    "build:dev": "tsx build.ts --dev"
   },
   "dependencies": {
     "@fetchproxy/extension-core": "^2.11.3",

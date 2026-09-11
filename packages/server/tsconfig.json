@@ -6,5 +6,14 @@
     "composite": true
   },
   "include": ["src/**/*"],
+  // A test file next to the source it covers is still a source file to
+  // `include`: `src/session-ready.test.ts` compiled to
+  // `dist/session-ready.test.js` and was PUBLISHED — a module importing
+  // `vitest` inside every cohort MCP and every mcp-host tenant child. That one
+  // has moved to `tests/`, where the repo's other tests live; this stays as
+  // the guard for the next one, and the root
+  // `tests/published-packages-ship-no-tests.test.ts` asks tsc itself which
+  // files each published package actually compiles.
+  "exclude": ["src/**/*.test.ts"],
   "references": [{ "path": "../protocol" }]
 }
