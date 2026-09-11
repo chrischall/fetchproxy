@@ -18,7 +18,7 @@ import {
 } from '@fetchproxy/protocol';
 import { startPeer, type InternalPeerHandle } from '../src/peer.js';
 import { loadOrCreateIdentity } from '../src/identity.js';
-import { listenEphemeral } from './helpers/ephemeral-port.js';
+import { listenEphemeral, loopbackWss } from './helpers/ephemeral-port.js';
 import type { ExtensionPin, ExtensionTrustPort } from '../src/extension-trust.js';
 
 /**
@@ -70,7 +70,7 @@ async function fakeHost(): Promise<{
   peerHello: Promise<HelloFrameFromServer>;
   send(frame: unknown): void;
 }> {
-  const wss = new WebSocketServer({ port: 0 });
+  const wss = loopbackWss();
   const port = await listenEphemeral(wss);
   let socket: WebSocket | null = null;
   const peerHello = new Promise<HelloFrameFromServer>((resolve) => {

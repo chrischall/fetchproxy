@@ -1,5 +1,6 @@
 import { evalJsonPointer } from '@fetchproxy/protocol';
 import { csrfSoftMiss } from './lib/csrf-soft-miss.js';
+import { MAX_REQUEST_BODY_BYTES, MAX_RESPONSE_BODY_BYTES } from './content-limits.js';
 
 /**
  * Content script (isolated world). Listens for fetch RPC messages
@@ -15,8 +16,6 @@ import { csrfSoftMiss } from './lib/csrf-soft-miss.js';
  * so we can pick them up here and forward as headers.
  */
 
-const MAX_REQUEST_BODY_BYTES = 1 * 1024 * 1024; // 1 MB
-const MAX_RESPONSE_BODY_BYTES = 5 * 1024 * 1024; // 5 MB
 const GRAPHQL_TIMEOUT_MS = 20 * 1000; // 20 s to await the MAIN-world reply
 // Must stay UNDER the server's own `fetchTimeoutMs` (default 30s,
 // ws-server.ts). At 30s the two raced and the server's generic timeout won,

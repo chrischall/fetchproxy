@@ -19,6 +19,7 @@ import {
   type InnerFrame,
 } from '@fetchproxy/protocol';
 import { buildServerHello } from './build-server-hello.js';
+import { encodeOutboundInnerFrame } from './frame-size.js';
 import { SessionState } from './session.js';
 import { awaitSessionReady, FetchproxyHelloRejectedError } from './session-ready.js';
 import type { Identity } from './identity.js';
@@ -143,8 +144,35 @@ const enc = new TextEncoder();
 export async function startPeer(opts: PeerOpts): Promise<InternalPeerHandle> {
   const ws = new WebSocket(`ws://${opts.host}:${opts.port}`);
   await new Promise<void>((resolve, reject) => {
-    ws.once('open', () => resolve());
-    ws.once('error', reject);
+    // Both listeners come off once either fires: leaving the handshake's
+    // 'error' listener attached would make it the socket's only one for the
+    // rest of the connection, swallowing the first later error into a reject
+    // of an already-settled promise.
+    const onOpen = (): void => {
+      cleanup();
+      resolve();
+    };
+    const onError = (e: Error): void => {
+      cleanup();
+      reject(e);
+    };
+    const cleanup = (): void => {
+      ws.off('open', onOpen);
+      ws.off('error', onError);
+    };
+    ws.once('open', onOpen);
+    ws.once('error', onError);
+  });
+
+  // A socket error is an EventEmitter 'error': with no listener it is an
+  // uncaught exception that takes the whole MCP process down. The handshake's
+  // listener is gone by now, and the frame cap makes an emit here routine
+  // rather than exotic — `ws` reports an oversize frame by emitting
+  // (WS_ERR_UNSUPPORTED_MESSAGE_LENGTH) before closing with 1009 — so the host
+  // could kill this peer by sending one big frame. `ws` closes the socket
+  // itself; there is nothing to do but say so. Mirrors host.ts.
+  ws.on('error', (e) => {
+    console.warn(`[fetchproxy] peer: socket error: ${String(e)}`);
   });
 
   // Send our hello first thing. The session nonce inside is the salt
@@ -398,9 +426,36 @@ export async function startPeer(opts: PeerOpts): Promise<InternalPeerHandle> {
         return;
       }
       if (frame.type === 'frame' && frame.mcpId === opts.mcpId) {
-        if (!session) return; // ignore encrypted frames before handshake
-        if (!session.acceptInboundSeq(frame.seq)) return;
-        const result = await openEncryptedFrameDetailed(session.sessionKey, frame);
+        // Captured, not re-read after the await: the seq belongs to the
+        // session whose key opened the frame, and a renegotiation during the
+        // open would otherwise commit it against the new one.
+        const inboundSession = session;
+        if (!inboundSession) return; // ignore encrypted frames before handshake
+        // Claimed SYNCHRONOUSLY, before the await below. A bare freshness
+        // question changes nothing, so two copies of one frame arriving in a
+        // single read both passed it — deterministically, since the counter
+        // cannot move until the open returns. The claim takes the seq out of
+        // circulation now and the duplicate behind it is refused as a replay.
+        if (!inboundSession.claimInboundSeq(frame.seq)) return;
+        let result;
+        try {
+          result = await openEncryptedFrameDetailed(inboundSession.sessionKey, frame);
+        } catch (e) {
+          // `openEncryptedFrameDetailed` reports both failures in its result
+          // rather than throwing, so this is the unexpected path — but the
+          // claim must not leak out of it whatever went wrong.
+          inboundSession.releaseInboundSeq(frame.seq);
+          throw e;
+        }
+        // The counter moves for a frame that AUTHENTICATED, which is both
+        // outcomes below except `decrypt-failed` — a validation failure
+        // decrypted under the live key, so its seq is genuinely spent and
+        // replaying it must still be refused. A decrypt failure gives the
+        // claim back instead: advancing before the open let one
+        // unauthenticated frame with a high seq wedge the session, every
+        // genuine frame afterwards carrying a lower number and being dropped.
+        if (result.stage !== 'decrypt-failed') inboundSession.commitInboundSeq(frame.seq);
+        else inboundSession.releaseInboundSeq(frame.seq);
         if (result.stage === 'ok') {
           innerListeners.forEach((cb) => cb(result.inner));
         } else if (result.stage === 'decrypt-failed') {
@@ -482,11 +537,16 @@ export async function startPeer(opts: PeerOpts): Promise<InternalPeerHandle> {
       // assertion is load-bearing for TypeScript's narrowing but does not
       // encode runtime hope.
       const s = session!;
+      // Measured before a seq is claimed, so a refused frame spends nothing
+      // and leaves no gap: an oversize payload would otherwise meet the host's
+      // `maxPayload` as a 1009 CLOSE, taking this peer's only link to the
+      // bridge down to report that one call was too big.
+      const plaintext = encodeOutboundInnerFrame(opts.mcpId, inner);
       const sealed = await sealInnerFrame(
         s.sessionKey,
         opts.mcpId,
         s.nextOutboundSeq(),
-        inner,
+        plaintext,
       );
       ws.send(JSON.stringify(sealed));
     },
