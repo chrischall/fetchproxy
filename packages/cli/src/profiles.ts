@@ -1,4 +1,7 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { randomBytes } from 'node:crypto';
+import {
+  chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync,
+} from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type {
@@ -227,9 +230,46 @@ export function loadProfiles(home: string = cliHome()): Record<string, Profile> 
   return out;
 }
 
+/**
+ * The one write path for `profiles.json` — every profile verb (`add`,
+ * `declare`, `remove`) goes through here.
+ *
+ * Write-then-rename, for the reason `writeExtensionPin` does it (server
+ * `extension-trust.ts`): opening the target truncates it before a byte is
+ * written, so a crash, a full disk or a ^C mid-write leaves an empty file and
+ * `loadProfiles` then refuses EVERY profile as invalid JSON — one interrupted
+ * `fpx profile declare` losing the whole set, including the domains and scope
+ * the user already paired against. `rename` is atomic on every filesystem this
+ * runs on, so a reader sees the old file or the new one and never half of one.
+ *
+ * The temporary name carries a random component rather than a fixed `.tmp`
+ * suffix: two `fpx` processes writing at once would otherwise share one
+ * staging file, and the first to `rename` would publish the second's
+ * half-written bytes — the torn read this exists to remove, reintroduced. The
+ * last writer still wins (a lost update, which it always was); what cannot
+ * happen is a torn file.
+ *
+ * 0600 twice over, as the identity file does it: `writeFileSync`'s `mode`
+ * applies only at creation and is subject to the umask, so the explicit
+ * `chmod` is what actually guarantees it. Under the old in-place write a
+ * `profiles.json` that already existed kept whatever mode it had, and the
+ * `mode` option did nothing at all.
+ */
 export function saveProfiles(map: Record<string, Profile>, home: string = cliHome()): void {
   mkdirSync(home, { recursive: true, mode: 0o700 });
-  writeFileSync(profilesPath(home), `${JSON.stringify(map, null, 2)}\n`, { mode: 0o600 });
+  const path = profilesPath(home);
+  const tmp = `${path}.${randomBytes(6).toString('hex')}.tmp`;
+  try {
+    writeFileSync(tmp, `${JSON.stringify(map, null, 2)}\n`, { mode: 0o600 });
+    chmodSync(tmp, 0o600);
+    renameSync(tmp, path);
+  } catch (e) {
+    // Best effort: a staging file left behind is readable only by its owner
+    // and is never read by anything, but leaving one per interrupted write
+    // turns a crash into litter in the user's CLI home.
+    rmSync(tmp, { force: true });
+    throw e;
+  }
 }
 
 export function getProfile(name: string, home: string = cliHome()): Profile {
