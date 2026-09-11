@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.11.3](https://github.com/chrischall/fetchproxy/compare/v2.11.2...v2.11.3) (2026-09-11)
+
+
+### Bug Fixes
+
+* **server:** FETCHPROXY_TRUST_DIR, so a hosted MCP can persist its extension pin beside a read-only identity ([#352](https://github.com/chrischall/fetchproxy/issues/352)) ([611d276](https://github.com/chrischall/fetchproxy/commit/611d2767d308c3fee89045e428ce9903424e71f0))
+
 ## [2.11.2](https://github.com/chrischall/fetchproxy/compare/v2.11.1...v2.11.2) (2026-09-10)
 
 
