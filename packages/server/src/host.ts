@@ -12,6 +12,7 @@ import {
   validateFrame,
   derivePairCodeFromIds,
   HKDF_SESSION_INFO,
+  MAX_FRAME_BYTES,
   type Capability,
   type CaptureHeaderDecl,
   type IndexedDbScopeDecl,
@@ -24,6 +25,7 @@ import {
   type InnerFrame,
 } from '@fetchproxy/protocol';
 import { buildServerHello } from './build-server-hello.js';
+import { encodeOutboundInnerFrame } from './frame-size.js';
 import { SessionState } from './session.js';
 import { awaitSessionReady, FetchproxyHelloRejectedError } from './session-ready.js';
 import type { Identity } from './identity.js';
@@ -37,6 +39,43 @@ import { decideExtensionTrust, type ExtensionTrustPort } from './extension-trust
 // - http(s)://127.0.0.1 or localhost (dev tools / curl from same host)
 // Everything else (including https://evil.com) is rejected.
 const PUBLIC_ORIGIN_RE = /^https?:\/\/(?!(127\.0\.0\.1|localhost)(:|$))/i;
+
+/**
+ * How long a socket may sit on the port without identifying itself.
+ *
+ * docs/SECURITY.md §T2 defense 3 has promised this for as long as the threat
+ * model has existed ("connections that don't send a valid hello frame within
+ * 15 seconds get closed") and nothing implemented it: a drive-by page that
+ * reached the upgrade — or any local process enumerating the port — could
+ * hold a connection open indefinitely. Identification is the gate rather than
+ * bytes arriving, because a socket that chats without ever sending a hello is
+ * exactly the connection being described.
+ */
+export const HANDSHAKE_TIMEOUT_MS = 15_000;
+
+/**
+ * The largest frame the host will accept from a peer or the extension.
+ *
+ * `ws` defaults to 100 MiB, which is a lot of process memory a local peer can
+ * make the host allocate before a single byte is validated. Over the cap, `ws`
+ * closes the socket with 1009 without buffering the rest.
+ *
+ * That close is why the number is `MAX_FRAME_BYTES` — the protocol's own
+ * budget, derived in `seal.ts` from the biggest body the extension will relay
+ * — rather than a figure picked for how much memory feels reasonable. 8 MiB
+ * was picked that way, and it sat UNDER the worst legitimate frame: the wire
+ * form is base64 of the JSON of the plaintext, so a 5 MiB response body of
+ * non-ASCII text (never mind a storage read, which has no cap of its own at
+ * all) comes out the far side of that expansion well past 8 MiB. A 1009 on
+ * the extension's socket is not one failed call — it is the ONE socket every
+ * MCP on this concentrator shares, so all of them drop together.
+ *
+ * A conforming sender never reaches this at all: the extension measures each
+ * frame against the same constant before sealing it and fails the single
+ * request instead. What is left here is the backstop for a sender that is not
+ * the extension.
+ */
+export const MAX_PAYLOAD_BYTES = MAX_FRAME_BYTES;
 
 export interface HostOpts {
   httpServer: HttpServer;
@@ -78,6 +117,17 @@ export interface HostOpts {
    * trust store is.
    */
   extensionTrust: ExtensionTrustPort;
+  /**
+   * Override `HANDSHAKE_TIMEOUT_MS`. Tests only — a suite cannot afford to
+   * wait out fifteen real seconds to watch a silent socket be closed.
+   */
+  handshakeTimeoutMs?: number;
+  /**
+   * Override `MAX_PAYLOAD_BYTES`. Tests only — proving the cap bites means
+   * sending a frame over it, and pushing 42 MiB across loopback to watch a
+   * 1009 arrive tests the size of the constant rather than the behaviour.
+   */
+  maxPayloadBytes?: number;
 }
 
 export interface HostHandle {
@@ -109,6 +159,7 @@ const enc = new TextEncoder();
 export async function startHost(opts: HostOpts): Promise<HostHandle> {
   const wss = new WebSocketServer({
     server: opts.httpServer,
+    maxPayload: opts.maxPayloadBytes ?? MAX_PAYLOAD_BYTES,
     verifyClient: (info, cb) => {
       const origin = info.req.headers.origin;
       if (origin && PUBLIC_ORIGIN_RE.test(origin)) {
@@ -194,6 +245,34 @@ export async function startHost(opts: HostOpts): Promise<HostHandle> {
     // it, and "which connection was this decided for" is not something the
     // ready handler should have to reason about.
     let pinOnReady = false;
+
+    // Close a socket that never identifies itself. The check is on
+    // `identified` rather than on a flag the hello paths have to remember to
+    // clear: the extension path sets it only after an awaited pin read, so a
+    // "we got a hello" flag set earlier would spare a socket the trust
+    // decision is still refusing, and one set in two places is one somebody
+    // forgets in the third. Unref'd because a host holding the event loop
+    // open for fifteen seconds after its last socket died would be this
+    // defense making the process harder to exit than it was.
+    const handshakeTimer = setTimeout(() => {
+      if (identified || closed) return;
+      try {
+        ws.close(1008, 'handshake timeout');
+      } catch {
+        /* already going down */
+      }
+    }, opts.handshakeTimeoutMs ?? HANDSHAKE_TIMEOUT_MS);
+    handshakeTimer.unref?.();
+
+    // A socket error is an EventEmitter 'error': unhandled, it is an uncaught
+    // exception that takes the whole MCP process down. The cap above makes
+    // that routine rather than exotic — `ws` reports an oversize frame by
+    // emitting here (WS_ERR_UNSUPPORTED_MESSAGE_LENGTH) before closing with
+    // 1009 — so a peer could kill the host by sending one big frame. `ws`
+    // closes the socket itself; there is nothing to do but say so.
+    ws.on('error', (e) => {
+      console.warn(`[fetchproxy] host: socket error: ${String(e)}`);
+    });
 
     ws.on('message', async (data) => {
       try {
@@ -445,9 +524,31 @@ export async function startHost(opts: HostOpts): Promise<HostHandle> {
           if (identified === 'extension') {
             // Extension → server. Route by mcpId.
             if (frame.mcpId === opts.ownMcpId) {
-              if (!ownSession) return;
-              if (!ownSession.acceptInboundSeq(frame.seq)) return;
-              const inner = await openEncryptedFrame(ownSession.sessionKey, frame);
+              // Captured, not re-read after the await: the seq belongs to the
+              // session whose key opened the frame, and a renegotiation
+              // during the open would otherwise commit it against the new one.
+              const session = ownSession;
+              if (!session) return;
+              // Claimed SYNCHRONOUSLY, before the await below: two copies of
+              // one frame read in the same pass would otherwise both be told
+              // the seq was free, since nothing moves the counter until the
+              // open returns. The claim takes it out of circulation now, so
+              // the duplicate is refused here as a replay.
+              if (!session.claimInboundSeq(frame.seq)) return;
+              let inner;
+              try {
+                inner = await openEncryptedFrame(session.sessionKey, frame);
+              } catch (e) {
+                // A frame that fails GCM authentication never happened: give
+                // the claim back and leave the counter where it was —
+                // otherwise one forged frame with a high seq takes every
+                // genuine frame already in flight behind it down with the
+                // socket it tears up.
+                session.releaseInboundSeq(frame.seq);
+                throw e;
+              }
+              // Only now is the seq spent.
+              session.commitInboundSeq(frame.seq);
               ownInnerListeners.forEach((cb) => cb(inner));
             } else {
               const slot = peers.get(frame.mcpId);
@@ -510,6 +611,7 @@ export async function startHost(opts: HostOpts): Promise<HostHandle> {
 
     ws.on('close', () => {
       closed = true;
+      clearTimeout(handshakeTimer);
       if (extensionClaim === ws) extensionClaim = null;
       if (identified === 'extension' && extensionWs === ws) {
         extensionWs = null;
@@ -581,11 +683,17 @@ export async function startHost(opts: HostOpts): Promise<HostHandle> {
         pendingPairCode: () => ownPendingPairCode,
       });
       if (!extensionWs) throw new Error('host: no extension connected');
+      // Measured before a seq is claimed, so a refused frame spends nothing
+      // and leaves no gap. The socket this would go out on is the ONE the
+      // extension holds for every MCP on this concentrator, so meeting its
+      // `maxPayload` as a 1009 close would drop every sibling's bridge to
+      // report that one of our own calls was too big.
+      const plaintext = encodeOutboundInnerFrame(opts.ownMcpId, inner);
       const sealed = await sealInnerFrame(
         session.sessionKey,
         opts.ownMcpId,
         session.nextOutboundSeq(),
-        inner,
+        plaintext,
       );
       extensionWs.send(JSON.stringify(sealed));
     },
