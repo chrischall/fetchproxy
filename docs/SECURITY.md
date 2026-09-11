@@ -280,6 +280,8 @@ HIGH_RISK_KEYWORDS.some((k) => domain.includes(k));
 - We deliberately don't ship a curated allowlist of "financial institutions" or "webmail providers" — that's a category we can't keep accurate, and a stale list gives false confidence.
 - The defense the user must rely on is reading the domain list, not the warning marker. The warning exists to make the user pause; the actual gate is the explicit Approve click.
 
+**Defense 3 — a declared domain may not be a public suffix.** `domains` entries are matched exact-or-subdomain on every side, so `co.uk`, `github.io` or `vercel.app` would claim every site anybody can register under them while the popup shows one plausible string. `validateHello` refuses such an entry (`packages/protocol/src/public-suffix.ts`, `isPublicSuffix`); `HOSTNAME_RE` already refused a bare TLD. It is a **heuristic, not the Mozilla Public Suffix List**: every single-label host, a generative rule for `<administrative label>.<two-letter ccTLD>` (`co.uk`, `com.au`, `gob.mx`), and a hand list of the ccTLD levels that rule cannot reach (`ne.jp`, `me.uk`) plus the well-known vendor suffixes (`github.io`, `herokuapp.com`, `pages.dev`, `s3.amazonaws.com`). Consistent with the point above about curated lists, **a public suffix this file has never heard of is accepted** — the long tail, the PSL's wildcard/exception rules, and enormous-but-registrable parents like `amazonaws.com` are not covered, and the module comment says so entry by entry. Reading the domain list remains the defense.
+
 ### T5 — Lateral movement via tab navigation
 
 A compromised MCP could fetch a URL that navigates the tab to an attacker-controlled page (e.g., a redirect chain). If the tab navigates, subsequent fetches would go through a different document.
