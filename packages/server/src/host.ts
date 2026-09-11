@@ -31,14 +31,124 @@ import { awaitSessionReady, FetchproxyHelloRejectedError } from './session-ready
 import type { Identity } from './identity.js';
 import { decideExtensionTrust, type ExtensionTrustPort } from './extension-trust.js';
 
-// Reject WS upgrades from public origins (drive-by webpage defense).
+// Reject WS upgrades from browsing contexts (drive-by webpage defense).
 // Browsers send Origin: <scheme>://<host>[:<port>] on WS upgrades from
-// pages. Extensions send chrome-extension:// or null/missing. We allow:
-// - Missing or null origin (extension)
-// - chrome-extension://, safari-extension://, moz-extension://
-// - http(s)://127.0.0.1 or localhost (dev tools / curl from same host)
-// Everything else (including https://evil.com) is rejected.
-const PUBLIC_ORIGIN_RE = /^https?:\/\/(?!(127\.0\.0\.1|localhost)(:|$))/i;
+// pages. Extensions send chrome-extension:// (moz-, safari-web-); a Node
+// peer dialing the concentrator sends no Origin header at all. We allow
+// exactly two things, and `originVerdict` below is an ALLOWLIST of them
+// rather than a list of refusals with everything else falling through:
+// - A missing Origin header (a peer, or curl)
+// - chrome-extension://, moz-extension://, safari-web-extension://
+// Every http(s) origin is a PAGE and is rejected, as is the opaque `null`
+// origin, and so is any other scheme — a packaged desktop or mobile app
+// (tauri://, capacitor://, app://) is a page with an origin of its own.
+const HTTP_ORIGIN_RE = /^https?:\/\//i;
+const PUBLIC_ORIGIN_RE = /^https?:\/\/(?!(127\.0\.0\.1|localhost|\[::1\])(:|$))/i;
+
+/**
+ * The origin a browser extension's own pages and service worker dial with.
+ *
+ * This is the whole of what the gate admits with an `Origin` header present,
+ * which is why it is a regex over named schemes and not "not one of the ones
+ * we refuse": the population this layer exists to keep out is every browsing
+ * context that is not the extension, and a browsing context does not have to
+ * be served over http to be one. A `tauri://`, `capacitor://`, `ionic://` or
+ * `app://` page is an installed app's UI, it can reach loopback, and it can
+ * raise a pair prompt under a name of its choosing exactly as a web page can.
+ *
+ * Adding a browser means adding its scheme here — which is the point. A
+ * fallthrough admits the next scheme nobody has thought of, silently.
+ */
+const EXTENSION_ORIGIN_RE = /^(chrome-extension|moz-extension|safari-web-extension):\/\//i;
+
+/**
+ * The literal value a browsing context with an OPAQUE origin sends: a
+ * sandboxed iframe, an `srcdoc` document, a `data:` URL, a `file://` page.
+ * The header is present and its value is the four characters `null`, which
+ * is not the same thing as the header being absent.
+ */
+const OPAQUE_ORIGIN = 'null';
+
+/**
+ * The one documented way to put `null` and `localhost` origins back.
+ *
+ * Both were accepted until this existed, and the comment above used to call
+ * `null` "the extension" — it is not. An extension's socket carries its own
+ * `chrome-extension://` origin; `null` is what a page with an opaque origin
+ * sends, and `http://localhost:<port>` is what a dev server, a notebook or
+ * any locally-served app sends. Admitting those means such a page, in a
+ * browser the user already has open, reaches the concentrator and is
+ * answered — and `docs/SECURITY.md` §T2 defence 2 is the layer that exists
+ * to stop exactly that. With those two through, it stopped `https://evil.com`
+ * and nothing else.
+ *
+ * They are still useful when somebody is BUILDING against the bridge from a
+ * local page, which is why this is an escape rather than a removal — and why
+ * it is an environment variable rather than an option: the packages that
+ * construct a `FetchproxyServer` are not edited to debug one of them.
+ * Exactly `1` turns it on. Anything else is a typo rather than an intention
+ * and is refused WITH A WARNING rather than read as "on", because a value
+ * that half works is how a development escape survives into a deployment.
+ */
+export const ALLOW_LOCAL_ORIGINS_ENV = 'FETCHPROXY_ALLOW_LOCAL_ORIGINS';
+
+function envAllowsLocalOrigins(env: Record<string, string | undefined> = process.env): boolean {
+  const raw = env[ALLOW_LOCAL_ORIGINS_ENV];
+  if (raw === undefined || raw.trim() === '') return false;
+  if (raw.trim() === '1') return true;
+  console.warn(
+    `[fetchproxy] ignoring ${ALLOW_LOCAL_ORIGINS_ENV}=${JSON.stringify(raw)}: the only value ` +
+      `that turns it on is 1. Upgrades from a null or localhost origin stay refused.`,
+  );
+  return false;
+}
+
+/** What the origin gate decided about one upgrade — see `originVerdict`. */
+export type OriginVerdict = { allow: true } | { allow: false; reason: string; escapable: boolean };
+
+/**
+ * Decide one upgrade's `Origin`.
+ *
+ * A refusal is either ESCAPABLE (a local page, which a developer may
+ * genuinely be holding) or not (a public page, which the escape deliberately
+ * does not admit — turning the gate off entirely is not on offer). "Local" is
+ * the complement of `PUBLIC_ORIGIN_RE` within http(s) rather than a second
+ * regex of its own, so the two cannot drift apart and leave an http origin
+ * that is neither and so falls through to the next branch.
+ *
+ * The allowed population is an extension scheme, or no `Origin` header at
+ * all. Everything else is refused, including a scheme this file does not
+ * name: the last branch is a refusal rather than an `allow`.
+ */
+export function originVerdict(origin: string | undefined, allowLocal: boolean): OriginVerdict {
+  // No Origin header: a Node peer dialing the concentrator, or curl. A page
+  // cannot get here — every browser sends one on a WS upgrade.
+  if (origin === undefined) return { allow: true };
+
+  if (HTTP_ORIGIN_RE.test(origin)) {
+    if (PUBLIC_ORIGIN_RE.test(origin)) {
+      return { allow: false, reason: 'origin not allowed', escapable: false };
+    }
+    return allowLocal
+      ? { allow: true }
+      : { allow: false, reason: 'localhost page origin not allowed', escapable: true };
+  }
+
+  if (origin.toLowerCase() === OPAQUE_ORIGIN) {
+    return allowLocal
+      ? { allow: true }
+      : { allow: false, reason: 'opaque (null) origin not allowed', escapable: true };
+  }
+
+  // chrome-extension:// and its siblings — the extension itself.
+  if (EXTENSION_ORIGIN_RE.test(origin)) return { allow: true };
+
+  // Anything else with an Origin header is a browsing context we have no
+  // reason to know: a packaged app's page, a scheme a future browser mints,
+  // or a present-but-empty header. Refused, and not escapable — the escape
+  // admits local ORIGINS, it does not widen what counts as the extension.
+  return { allow: false, reason: 'origin not allowed', escapable: false };
+}
 
 /**
  * How long a socket may sit on the port without identifying itself.
@@ -157,16 +267,50 @@ interface PeerSlot {
 const enc = new TextEncoder();
 
 export async function startHost(opts: HostOpts): Promise<HostHandle> {
+  // Read once, at boot: the answer cannot change while the process runs, and
+  // reading it here is what makes the warning below fire once rather than on
+  // every upgrade a port scanner attempts.
+  const allowLocalOrigins = envAllowsLocalOrigins();
+  if (allowLocalOrigins) {
+    console.warn(
+      `[fetchproxy] ${ALLOW_LOCAL_ORIGINS_ENV}=1: accepting WebSocket upgrades from null and ` +
+        `localhost page origins. This is a development escape — any local page the browser ` +
+        `has open can reach this concentrator while it is set.`,
+    );
+  }
+
+  /**
+   * Origins already named in a warning. Bounded because the thing on the
+   * other end of a refusal may be a page in a loop, and a log line per
+   * attempt is a way to fill a disk from outside.
+   */
+  const warnedOrigins = new Set<string>();
+
   const wss = new WebSocketServer({
     server: opts.httpServer,
     maxPayload: opts.maxPayloadBytes ?? MAX_PAYLOAD_BYTES,
     verifyClient: (info, cb) => {
       const origin = info.req.headers.origin;
-      if (origin && PUBLIC_ORIGIN_RE.test(origin)) {
-        cb(false, 403, 'origin not allowed');
+      const verdict = originVerdict(origin, allowLocalOrigins);
+      if (verdict.allow) {
+        cb(true);
         return;
       }
-      cb(true);
+      // Only the escapable refusals say anything. A developer holding a
+      // localhost page has a remedy and needs to be told it; a public page
+      // has none, so there is nothing to print and every reason not to —
+      // that refusal is the drive-by this gate exists for.
+      if (verdict.escapable && origin !== undefined && warnedOrigins.size < 8) {
+        if (!warnedOrigins.has(origin)) {
+          warnedOrigins.add(origin);
+          console.warn(
+            `[fetchproxy] refused a WebSocket upgrade from ${JSON.stringify(origin)}: ` +
+              `${verdict.reason}. If that is you, developing against the bridge, set ` +
+              `${ALLOW_LOCAL_ORIGINS_ENV}=1 on this MCP — never on a deployed one.`,
+          );
+        }
+      }
+      cb(false, 403, verdict.reason);
     },
   });
 

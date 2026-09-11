@@ -86,6 +86,16 @@ parity with this table. For longer "when to override" guidance, see
 | `localStoragePointers` | `StoragePointerDecl[]` | `[]` | Declared `(key, jsonPointer)` extractions over localStorage. |
 | `sessionStoragePointers` | `StoragePointerDecl[]` | `[]` | Same shape as `localStoragePointers`, against sessionStorage. |
 
+### Environment
+
+`FETCHPROXY_WS_PORT`, `FETCHPROXY_WS_HOST`, `FETCHPROXY_IDENTITY_DIR` and
+`FETCHPROXY_TRUST_DIR` are the ambient halves of the options above (see each
+row). One variable has no option beside it:
+
+| Variable | Default | What it does |
+|---|---|---|
+| `FETCHPROXY_ALLOW_LOCAL_ORIGINS` | unset | Admit WebSocket upgrades carrying the opaque `null` origin or an `http(s)://` loopback page origin (`localhost`, `127.0.0.1`, `[::1]`), which are otherwise refused with 403. Only `1` turns it on; any other value is ignored with a warning, and a public origin — or a page on a scheme that is not one of the three extension schemes — stays refused either way: this admits local origins, it does not turn the origin gate off or widen what counts as the extension. **A development escape**: while it is set, any page the browser has open on localhost can reach the concentrator and raise a pair prompt of its own. The extension is unaffected (it dials with an extension scheme — `chrome-extension://`, `moz-extension://`, `safari-web-extension://`) and so is a peer MCP (no `Origin` header), so an ordinary install never needs it. See `docs/SECURITY.md` §T2 and §Which origins may open the socket. |
+
 ### Choosing the right options
 
 - **`fetchTimeoutMs`.** The default `30_000` matches what every realty
