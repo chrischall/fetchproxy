@@ -91,11 +91,18 @@ export function assertHostOnProfile(host: string, profile: Profile): string {
  * `resolveBaseDomain(opts.domain)` eagerly (even for absolute URLs) and throws
  * when a profile declares >1 domain and none is passed, so a multi-domain
  * profile needs the resolved domain on every call.
+ *
+ * `hostname`, never `host`: `host` carries the port, and both layers that
+ * actually ENFORCE this rule compare the port-less name — the server's
+ * `assertUrlInDomains` and the extension's `isUrlAllowedForDomain`. On `host`,
+ * a profile declaring `example.com` refused `https://example.com:8443/x` here
+ * and the bridge accepted it one hop later, so the pre-flight refusal
+ * contradicted the rule it exists to report early.
  */
 export function assertUrlOnProfile(url: string, profile: Profile): string {
   let host: string;
   try {
-    host = new URL(url).host;
+    host = new URL(url).hostname;
   } catch {
     throw new UsageError(`not a valid URL: ${JSON.stringify(url)}`);
   }

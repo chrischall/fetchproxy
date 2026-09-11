@@ -91,7 +91,7 @@ Every verb takes `-p`/`--profile <name>` (except the `profile` subcommands thems
 | `fpx capture [header@host[/path]…] -p <name> [--capture-timeout <s>]` | Snapshot declared request headers off the next matching request the PAGE makes (all declared captures if none named). Requires `--capture-header`. | `fpx capture authorization@api.resy.com -p resy` |
 | `fpx capture-redirect <host>[/path] -p <name> [--capture-timeout <s>]` | Report where the next matching request gets redirected to — the target a page-level fetch only ever sees as opaque. Requires `--allow-capture-redirect`. | `fpx capture-redirect api.resy.com/download -p resy` |
 | `fpx graphql <handle> -p <name> [--var k=v]… [--via-tab <url>]` | Run a declared GraphQL operation by handle, with typed variables. Requires `--graphql-op`. | `fpx graphql autocomplete -p opentable --var term=sushi` |
-| `fpx write-cookies <name=value…> -p <name> [--storage-domain d] [--storage-subdomain s]` | Write cookies into the profile's tab and print the names that landed. Requires `--allow-cookie-write`. | `fpx write-cookies sid=abc123 -p opentable` |
+| `fpx write-cookies <name=value\|name=@file…>` or `fpx write-cookies --from-stdin`, `-p <name> [--storage-domain d] [--storage-subdomain s]` | Write cookies into the profile's tab and print the names that landed. Requires `--allow-cookie-write`. The value can come off disk or off stdin instead of argv — see below. | `fpx write-cookies sid=@sid.txt -p opentable` |
 | `fpx --version` (or `-v`) | Print the CLI version to stdout. The version also appears in the `fpx` / `fpx --help` header. | `fpx --version` |
 
 `--storage-domain` / `--storage-subdomain` (on the storage-read verbs, `session`, and `dom`) select which declared domain to read from when a profile declares more than one — required only in that case, same as the underlying library.
@@ -99,6 +99,22 @@ Every verb takes `-p`/`--profile <name>` (except the `profile` subcommands thems
 `--dom-selector <handle>=<css>` (on `profile declare`) declares a named DOM read: `<handle>` is the logical name `fpx dom` references, `<css>` is the `document.querySelector` CSS selector the extension reads (first match only, no page-JS execution). `--allow-download` grants the profile the `download` capability, letting `fpx download` save a declared-domain URL through the browser's own network stack.
 
 `--capture-timeout <s>` (on `capture` and `capture-redirect`) is how long to hold the window open, in SECONDS. It also raises the transport deadline these two verbs run under, because that deadline bounds every reply wait and a per-call timeout cannot exceed it — without the lift, asking for more than 30 seconds got you 30.
+
+### Keeping a cookie value off the command line
+
+`fpx write-cookies` moves a live session cookie, and a value typed as an argument lands in shell history, in `ps` output, and in `/proc/<pid>/cmdline` — where every other process on the machine can read it. Two forms keep it off argv:
+
+```sh
+fpx write-cookies sid=@./sid.txt -p opentable          # the value is the file's contents
+printf 'sid=%s\n' "$SID" | fpx write-cookies --from-stdin -p opentable
+```
+
+- **`name=@file`** reads the value from that file. **Exactly one trailing line ending is stripped** — a `\n`, or the `\r\n` of a CRLF — and nothing else. That is deliberate: `echo "$v" > f` is how the value usually gets into the file, and a cookie carrying a stray newline fails in a way that is hard to see (the write is accepted, the site rejects the session, and nothing in between prints the character). Nothing is trimmed from either end or from inside, so a value with spaces, tabs or `=` in it survives intact; a value that genuinely ends in a newline keeps it by ending the file with two.
+- **`--from-stdin`** reads the whole set from stdin, one `name=value` per line. Blank lines are skipped and a trailing `\r` is dropped, so a CRLF stream writes the same cookies a LF one does. Values here are **literal**: there is no `@file` indirection, which is also the way to write a value that genuinely starts with `@`. A line that is not a pair is reported by line NUMBER and never quoted, because such a line is usually a value pasted without its name. A terminal is refused rather than read (nothing closes it), so pipe or redirect into it. The read WAITS for its producer, so a slow one is fine — `op read op://vault/site/cookie | fpx write-cookies --from-stdin -p opentable` reads what the secret manager eventually prints rather than giving up on the empty pipe it finds first.
+
+Pairs on the command line and `--from-stdin` are two sources for one set, and naming both is refused rather than resolved by an invisible precedence rule. Neither form writes anything to disk: the value goes over the bridge and nowhere else.
+
+The same exposure exists for `-H 'Authorization: …'` on the fetch verbs, which has no file form yet.
 
 The four `--allow-*` flags and `--graphql-op` each grant one capability, and each is what its verb needs: `--allow-cookie-write` for `write-cookies`, `--allow-in-page` for `--in-page` on the fetch verbs, `--allow-capture-redirect` for `capture-redirect`, and a `--graphql-op handle=OperationName` declaration per operation `fpx graphql` may run. A capability the profile has not declared is refused before the bridge is dialled, not after.
 
