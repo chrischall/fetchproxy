@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { runFetch, type VerbServer } from '../src/verbs/fetch.js';
+import { runFetch, assertUrlOnProfile, type VerbServer } from '../src/verbs/fetch.js';
 import { emptyProfile } from '../src/profiles.js';
 import { EXIT, UsageError, type Io } from '../src/output.js';
 import { FetchproxySessionNotReadyError } from '@fetchproxy/server';
@@ -210,5 +210,35 @@ describe('--in-page', () => {
     await runFetch({ ...CMD, inPage: false } as never, PROFILE, memIo(), () => server);
     const opts = (server.request as unknown as { mock: { calls: unknown[][] } }).mock.calls[0]![2];
     expect(Object.prototype.hasOwnProperty.call(opts, 'inPage')).toBe(false);
+  });
+});
+
+describe('assertUrlOnProfile — judged by hostname, as the server is', () => {
+  // The extension (`isUrlAllowedForDomain`) and the server
+  // (`assertUrlInDomains`) both compare `URL.hostname`, which carries no
+  // port. The CLI compared `URL.host`, which does, so a declared
+  // `example.com` refused `https://example.com:8443/x` here and accepted it
+  // one hop later — the CLI's pre-flight refusal disagreeing with the rule it
+  // exists to report early. The protocol's rule is the one that binds.
+  const PROF = emptyProfile(['example.com']);
+
+  it('accepts a default-port URL on a declared domain', () => {
+    expect(assertUrlOnProfile('https://example.com/x', PROF)).toBe('example.com');
+  });
+
+  it('accepts an explicit-port URL on a declared domain', () => {
+    expect(assertUrlOnProfile('https://example.com:8443/x', PROF)).toBe('example.com');
+  });
+
+  it('accepts an explicit port on a subdomain of a declared domain', () => {
+    expect(assertUrlOnProfile('http://api.example.com:3000/x', PROF)).toBe('example.com');
+  });
+
+  it('still refuses a host that is not on the profile, port or no port', () => {
+    expect(() => assertUrlOnProfile('https://evil.com/x', PROF)).toThrow(UsageError);
+    expect(() => assertUrlOnProfile('https://evil.com:8443/x', PROF)).toThrow(UsageError);
+    // Not a suffix match on the raw string either: "notexample.com" ends with
+    // "example.com" without being on it.
+    expect(() => assertUrlOnProfile('https://notexample.com:8443/x', PROF)).toThrow(UsageError);
   });
 });

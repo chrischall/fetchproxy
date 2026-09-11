@@ -31,7 +31,7 @@ const USAGE = `fpx ${VERSION} — fetchproxy CLI: authenticated fetches through 
   fpx request <url> -p <name> [-X METHOD] [-H …]… [-d body|@file] [--json] [--via-tab <url>] [--in-page] [--no-credentials]
   fpx cookies|local-storage|session-storage|indexeddb [keys…] -p <name> [--storage-domain d] [--storage-subdomain s]
   fpx capture [header@host…] -p <name> [--capture-timeout <s>]
-  fpx write-cookies <name=value…> -p <name> [--storage-domain d] [--storage-subdomain s]
+  fpx write-cookies <name=value|name=@file…> | --from-stdin -p <name> [--storage-domain d] [--storage-subdomain s]
   fpx capture-redirect <host>[/path] -p <name> [--capture-timeout <s>]
   fpx graphql <handle> -p <name> [--var k=v]… [--via-tab <url>]
   fpx session -p <name> [--storage-domain d] [--storage-subdomain s]
@@ -42,6 +42,11 @@ const USAGE = `fpx ${VERSION} — fetchproxy CLI: authenticated fetches through 
 request's own host. Needed for API hosts that serve no page — e.g. fetch
 api.example.com through --via-tab https://www.example.com/. Must be on a
 declared domain.
+
+A cookie value typed on the command line lands in shell history, in ps output
+and in /proc/<pid>/cmdline. Keep it off argv: name=@file reads the value from
+that file (exactly one trailing newline is stripped), and --from-stdin reads
+the whole set from stdin, one name=value per line, values taken literally.
 
 Data on stdout, everything else on stderr.
 Exit codes: 0 ok · 1 usage · 2 bridge unavailable · 3 bot wall · 4 upstream HTTP error`;
@@ -59,6 +64,8 @@ export interface CliDeps {
   makeServer?: VerbServerFactory;
   bootstrapFn?: typeof bootstrap;
   readFile?: (p: string) => string;
+  /** The whole of stdin, for `fpx write-cookies --from-stdin`. */
+  readStdin?: () => string;
 }
 
 const uniqMerge = (base: string[], extra: string[]): string[] => [...new Set([...base, ...extra])];
@@ -66,7 +73,7 @@ const uniqMerge = (base: string[], extra: string[]): string[] => [...new Set([..
 export async function runCli(argv: string[], io: Io, deps: CliDeps = {}): Promise<number> {
   const home = deps.home ?? cliHome();
   try {
-    const cmd = parseCliArgs(argv, deps.readFile);
+    const cmd = parseCliArgs(argv, deps.readFile, deps.readStdin);
     switch (cmd.kind) {
       case 'help':
         io.err(USAGE);

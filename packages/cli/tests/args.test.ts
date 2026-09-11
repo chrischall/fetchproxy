@@ -1,6 +1,44 @@
 import { describe, it, expect } from 'vitest';
-import { parseCliArgs } from '../src/args.js';
+import { spawn } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+import { parseCliArgs, readStdinSync } from '../src/args.js';
 import { UsageError } from '../src/output.js';
+
+const repoRoot = fileURLToPath(new URL('../../..', import.meta.url));
+const stdinChild = fileURLToPath(new URL('./fixtures/from-stdin-child.ts', import.meta.url));
+
+/**
+ * Run the parser's REAL default stdin reader against a REAL pipe, with the
+ * producer writing only after `delayMs`. The delay is the whole test: every
+ * realistic producer for this flag (`op read`, `gpg -d`, `pass show`, a curl)
+ * is slower than the child's first read, and a reader that does not wait loses
+ * the set with an EAGAIN that reads like a bridge failure.
+ */
+function parseFromRealPipe(
+  chunks: string[],
+  delayMs: number,
+): Promise<{ code: number | null; stdout: string; stderr: string }> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, ['--import', 'tsx', stdinChild], {
+      cwd: repoRoot,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    let stdout = ''; let stderr = '';
+    child.stdout.setEncoding('utf8');
+    child.stderr.setEncoding('utf8');
+    child.stdout.on('data', (d: string) => { stdout += d; });
+    child.stderr.on('data', (d: string) => { stderr += d; });
+    child.on('error', reject);
+    child.on('close', (code) => resolve({ code, stdout, stderr }));
+    // A child that gives up on the read closes the pipe under us; let the
+    // assertions report that rather than an unhandled EPIPE.
+    child.stdin.on('error', () => {});
+    setTimeout(() => {
+      for (const c of chunks) child.stdin.write(c);
+      child.stdin.end();
+    }, delayMs);
+  });
+}
 
 describe('parseCliArgs', () => {
   it('parses profile add with repeated domains', () => {
@@ -219,6 +257,172 @@ describe('capture / write-cookies parsing', () => {
     ]);
     expect(cmd.storageDomain).toBe('d.com');
     expect(cmd.storageSubdomain).toBe('s');
+  });
+});
+
+/**
+ * A cookie value must not have to sit in a shell command: on argv it lands in
+ * shell history, in `ps` output, and in `/proc/<pid>/cmdline`. These two forms
+ * are the ways to keep a live session cookie off the command line.
+ */
+describe('write-cookies value sources', () => {
+  const asWrite = (
+    argv: string[],
+    readFile?: (p: string) => string,
+    readStdin?: () => string,
+  ) =>
+    parseCliArgs(argv, readFile, readStdin) as
+      Extract<ReturnType<typeof parseCliArgs>, { kind: 'write-cookies' }>;
+
+  describe('name=@file', () => {
+    it('reads the value out of the file instead of argv', () => {
+      const cmd = asWrite(['write-cookies', 'sid=@/tmp/sid.txt', '-p', 'x'], (p) => {
+        expect(p).toBe('/tmp/sid.txt');
+        return 'abc123';
+      });
+      expect(cmd.cookies).toEqual({ sid: 'abc123' });
+    });
+
+    // Documented: EXACTLY ONE trailing line ending is stripped, so
+    // `printf %s` and `echo` write the same cookie.
+    it('strips exactly one trailing newline, CRLF included', () => {
+      expect(asWrite(['write-cookies', 'a=@f', '-p', 'x'], () => 'v\n').cookies).toEqual({ a: 'v' });
+      expect(asWrite(['write-cookies', 'a=@f', '-p', 'x'], () => 'v\r\n').cookies)
+        .toEqual({ a: 'v' });
+      expect(asWrite(['write-cookies', 'a=@f', '-p', 'x'], () => 'v').cookies).toEqual({ a: 'v' });
+    });
+
+    it('keeps a newline the value really ends with, when the file ends with two', () => {
+      expect(asWrite(['write-cookies', 'a=@f', '-p', 'x'], () => 'v\n\n').cookies)
+        .toEqual({ a: 'v\n' });
+    });
+
+    it('keeps "=" and whitespace inside the value, and trims neither end', () => {
+      expect(asWrite(['write-cookies', 'tok=@f', '-p', 'x'], () => 'a=b=c\n').cookies)
+        .toEqual({ tok: 'a=b=c' });
+      expect(asWrite(['write-cookies', 'tok=@f', '-p', 'x'], () => ' a b \tc \n').cookies)
+        .toEqual({ tok: ' a b \tc ' });
+    });
+
+    it('reports an unreadable file as a usage error naming the path', () => {
+      expect(() => asWrite(['write-cookies', 'sid=@nope.txt', '-p', 'x'], () => {
+        throw new Error('ENOENT: no such file or directory');
+      })).toThrow(/nope\.txt/);
+      expect(() => asWrite(['write-cookies', 'sid=@nope.txt', '-p', 'x'], () => {
+        throw new Error('ENOENT');
+      })).toThrow(UsageError);
+    });
+
+    it('refuses an empty path', () => {
+      expect(() => asWrite(['write-cookies', 'sid=@', '-p', 'x'], () => 'v'))
+        .toThrow(UsageError);
+    });
+  });
+
+  describe('--from-stdin', () => {
+    it('reads one name=value per line and ignores the terminating newline', () => {
+      const cmd = asWrite(['write-cookies', '-p', 'x', '--from-stdin'], undefined,
+        () => 'sid=abc\ntok=def\n');
+      expect(cmd.cookies).toEqual({ sid: 'abc', tok: 'def' });
+    });
+
+    it('keeps "=" and whitespace in a value, and tolerates CRLF', () => {
+      const cmd = asWrite(['write-cookies', '-p', 'x', '--from-stdin'], undefined,
+        () => 'tok=a=b=c\r\nspaced= two words \r\n');
+      expect(cmd.cookies).toEqual({ tok: 'a=b=c', spaced: ' two words ' });
+    });
+
+    // Values here are LITERAL: stdin is already off argv, so a second
+    // indirection would only make a value that starts with "@" unwritable.
+    it('takes an @ value literally rather than as a file', () => {
+      const cmd = asWrite(['write-cookies', '-p', 'x', '--from-stdin'],
+        () => { throw new Error('readFile must not be called'); },
+        () => 'sid=@not-a-file\n');
+      expect(cmd.cookies).toEqual({ sid: '@not-a-file' });
+    });
+
+    it('skips blank lines', () => {
+      const cmd = asWrite(['write-cookies', '-p', 'x', '--from-stdin'], undefined,
+        () => '\nsid=abc\n\n');
+      expect(cmd.cookies).toEqual({ sid: 'abc' });
+    });
+
+    it('names the line number and never echoes a malformed line', () => {
+      let message = '';
+      try {
+        asWrite(['write-cookies', '-p', 'x', '--from-stdin'], undefined,
+          () => 'sid=abc\nsupersecret\n');
+      } catch (e) {
+        message = (e as Error).message;
+      }
+      expect(message).toMatch(/line 2/);
+      expect(message).not.toMatch(/supersecret/);
+    });
+
+    it('refuses pairs on argv alongside it', () => {
+      expect(() => asWrite(['write-cookies', 'sid=a', '-p', 'x', '--from-stdin'], undefined,
+        () => 'tok=b\n')).toThrow(UsageError);
+    });
+
+    /**
+     * The defect this exists for: `readFileSync(0)` makes ONE read attempt,
+     * and Node has already put fd 0 into non-blocking mode by the time the
+     * parser touches `process.stdin`, so a producer that has not written yet
+     * comes back EAGAIN rather than waiting. An immediate write passes either
+     * way and proves nothing; the delay is the test.
+     */
+    it('waits for a slow producer instead of failing the read', async () => {
+      const r = await parseFromRealPipe(['sid=abc\n'], 300);
+      expect(r.stderr).toBe('');
+      expect(r.code).toBe(0);
+      expect(JSON.parse(r.stdout)).toEqual({ sid: 'abc' });
+    }, 30_000);
+
+    // And it keeps reading: a set bigger than one read buffer, arriving in
+    // pieces, is one set rather than whichever piece landed first.
+    it('accumulates a set that arrives in several chunks', async () => {
+      const big = 'x'.repeat(200_000);
+      const r = await parseFromRealPipe(['sid=ab', 'c\ntok=', big, '\n'], 200);
+      expect(r.stderr).toBe('');
+      expect(r.code).toBe(0);
+      expect(JSON.parse(r.stdout)).toEqual({ sid: 'abc', tok: big });
+    }, 30_000);
+
+    /**
+     * A read that genuinely fails is the operator's problem, not the bridge's.
+     * Left raw it escapes as an `Error`, which `runCli` maps to exit 2,
+     * "bridge unavailable" — the same mis-mapping the `@file` half goes out of
+     * its way to avoid one function away.
+     */
+    it('reports an unreadable stdin as a usage error naming stdin', () => {
+      let thrown: unknown;
+      try { readStdinSync(2 ** 30); } catch (e) { thrown = e; }
+      expect(thrown).toBeInstanceOf(UsageError);
+      expect((thrown as Error).message).toMatch(/stdin/);
+      expect((thrown as Error).message).toMatch(/EBADF/);
+    });
+
+    it('carries the storage scope through', () => {
+      const cmd = asWrite(['write-cookies', '-p', 'x', '--from-stdin', '--storage-domain', 'd.com'],
+        undefined, () => 'sid=a\n');
+      expect(cmd.storageDomain).toBe('d.com');
+    });
+
+    // A terminal never reaches EOF on its own, so the default reader would
+    // block with nothing on screen to say why. Refusing is the only outcome
+    // that can be diagnosed from the scrollback.
+    it('refuses a terminal rather than blocking on a read that never ends', () => {
+      const was = process.stdin.isTTY;
+      try {
+        process.stdin.isTTY = true;
+        expect(() => parseCliArgs(['write-cookies', '-p', 'x', '--from-stdin']))
+          .toThrow(UsageError);
+        expect(() => parseCliArgs(['write-cookies', '-p', 'x', '--from-stdin']))
+          .toThrow(/terminal/i);
+      } finally {
+        process.stdin.isTTY = was;
+      }
+    });
   });
 });
 
