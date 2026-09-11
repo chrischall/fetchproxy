@@ -96,7 +96,10 @@ jobs:
           echo "RC_VERSION=${RC_VERSION}" >> "$GITHUB_OUTPUT"
           echo "Computed rc version: ${RC_VERSION}"
 
-      - run: npm ci
+      # `--ignore-scripts`, for the reason release-please.yml's publish
+      # job gives: this job holds the same OIDC publish identity, so a
+      # transitive dependency's lifecycle script would run beside it.
+      - run: npm ci --ignore-scripts
 
       # Rewrite every workspace's package.json `version` field, plus
       # the Chrome extension manifest's `version`, plus every

@@ -11,8 +11,12 @@ name: release-please
 # Job 2 (publish): gates on `tag_name` being set (meaning the release
 # PR just merged). Checks out the tag, builds each non-private
 # sub-package, publishes them to npm via Trusted Publisher OIDC,
-# builds the Chrome extension zip, and attaches the zip to the
-# GitHub Release release-please already authored.
+# builds the Chrome extension zip, and attaches the zip plus a
+# `.zip.sha256` digest of it to the GitHub Release release-please
+# already authored. Neither asset is ever overwritten: an asset the
+# release already carries is left alone (the zip is not byte-
+# reproducible, so on that path the digest is computed from the
+# PUBLISHED zip rather than from the local rebuild).
 
 on:
   push:
@@ -176,7 +180,14 @@ jobs:
       - name: Strip always-auth from .npmrc
         run: sed -i '/always-auth/d' "$NPM_CONFIG_USERCONFIG"
 
-      - run: npm ci
+      # `--ignore-scripts`: this job holds the OIDC publish identity for
+      # every @fetchproxy/* package, so a lifecycle script from any
+      # transitive dependency would execute beside the thing that can
+      # publish. The lockfile carries esbuild's platform binary as an
+      # optional package, so the build below does not need esbuild's
+      # postinstall — verified with a clean
+      # `npm ci --ignore-scripts && npm run build`.
+      - run: npm ci --ignore-scripts
 
       # The umbrella VERSION = the release tag (release-please picks it
       # off the root package). Used for the extension-zip filename and
@@ -185,10 +196,35 @@ jobs:
       # independently (only the ones whose conventional commits warrant
       # it), so the umbrella tag does NOT track every sub-package's
       # version 1:1.
+      #
+      # The tag rides in `env:` rather than being interpolated into the
+      # `run:` body: `republish_tag` is a dispatch input, and a workflow
+      # expression is substituted into the script BEFORE the shell sees
+      # it, so a crafted input would run as this job — which holds
+      # `contents: write` and `id-token: write`. `env:` hands it over as
+      # data. (release-please-next.yml already passes its inputs this
+      # way.)
+      #
+      # `env:` alone is only half of it, which is why the SHAPE is
+      # checked here too: the value is written to `$GITHUB_ENV`, a
+      # line-oriented file with no heredoc delimiter on this line, and
+      # a `workflow_dispatch` string input accepts a newline through the
+      # API. An unvalidated tag could therefore define a SECOND variable
+      # — NODE_OPTIONS or PATH, say — for every later step of this job,
+      # i.e. for the npm publishes. Anything that is not
+      # `v?MAJOR.MINOR.PATCH[-suffix]` is refused, exactly as
+      # release-please-next.yml's "Compute RC version" refuses its own
+      # inputs.
       - name: Set umbrella VERSION env
+        env:
+          RELEASE_TAG: ${{ needs.release-please.outputs.tag_name || inputs.republish_tag }}
         run: |
-          TAG="${{ needs.release-please.outputs.tag_name || inputs.republish_tag }}"
-          echo "VERSION=${TAG#v}" >> "$GITHUB_ENV"
+          set -euo pipefail
+          if ! [[ "$RELEASE_TAG" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$ ]]; then
+            echo "release tag '${RELEASE_TAG}' must be v?MAJOR.MINOR.PATCH[-suffix] (e.g. v1.3.3)" >&2
+            exit 1
+          fi
+          echo "VERSION=${RELEASE_TAG#v}" >> "$GITHUB_ENV"
 
       # Build TS packages in dependency order: protocol → server →
       # bootstrap → extension-core. extension-chrome's bundle is built
@@ -269,12 +305,68 @@ jobs:
           ls -la "../../../fetchproxy-extension-${VERSION}.zip"
 
       # release-please-action already created the GitHub Release with
-      # the CHANGELOG body. Attach the extension zip via gh release
-      # upload --clobber so re-runs overwrite.
+      # the CHANGELOG body. Attach the extension zip and a digest of
+      # it: the zip IS the distribution path today (no Chrome Web Store
+      # listing), so the release has to say which bytes it published,
+      # and a sideloader checks what they downloaded with one
+      # `sha256sum -c` (hence sha256sum's own format).
+      #
+      # NO `--clobber`: a published asset is what somebody already
+      # downloaded and checked, and `republish_tag` lets any account
+      # with write access re-run this job against an existing tag with
+      # a rebuilt zip. An asset that is already there is therefore left
+      # alone and reported, the way the npm publish steps above skip a
+      # version npm already has — so a republish after a failed npm
+      # step still completes rather than failing on the upload.
+      #
+      # Which is exactly why the digest is computed HERE, from whichever
+      # zip the release ends up carrying, rather than in a step of its
+      # own from the local rebuild. The zip is NOT byte-reproducible —
+      # `zip -r` stores each entry's mtime and a fresh checkout stamps
+      # every file with checkout time, so two runs over the same dist/
+      # differ — so on the republish path, where the upload above is
+      # skipped, a digest of the rebuild would describe bytes nobody
+      # can download: the sideloader who follows the instruction this
+      # asset exists for reads FAILED, which is indistinguishable from
+      # tampering and strictly worse than shipping no digest at all.
+      # The published zip is downloaded and hashed instead, so the two
+      # assets always describe each other.
       - name: Attach artifacts to release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ needs.release-please.outputs.tag_name || inputs.republish_tag }}
         run: |
-          gh release upload "${{ needs.release-please.outputs.tag_name || inputs.republish_tag }}" \
-            "fetchproxy-extension-${VERSION}.zip" \
-            --clobber
+          set -euo pipefail
+          ZIP="fetchproxy-extension-${VERSION}.zip"
+          DIGEST="${ZIP}.sha256"
+          EXISTING=$(gh release view "$RELEASE_TAG" --json assets --jq '.assets[].name')
+          has_asset() { printf '%s\n' "$EXISTING" | grep -qxF "$1"; }
+
+          # The one combination that cannot be repaired without
+          # overwriting something: a digest whose zip has been deleted
+          # by hand. Uploading a fresh zip under it would leave the
+          # release asserting a digest of bytes it no longer serves,
+          # so refuse BEFORE uploading anything and name the repair.
+          if has_asset "$DIGEST" && ! has_asset "$ZIP"; then
+            echo "Release ${RELEASE_TAG} carries ${DIGEST} but not ${ZIP}: the published" >&2
+            echo "digest describes bytes the release no longer serves, and this job never" >&2
+            echo "overwrites an asset. Delete ${DIGEST} from the release, then re-run." >&2
+            exit 1
+          fi
+
+          if has_asset "$ZIP"; then
+            echo "Release ${RELEASE_TAG} already carries ${ZIP} — leaving it alone."
+            # Hash what the release serves, never this run's rebuild.
+            rm -f "$ZIP"
+            gh release download "$RELEASE_TAG" --pattern "$ZIP" --dir .
+          else
+            gh release upload "$RELEASE_TAG" "$ZIP"
+          fi
+
+          if has_asset "$DIGEST"; then
+            echo "Release ${RELEASE_TAG} already carries ${DIGEST} — leaving it alone."
+          else
+            sha256sum "$ZIP" > "$DIGEST"
+            cat "$DIGEST"
+            gh release upload "$RELEASE_TAG" "$DIGEST"
+          fi
