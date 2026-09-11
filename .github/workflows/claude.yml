@@ -25,9 +25,6 @@ permissions:
 
 jobs:
   claude:
-    # SHA-pinned rather than `@main`: a push to chrischall/workflows would
-    # otherwise rewrite what runs in this repo with no PR here. The four callers
-    # (ci, auto-merge, claude, pr-auto-review) move together.
-    uses: chrischall/workflows/.github/workflows/reusable-claude.yml@dddbfd48c301af41d893b1087da3e569d2573e7e # main
+    uses: chrischall/workflows/.github/workflows/reusable-claude.yml@main
     secrets:
       claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}

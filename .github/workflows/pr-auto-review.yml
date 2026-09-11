@@ -61,10 +61,7 @@ concurrency:
 
 jobs:
   review:
-    # SHA-pinned rather than `@main`: a push to chrischall/workflows would
-    # otherwise rewrite what runs in this repo with no PR here. The four callers
-    # (ci, auto-merge, claude, pr-auto-review) move together.
-    uses: chrischall/workflows/.github/workflows/reusable-pr-auto-review.yml@dddbfd48c301af41d893b1087da3e569d2573e7e # main
+    uses: chrischall/workflows/.github/workflows/reusable-pr-auto-review.yml@main
     with:
       conventions_hint: ""
     secrets:

@@ -50,7 +50,7 @@ jobs:
       tag_name: ${{ steps.release.outputs.tag_name }}
       pr: ${{ steps.release.outputs.pr }}
     steps:
-      - uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
+      - uses: googleapis/release-please-action@v5.0.0
         id: release
         with:
           token: ${{ secrets.RELEASE_PAT }}
@@ -73,14 +73,14 @@ jobs:
       # current.
       - name: Checkout for cross-dep sync
         if: steps.release.outputs.pr
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 0
           token: ${{ secrets.RELEASE_PAT }}
 
       - name: Setup Node for cross-dep sync
         if: steps.release.outputs.pr
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        uses: actions/setup-node@v7.0.0
         with:
           node-version: 24
           cache: npm
@@ -156,14 +156,14 @@ jobs:
       contents: write
       id-token: write
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@v7.0.1
         with:
           # Prefer the release-please-emitted tag on the auto path; fall
           # back to the manually-supplied republish_tag on the dispatch
           # path.
           ref: ${{ needs.release-please.outputs.tag_name || inputs.republish_tag }}
 
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@v7.0.0
         with:
           node-version: 24
           cache: npm
