@@ -148,6 +148,39 @@ describe('runCli', () => {
     expect((makeServer.mock.calls[0] as unknown[])[0]).toMatchObject({ serverName: 'fpx-trip' });
   });
 
+  /**
+   * End to end, because the two value sources are worth nothing unless the
+   * wiring from `runCli` reaches the parser: a cookie value must be able to
+   * come off disk or off stdin instead of out of argv.
+   */
+  it('verb dispatch: write-cookies takes values off a file and off stdin, never argv', async () => {
+    const io = memIo();
+    await runCli(['profile', 'add', 'r', '--domain', 'resy.com'], io, { home });
+    await runCli(['profile', 'declare', 'r', '--cookie', 'sid', '--cookie', 'tok',
+      '--allow-cookie-write'], io, { home });
+    const written: Record<string, string>[] = [];
+    const makeServer = vi.fn(() => ({
+      listen: async () => {}, close: async () => {},
+      writeCookies: async (o: { cookies: Record<string, string> }) => {
+        written.push(o.cookies);
+        return Object.keys(o.cookies);
+      },
+    }));
+    const deps = { home, makeServer: makeServer as never };
+
+    // A real file through the real default readFile: `echo` left a newline in
+    // it, and the cookie must not carry one.
+    const valueFile = join(home, 'sid.txt');
+    writeFileSync(valueFile, 'a=b c\n');
+    expect(await runCli(['write-cookies', `sid=@${valueFile}`, '-p', 'r'], io, deps))
+      .toBe(EXIT.OK);
+    expect(written[0]).toEqual({ sid: 'a=b c' });
+
+    expect(await runCli(['write-cookies', '-p', 'r', '--from-stdin'], io,
+      { ...deps, readStdin: () => 'sid=a=b c\ntok= spaced \n' })).toBe(EXIT.OK);
+    expect(written[1]).toEqual({ sid: 'a=b c', tok: ' spaced ' });
+  });
+
   it('UsageError → exit 1 with message on stderr', async () => {
     const io = memIo();
     expect(await runCli(['get', 'https://x.com/'], io, { home })).toBe(EXIT.USAGE);

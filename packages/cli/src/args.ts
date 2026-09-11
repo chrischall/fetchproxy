@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { readFileSync, readSync } from 'node:fs';
 import { parseArgs } from 'node:util';
 import type { CaptureHeaderDecl, DomSelectorDecl, GraphqlOpDeclaration } from '@fetchproxy/protocol';
 import { UsageError } from './output.js';
@@ -124,14 +124,177 @@ function resolveBody(raw: string, readFile: (p: string) => string): string {
   return raw.startsWith('@') ? readFile(raw.slice(1)) : raw;
 }
 
+/**
+ * EXACTLY ONE trailing line ending comes off a file-read cookie value — a
+ * `\n`, or the `\r\n` of a CRLF — and nothing else.
+ *
+ * Stripping one rather than none because `echo "$v" > f` is how the value
+ * gets into the file nine times out of ten, and a cookie carrying a stray
+ * newline fails in a way that is hard to see: the write is accepted, the site
+ * rejects the session, and nothing in between prints the character. Stripping
+ * one rather than trimming because a value with spaces at either end is still
+ * that value; only the line ending the shell added is assumed not to be. A
+ * value that genuinely ends in a newline keeps it by ending the file with two.
+ */
+function stripOneTrailingNewline(text: string): string {
+  if (text.endsWith('\r\n')) return text.slice(0, -2);
+  if (text.endsWith('\n')) return text.slice(0, -1);
+  return text;
+}
+
+/**
+ * One `name=value` cookie pair off the command line. The value may be
+ * `@<path>`, read from that file: typed on argv a live session cookie lands
+ * in shell history, in `ps` output, and in `/proc/<pid>/cmdline`, and moving
+ * a live credential is the whole of what this verb does.
+ *
+ * The split is at the FIRST `=`, so a value may hold as many more as it likes;
+ * the name may not be empty, the value may.
+ */
+function parseCookiePair(raw: string, readFile: (p: string) => string): [string, string] {
+  const eq = raw.indexOf('=');
+  if (eq <= 0) {
+    throw new UsageError(`fpx write-cookies expects name=value, got ${JSON.stringify(raw)}`);
+  }
+  const name = raw.slice(0, eq);
+  const value = raw.slice(eq + 1);
+  if (!value.startsWith('@')) return [name, value];
+  const path = value.slice(1);
+  if (path.length === 0) {
+    throw new UsageError(
+      `fpx write-cookies: ${JSON.stringify(name)}=@ names no file`,
+      'pass name=@path/to/value — or --from-stdin, where a value starting with @ is literal',
+    );
+  }
+  let text: string;
+  try {
+    text = readFile(path);
+  } catch (e) {
+    // A file that cannot be read is the operator's mistake, not the bridge's:
+    // exit 1, and named, since the value never appears anywhere to compare.
+    throw new UsageError(
+      `fpx write-cookies: cannot read ${JSON.stringify(path)} for cookie ` +
+        `${JSON.stringify(name)}: ${(e as Error).message}`,
+    );
+  }
+  return [name, stripOneTrailingNewline(text)];
+}
+
+/**
+ * `--from-stdin`: the whole set, one `name=value` per line.
+ *
+ * Values here are LITERAL — no `@file` indirection. Stdin is already off the
+ * command line, so a second level of magic would buy nothing and would make a
+ * value that genuinely starts with `@` unwritable. Blank lines are skipped,
+ * which is what makes the stream's own terminating newline a terminator
+ * rather than an empty pair, and a trailing `\r` is dropped so a CRLF stream
+ * writes the same cookies a LF one does.
+ *
+ * A malformed line is reported by NUMBER and never quoted: a line that is not
+ * a pair is, as often as not, a value pasted without its name, and an error
+ * message is the one place a credential must not turn up.
+ */
+function parseCookieSet(text: string): Record<string, string> {
+  const cookies: Record<string, string> = {};
+  text.split('\n').forEach((rawLine, i) => {
+    const line = rawLine.endsWith('\r') ? rawLine.slice(0, -1) : rawLine;
+    if (line.length === 0) return;
+    const eq = line.indexOf('=');
+    if (eq <= 0) {
+      throw new UsageError(
+        `fpx write-cookies: stdin line ${i + 1} is not name=value`,
+        'one name=value per line — the line itself is not echoed, in case it is a value',
+      );
+    }
+    cookies[line.slice(0, eq)] = line.slice(eq + 1);
+  });
+  return cookies;
+}
+
 function requireProfile(profile: string | undefined): string {
   if (!profile) throw new UsageError('this command requires -p/--profile <name>');
   return profile;
 }
 
+const STDIN_HINT =
+  'pipe the set in, e.g. printf \'sid=%s\\n\' "$SID" | fpx write-cookies --from-stdin -p <name>';
+
+/**
+ * Drain a descriptor to EOF, synchronously, WAITING for the writer.
+ *
+ * `readFileSync(fd)` is the obvious spelling and is the wrong one here. Node
+ * puts fd 0 into non-blocking mode as soon as anything touches
+ * `process.stdin` — the terminal check below does — so a single read against
+ * a pipe whose producer has not written yet returns EAGAIN instead of
+ * waiting. Every producer this flag exists for is slower than the child's
+ * first read (`op read op://…`, `gpg -d`, `pass show`, a curl, any script);
+ * only `printf … | fpx`, which has already written by then, is fast enough to
+ * make one attempt look like it works. So the read is a LOOP: EAGAIN sleeps
+ * and retries, zero bytes or EOF ends it, and every chunk is kept — a set
+ * larger than one buffer arrives in pieces.
+ *
+ * `Atomics.wait` is the sleep because it is the only synchronous one Node
+ * has, and this parser is synchronous: the set is wanted before anything
+ * dials the bridge.
+ */
+function drainFdSync(fd: number): string {
+  const chunks: Buffer[] = [];
+  const buf = Buffer.alloc(64 * 1024);
+  const idle = new Int32Array(new SharedArrayBuffer(4));
+  for (;;) {
+    let n: number;
+    try {
+      n = readSync(fd, buf, 0, buf.length, null);
+    } catch (e) {
+      const code = (e as NodeJS.ErrnoException).code;
+      if (code === 'EAGAIN') {
+        Atomics.wait(idle, 0, 0, 5);
+        continue;
+      }
+      if (code === 'EOF') break;
+      throw e;
+    }
+    if (n === 0) break;
+    chunks.push(Buffer.from(buf.subarray(0, n)));
+  }
+  return Buffer.concat(chunks).toString('utf8');
+}
+
+/**
+ * The whole of stdin, read synchronously because this parser is synchronous
+ * and the set is wanted before anything dials the bridge.
+ *
+ * A terminal is refused rather than read: nothing closes it, so the loop
+ * above would spin forever with nothing on screen to say why. A redirect or a
+ * pipe is not a terminal, so the forms this flag exists for are untouched.
+ *
+ * A read that genuinely fails — EBADF, EIO — becomes a `UsageError`, the same
+ * shape `parseCookiePair` gives an unreadable `@file`: left raw it reaches
+ * `runCli`'s catch-all and exits 2, "bridge unavailable", which points at the
+ * browser for a problem that is entirely on this side of it.
+ *
+ * `fd` is a parameter only so a test can point the reader at a descriptor it
+ * controls; production reads 0.
+ */
+export function readStdinSync(fd = 0): string {
+  if (process.stdin.isTTY) {
+    throw new UsageError('--from-stdin found a terminal, not a pipe or a redirect', STDIN_HINT);
+  }
+  try {
+    return drainFdSync(fd);
+  } catch (e) {
+    const err = e as NodeJS.ErrnoException;
+    throw new UsageError(
+      `fpx write-cookies: cannot read stdin: ${err.code ?? ''} ${err.message}`.replace(/\s+/g, ' ').trim(),
+      STDIN_HINT,
+    );
+  }
+}
+
 export function parseCliArgs(
   argv: string[],
   readFile: (p: string) => string = (p) => readFileSync(p, 'utf8'),
+  readStdin: () => string = readStdinSync,
 ): Command {
   let parsed;
   try {
@@ -158,6 +321,7 @@ export function parseCliArgs(
         'graphql-op': { type: 'string', multiple: true, default: [] },
         var: { type: 'string', multiple: true, default: [] },
         filename: { type: 'string' },
+        'from-stdin': { type: 'boolean', default: false },
         'storage-domain': { type: 'string' },
         'storage-subdomain': { type: 'string' },
         'via-tab': { type: 'string' },
@@ -313,15 +477,23 @@ export function parseCliArgs(
   }
 
   if (cmd === 'write-cookies') {
-    const cookies: Record<string, string> = {};
-    for (const pair of rest) {
-      const eq = pair.indexOf('=');
-      if (eq <= 0) {
+    let cookies: Record<string, string> = {};
+    if (values['from-stdin']) {
+      // Two sources for one set is two intentions in one command, and the
+      // precedence between them would be invisible in the scrollback — so it
+      // is refused rather than guessed at, as `trust clear <name> --all` is.
+      if (rest.length > 0) {
         throw new UsageError(
-          `fpx write-cookies expects name=value, got ${JSON.stringify(pair)}`,
+          'fpx write-cookies takes pairs on the command line or --from-stdin, not both',
+          'put every pair on stdin, or drop --from-stdin',
         );
       }
-      cookies[pair.slice(0, eq)] = pair.slice(eq + 1);
+      cookies = parseCookieSet(readStdin());
+    } else {
+      for (const pair of rest) {
+        const [name, value] = parseCookiePair(pair, readFile);
+        cookies[name] = value;
+      }
     }
     return {
       kind: 'write-cookies', profile: requireProfile(values.profile), cookies,
