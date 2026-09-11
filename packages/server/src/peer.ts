@@ -2,6 +2,7 @@ import { WebSocket } from 'ws';
 import {
   ecdhX25519,
   readySignaturePayload,
+  derivePairCodeFromIds,
   ed25519Verify,
   fromB64,
   hkdfSha256,
@@ -217,7 +218,10 @@ export async function startPeer(opts: PeerOpts): Promise<InternalPeerHandle> {
   // pair-pending; cleared on the next ready (user approved). MCP-level
   // callers consult it to fail tool calls fast with an actionable error
   // instead of waiting on a session promise that never resolves.
+  // M1 (bridge review 2026-09-10): only ever set from `pairCodeFor` — the
+  // number the frame carried is checked against that, never copied out of it.
   let pendingPairCode: string | null = null;
+  let warnedUnverifiablePairCode = false;
 
   // `sessionPromise` fires once: it gates the first `sendInner` until the
   // initial ready arrives. After that, renegotiations update `session` in
@@ -241,6 +245,38 @@ export async function startPeer(opts: PeerOpts): Promise<InternalPeerHandle> {
   // `undefined` = not read yet; `null` = read, nothing pinned. See the note in
   // `authenticateExtension` for why this is cached rather than re-read.
   let cachedPin: ExtensionPin | null | undefined = undefined;
+
+  /**
+   * The joint pair code for a relayed extension hello — `SHA256(ourPub ||
+   * extPub)`, the order the popup uses. The only code this peer will ever
+   * show, and what every `pair-pending` frame is judged against.
+   *
+   * M1 (bridge review 2026-09-10): computed FROM THE LIVE HELLO on demand
+   * rather than cached beside it, which is what makes two properties
+   * structural instead of remembered. (1) `ws` does not serialise an async
+   * message handler, so a `pair-pending` in the same read turn as the hello
+   * runs while the hello's own awaits are still outstanding: against a cached
+   * value that frame was judged against a derivation in flight, which reads as
+   * "no extension identity was ever relayed" and downgraded the close-on-
+   * disagreement to a warning on a live socket. Here it derives from the hello
+   * itself and gets the same answer whenever it runs. (2) A code cannot
+   * outlive the pair of identities it commits to, because there is no stored
+   * code to forget to clear when that extension goes — clearing
+   * `extensionHello` is the whole of it.
+   */
+  const pairCodeFor = async (
+    hello: HelloFrameFromExtension,
+  ): Promise<string | null> => {
+    try {
+      return await derivePairCodeFromIds(
+        opts.identity.x25519Pub,
+        fromB64(hello.identityX25519Pub),
+      );
+    } catch (e) {
+      console.error('[fetchproxy] could not derive the pair code:', e);
+      return null;
+    }
+  };
 
   /**
    * Decide whether the extension behind this host may open a session with us:
@@ -347,6 +383,11 @@ export async function startPeer(opts: PeerOpts): Promise<InternalPeerHandle> {
       // authenticate the far end of its own session. Before 1.12.0 no host
       // sent this, which is why its absence is handled rather than assumed.
       if (frame.type === 'hello' && frame.role === 'extension') {
+        // M1 (bridge review 2026-09-10): this is also the whole of what makes
+        // a pair code derivable here — `pairCodeFor` reads it back off this
+        // hello. Assigned synchronously, so a `pair-pending` delivered in the
+        // same read turn is judged against the identity it belongs to rather
+        // than against nothing.
         extensionHello = frame;
         return;
       }
@@ -357,7 +398,9 @@ export async function startPeer(opts: PeerOpts): Promise<InternalPeerHandle> {
         extensionHello = null;
         extensionGone = true;
         // Same as the host: a code nobody can approve any more must not
-        // outrank "the extension is gone" in the session snapshot.
+        // outrank "the extension is gone" in the session snapshot. Nothing
+        // else has to be forgotten here — clearing the hello above is what
+        // retires the derivation with it (M1, `pairCodeFor`).
         pendingPairCode = null;
         return;
       }
@@ -421,8 +464,47 @@ export async function startPeer(opts: PeerOpts): Promise<InternalPeerHandle> {
       }
 
       if (frame.type === 'pair-pending' && frame.mcpId === opts.mcpId) {
-        pendingPairCode = frame.pairCode;
-        pendingPairListeners.forEach((cb) => cb(frame.pairCode));
+        // M1 (bridge review 2026-09-10): as on the host — the code a user
+        // compares against the popup is the one derived here from the two
+        // identities, and the frame's number is only ever checked against it.
+        // It arrives plaintext across the concentrator, so surfacing it would
+        // let whatever is in the middle pick the string both "channels" show.
+        // Read off the hello that is live NOW, and derived from it here: this
+        // handler runs interleaved with the hello's, so a code remembered by
+        // that one is a code this one may find half-written (see
+        // `pairCodeFor`).
+        const hello = extensionHello;
+        const derived = hello === null ? null : await pairCodeFor(hello);
+        if (derived === null) {
+          // Nothing to judge against: no extension identity is on this handle
+          // — a pre-1.12.0 host relays none at all, and a host that has told
+          // us the browser went has taken back the one it relayed. Refusing
+          // the socket would take down a working (if unverifiable) bridge for
+          // a hint; displaying the frame's number is the hole itself. So say
+          // so once and show nothing — the same trade `authenticateExtension`
+          // makes about such a host.
+          if (!warnedUnverifiablePairCode) {
+            warnedUnverifiablePairCode = true;
+            console.warn(
+              `[fetchproxy] ${opts.serverName}: a pair code arrived that this peer cannot ` +
+                `derive for itself (no extension identity has been relayed to it), so it is ` +
+                `not being shown. If the MCP holding the bridge port is older than 1.12.0, ` +
+                `upgrading it closes this.`,
+            );
+          }
+          return;
+        }
+        if (frame.pairCode !== derived) {
+          console.error(
+            `[fetchproxy] ${opts.serverName}: the extension's pair code (${frame.pairCode}) ` +
+              `does not match the one derived from both identities (${derived}) — refusing ` +
+              `to pair (possible MITM between this MCP and the extension)`,
+          );
+          ws.close(1008, 'pair code mismatch');
+          return;
+        }
+        pendingPairCode = derived;
+        pendingPairListeners.forEach((cb) => cb(derived));
         return;
       }
       if (frame.type === 'frame' && frame.mcpId === opts.mcpId) {

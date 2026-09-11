@@ -7,6 +7,7 @@ import {
   validateFrame,
   generateX25519,
   generateEd25519,
+  derivePairCodeFromIds,
   type HelloFrameFromExtension,
 } from '@fetchproxy/protocol';
 import { FetchproxyServer, FetchproxyProtocolError } from '../../src/index.js';
@@ -15,18 +16,22 @@ import { getEphemeralPort } from '../helpers/ephemeral-port.js';
 /**
  * Connect a mock extension that handshakes JUST enough to receive every
  * server hello, then — instead of returning a ready frame to auto-trust —
- * sends back a `pair-pending` frame for each MCP carrying a fixed pair
- * code. Mirrors what the real extension does in `background.ts:onServerHello`
- * when `handleServerHello` returns `kind: 'needs-pair'`.
+ * sends back a `pair-pending` frame for each MCP carrying the joint pair
+ * code for that MCP. Mirrors what the real extension does in
+ * `background.ts:onServerHello` when `handleServerHello` returns
+ * `kind: 'needs-pair'`.
+ *
+ * The code is DERIVED here, exactly as the popup derives it — an MCP
+ * refuses a `pair-pending` whose number disagrees with its own derivation
+ * (M1), so a mock sending an arbitrary string is a mock the bridge hangs
+ * up on. `codeFor(serverName)` hands the test the same number, which is
+ * also the one the MCP computed for itself.
  *
  * Returns a `helloCount` accessor so the test can wait until both the
  * host's own hello and the peer's forwarded hello have arrived before
  * issuing tool calls.
  */
-async function connectMockExtensionThatNeverApproves(
-  port: number,
-  perMcpPairCode: Record<string, string>,
-) {
+async function connectMockExtensionThatNeverApproves(port: number) {
   const extIdX = await generateX25519();
   const extIdEd = await generateEd25519();
   const extSessionNonce = new Uint8Array(32);
@@ -39,18 +44,25 @@ async function connectMockExtensionThatNeverApproves(
   });
 
   let helloCount = 0;
+  const codes = new Map<string, string>();
   ws.on('message', (data) => {
     void (async () => {
       try {
         const parsed = JSON.parse(data.toString());
         const frame = validateFrame(parsed);
         if (frame.type === 'hello' && frame.role === 'server') {
-          helloCount += 1;
           // Pair-pending instead of ready — extension is waiting on user.
-          const code = perMcpPairCode[frame.serverName] ?? '000-000';
+          const code = await derivePairCodeFromIds(
+            Buffer.from(frame.identityX25519Pub, 'base64'),
+            extIdX.publicKey,
+          );
+          codes.set(frame.serverName, code);
           ws.send(
             JSON.stringify({ type: 'pair-pending', mcpId: frame.mcpId, pairCode: code }),
           );
+          // Counted AFTER the send so `helloCountReached` means "the frame is
+          // on the wire", not "the derivation started".
+          helloCount += 1;
         }
       } catch {
         /* ignore */
@@ -73,6 +85,8 @@ async function connectMockExtensionThatNeverApproves(
 
   return {
     ws,
+    /** The joint code this extension sent for `serverName` — the MCP's own. */
+    codeFor: (serverName: string) => codes.get(serverName) ?? '',
     helloCountReached: (n: number, timeoutMs = 2000) =>
       new Promise<void>((resolve, reject) => {
         const start = Date.now();
@@ -117,9 +131,7 @@ describe('pair-pending surfaces the pair code to MCP-side callers', () => {
     await host.connect();
     expect(host.role).toBe('host');
 
-    const ext = await connectMockExtensionThatNeverApproves(port, {
-      'host-mcp': '845-237',
-    });
+    const ext = await connectMockExtensionThatNeverApproves(port);
     extWs = ext.ws;
     await ext.helloCountReached(1);
     // Give the pair-pending frame round-trip a beat to update host state.
@@ -134,7 +146,7 @@ describe('pair-pending surfaces the pair code to MCP-side callers', () => {
     if (!result.ok) {
       expect(result.error).toMatch(/pairing required/);
       expect(result.error).toMatch(/host-mcp/);
-      expect(result.error).toMatch(/845-237/);
+      expect(result.error).toContain(ext.codeFor('host-mcp'));
     }
   }, 15_000);
 
@@ -161,10 +173,7 @@ describe('pair-pending surfaces the pair code to MCP-side callers', () => {
     await peer.connect();
     expect(peer.role).toBe('peer');
 
-    const ext = await connectMockExtensionThatNeverApproves(port, {
-      'host-mcp': '111-222',
-      'peer-mcp': '333-444',
-    });
+    const ext = await connectMockExtensionThatNeverApproves(port);
     extWs = ext.ws;
     await ext.helloCountReached(2);
     await new Promise((r) => setTimeout(r, 50));
@@ -178,9 +187,10 @@ describe('pair-pending surfaces the pair code to MCP-side callers', () => {
     if (!result.ok) {
       expect(result.error).toMatch(/pairing required/);
       expect(result.error).toMatch(/peer-mcp/);
-      // Critically: peer must see ITS pair code, not the host's.
-      expect(result.error).toMatch(/333-444/);
-      expect(result.error).not.toMatch(/111-222/);
+      // Critically: peer must see ITS pair code, not the host's — the two
+      // commit to different MCP identities, so they are different numbers.
+      expect(result.error).toContain(ext.codeFor('peer-mcp'));
+      expect(result.error).not.toContain(ext.codeFor('host-mcp'));
     }
   }, 15_000);
 
@@ -198,15 +208,13 @@ describe('pair-pending surfaces the pair code to MCP-side callers', () => {
     await host.listen();
     await host.connect();
 
-    const ext = await connectMockExtensionThatNeverApproves(port, {
-      'host-mcp': '901-234',
-    });
+    const ext = await connectMockExtensionThatNeverApproves(port);
     extWs = ext.ws;
     await ext.helloCountReached(1);
     await new Promise((r) => setTimeout(r, 30));
 
     await expect(host.readCookies()).rejects.toThrow(FetchproxyProtocolError);
-    await expect(host.readCookies()).rejects.toThrow(/901-234/);
+    await expect(host.readCookies()).rejects.toThrow(ext.codeFor('host-mcp'));
     await expect(host.readCookies()).rejects.toThrow(/pairing required/);
     await expect(host.readCookies()).rejects.toThrow(/host-mcp/);
   }, 15_000);
@@ -234,18 +242,15 @@ describe('pair-pending surfaces the pair code to MCP-side callers', () => {
     await peer.listen();
     await peer.connect();
 
-    const ext = await connectMockExtensionThatNeverApproves(port, {
-      'host-mcp': '111-222',
-      'peer-mcp': '555-666',
-    });
+    const ext = await connectMockExtensionThatNeverApproves(port);
     extWs = ext.ws;
     await ext.helloCountReached(2);
     await new Promise((r) => setTimeout(r, 50));
 
     await expect(peer.readCookies()).rejects.toThrow(FetchproxyProtocolError);
-    await expect(peer.readCookies()).rejects.toThrow(/555-666/);
+    await expect(peer.readCookies()).rejects.toThrow(ext.codeFor('peer-mcp'));
     await expect(peer.readCookies()).rejects.toThrow(/peer-mcp/);
-    await expect(peer.readCookies()).rejects.not.toThrow(/111-222/);
+    await expect(peer.readCookies()).rejects.not.toThrow(ext.codeFor('host-mcp'));
   }, 15_000);
 
   it('error message is model-directive — contains instruction to display the code', async () => {
@@ -261,9 +266,7 @@ describe('pair-pending surfaces the pair code to MCP-side callers', () => {
     await host.listen();
     await host.connect();
 
-    const ext = await connectMockExtensionThatNeverApproves(port, {
-      'test-mcp': '123-456',
-    });
+    const ext = await connectMockExtensionThatNeverApproves(port);
     extWs = ext.ws;
     await ext.helloCountReached(1);
     await new Promise((r) => setTimeout(r, 30));
@@ -278,7 +281,7 @@ describe('pair-pending surfaces the pair code to MCP-side callers', () => {
       expect(result.error).toContain('Tell the user');
       expect(result.error).toContain('display this code');
       expect(result.error).toContain('Transporter');
-      expect(result.error).toContain('123-456');
+      expect(result.error).toContain(ext.codeFor('test-mcp'));
     }
   }, 15_000);
 
@@ -297,22 +300,18 @@ describe('pair-pending surfaces the pair code to MCP-side callers', () => {
     await host.listen();
     await host.connect();
 
-    const ext = await connectMockExtensionThatNeverApproves(port, {
-      'host-mcp': '567-890',
-    });
+    const ext = await connectMockExtensionThatNeverApproves(port);
     extWs = ext.ws;
     await ext.helloCountReached(1);
     // Give the host's onPendingPair listeners a tick to fire.
     await new Promise((r) => setTimeout(r, 50));
 
-    // The MCP host's existing onPairCode (derived from extension hello +
-    // own pub) also fires on extension hello receipt, so codes has the
-    // locally-computed code already. The pair-pending frame's code is
-    // surfaced through `host.pendingPairCode()` / `fetch()` errors, not
-    // re-fired through onPairCode (which is intentional — the locally
-    // computed code is canonical for the host's own pair, the wire one
-    // is a sanity check). What we ASSERT here is that the host doesn't
-    // hang when fetch is called after pair-pending arrives.
+    // `onPairCode` fires on extension-hello receipt with the code the host
+    // derived from that hello and its own pub. Since M1 that is also the
+    // ONLY code a `fetch()` error can carry — the frame's number is checked
+    // against it and refused on a disagreement, never displayed — so the
+    // two are one value, and asserting them together is the point.
+    expect(codes).toContain(ext.codeFor('host-mcp'));
     const result = await host.fetch({
       url: 'https://host.example.com/x',
       method: 'GET',
@@ -320,7 +319,7 @@ describe('pair-pending surfaces the pair code to MCP-side callers', () => {
     });
     expect(result.ok).toBe(false);
     if (!result.ok) {
-      expect(result.error).toMatch(/567-890/);
+      expect(result.error).toContain(ext.codeFor('host-mcp'));
     }
   }, 15_000);
 });

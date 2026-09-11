@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   validateFrame,
+  derivePairCodeFromIds,
   type HelloFrameFromExtension,
 } from '@fetchproxy/protocol';
 import { startHost, type HostHandle } from '../src/host.js';
@@ -312,19 +313,26 @@ describe('host (concentrator)', () => {
       } satisfies HelloFrameFromExtension),
     );
     await vi.waitFor(() => expect(host!.extensionConnected()).toBe(true));
+    // M1: the host judges the frame's code against the one it derives from
+    // the two identity pubs, so a code the extension made up would be an
+    // alarm and a closed socket rather than a pending pair.
+    const code = await derivePairCodeFromIds(
+      id.x25519Pub,
+      new Uint8Array(Buffer.from('AAAA', 'base64')),
+    );
     ws.send(
       JSON.stringify({
         type: 'pair-pending',
         mcpId: 'opentable-mcp:0.9.1:abc1234567890def',
-        pairCode: '457-035',
+        pairCode: code,
       }),
     );
-    await vi.waitFor(() => expect(host!.pendingPairCode()).toBe('457-035'));
+    await vi.waitFor(() => expect(host!.pendingPairCode()).toBe(code));
 
     ws.close();
     await vi.waitFor(() => expect(host!.extensionConnected()).toBe(false));
     // The popup that showed the code is gone with the browser; reporting
-    // "approve 457-035" now would send the user to a prompt that no longer
+    // "approve <code>" now would send the user to a prompt that no longer
     // exists, when the remedy is to reopen the browser.
     expect(host.pendingPairCode()).toBeNull();
   });

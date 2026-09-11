@@ -462,6 +462,15 @@ export interface EncryptedFrame {
  * its own; security comes from the user comparing it across two
  * channels (extension popup + MCP-side display) before approving.
  *
+ * M1 (bridge review 2026-09-10): `pairCode` is therefore a CROSS-CHECK, never
+ * the value the MCP displays. The frame is plaintext and unauthenticated, and
+ * it crosses whatever sits between the MCP and the browser, so an MCP that
+ * showed its caller this number would be showing what the middle chose — and
+ * the two "channels" the user is asked to compare would be one. Both the host
+ * and the peer derive the code themselves from the two identity pubs, display
+ * only that, and close the connection with a logged alarm on a `pairCode`
+ * that disagrees.
+ *
  * Subsequent ready (after user approval) implicitly clears the pending
  * state on the MCP side. Cancellation has no explicit signal — the
  * stored pair code is a hint, not authoritative state.
