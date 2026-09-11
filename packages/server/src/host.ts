@@ -38,6 +38,30 @@ import { decideExtensionTrust, type ExtensionTrustPort } from './extension-trust
 // Everything else (including https://evil.com) is rejected.
 const PUBLIC_ORIGIN_RE = /^https?:\/\/(?!(127\.0\.0\.1|localhost)(:|$))/i;
 
+/**
+ * How long a socket may sit on the port without identifying itself.
+ *
+ * docs/SECURITY.md §T2 defense 3 has promised this for as long as the threat
+ * model has existed ("connections that don't send a valid hello frame within
+ * 15 seconds get closed") and nothing implemented it: a drive-by page that
+ * reached the upgrade — or any local process enumerating the port — could
+ * hold a connection open indefinitely. Identification is the gate rather than
+ * bytes arriving, because a socket that chats without ever sending a hello is
+ * exactly the connection being described.
+ */
+export const HANDSHAKE_TIMEOUT_MS = 15_000;
+
+/**
+ * The largest frame the host will accept from a peer or the extension.
+ *
+ * `ws` defaults to 100 MiB, which is a lot of process memory a local peer can
+ * make the host allocate before a single byte is validated. 8 MiB is the
+ * extension's own 5 MiB body cap plus room for base64 expansion and the
+ * envelope around it, so no legitimate frame is near it. Over the cap, `ws`
+ * closes the socket with 1009 without buffering the rest.
+ */
+export const MAX_PAYLOAD_BYTES = 8 * 1024 * 1024;
+
 export interface HostOpts {
   httpServer: HttpServer;
   ownIdentity: Identity;
@@ -78,6 +102,11 @@ export interface HostOpts {
    * trust store is.
    */
   extensionTrust: ExtensionTrustPort;
+  /**
+   * Override `HANDSHAKE_TIMEOUT_MS`. Tests only — a suite cannot afford to
+   * wait out fifteen real seconds to watch a silent socket be closed.
+   */
+  handshakeTimeoutMs?: number;
 }
 
 export interface HostHandle {
@@ -109,6 +138,7 @@ const enc = new TextEncoder();
 export async function startHost(opts: HostOpts): Promise<HostHandle> {
   const wss = new WebSocketServer({
     server: opts.httpServer,
+    maxPayload: MAX_PAYLOAD_BYTES,
     verifyClient: (info, cb) => {
       const origin = info.req.headers.origin;
       if (origin && PUBLIC_ORIGIN_RE.test(origin)) {
@@ -194,6 +224,34 @@ export async function startHost(opts: HostOpts): Promise<HostHandle> {
     // it, and "which connection was this decided for" is not something the
     // ready handler should have to reason about.
     let pinOnReady = false;
+
+    // Close a socket that never identifies itself. The check is on
+    // `identified` rather than on a flag the hello paths have to remember to
+    // clear: the extension path sets it only after an awaited pin read, so a
+    // "we got a hello" flag set earlier would spare a socket the trust
+    // decision is still refusing, and one set in two places is one somebody
+    // forgets in the third. Unref'd because a host holding the event loop
+    // open for fifteen seconds after its last socket died would be this
+    // defense making the process harder to exit than it was.
+    const handshakeTimer = setTimeout(() => {
+      if (identified || closed) return;
+      try {
+        ws.close(1008, 'handshake timeout');
+      } catch {
+        /* already going down */
+      }
+    }, opts.handshakeTimeoutMs ?? HANDSHAKE_TIMEOUT_MS);
+    handshakeTimer.unref?.();
+
+    // A socket error is an EventEmitter 'error': unhandled, it is an uncaught
+    // exception that takes the whole MCP process down. The cap above makes
+    // that routine rather than exotic — `ws` reports an oversize frame by
+    // emitting here (WS_ERR_UNSUPPORTED_MESSAGE_LENGTH) before closing with
+    // 1009 — so a peer could kill the host by sending one big frame. `ws`
+    // closes the socket itself; there is nothing to do but say so.
+    ws.on('error', (e) => {
+      console.warn(`[fetchproxy] host: socket error: ${String(e)}`);
+    });
 
     ws.on('message', async (data) => {
       try {
@@ -519,6 +577,7 @@ export async function startHost(opts: HostOpts): Promise<HostHandle> {
 
     ws.on('close', () => {
       closed = true;
+      clearTimeout(handshakeTimer);
       if (extensionClaim === ws) extensionClaim = null;
       if (identified === 'extension' && extensionWs === ws) {
         extensionWs = null;
