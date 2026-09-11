@@ -82,6 +82,19 @@ function responseOfWireSize(over: number): InnerFrame {
   };
 }
 
+/**
+ * A case that actually SEALS a frame at the cap moves ~42 MiB through
+ * JSON.stringify, AES-GCM and base64. That is 1-2 s of CPU on its own and
+ * several times that with the rest of the suite's 129 workers competing for
+ * the machine, where vitest's default 5 s budget — sized for a test that is
+ * WAITING, not one that is WORKING — turns a correct test into a flake. The
+ * two cases below that seal at the cap were measured at 4166 ms and 3656 ms
+ * under the full suite, so they carry a budget of their own rather than the
+ * whole suite being given one: a 5 s test everywhere else still means
+ * something is wrong, and that is worth keeping.
+ */
+const CAP_SIZED_TIMEOUT_MS = 30_000;
+
 describe('the extension caps the frame it sends', () => {
   beforeEach(() => {
     unbindAll();
@@ -124,14 +137,18 @@ describe('the extension caps the frame it sends', () => {
     errors.mockRestore();
   });
 
-  it('sends a frame that fits, unchanged', async () => {
-    const fits = responseOfWireSize(-1024);
-    await sendInner(MCP_ID, fits);
-    expect(ws.sent).toHaveLength(1);
-    const inner = await openEncryptedFrame(KEY, sentFrames()[0]!);
-    expect(inner).toMatchObject({ type: 'response', id: 12, ok: true });
-    expect(ws.closeCalls).toBe(0);
-  });
+  it(
+    'sends a frame that fits, unchanged',
+    async () => {
+      const fits = responseOfWireSize(-1024);
+      await sendInner(MCP_ID, fits);
+      expect(ws.sent).toHaveLength(1);
+      const inner = await openEncryptedFrame(KEY, sentFrames()[0]!);
+      expect(inner).toMatchObject({ type: 'response', id: 12, ok: true });
+      expect(ws.closeCalls).toBe(0);
+    },
+    CAP_SIZED_TIMEOUT_MS,
+  );
 
   it('keeps the op echo when the frame it refuses was already a failure', async () => {
     const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
@@ -162,12 +179,16 @@ describe('the extension caps the frame it sends', () => {
     errors.mockRestore();
   });
 
-  it('spends exactly one seq either way, so a refusal leaves no gap', async () => {
-    await sendInner(MCP_ID, responseOfWireSize(-1024));
-    await sendInner(MCP_ID, responseOfWireSize(1024));
-    await sendInner(MCP_ID, { type: 'pong' });
-    expect(sentFrames().map((f) => f.seq)).toEqual([1, 2, 3]);
-  });
+  it(
+    'spends exactly one seq either way, so a refusal leaves no gap',
+    async () => {
+      await sendInner(MCP_ID, responseOfWireSize(-1024));
+      await sendInner(MCP_ID, responseOfWireSize(1024));
+      await sendInner(MCP_ID, { type: 'pong' });
+      expect(sentFrames().map((f) => f.seq)).toEqual([1, 2, 3]);
+    },
+    CAP_SIZED_TIMEOUT_MS,
+  );
 });
 
 describe('MAX_FRAME_BYTES is derived from the worst legitimate frame', () => {

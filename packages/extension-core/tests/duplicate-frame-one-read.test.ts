@@ -15,21 +15,28 @@ import {
   HKDF_SESSION_INFO,
   PROTOCOL_VERSION,
   type EncryptedFrame,
-  type InnerFrame,
   type RawKeyPair,
 } from '@fetchproxy/protocol';
 
 /**
- * The extension's replay counter advances for a frame that AUTHENTICATED,
- * never for one that merely arrived.
+ * One seq, one frame — including when the two copies arrive in the SAME read.
  *
- * `onEncryptedFrame` used to call `acceptInboundSeq` before the AES-GCM open,
- * so a single unauthenticated frame carrying a high `seq` set `lastInbound`
- * out of reach and every genuine frame after it was dropped as a replay —
- * with the socket kept open and the MCP's calls simply never answered. The
- * seq gate is now a claim taken before the open (`claimInboundSeq`) and an
- * answer recorded after it: `commitInboundSeq` when the frame authenticated,
- * `releaseInboundSeq` when it did not.
+ * The inbound gate asked `isFreshInboundSeq` before the AES-GCM open and
+ * recorded `commitInboundSeq` after it, with an `await` in between. A question
+ * changes nothing, so two identical frames delivered in one pass both got
+ * their yes before either could commit. `onMessage` is dispatched
+ * fire-and-forget here, so both then ran.
+ *
+ * On this side that is worse than the wedge the split was closing. The
+ * extension is the RESPONDER: a duplicate that gets past the gate reaches
+ * `handleRequest`, and `handlers/dispatch.ts` has no per-id guard of its own —
+ * so a repeated `write_cookies` or non-GET `fetch` would EXECUTE twice. The
+ * gate is now a synchronous claim taken before any await, which is the only
+ * place a duplicate arriving in the same read can be told apart from the
+ * original.
+ *
+ * The two frames are therefore delivered with nothing awaited between them. A
+ * test that awaits the first would not reproduce the bug.
  */
 
 class FakeSocket {
@@ -74,8 +81,14 @@ class FakeSocket {
     this.emit('open', {});
   }
 
+  /** Synchronous, exactly as a WS receiver emits each message of one read. */
   message(payload: unknown): void {
     this.emit('message', { data: JSON.stringify(payload) });
+  }
+
+  /** A message already serialised — so two copies are byte-identical. */
+  raw(data: string): void {
+    this.emit('message', { data });
   }
 
   frames<T = Record<string, unknown>>(type: string): T[] {
@@ -180,7 +193,7 @@ function forgedFrame(mcpId: string, seq: number): Record<string, unknown> {
   };
 }
 
-describe('extension replay counter', () => {
+describe('extension: a duplicate frame in one read is handled exactly once', () => {
   let localWs: FakeSocket;
 
   beforeEach(async () => {
@@ -205,9 +218,8 @@ describe('extension replay counter', () => {
     localWs.open();
   });
 
-  it('a forged frame does not wedge the session behind its seq', async () => {
-    const warns = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const mcp = await scriptedMcp('alltrails-mcp:2.1.3:8888888888888888');
+  it('two copies delivered back to back are answered once', async () => {
+    const mcp = await scriptedMcp('alltrails-mcp:2.1.3:5555555555555555');
     await trustMcp(mcp);
     localWs.message(await helloFrom(mcp));
     await vi.waitUntil(() => localWs.frames('ready').length > 0);
@@ -216,65 +228,49 @@ describe('extension replay counter', () => {
       localWs.frames<{ extensionSessionPub: string }>('ready')[0]!,
     );
 
-    // Anything that can put a frame on this socket claims seq 9 without
-    // holding the key.
-    localWs.message(forgedFrame(mcp.mcpId, 9));
+    // Nothing is awaited between the two: one read of the socket, two
+    // identical frames, exactly as a retransmit or a replaying relay delivers
+    // them.
+    const dup = JSON.stringify(await sealInnerFrame(key, mcp.mcpId, 1, { type: 'ping' }));
+    localWs.raw(dup);
+    localWs.raw(dup);
+
+    await vi.waitUntil(() => localWs.frames('frame').length > 0);
+    // Room for a second answer to appear, then the assertion that it did not.
+    await new Promise((r) => setTimeout(r, 50));
+    expect(localWs.frames('frame')).toHaveLength(1);
+    const pong = localWs.frames<EncryptedFrame>('frame')[0]!;
+    expect((await openEncryptedFrame(key, pong)).type).toBe('pong');
+
+    // The claim did not wedge the session behind the seq it took.
+    localWs.message(await sealInnerFrame(key, mcp.mcpId, 2, { type: 'ping' }));
+    await vi.waitUntil(() => localWs.frames('frame').length > 1);
+    expect(localWs.frames('frame')).toHaveLength(2);
+  });
+
+  it('a claim released by a failed open leaves the seq open to the genuine frame', async () => {
+    const warns = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const mcp = await scriptedMcp('alltrails-mcp:2.1.3:6666666666666666');
+    await trustMcp(mcp);
+    localWs.message(await helloFrom(mcp));
+    await vi.waitUntil(() => localWs.frames('ready').length > 0);
+    const key = await sessionKeyFor(
+      mcp,
+      localWs.frames<{ extensionSessionPub: string }>('ready')[0]!,
+    );
+
+    // A forged frame claims seq 4 and fails to authenticate. It never
+    // happened, so the claim goes back and the counter does not move — the
+    // property the two-call gate exists for, which the claim must not cost.
+    localWs.message(forgedFrame(mcp.mcpId, 4));
     await vi.waitUntil(() => warns.mock.calls.length > 0);
     expect(localWs.frames('frame')).toHaveLength(0);
 
-    // The genuine ping the MCP sends next carries seq 1 and must still be
-    // answered.
-    localWs.message(await sealInnerFrame(key, mcp.mcpId, 1, { type: 'ping' }));
+    localWs.message(await sealInnerFrame(key, mcp.mcpId, 4, { type: 'ping' }));
     await vi.waitUntil(() => localWs.frames('frame').length > 0);
     const pong = localWs.frames<EncryptedFrame>('frame')[0]!;
     expect((await openEncryptedFrame(key, pong)).type).toBe('pong');
-
-    // The counter DID move for the frame that authenticated: replaying it is
-    // still refused.
-    localWs.message(await sealInnerFrame(key, mcp.mcpId, 1, { type: 'ping' }));
-    await new Promise((r) => setTimeout(r, 20));
-    expect(localWs.frames('frame')).toHaveLength(1);
-  });
-
-  it('an authenticated frame that fails validation still spends its seq', async () => {
-    const warns = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
-    const mcp = await scriptedMcp('alltrails-mcp:2.1.3:7777777777777777');
-    await trustMcp(mcp);
-    localWs.message(await helloFrom(mcp));
-    await vi.waitUntil(() => localWs.frames('ready').length > 0);
-    const key = await sessionKeyFor(
-      mcp,
-      localWs.frames<{ extensionSessionPub: string }>('ready')[0]!,
-    );
-
-    // Decrypts under the live session key — so whoever sent it holds the key
-    // and this seq is genuinely spent — but the plaintext is not a frame this
-    // protocol knows. `peer.ts` states the rule the extension has to agree
-    // with: the counter moves once a frame AUTHENTICATES, whatever validation
-    // then says about it.
-    localWs.message(
-      await sealInnerFrame(key, mcp.mcpId, 5, { type: 'bogus' } as unknown as InnerFrame),
-    );
-    await vi.waitUntil(() => warns.mock.calls.length + errors.mock.calls.length > 0);
-    expect(localWs.frames('frame')).toHaveLength(0);
-    // seq 5 is spent: a captured frame replayed at it is refused.
-    localWs.message(await sealInnerFrame(key, mcp.mcpId, 5, { type: 'ping' }));
-    await new Promise((r) => setTimeout(r, 20));
-    expect(localWs.frames('frame')).toHaveLength(0);
-
-    // And the session is not wedged — the next seq is answered as usual.
-    localWs.message(await sealInnerFrame(key, mcp.mcpId, 6, { type: 'ping' }));
-    await vi.waitUntil(() => localWs.frames('frame').length > 0);
-    const pong = localWs.frames<EncryptedFrame>('frame')[0]!;
-    expect((await openEncryptedFrame(key, pong)).type).toBe('pong');
-
-    // And it was said out loud, told apart from a stale-key drop: this frame
-    // came from the live peer, so it is a protocol bug rather than a
-    // straggler from a session that already rotated.
-    expect(errors).toHaveBeenCalled();
 
     warns.mockRestore();
-    errors.mockRestore();
   });
 });

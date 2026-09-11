@@ -23,33 +23,26 @@ import { listenEphemeral, loopbackWss } from './helpers/ephemeral-port.js';
 import type { ExtensionPin, ExtensionTrustPort } from '../src/extension-trust.js';
 
 /**
- * The replay counter is advanced by a frame that AUTHENTICATED, never by one
- * that merely arrived.
+ * One seq, one frame — including when the two copies arrive in the SAME read.
  *
- * `SessionState.acceptInboundSeq` used to be called before the AES-GCM open,
- * so anything that could put a frame on the socket could set `lastInbound` to
- * a number of its choosing — and every genuine frame after it, carrying a
- * lower seq, was then silently dropped as a replay. One unauthenticated frame
- * with `seq: 2 ** 40` wedged the session for good on the peer and the
- * extension; on the host it tore the socket down and took the in-flight
- * genuine frames with it. The gate is now a claim (`claimInboundSeq`) taken
- * before the open and an answer recorded after it — `commitInboundSeq` when
- * the frame authenticated, `releaseInboundSeq` when it did not, which is what
- * leaves the counter where it was.
+ * Splitting the inbound gate into a question (`isFreshInboundSeq`) asked
+ * before the AES-GCM open and an answer (`commitInboundSeq`) recorded after it
+ * put an `await` between the two. A question changes nothing, so two identical
+ * frames read in one pass of the WS receiver both got their yes before either
+ * could commit, and both were processed. Deterministic, not a race you need
+ * luck for.
+ *
+ * The gate is now a synchronous CLAIM: the first frame takes the seq out of
+ * circulation the instant it is read, so the duplicate behind it is refused
+ * exactly as one arriving a second later would be. A claim is given back when
+ * the frame does not authenticate, which is what keeps the property the
+ * split existed for — the counter does not move for a frame that never
+ * happened.
+ *
+ * The frames therefore go out in ONE write (see the cork below). A test that
+ * awaits the first before delivering the second does not reproduce the bug and
+ * would pass against the code this fixes.
  */
-
-const FORGED_SEQ = 9;
-
-/** A frame that passes `validateFrame` and fails AES-GCM authentication. */
-function forgedFrame(mcpId: string, seq: number): Record<string, unknown> {
-  return {
-    type: 'frame',
-    mcpId,
-    seq,
-    iv: Buffer.from(new Uint8Array(12).fill(7)).toString('base64'),
-    ciphertext: Buffer.from(new Uint8Array(48).fill(9)).toString('base64'),
-  };
-}
 
 function blankTrust(): ExtensionTrustPort {
   let pin: ExtensionPin | null = null;
@@ -62,7 +55,26 @@ function blankTrust(): ExtensionTrustPort {
   };
 }
 
-describe('replay counter advances only after a frame authenticates', () => {
+/** A frame that passes `validateFrame` and fails AES-GCM authentication. */
+function forgedFrame(mcpId: string, seq: number): Record<string, unknown> {
+  return {
+    type: 'frame',
+    mcpId,
+    seq,
+    iv: Buffer.from(new Uint8Array(12).fill(7)).toString('base64'),
+    ciphertext: Buffer.from(new Uint8Array(48).fill(9)).toString('base64'),
+  };
+}
+
+/** Write everything `send` does inside as ONE TCP write. */
+function inOneWrite(ws: WebSocket, send: () => void): void {
+  const sock = (ws as unknown as { _socket: { cork(): void; uncork(): void } })._socket;
+  sock.cork();
+  send();
+  sock.uncork();
+}
+
+describe('a duplicate frame in one read is processed exactly once', () => {
   let host: HostHandle | null = null;
   let peer: InternalPeerHandle | null = null;
   let wss: WebSocketServer | null = null;
@@ -79,19 +91,11 @@ describe('replay counter advances only after a frame authenticates', () => {
     }
   });
 
-  it('host: a forged frame does not reject the genuine frame behind it', async () => {
-    // The host tears the socket down over a frame it cannot open, so the
-    // window this bug lives in is the frames already in flight behind the
-    // forged one: the counter used to move the instant the forged frame was
-    // READ, which rejected every one of them before the teardown even ran.
-    // Both frames therefore go out in a single TCP write (see the cork
-    // below), so the host reads them in one pass of the WS receiver.
-    const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
-
+  it('host: two copies of one frame in a single write are delivered once', async () => {
     const el = await electRole({ host: '127.0.0.1', port: 0 });
     if (el.role !== 'host') throw new Error('expected host');
     const port = (el.server.address() as AddressInfo).port;
-    const idDir = mkdtempSync(join(tmpdir(), 'fp-replay-host-'));
+    const idDir = mkdtempSync(join(tmpdir(), 'fp-dup-host-'));
     const identity = await loadOrCreateIdentity('opentable-mcp', idDir);
     const mcpId = 'opentable-mcp:0.9.1:abc1234567890def';
 
@@ -112,28 +116,26 @@ describe('replay counter advances only after a frame authenticates', () => {
     const received: InnerFrame[] = [];
     host.onOwnInner((inner) => received.push(inner));
 
-    const genuine = await sealInnerFrame(sessionKey, mcpId, 1, { type: 'pong' });
-    // One write, so both frames reach the host's receiver in the same pass
-    // and the second is dispatched while the first is still awaiting its
-    // (failing) decrypt. Without the cork the two could land in separate
-    // reads, and the teardown would beat the genuine frame for reasons that
-    // have nothing to do with the counter.
-    const sock = (ext.ws as unknown as { _socket: { cork(): void; uncork(): void } })._socket;
-    sock.cork();
-    ext.ws.send(JSON.stringify(forgedFrame(mcpId, FORGED_SEQ)));
-    ext.ws.send(JSON.stringify(genuine));
-    sock.uncork();
+    const dup = JSON.stringify(await sealInnerFrame(sessionKey, mcpId, 1, { type: 'pong' }));
+    inOneWrite(ext.ws, () => {
+      ext.ws.send(dup);
+      ext.ws.send(dup);
+    });
 
     await vi.waitFor(() => expect(received).toHaveLength(1));
-    expect(received[0]).toMatchObject({ type: 'pong' });
-    // And the forged frame was still refused — this is not the open getting
-    // laxer, only the counter getting later.
-    expect(errors).toHaveBeenCalled();
+    // The second copy is not merely late — give the loop room and prove it
+    // never lands.
+    await new Promise((r) => setTimeout(r, 50));
+    expect(received).toHaveLength(1);
+
+    // And the session is not wedged by its own claim: the next seq is taken.
+    ext.ws.send(JSON.stringify(await sealInnerFrame(sessionKey, mcpId, 2, { type: 'pong' })));
+    await vi.waitFor(() => expect(received).toHaveLength(2));
     ext.close();
   });
 
-  it('peer: a forged frame leaves the counter where the last genuine one put it', async () => {
-    const idDir = mkdtempSync(join(tmpdir(), 'fp-replay-peer-'));
+  it('peer: two copies of one frame in a single write are delivered once', async () => {
+    const idDir = mkdtempSync(join(tmpdir(), 'fp-dup-peer-'));
     const identity = await loadOrCreateIdentity('opentable-mcp', idDir);
     const mcpId = 'opentable-mcp:0.9.1:a3f7c91d2e8b4f56';
 
@@ -176,24 +178,27 @@ describe('replay counter advances only after a frame authenticates', () => {
 
     const received: InnerFrame[] = [];
     peer.onInner((inner) => received.push(inner));
-    // sendInner awaits session-ready, so the key exists once this resolves.
     await peer.sendInner({ type: 'ping' });
     expect(sessionKey).not.toBeNull();
 
-    hostWs!.send(JSON.stringify(forgedFrame(mcpId, FORGED_SEQ)));
-    // The peer drops a frame it cannot open silently and keeps the socket, so
-    // there is nothing to wait FOR — give the drop a turn of the loop, then
-    // send the genuine frame whose seq the forged one would have swallowed.
-    await new Promise((r) => setTimeout(r, 20));
-    hostWs!.send(JSON.stringify(await sealInnerFrame(sessionKey!, mcpId, 1, { type: 'pong' })));
+    const dup = JSON.stringify(await sealInnerFrame(sessionKey!, mcpId, 1, { type: 'pong' }));
+    inOneWrite(hostWs!, () => {
+      hostWs!.send(dup);
+      hostWs!.send(dup);
+    });
 
     await vi.waitFor(() => expect(received).toHaveLength(1));
-    expect(received[0]).toMatchObject({ type: 'pong' });
-
-    // The counter DID move for the frame that authenticated: replaying it is
-    // still refused.
-    hostWs!.send(JSON.stringify(await sealInnerFrame(sessionKey!, mcpId, 1, { type: 'pong' })));
-    await new Promise((r) => setTimeout(r, 20));
+    await new Promise((r) => setTimeout(r, 50));
     expect(received).toHaveLength(1);
+
+    // A frame that FAILS authentication gives its claim back, so the seq it
+    // named is still open to the genuine frame that carries it. This is the
+    // property the split gate exists for, and the claim must not cost it.
+    const warns = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    hostWs!.send(JSON.stringify(forgedFrame(mcpId, 7)));
+    await new Promise((r) => setTimeout(r, 20));
+    hostWs!.send(JSON.stringify(await sealInnerFrame(sessionKey!, mcpId, 7, { type: 'pong' })));
+    await vi.waitFor(() => expect(received).toHaveLength(2));
+    warns.mockRestore();
   });
 });

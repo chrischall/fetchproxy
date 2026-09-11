@@ -3,6 +3,8 @@ import {
   MAX_FRAME_BYTES,
   AES_GCM_TAG_BYTES,
   base64Length,
+  encodeInnerFrame,
+  openEncryptedFrame,
   sealedFrameWireBytes,
   sealInnerFrame,
   toB64,
@@ -67,6 +69,26 @@ describe('sealedFrameWireBytes', () => {
     const sealed = await sealInnerFrame(key, mcpId, seq, inner);
     expect(sealedFrameWireBytes(mcpId, seq, inner)).toBe(utf8(JSON.stringify(sealed)));
   });
+
+  it.each(cases)(
+    'measures the same whether given the frame or its plaintext: $label',
+    async ({ inner }) => {
+      // The point of taking the plaintext is that a caller which is about to
+      // seal the frame serialises it ONCE — a second multi-megabyte string
+      // inside an MV3 service worker is what this removes. The number must not
+      // move a byte for it: the cap's correctness rests on the measurement
+      // being exact, in both directions.
+      const mcpId = 'alltrails-mcp:2.11.3:0123456789abcdef';
+      const plaintext = encodeInnerFrame(inner);
+      expect(sealedFrameWireBytes(mcpId, 7, plaintext)).toBe(
+        sealedFrameWireBytes(mcpId, 7, inner),
+      );
+      // And the bytes measured really are the bytes sealed.
+      const sealed = await sealInnerFrame(key, mcpId, 7, plaintext);
+      expect(sealedFrameWireBytes(mcpId, 7, plaintext)).toBe(utf8(JSON.stringify(sealed)));
+      expect(await openEncryptedFrame(key, sealed)).toEqual(inner);
+    },
+  );
 
   it('is measured against the widest seq, so it never under-counts', () => {
     const mcpId = 'a:1:0123456789abcdef';

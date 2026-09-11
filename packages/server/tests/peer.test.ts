@@ -16,7 +16,7 @@ import {
 } from '@fetchproxy/protocol';
 import { startPeer, type InternalPeerHandle } from '../src/peer.js';
 import { loadOrCreateIdentity } from '../src/identity.js';
-import { listenEphemeral } from './helpers/ephemeral-port.js';
+import { listenEphemeral, loopbackWss } from './helpers/ephemeral-port.js';
 
 describe('peer client', () => {
   let wss: WebSocketServer | null = null;
@@ -35,7 +35,7 @@ describe('peer client', () => {
     const idDir = mkdtempSync(join(tmpdir(), 'fp-peer-'));
     const identity = await loadOrCreateIdentity('opentable-mcp', idDir);
 
-    wss = new WebSocketServer({ port: 0 });
+    wss = loopbackWss();
     const port = await listenEphemeral(wss);
 
     const helloPromise = new Promise<HelloFrameFromServer>((resolve) => {
@@ -94,7 +94,7 @@ describe('peer client', () => {
     const idDir = mkdtempSync(join(tmpdir(), 'fp-peer-'));
     const identity = await loadOrCreateIdentity('opentable-mcp', idDir);
 
-    wss = new WebSocketServer({ port: 0 });
+    wss = loopbackWss();
     const port = await listenEphemeral(wss);
     wss.on('connection', (ws: WebSocket) => {
       ws.once('message', () => {
@@ -121,7 +121,7 @@ describe('peer client', () => {
     const idDir = mkdtempSync(join(tmpdir(), 'fp-peer-'));
     const identity = await loadOrCreateIdentity('opentable-mcp', idDir);
 
-    wss = new WebSocketServer({ port: 0 });
+    wss = loopbackWss();
     const port = await listenEphemeral(wss);
     // Host that takes the hello and then immediately closes — never sends ready.
     wss.on('connection', (ws: WebSocket) => {
@@ -150,7 +150,7 @@ describe('peer client', () => {
     const idDir = mkdtempSync(join(tmpdir(), 'fp-peer-'));
     const identity = await loadOrCreateIdentity('opentable-mcp', idDir);
 
-    wss = new WebSocketServer({ port: 0 });
+    wss = loopbackWss();
     const port = await listenEphemeral(wss);
     // Host accepts the hello, then closes — simulates the host dying.
     wss.on('connection', (ws: WebSocket) => {
@@ -188,7 +188,7 @@ describe('peer client', () => {
     const identity = await loadOrCreateIdentity('opentable-mcp', idDir);
     const mcpId = 'opentable-mcp:0.9.1:a3f7c91d2e8b4f56';
 
-    wss = new WebSocketServer({ port: 0 });
+    wss = loopbackWss();
     const port = await listenEphemeral(wss);
 
     let hostWs: WebSocket | null = null;

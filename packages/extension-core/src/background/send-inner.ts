@@ -30,9 +30,11 @@
 
 import {
   MAX_FRAME_BYTES,
+  encodeInnerFrame,
   sealInnerFrame,
   sealedFrameWireBytes,
   type InnerFrame,
+  type InnerFrameOrPlaintext,
 } from '@fetchproxy/protocol';
 
 import { state } from './state.js';
@@ -80,8 +82,14 @@ export async function sendInner(mcpId: string, inner: InnerFrame): Promise<void>
   // dropped frame. `Number.MAX_SAFE_INTEGER` stands in for the seq not yet
   // claimed — it is the widest this session could ever reach, so the
   // measurement is at or above the frame that actually goes out, never below.
-  const wireBytes = sealedFrameWireBytes(mcpId, Number.MAX_SAFE_INTEGER, inner);
-  let toSend = inner;
+  //
+  // Serialised ONCE: the plaintext measured here is the plaintext
+  // `sealInnerFrame` encrypts below, so the two cannot disagree and the
+  // multi-megabyte string this service worker just built is not built again
+  // on the common path where the frame fits.
+  const plaintext = encodeInnerFrame(inner);
+  const wireBytes = sealedFrameWireBytes(mcpId, Number.MAX_SAFE_INTEGER, plaintext);
+  let toSend: InnerFrameOrPlaintext = plaintext;
   if (wireBytes > MAX_FRAME_BYTES) {
     console.error(
       `[fetchproxy] refusing to send a ${wireBytes}-byte frame for ${mcpId} ` +

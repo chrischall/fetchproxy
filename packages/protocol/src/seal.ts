@@ -24,6 +24,32 @@ export function base64Length(byteLength: number): number {
 }
 
 /**
+ * The exact plaintext bytes {@link sealInnerFrame} encrypts for this inner
+ * frame — the one place `JSON.stringify` is applied to one.
+ *
+ * Exported so a caller that must MEASURE a frame before sending it pays for
+ * the serialisation once: {@link sealedFrameWireBytes} and
+ * {@link sealInnerFrame} both take these bytes in place of the object, so the
+ * number measured and the frame that goes out come from the same string by
+ * construction rather than by two calls agreeing. Measuring and then sealing
+ * the object serialised it twice — a second multi-megabyte string plus its
+ * encoded copy, inside an MV3 service worker at that.
+ */
+export function encodeInnerFrame(inner: InnerFrame): Uint8Array {
+  return enc.encode(JSON.stringify(inner));
+}
+
+/**
+ * An inner frame, or the plaintext {@link encodeInnerFrame} already made of
+ * one. Interchangeable everywhere either is accepted.
+ */
+export type InnerFrameOrPlaintext = InnerFrame | Uint8Array;
+
+function plaintextOf(inner: InnerFrameOrPlaintext): Uint8Array {
+  return inner instanceof Uint8Array ? inner : encodeInnerFrame(inner);
+}
+
+/**
  * Exactly how many bytes this inner frame will occupy on the wire once
  * {@link sealInnerFrame} has sealed it and `JSON.stringify` has rendered the
  * envelope — answered WITHOUT encrypting anything.
@@ -40,9 +66,17 @@ export function base64Length(byteLength: number): number {
  * whose decimal width the caller cannot know before it spends one — pass
  * `Number.MAX_SAFE_INTEGER` to measure against the widest a session can
  * reach, which over-counts by a few bytes and never under-counts.
+ *
+ * Pass {@link encodeInnerFrame}'s output rather than the object when the same
+ * frame is about to be sealed: the bytes measured are then literally the bytes
+ * encrypted, and the big string is built once.
  */
-export function sealedFrameWireBytes(mcpId: string, seq: number, inner: InnerFrame): number {
-  const plaintext = enc.encode(JSON.stringify(inner)).length;
+export function sealedFrameWireBytes(
+  mcpId: string,
+  seq: number,
+  inner: InnerFrameOrPlaintext,
+): number {
+  const plaintext = plaintextOf(inner).length;
   // The same object `sealInnerFrame` builds, with the two base64 fields empty
   // so their lengths can be added back exactly. Key order and escaping of
   // `mcpId` therefore match the real frame character for character.
@@ -98,15 +132,19 @@ export const MAX_FRAME_BYTES = 42 * 1024 * 1024;
 /**
  * Encrypt an inner frame and produce the wire-format EncryptedFrame.
  * IV is freshly generated per call. AES-256-GCM tag is bundled into ciphertext.
+ *
+ * Accepts {@link encodeInnerFrame}'s plaintext as well as the object, so a
+ * caller that measured the frame with {@link sealedFrameWireBytes} first can
+ * hand over the bytes it already has instead of serialising them again.
  */
 export async function sealInnerFrame(
   sessionKey: Uint8Array,
   mcpId: string,
   seq: number,
-  inner: InnerFrame,
+  inner: InnerFrameOrPlaintext,
 ): Promise<EncryptedFrame> {
   const iv = randomIv();
-  const pt = enc.encode(JSON.stringify(inner));
+  const pt = plaintextOf(inner);
   const ct = await aesGcmSeal(sessionKey, iv, pt);
   return {
     type: 'frame',

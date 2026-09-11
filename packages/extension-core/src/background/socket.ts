@@ -263,11 +263,28 @@ async function onEncryptedFrame(link: Link, frame: EncryptedFrame): Promise<void
   if (linkForMcp(frame.mcpId) !== link) return;
   const entry = state.sessions.get(frame.mcpId);
   if (!entry) return;
-  if (!entry.isFreshInboundSeq(frame.seq)) return;
+  // Claimed SYNCHRONOUSLY, before any await. `onMessage` is dispatched
+  // fire-and-forget, so two copies of one frame delivered in a single read run
+  // concurrently: a gate that only ASKED whether the seq was fresh answered
+  // yes to both, because nothing moves the counter until the open returns.
+  // Here that is not a wedge but a double EXECUTION — a duplicated
+  // `write_cookies` or non-GET `fetch` reaches `handleRequest` twice, and
+  // `handlers/dispatch.ts` has no per-id guard of its own. The claim takes the
+  // seq out of circulation now, so the second copy is refused as a replay.
+  if (!entry.claimInboundSeq(frame.seq)) return;
   flashActivity();
-  const opened = await openEncryptedFrameDetailed(entry.sessionKey, frame);
+  let opened;
+  try {
+    opened = await openEncryptedFrameDetailed(entry.sessionKey, frame);
+  } catch (e) {
+    // It reports both failures in its result rather than throwing, so this is
+    // the unexpected path — but a claim must not leak out of it.
+    entry.releaseInboundSeq(frame.seq);
+    throw e;
+  }
   // The counter moves for a frame that AUTHENTICATED, which is every outcome
-  // except `decrypt-failed`. Advancing on the way IN meant anything able to
+  // except `decrypt-failed`; that one gives the claim back instead, spending
+  // nothing. Advancing on the way IN meant anything able to
   // reach this socket could name a seq without holding the key, and every
   // genuine frame after it — all carrying lower numbers — was dropped as a
   // replay while the socket stayed open and looked healthy. Advancing only on
@@ -278,6 +295,7 @@ async function onEncryptedFrame(link: Link, frame: EncryptedFrame): Promise<void
   // this rule; the two ends of the same session must not disagree about which
   // frames are still accepted.
   if (opened.stage !== 'decrypt-failed') entry.commitInboundSeq(frame.seq);
+  else entry.releaseInboundSeq(frame.seq);
   if (opened.stage === 'decrypt-failed') {
     // Typically a straggler from a session that already rotated (the MCP
     // reconnected mid-flight). Nothing about the plaintext can be trusted —

@@ -71,6 +71,18 @@ export async function connectMockExtension(
     /* expected on refusal */
   });
 
+  // A close is LATCHED rather than waited for from wherever the caller happens
+  // to be. `closed()` used to attach the listener on the spot, so a refusal
+  // that had already arrived — the host answers a forged `ready` by closing
+  // 1008 immediately, and the caller has awaited two crypto operations since
+  // sending it — woke nobody and the case sat there until the test timed out.
+  let closeSeen: { code: number; reason: string } | null = null;
+  const closeWaiters: ((r: { code: number; reason: string }) => void)[] = [];
+  ws.on('close', (code: number, reason: Buffer) => {
+    closeSeen = { code, reason: reason.toString() };
+    for (const wake of closeWaiters.splice(0)) wake(closeSeen);
+  });
+
   const serverHellos = new Map<string, { sessionNonce: string; identityX25519Pub: string }>();
   // Keyed by mcpId, because a concentrator announces every MCP on one socket.
   // Draining a flat list on each hello woke waiters for OTHER ids and dropped
@@ -143,11 +155,7 @@ export async function connectMockExtension(
       return hkdfSha256(shared, mcpNonce, new TextEncoder().encode(HKDF_SESSION_INFO), 32);
     },
     closed: () =>
-      new Promise((resolve) =>
-        ws.once('close', (code: number, reason: Buffer) =>
-          resolve({ code, reason: reason.toString() }),
-        ),
-      ),
+      closeSeen ? Promise.resolve(closeSeen) : new Promise((resolve) => closeWaiters.push(resolve)),
     close: () => ws.close(),
   };
 }

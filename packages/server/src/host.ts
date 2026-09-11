@@ -25,6 +25,7 @@ import {
   type InnerFrame,
 } from '@fetchproxy/protocol';
 import { buildServerHello } from './build-server-hello.js';
+import { encodeOutboundInnerFrame } from './frame-size.js';
 import { SessionState } from './session.js';
 import { awaitSessionReady, FetchproxyHelloRejectedError } from './session-ready.js';
 import type { Identity } from './identity.js';
@@ -528,12 +529,25 @@ export async function startHost(opts: HostOpts): Promise<HostHandle> {
               // during the open would otherwise commit it against the new one.
               const session = ownSession;
               if (!session) return;
-              if (!session.isFreshInboundSeq(frame.seq)) return;
-              const inner = await openEncryptedFrame(session.sessionKey, frame);
-              // Only now. A frame that fails GCM authentication throws out of
-              // here and must leave the counter where it was — otherwise one
-              // forged frame with a high seq takes every genuine frame already
-              // in flight behind it down with the socket it tears up.
+              // Claimed SYNCHRONOUSLY, before the await below: two copies of
+              // one frame read in the same pass would otherwise both be told
+              // the seq was free, since nothing moves the counter until the
+              // open returns. The claim takes it out of circulation now, so
+              // the duplicate is refused here as a replay.
+              if (!session.claimInboundSeq(frame.seq)) return;
+              let inner;
+              try {
+                inner = await openEncryptedFrame(session.sessionKey, frame);
+              } catch (e) {
+                // A frame that fails GCM authentication never happened: give
+                // the claim back and leave the counter where it was —
+                // otherwise one forged frame with a high seq takes every
+                // genuine frame already in flight behind it down with the
+                // socket it tears up.
+                session.releaseInboundSeq(frame.seq);
+                throw e;
+              }
+              // Only now is the seq spent.
               session.commitInboundSeq(frame.seq);
               ownInnerListeners.forEach((cb) => cb(inner));
             } else {
@@ -669,11 +683,17 @@ export async function startHost(opts: HostOpts): Promise<HostHandle> {
         pendingPairCode: () => ownPendingPairCode,
       });
       if (!extensionWs) throw new Error('host: no extension connected');
+      // Measured before a seq is claimed, so a refused frame spends nothing
+      // and leaves no gap. The socket this would go out on is the ONE the
+      // extension holds for every MCP on this concentrator, so meeting its
+      // `maxPayload` as a 1009 close would drop every sibling's bridge to
+      // report that one of our own calls was too big.
+      const plaintext = encodeOutboundInnerFrame(opts.ownMcpId, inner);
       const sealed = await sealInnerFrame(
         session.sessionKey,
         opts.ownMcpId,
         session.nextOutboundSeq(),
-        inner,
+        plaintext,
       );
       extensionWs.send(JSON.stringify(sealed));
     },
