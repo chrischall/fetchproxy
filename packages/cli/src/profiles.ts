@@ -7,6 +7,7 @@ import type {
   GraphqlOpDeclaration,
   IndexedDbScopeDecl,
 } from '@fetchproxy/protocol';
+import { defaultTrustDir } from '@fetchproxy/server';
 import { UsageError } from './output.js';
 
 export interface PointerDecl {
@@ -91,12 +92,17 @@ export function identityPath(
  * Leaving the pin behind means a profile of the same name created later starts
  * life already committed to a browser identity it never met — inheriting a
  * refusal, or a trust, that nobody in this installation decided.
+ *
+ * "Beside" is where the pin lands by default and no longer where it must land:
+ * `FETCHPROXY_TRUST_DIR` moves it, and this has to follow the same resolution
+ * the server writes through or `profile remove` deletes a file that is not the
+ * pin.
  */
 export function extensionPinPath(
   name: string,
-  identityDir: string = join(homedir(), '.fetchproxy', 'identity'),
+  trustDir: string = defaultTrustDir(),
 ): string {
-  return join(identityDir, `fpx-${name}.extension-trust.json`);
+  return join(trustDir, `fpx-${name}.extension-trust.json`);
 }
 
 export function emptyProfile(domains: string[]): Profile {

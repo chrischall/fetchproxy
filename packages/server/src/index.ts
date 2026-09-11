@@ -70,10 +70,13 @@ export type { Capability, FetchInit } from '@fetchproxy/protocol';
 export {
   clearExtensionPin,
   decideExtensionTrust,
+  defaultTrustDir,
   extensionTrustPath,
   fileExtensionTrust,
   readExtensionPin,
+  resolveTrustDir,
   writeExtensionPin,
+  TRUST_DIR_ENV,
   TRUST_NEW_EXTENSION_ENV,
 } from './extension-trust.js';
 export type { ExtensionPin, ExtensionTrustPort, TrustOutcome } from './extension-trust.js';

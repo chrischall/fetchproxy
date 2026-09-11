@@ -30,8 +30,68 @@
  * this machine and cannot touch this file.
  */
 import { readFile, writeFile, rename, unlink, mkdir, chmod } from 'node:fs/promises';
-import { join } from 'node:path';
+import { isAbsolute, join } from 'node:path';
 import { defaultIdentityDir, safeIdentityFileBase } from './identity.js';
+
+/**
+ * Where the pin lives, when it must not live beside the identity.
+ *
+ * The pin has always been written into the identity directory, which is the
+ * right answer on a laptop: one directory, mode 0700, owned by the user, and
+ * removing a profile takes both files together. It stops being the right
+ * answer the moment a HOST provisions the identity — mcp-host writes
+ * `<identityDir>/<server-name>.json` for the child so every caller's child
+ * presents one identity to the extension, and the directory it writes is not
+ * one the child may write back to. The identity is READ there; the pin is the
+ * one thing this package WRITES, after the ready signature proves the key.
+ * Point both at one read-only directory and the write fails, `host.ts` logs
+ * `could not persist the extension pin`, and the MCP trusts on first use again
+ * on the next boot — the pin refusing nothing, silently.
+ *
+ * So the two directories are separable. `FETCHPROXY_TRUST_DIR` is the ambient
+ * half, for the same reason `FETCHPROXY_IDENTITY_DIR` is: a host does not edit
+ * the thirteen packages that construct `FetchproxyServer`, it sets an
+ * environment variable on the child.
+ *
+ * Held to the identity variable's contract — an ABSOLUTE path or nothing. A
+ * relative one would land against the child's working directory, which is not
+ * a place the operator wrote down and can differ between the process that
+ * wrote the pin and the next to look for it, which is the failure the variable
+ * exists to fix. Unlike the identity resolver this one SAYS SO when it falls
+ * through: a misplaced identity fails loudly at the next handshake, while a
+ * misplaced pin fails at nothing — it just writes somewhere that does not
+ * persist, and the only symptom is a pair prompt that comes back.
+ */
+export const TRUST_DIR_ENV = 'FETCHPROXY_TRUST_DIR';
+
+function envTrustDir(env: Record<string, string | undefined> = process.env): string | undefined {
+  const raw = env[TRUST_DIR_ENV];
+  if (raw === undefined) return undefined;
+  const dir = raw.trim();
+  if (dir !== '' && isAbsolute(dir)) return dir;
+  console.warn(
+    `[fetchproxy] ignoring ${TRUST_DIR_ENV}=${JSON.stringify(raw)}: it is not an absolute ` +
+      `path. The extension pin will be written beside the identity instead, which is not ` +
+      `where you pointed it — if that directory is read-only, no pin is ever kept.`,
+  );
+  return undefined;
+}
+
+/**
+ * The trust directory, in the order everything else in this package resolves:
+ * an explicit option, then the environment, then the identity directory the
+ * pin has always shared. Never a fourth answer — with nothing set anywhere the
+ * pin lands exactly where it landed before this existed.
+ */
+export function resolveTrustDir(explicit?: string, identityDir?: string): string {
+  if (explicit !== undefined) return explicit;
+  return envTrustDir() ?? identityDir ?? defaultIdentityDir();
+}
+
+/** `FETCHPROXY_TRUST_DIR` when it names an absolute path, else the identity directory. */
+export function defaultTrustDir(): string {
+  return resolveTrustDir();
+}
 
 /** The extension identity an MCP has committed to, base64 raw 32B each. */
 export interface ExtensionPin {
@@ -66,17 +126,27 @@ export interface ExtensionTrustPort {
   location?: string;
 }
 
-/** The file-backed port: the pin beside the MCP's own identity. */
+/**
+ * The file-backed port: the pin beside the MCP's own identity, unless a
+ * `trustDir` (or `FETCHPROXY_TRUST_DIR`) sends it somewhere writable.
+ *
+ * `dir` is the IDENTITY directory — the default the pin follows when nothing
+ * says otherwise — and is deliberately not renamed: it is what every caller
+ * already passes, and the whole point of this change is that the two answers
+ * can differ.
+ */
 export function fileExtensionTrust(args: {
   serverName: string;
   dir?: string;
+  trustDir?: string;
   allowNew: boolean;
 }): ExtensionTrustPort {
+  const dir = resolveTrustDir(args.trustDir, args.dir);
   return {
     allowNew: args.allowNew,
-    location: extensionTrustPath(args.serverName, args.dir ?? defaultIdentityDir()),
-    read: () => readExtensionPin(args.serverName, args.dir ?? defaultIdentityDir()),
-    write: (pin) => writeExtensionPin(args.serverName, pin, args.dir ?? defaultIdentityDir()),
+    location: extensionTrustPath(args.serverName, dir),
+    read: () => readExtensionPin(args.serverName, dir),
+    write: (pin) => writeExtensionPin(args.serverName, pin, dir),
   };
 }
 
@@ -149,8 +219,8 @@ export function decideExtensionTrust(args: {
   };
 }
 
-/** Where the pin lives — beside the identity, one per MCP. */
-export function extensionTrustPath(serverName: string, dir: string = defaultIdentityDir()): string {
+/** Where the pin lives — one per MCP, under the trust directory. */
+export function extensionTrustPath(serverName: string, dir: string = defaultTrustDir()): string {
   return join(dir, `${safeIdentityFileBase(serverName)}.extension-trust.json`);
 }
 
@@ -159,7 +229,7 @@ function extensionTrustPathHint(serverName: string): string {
   try {
     return extensionTrustPath(serverName);
   } catch {
-    return join(defaultIdentityDir(), '<server-name>.extension-trust.json');
+    return join(defaultTrustDir(), '<server-name>.extension-trust.json');
   }
 }
 
@@ -175,7 +245,7 @@ function isPin(x: unknown): x is ExtensionPin {
 
 export async function readExtensionPin(
   serverName: string,
-  dir: string = defaultIdentityDir(),
+  dir: string = defaultTrustDir(),
 ): Promise<ExtensionPin | null> {
   const path = extensionTrustPath(serverName, dir);
   let raw: string;
@@ -207,7 +277,7 @@ export async function readExtensionPin(
 export async function writeExtensionPin(
   serverName: string,
   pin: ExtensionPin,
-  dir: string = defaultIdentityDir(),
+  dir: string = defaultTrustDir(),
 ): Promise<void> {
   const path = extensionTrustPath(serverName, dir);
   await mkdir(dir, { recursive: true, mode: 0o700 });
@@ -222,7 +292,7 @@ export async function writeExtensionPin(
 /** Drop the pin. Returns whether there was one. */
 export async function clearExtensionPin(
   serverName: string,
-  dir: string = defaultIdentityDir(),
+  dir: string = defaultTrustDir(),
 ): Promise<boolean> {
   const path = extensionTrustPath(serverName, dir);
   try {

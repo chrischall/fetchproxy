@@ -49,6 +49,13 @@ Exit codes: 0 ok · 1 usage · 2 bridge unavailable · 3 bot wall · 4 upstream 
 export interface CliDeps {
   home?: string;
   identityDir?: string;
+  /**
+   * Where the extension pins live, when that is not the identity directory.
+   * Tests that pass only `identityDir` keep the pin beside the
+   * identity, which is where a `FETCHPROXY_TRUST_DIR`-less installation
+   * writes it.
+   */
+  trustDir?: string;
   makeServer?: VerbServerFactory;
   bootstrapFn?: typeof bootstrap;
   readFile?: (p: string) => string;
@@ -126,7 +133,7 @@ export async function runCli(argv: string[], io: Io, deps: CliDeps = {}): Promis
         rmSync(identityPath(cmd.name, deps.identityDir), { force: true });
         // …and the pin beside it, or a profile re-created under this name
         // inherits a browser identity it never paired with (#208).
-        rmSync(extensionPinPath(cmd.name, deps.identityDir), { force: true });
+        rmSync(extensionPinPath(cmd.name, deps.trustDir ?? deps.identityDir), { force: true });
         io.err(`profile "${cmd.name}" removed — also revoke fpx-${cmd.name} in the Transporter extension popup`);
         return EXIT.OK;
       }
@@ -151,7 +158,7 @@ export async function runCli(argv: string[], io: Io, deps: CliDeps = {}): Promis
       case 'health':
         return await runHealth(cmd, getProfile(cmd.profile, home), io, deps.makeServer);
       case 'trust':
-        return await runTrust(cmd, io, deps.identityDir);
+        return await runTrust(cmd, io, deps.trustDir ?? deps.identityDir);
       case 'pair':
         return await runPair(cmd, getProfile(cmd.profile, home), io, deps.makeServer);
     }
