@@ -28,7 +28,7 @@
  */
 
 import {
-  openEncryptedFrame,
+  openEncryptedFrameDetailed,
   validateFrame,
   toB64,
   PROTOCOL_VERSION,
@@ -265,18 +265,40 @@ async function onEncryptedFrame(link: Link, frame: EncryptedFrame): Promise<void
   if (!entry) return;
   if (!entry.isFreshInboundSeq(frame.seq)) return;
   flashActivity();
-  let inner: InnerFrame;
-  try {
-    inner = await openEncryptedFrame(entry.sessionKey, frame);
-  } catch (e) {
-    console.warn('[fetchproxy] decrypt failed:', e);
+  const opened = await openEncryptedFrameDetailed(entry.sessionKey, frame);
+  // The counter moves for a frame that AUTHENTICATED, which is every outcome
+  // except `decrypt-failed`. Advancing on the way IN meant anything able to
+  // reach this socket could name a seq without holding the key, and every
+  // genuine frame after it — all carrying lower numbers — was dropped as a
+  // replay while the socket stayed open and looked healthy. Advancing only on
+  // `ok` is the same bug from the other side: a frame that decrypted under the
+  // live session key was sent by whoever holds that key, so its seq is spent
+  // whatever the plaintext then turns out to be, and leaving the counter
+  // behind leaves that seq replayable. `peer.ts` states and implements exactly
+  // this rule; the two ends of the same session must not disagree about which
+  // frames are still accepted.
+  if (opened.stage !== 'decrypt-failed') entry.commitInboundSeq(frame.seq);
+  if (opened.stage === 'decrypt-failed') {
+    // Typically a straggler from a session that already rotated (the MCP
+    // reconnected mid-flight). Nothing about the plaintext can be trusted —
+    // drop it quietly, the next frame on the live key will land.
+    console.warn('[fetchproxy] decrypt failed:', opened.error);
     return;
   }
-  // Only now that the frame has AUTHENTICATED. Advancing on the way in meant
-  // anything able to reach this socket could name a seq without holding the
-  // key, and every genuine frame after it — all carrying lower numbers — was
-  // dropped as a replay while the socket stayed open and looked healthy.
-  entry.commitInboundSeq(frame.seq);
+  if (opened.stage === 'validation-failed') {
+    // Decryption SUCCEEDED, so this really is the live MCP on the other end
+    // and the malformed plaintext is a protocol bug rather than a stale-key
+    // symptom. Say so on its own channel rather than in the warn bucket every
+    // straggler lands in. No synthetic reply goes back: the extension is the
+    // RESPONDER here, so there is no pending call of ours to fail — the MCP's
+    // own request timeout is what covers a request we could not read.
+    console.error(
+      '[fetchproxy] received a frame that decrypted OK but failed validation:',
+      opened.error,
+    );
+    return;
+  }
+  const inner: InnerFrame = opened.inner;
   if (inner.type === 'ping') {
     await sendInner(frame.mcpId, { type: 'pong' });
   } else if (inner.type === 'request') {

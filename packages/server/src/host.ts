@@ -12,6 +12,7 @@ import {
   validateFrame,
   derivePairCodeFromIds,
   HKDF_SESSION_INFO,
+  MAX_FRAME_BYTES,
   type Capability,
   type CaptureHeaderDecl,
   type IndexedDbScopeDecl,
@@ -55,12 +56,25 @@ export const HANDSHAKE_TIMEOUT_MS = 15_000;
  * The largest frame the host will accept from a peer or the extension.
  *
  * `ws` defaults to 100 MiB, which is a lot of process memory a local peer can
- * make the host allocate before a single byte is validated. 8 MiB is the
- * extension's own 5 MiB body cap plus room for base64 expansion and the
- * envelope around it, so no legitimate frame is near it. Over the cap, `ws`
+ * make the host allocate before a single byte is validated. Over the cap, `ws`
  * closes the socket with 1009 without buffering the rest.
+ *
+ * That close is why the number is `MAX_FRAME_BYTES` — the protocol's own
+ * budget, derived in `seal.ts` from the biggest body the extension will relay
+ * — rather than a figure picked for how much memory feels reasonable. 8 MiB
+ * was picked that way, and it sat UNDER the worst legitimate frame: the wire
+ * form is base64 of the JSON of the plaintext, so a 5 MiB response body of
+ * non-ASCII text (never mind a storage read, which has no cap of its own at
+ * all) comes out the far side of that expansion well past 8 MiB. A 1009 on
+ * the extension's socket is not one failed call — it is the ONE socket every
+ * MCP on this concentrator shares, so all of them drop together.
+ *
+ * A conforming sender never reaches this at all: the extension measures each
+ * frame against the same constant before sealing it and fails the single
+ * request instead. What is left here is the backstop for a sender that is not
+ * the extension.
  */
-export const MAX_PAYLOAD_BYTES = 8 * 1024 * 1024;
+export const MAX_PAYLOAD_BYTES = MAX_FRAME_BYTES;
 
 export interface HostOpts {
   httpServer: HttpServer;
@@ -107,6 +121,12 @@ export interface HostOpts {
    * wait out fifteen real seconds to watch a silent socket be closed.
    */
   handshakeTimeoutMs?: number;
+  /**
+   * Override `MAX_PAYLOAD_BYTES`. Tests only — proving the cap bites means
+   * sending a frame over it, and pushing 42 MiB across loopback to watch a
+   * 1009 arrive tests the size of the constant rather than the behaviour.
+   */
+  maxPayloadBytes?: number;
 }
 
 export interface HostHandle {
@@ -138,7 +158,7 @@ const enc = new TextEncoder();
 export async function startHost(opts: HostOpts): Promise<HostHandle> {
   const wss = new WebSocketServer({
     server: opts.httpServer,
-    maxPayload: MAX_PAYLOAD_BYTES,
+    maxPayload: opts.maxPayloadBytes ?? MAX_PAYLOAD_BYTES,
     verifyClient: (info, cb) => {
       const origin = info.req.headers.origin;
       if (origin && PUBLIC_ORIGIN_RE.test(origin)) {

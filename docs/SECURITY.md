@@ -79,6 +79,7 @@ Chrome / Safari currently allow WebSocket connections from HTTP pages to `ws://l
 3. **No-key handshake.** Connections that don't send a valid `hello` frame within 15 seconds get closed. A drive-by webpage script enumerating localhost ports gets nothing useful.
 4. **Browser-side Private Network Access (PNA).** Chrome's PNA spec (Chrome 130+) requires public-origin pages to do a CORS preflight before connecting to private addresses. We refuse to honor any preflight, which kills the connection.
 5. **Identity signature.** Even if a webpage got past the above, it cannot mint a valid `sessionSig` over `mcpId || sessionNonce` without the legitimate MCP's private key — and an unknown identity falls into T1 (pair prompt).
+6. **Bounded buffering.** The host caps an inbound WS payload at `MAX_FRAME_BYTES` (42 MiB), so a connection that has not identified itself cannot make the process allocate `ws`'s 100 MiB default per message. The number is derived from the largest legitimate frame rather than chosen for comfort (`protocol/src/seal.ts`), because a payload over `maxPayload` is answered by CLOSING the socket with 1009 — and the extension's socket is the one every MCP on the concentrator shares. A conforming sender never reaches it: the extension measures each frame against the same constant before sealing it and fails that single request instead, which is also the only size bound `read_indexed_db`, `read_local_storage` and `read_dom` have.
 
 ### T3 — Compromised MCP server (supply chain)
 

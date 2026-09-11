@@ -15,6 +15,7 @@ import {
   HKDF_SESSION_INFO,
   PROTOCOL_VERSION,
   type EncryptedFrame,
+  type InnerFrame,
   type RawKeyPair,
 } from '@fetchproxy/protocol';
 
@@ -232,5 +233,47 @@ describe('extension replay counter', () => {
     localWs.message(await sealInnerFrame(key, mcp.mcpId, 1, { type: 'ping' }));
     await new Promise((r) => setTimeout(r, 20));
     expect(localWs.frames('frame')).toHaveLength(1);
+  });
+
+  it('an authenticated frame that fails validation still spends its seq', async () => {
+    const warns = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const mcp = await scriptedMcp('alltrails-mcp:2.1.3:7777777777777777');
+    await trustMcp(mcp);
+    localWs.message(await helloFrom(mcp));
+    await vi.waitUntil(() => localWs.frames('ready').length > 0);
+    const key = await sessionKeyFor(
+      mcp,
+      localWs.frames<{ extensionSessionPub: string }>('ready')[0]!,
+    );
+
+    // Decrypts under the live session key — so whoever sent it holds the key
+    // and this seq is genuinely spent — but the plaintext is not a frame this
+    // protocol knows. `peer.ts` states the rule the extension has to agree
+    // with: the counter moves once a frame AUTHENTICATES, whatever validation
+    // then says about it.
+    localWs.message(
+      await sealInnerFrame(key, mcp.mcpId, 5, { type: 'bogus' } as unknown as InnerFrame),
+    );
+    await vi.waitUntil(() => warns.mock.calls.length + errors.mock.calls.length > 0);
+    expect(localWs.frames('frame')).toHaveLength(0);
+    // seq 5 is spent: a captured frame replayed at it is refused.
+    localWs.message(await sealInnerFrame(key, mcp.mcpId, 5, { type: 'ping' }));
+    await new Promise((r) => setTimeout(r, 20));
+    expect(localWs.frames('frame')).toHaveLength(0);
+
+    // And the session is not wedged — the next seq is answered as usual.
+    localWs.message(await sealInnerFrame(key, mcp.mcpId, 6, { type: 'ping' }));
+    await vi.waitUntil(() => localWs.frames('frame').length > 0);
+    const pong = localWs.frames<EncryptedFrame>('frame')[0]!;
+    expect((await openEncryptedFrame(key, pong)).type).toBe('pong');
+
+    // And it was said out loud, told apart from a stale-key drop: this frame
+    // came from the live peer, so it is a protocol bug rather than a
+    // straggler from a session that already rotated.
+    expect(errors).toHaveBeenCalled();
+
+    warns.mockRestore();
+    errors.mockRestore();
   });
 });

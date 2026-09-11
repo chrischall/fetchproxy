@@ -12,6 +12,89 @@ function randomIv(): Uint8Array {
   return iv;
 }
 
+/** The AES-GCM authentication tag `aesGcmSeal` appends to every ciphertext. */
+export const AES_GCM_TAG_BYTES = 16;
+
+/** Base64 of the 12-byte IV: four characters per three bytes, no remainder. */
+const IV_B64_BYTES = 16;
+
+/** How many bytes standard padded base64 takes for `byteLength` bytes in. */
+export function base64Length(byteLength: number): number {
+  return Math.ceil(byteLength / 3) * 4;
+}
+
+/**
+ * Exactly how many bytes this inner frame will occupy on the wire once
+ * {@link sealInnerFrame} has sealed it and `JSON.stringify` has rendered the
+ * envelope — answered WITHOUT encrypting anything.
+ *
+ * Exists because the size of a frame has to be decided by its PRODUCER. A
+ * WebSocket peer that receives a payload over its `maxPayload` answers by
+ * closing the connection (1009), and on the concentrator the extension's
+ * connection is the one socket every MCP shares — so "this response is too
+ * big" has to be a fact about one request, decided before the frame is sent,
+ * rather than a discovery the receiver makes by tearing the socket down.
+ *
+ * Exact, not an estimate: an under-count lets an oversize frame out, and an
+ * over-count refuses one that would have fitted. The only freedom is `seq`,
+ * whose decimal width the caller cannot know before it spends one — pass
+ * `Number.MAX_SAFE_INTEGER` to measure against the widest a session can
+ * reach, which over-counts by a few bytes and never under-counts.
+ */
+export function sealedFrameWireBytes(mcpId: string, seq: number, inner: InnerFrame): number {
+  const plaintext = enc.encode(JSON.stringify(inner)).length;
+  // The same object `sealInnerFrame` builds, with the two base64 fields empty
+  // so their lengths can be added back exactly. Key order and escaping of
+  // `mcpId` therefore match the real frame character for character.
+  const envelope = enc.encode(
+    JSON.stringify({ type: 'frame', mcpId, seq, iv: '', ciphertext: '' }),
+  ).length;
+  return envelope + IV_B64_BYTES + base64Length(plaintext + AES_GCM_TAG_BYTES);
+}
+
+/**
+ * The largest frame a conforming end of this protocol may put on the wire.
+ *
+ * DERIVED, not picked — and the thing it is derived from is the biggest
+ * payload a legitimate frame can carry, which is a relayed `fetch` response
+ * body. The extension caps one at `MAX_RESPONSE_BODY_BYTES` = 5 MiB, counted
+ * in UTF-16 code units (`body.length`), not bytes. From there:
+ *
+ * ```
+ *   body                     5 MiB = 5,242,880 UTF-16 code units
+ *   JSON.stringify           x6 bytes/unit worst case: a C0 control character
+ *                            with no short escape, or a lone surrogate, is
+ *                            rendered `\u001f` — six ASCII bytes for one code
+ *                            unit. Ordinary non-ASCII is cheaper (a 3-byte
+ *                            BMP character is one unit; a 4-byte astral one is
+ *                            two).                         = 31,457,280 bytes
+ *   the rest of the inner frame (type/id/ok/op/status/url)
+ *                                                          +     65,536 bytes
+ *   AES-GCM tag                                            +         16 bytes
+ *   base64 of the ciphertext, ceil(n/3)*4                  x 4/3
+ *                                                          = 42,030,444 bytes
+ *   the {"type":"frame","mcpId":...,"seq":...,"iv":...} envelope
+ *                                                          +        512 bytes
+ *                                                          = 42,030,956 bytes
+ * ```
+ *
+ * 42 MiB is the next whole mebibyte above that. It is deliberately NOT a
+ * number chosen for how much memory a receiver should be willing to buffer:
+ * an 8 MiB cap picked that way is what this replaces, and it sat BELOW the
+ * frame above, so a large non-ASCII response would have closed the shared
+ * socket for every MCP on it.
+ *
+ * The memory question is answered at the other end instead. The extension
+ * measures each frame with {@link sealedFrameWireBytes} before sealing it and
+ * refuses the ONE request whose answer would exceed this, so a conforming
+ * sender never reaches the receiver's cap at all — which also, finally, puts
+ * a bound on `read_indexed_db`, `read_local_storage` and `read_dom`, none of
+ * which has a size cap of its own. What is left at the receiver is a backstop
+ * against a sender that is not this extension, and 42 MiB still takes 58% off
+ * what `ws` would otherwise let an unauthenticated local peer allocate.
+ */
+export const MAX_FRAME_BYTES = 42 * 1024 * 1024;
+
 /**
  * Encrypt an inner frame and produce the wire-format EncryptedFrame.
  * IV is freshly generated per call. AES-256-GCM tag is bundled into ciphertext.

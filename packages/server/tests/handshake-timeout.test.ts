@@ -4,7 +4,7 @@ import type { AddressInfo } from 'node:net';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { HelloFrameFromExtension } from '@fetchproxy/protocol';
+import { MAX_FRAME_BYTES, type HelloFrameFromExtension } from '@fetchproxy/protocol';
 import {
   startHost,
   HANDSHAKE_TIMEOUT_MS,
@@ -26,7 +26,10 @@ function blankTrust(): ExtensionTrustPort {
   };
 }
 
-async function bootHost(handshakeTimeoutMs?: number): Promise<{
+async function bootHost(
+  handshakeTimeoutMs?: number,
+  maxPayloadBytes?: number,
+): Promise<{
   handle: HostHandle;
   port: number;
 }> {
@@ -44,6 +47,7 @@ async function bootHost(handshakeTimeoutMs?: number): Promise<{
     ownDomains: ['opentable.com'],
     extensionTrust: blankTrust(),
     handshakeTimeoutMs,
+    maxPayloadBytes,
   });
   return { handle, port };
 }
@@ -122,10 +126,20 @@ describe('host handshake timeout (docs/SECURITY.md §T2 defense 3)', () => {
     expect(ws.readyState).toBe(WebSocket.OPEN);
   });
 
-  it('caps the frame a peer may send at 8 MiB', async () => {
-    expect(MAX_PAYLOAD_BYTES).toBe(8 * 1024 * 1024);
+  it("caps the frame a peer may send at the protocol's own frame budget", () => {
+    // Not a number of its own. `MAX_FRAME_BYTES` is derived from the largest
+    // legitimate frame (seal.ts carries the arithmetic), and the extension
+    // measures against the SAME constant before it seals — so a conforming
+    // sender fails one request rather than reaching the 1009 below, which on
+    // the extension's socket would drop every MCP on this concentrator.
+    expect(MAX_PAYLOAD_BYTES).toBe(MAX_FRAME_BYTES);
+  });
 
-    const booted = await bootHost();
+  it('closes a socket that sends a frame over the cap', async () => {
+    // A small cap, injected: the behaviour under test is the close, not the
+    // size of the constant, and pushing 42 MiB over loopback to watch it
+    // would test the latter slowly.
+    const booted = await bootHost(undefined, 64 * 1024);
     host = booted.handle;
     const ws = new WebSocket(`ws://127.0.0.1:${booted.port}`, {
       maxPayload: 64 * 1024 * 1024,
@@ -133,13 +147,13 @@ describe('host handshake timeout (docs/SECURITY.md §T2 defense 3)', () => {
     sockets.push(ws);
     await opened(ws);
 
-    ws.send(JSON.stringify({ type: 'hello', pad: 'a'.repeat(9 * 1024 * 1024) }));
+    ws.send(JSON.stringify({ type: 'hello', pad: 'a'.repeat(128 * 1024) }));
     // 1009 = "message too big" — the cap bit, not the frame validator.
     expect(await closeCodeWithin(ws, 5000)).toBe(1009);
   });
 
   it('control: a frame under the cap reaches the validator instead', async () => {
-    const booted = await bootHost();
+    const booted = await bootHost(undefined, 64 * 1024);
     host = booted.handle;
     const ws = new WebSocket(`ws://127.0.0.1:${booted.port}`, {
       maxPayload: 64 * 1024 * 1024,
@@ -147,7 +161,7 @@ describe('host handshake timeout (docs/SECURITY.md §T2 defense 3)', () => {
     sockets.push(ws);
     await opened(ws);
 
-    ws.send(JSON.stringify({ type: 'hello', pad: 'a'.repeat(1024 * 1024) }));
+    ws.send(JSON.stringify({ type: 'hello', pad: 'a'.repeat(1024) }));
     // 1002 = protocol error from validateFrame, so the control proves the
     // 1009 above came from the size cap and not from the same rejection.
     expect(await closeCodeWithin(ws, 5000)).toBe(1002);
