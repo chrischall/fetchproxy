@@ -100,6 +100,37 @@ describe('runCli', () => {
     expect(io.errs.join('\n')).toMatch(/extension popup/);
   });
 
+  /**
+   * "Beside the identity" is where the pin lands by default and no longer
+   * where it must land: `FETCHPROXY_TRUST_DIR` (a `trustDir` here) moves it,
+   * for a host that provisions the identity directory read-only. So the
+   * removal has to take the pin where it ACTUALLY is — and, the other half of
+   * the same rule, must not take a file that merely sits in the identity
+   * directory under the pin's name, which is what re-deriving the path from
+   * the identity directory would do. The identity itself stays in the
+   * identity directory: the two paths diverge, so each is asserted apart.
+   */
+  it('profile remove takes the pin from a trustDir that diverges from identityDir', async () => {
+    const io = memIo();
+    const trustDir = join(home, 'trust');
+    mkdirSync(trustDir, { recursive: true });
+    await runCli(['profile', 'add', 'r', '--domain', 'resy.com'], io, { home });
+    const idFile = join(identityDir, 'fpx-r.json');
+    const pinFile = join(trustDir, 'fpx-r.extension-trust.json');
+    // Same name, wrong directory: nothing this installation writes, so nothing
+    // this removal may delete.
+    const decoy = join(identityDir, 'fpx-r.extension-trust.json');
+    writeFileSync(idFile, '{}');
+    writeFileSync(pinFile, '{}');
+    writeFileSync(decoy, '{}');
+    expect(await runCli(['profile', 'remove', 'r'], io, { home, identityDir, trustDir }))
+      .toBe(EXIT.OK);
+    expect(loadProfiles(home)).toEqual({});
+    expect(existsSync(idFile), 'the identity comes from identityDir').toBe(false);
+    expect(existsSync(pinFile), 'the pin comes from trustDir').toBe(false);
+    expect(existsSync(decoy), 'a pin-shaped file in identityDir is not the pin').toBe(true);
+  });
+
   it('verb dispatch: get uses the injected factory and profile', async () => {
     const io = memIo();
     await runCli(['profile', 'add', 'trip', '--domain', 'tripadvisor.com'], io, { home });
