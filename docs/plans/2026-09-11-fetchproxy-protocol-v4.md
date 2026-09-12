@@ -112,7 +112,8 @@ So v4 needs a refusal path, not only a refusal.
 
 ## Decisions required before Task 1.1
 
-Each has a default; take the default unless Chris says otherwise.
+The first three have a default; take the default unless Chris says otherwise.
+The fourth is **answered** and is recorded here as settled rather than offered.
 
 1. **Package major.** v4 ships as `@fetchproxy/*` **3.0.0**. The off-by-one
    between package major and protocol version (package 2.x ↔ protocol 3;
@@ -148,12 +149,19 @@ Each has a default; take the default unless Chris says otherwise.
    a straggler registration is refused at spawn with an actionable message
    rather than discovered by a hanging tool call. This is a guard for the
    stragglers, not for the window.
-4. **Beta timing.** See Group 7 §"The one-installed-copy property", below. The
-   short version: **ship v4 before the extension has an install base outside
-   the operator's machines.** If the beta has already handed Transporter to
-   strangers on a sideloaded zip with no auto-update, this plan's Group 7 needs
-   a Chrome Web Store submission in front of it. That is Chris's call and it
-   gates the whole plan, not a task in it.
+4. **Beta timing — SETTLED, 2026-09-12: ship v4 now.** The operator's answer
+   is that **nothing has left his walls** — Transporter has no install base
+   outside his own machines. Three things follow and the rest of this plan is
+   written on them rather than around them: Group 7 needs **no** Chrome Web
+   Store submission in front of it; step 6 is a single reload; and
+   §"The one-installed-copy property" is a measured fact today, not an
+   assumption the executing session has to re-check. What does **not** change
+   is the deadline logic, which is the reason this is settled rather than
+   merely convenient: every day the listing stays unsubmitted is a day this
+   break stays cheap, and the answer expires the moment the beta hands the
+   extension to somebody who is not Chris. So this is a gate that is now open,
+   with the *other* arrangement (CWS submission first) still the only one
+   available if v4 slips past that moment.
 
 ---
 
@@ -243,6 +251,22 @@ the code rather than believed:
 > sent; and a `ready` that names a `sessionPub` this process no longer holds is
 > **discarded**, never refused, because the hello that superseded it is already
 > on its way.
+>
+> **And it has a LIVENESS half, which is the trigger side of the same rule:**
+> one extension session draws exactly **one** SESSION-EPHEMERAL mint per MCP
+> process, and every session-ephemeral mint is drawn by an extension session.
+> *Session-ephemeral* is what makes the second clause true rather than nearly
+> true, and the exception is named here rather than left to a later paragraph:
+> a peer also mints a **bootstrap** keypair, once, in `startPeer`
+> (`peer.ts:181-203`), drawn by a dial and by no extension session at all —
+> the host will not map a slot for a hello whose signature it cannot verify,
+> and Task 1.1 makes `sessionPub` a required field. That mint is bounded where
+> it is introduced below: no key is ever derived from it, the frame carrying it
+> says on the wire that it answers nothing so Rule B will not forward it, and
+> the first Rule A mint that commits zeroes it. Without the liveness half the
+> safety half above is satisfied by a process that mints forever: every hello
+> it sends names the live session, every mint it commits is the current one,
+> nothing is ever stale — and no session ever opens.
 
 Four rules produce it, and each is a change to existing code rather than a
 restatement. **Committed**, rather than *minted*, is the load-bearing word, and
@@ -255,16 +279,30 @@ invariant and a plausible-sounding claim about it.
   mints when the *relayed* extension hello arrives (`peer.ts:349-351`) and
   sends a fresh server hello in the same handler. Nothing else mints a session
   ephemeral, and nothing reuses one across two extension sessions.
+
+  **Which frames are TRIGGERS is as load-bearing as what a mint does, because
+  the peer's trigger arrives from the host and the peer's answer goes straight
+  back to it** — so a trigger the host re-sends in answer to that answer is a
+  loop, and Rule B's mirror (below) is what forbids it. The host relays an
+  extension hello to a peer in exactly two places. This is the trigger side of
+  the table further down, and a path added later owes a row here too:
+
+  | Frame reaching a peer | A mint trigger? | Why |
+  |---|---|---|
+  | the extension hello fanned out on extension connect (`host.ts:370`) | **yes** | one per extension session, to every peer in the map at that moment |
+  | the cached extension hello at the tail of the peer-hello branch (`host.ts:428`) | **yes — and only in answer to a REGISTRATION hello**, per Rule B's mirror | it is how a peer that registered *after* that fan-out learns an extension is attached at all; un-gated it also answers the peer's own re-hello, which is the livelock |
+  | `extension-disconnected` (`peer.ts:356-363`) | no | it ends a session: it zeroes, it does not mint |
+  | a `ready` on either path | no | Rule C's subject — it names an ephemeral rather than asking for one |
 - **Rule B — the host forwards a server hello to the extension only when the
   hello NAMES the current extension session.** The gate is
   `extensionHello !== null && frame.answersExtNonce === extensionHello.sessionNonce`
   — a fixed 32-byte comparison, with no branch for an absent field: a hello
   that answers no extension session carries 32 zero bytes, and a nonce minted
   from a CSPRNG is not that value. Two sends fail it and both are wrong under
-  v4 for the same reason: `:374-376` replays each peer's *cached* hello to a newly connected
-  extension, and `:425` forwards a peer's *registration* hello straight to an
-  already-connected extension. In both cases the `sessionPub` on the wire is
-  one Rule A is about to supersede.
+  v4 for the same reason: `host.ts:374-376` replays each peer's *cached* hello to
+  a newly connected extension, and `:425` forwards a peer's *registration* hello
+  straight to an already-connected extension. In both cases the `sessionPub` on
+  the wire is one Rule A is about to supersede.
 
   **The gate is on the FRAME, never on the slot, and that is the whole of it.**
   An earlier draft of this section gated `:425` on a mark recorded per peer —
@@ -282,7 +320,7 @@ invariant and a plausible-sounding claim about it.
      hello suspends at `:395`; E1's socket closes (`:618` nulls
      `extensionHello`, `:635-639` sends `extension-disconnected`, which zeroes
      P's ephemeral at `peer.ts:356-363`); E2 connects and its handler runs to
-     completion, so `:370` sets P's mark to E2's hello; the suspended handler
+     completion, so `host.ts:370` sets P's mark to E2's hello; the suspended handler
      resumes, `:424` writes the slot, and the mark now matches at `:425` — so
      the hello minted for E1 is forwarded to E2. All four steps are ordinary — the code treats MV3
      reconnects as routine — and the frame gate cannot be fooled by the
@@ -310,6 +348,84 @@ invariant and a plausible-sounding claim about it.
   reconnect, and nothing to carry across a slot overwrite — a reconnecting
   extension has a new nonce, so every hello minted against the old one stops
   matching by arithmetic.
+
+  **The same FIELD gates the other direction, with the test inverted, and
+  without it every peer session establishment livelocks.** `host.ts:428` —
+  `if (extensionHello) ws.send(JSON.stringify(extensionHello));` — sends the
+  cached extension hello at the tail of the peer-hello branch
+  UNCONDITIONALLY: on every peer hello, on the same socket, with no first-time
+  gate (the squat guard at `:411-420` fires only when `existing.ws !== ws`, and
+  `:424` simply overwrites the slot). It is a Rule A trigger, so a peer's Rule
+  A re-hello draws another one:
+
+  > registration hello → `:425` withholds it (Rule B) → `:428` sends E's hello
+  > → peer mints and re-hellos → `:425` now forwards it (the re-hello echoes
+  > E's live nonce, so Rule B passes) → `:428` sends E's hello **again** → peer
+  > mints and re-hellos → unbounded.
+
+  Nothing already written stops it. Rule B passes every iteration, because each
+  re-hello legitimately answers the live extension session. Rule D commits
+  every iteration, because `extensionHello === frame` compares against the
+  freshly parsed frame the handler was entered with. Rule C is downstream of a
+  session that never settles. And this is not an exotic path — the same loop
+  runs off `:370` on an ordinary MV3 reconnect, so under the rules as first
+  drafted **every** peer session establishment on **both** trigger paths spins,
+  and whether a session opens at all depends on the loop pausing long enough
+  for a `ready` to reach the pub the peer last committed. Each turn costs an
+  X25519 keygen and an Ed25519 sign on the peer, a verify on the host, and a
+  full `onServerHello` — bind, ECDH, HKDF, ready — on the extension. It also
+  makes two things this document already asserts unsatisfiable rather than
+  merely unproven: Task 2.2's dial-path test asserting the extension "then
+  receives **exactly one** server hello for it", and the `:425` row of the
+  table below, which describes one mint per extension session.
+
+  **The fix taken is Rule B mirrored onto `:428`: hand a peer the cached
+  extension hello only in answer to a hello that answers NO extension session**
+  — `answersExtNonce` all zero, i.e. a registration hello, tested through
+  `answersNoExtSession`, the one predicate Task 1.1 exports for the fact,
+  rather than a literal spelled out here and again where the peer writes it.
+  Those two are the fact's whole population in shipped code — this gate reads
+  it and the bootstrap hello writes it — and Task 1.1 says why the two places
+  that look like further readers are not: Rule B's own gate at `:425` compares
+  against the live nonce and takes no branch on this value, and Rule C's
+  refusal is a comparison against the extension's own nonce that the zero value
+  fails anyway. `:370` already
+  covers every new extension session for every peer in the map, so nothing else
+  needs the re-send. The predicate is the complement of the one above rather
+  than a copy of it, which is the point: a hello that answers the current
+  session goes ON to the extension and draws nothing back, and a hello that
+  answers nothing goes nowhere and draws the extension hello back. And this
+  half is one degree cleaner than its mirror: it reads the frame and **no
+  authoritative variable at all**, so there is no await window of the kind case
+  1 is about and nothing is recorded per peer. Termination and liveness both
+  follow from the two relays being mutually exclusive per (peer, extension
+  session):
+
+  - a peer already in the map when an extension connects is triggered once by
+    `:370`, and its re-hello answers that session's nonce, so `:428` is silent
+    for it;
+  - a peer that registers *after* that fan-out is not in the map for `:370` —
+    its handler may be suspended at the `await ed25519Verify` on `:395` — and is
+    triggered once by `:428`, which reads the CURRENT `extensionHello`. That is
+    the job this send still has to do, and the reason the answer is a gate
+    rather than a deletion;
+  - a peer that registers with no extension attached is triggered by neither,
+    and by `:370` when one connects.
+
+  **The alternative, and why it is not taken.** The loop can also be cut at the
+  peer: mint only when the arriving relayed hello's `sessionNonce` differs from
+  the `answersExtNonce` of the ephemeral this peer has currently **committed**
+  (committed, so it composes with Rule D rather than reading an in-flight mint
+  whose own commit may lose). That terminates too, and it is robust to a relay
+  that duplicates a frame, which the host-side gate is not — under the gate, a
+  duplicated extension hello costs a redundant mint and a redundant server
+  hello, the extension binding the last and Rule C discarding the `ready` for
+  the first: a degradation, never a loop, because the chain is cut where the
+  frames are produced. It is declined because it asks the peer to carry, across
+  Rule D's interval, a second fact about which session its ephemeral answers,
+  and that interval is where this design has already been wrong twice. If a
+  duplicating relay ever becomes real it is the repair to reach for, and it
+  composes with this gate rather than replacing it.
 - **Rule C — the extension refuses a hello that answers a nonce it did not
   send, and the MCP discards a `ready` for an ephemeral it no longer holds.**
   Rule B is the host's gate, and a gate that fails open must not be the only
@@ -321,8 +437,12 @@ invariant and a plausible-sounding claim about it.
     it refuses a hello whose `answersExtNonce` is not `link.sessionNonce`
     **before** `bindMcpToLink` at `:94` — no binding, no trust read, no pair
     prompt, and the existing `tellServerWhy` path carries the reason. A hello
-    that answers 32 zero bytes is refused here too: on the wire that is a
-    registration hello, and it has no business reaching the extension.
+    that answers 32 zero bytes is refused here too, and by that same
+    comparison rather than by a second check: on the wire that is a
+    registration hello, `link.sessionNonce` comes from a CSPRNG and is never
+    the zero value, so "answers nothing" fails the equality like any other
+    wrong answer — which is why Task 1.1 counts this as no reader of
+    `answersNoExtSession`.
   - **MCP side.** The `ready` now carries `mcpSessionPub` explicitly (§2
     already signs it), and both server paths compare it to the ephemeral they
     currently hold **before** verifying the signature. Equal → verify as
@@ -367,7 +487,7 @@ invariant and a plausible-sounding claim about it.
     `:620` rejects the pending promise, `:622` nulls `ownSession` and `:630`
     resets the promise — and Task 2.1's zeroing takes whatever was installed
     **before** mint 1, which on a first connection is nothing at all, because
-    mint 1 has not landed). The `:290` "extension
+    mint 1 has not landed). The `:290-291` "extension
     already connected" guard is now open, so E2 connects and its own mint
     commits. Mint 1 then resumes, overwrites `{nonce, pub, priv}` with E1's and
     sends a hello down a closed socket. The extension derived against pub2 and
@@ -430,9 +550,9 @@ invariant; a path added later owes a row.
 |---|---|---|---|---|
 | the host's own hello (`host.ts:372`) | the extension-hello handler (Rule A), committed under Rule D while `extensionWs === ws` — **not** same-tick: the mint awaits | `server-hello.ts:148`, immediately (auto-trust) | that mint | the commit is what makes it current, and from there it is zeroed only by the extension socket's close handler (`host.ts:612-641`), which *is* the end of this extension session. A mint for an EARLIER session resolving late cannot displace it: Rule D makes it zero its own half instead |
 | the host's own hello, needs-pair → the user clicks approve minutes later | as above | `approval.ts:163` | that same mint | the approval path skips an mcpId with no live link (`approval.ts:127-130`), and for the HOST's own mcpId that link IS the extension's socket to this host — so the thing the guard reads dies exactly when the mint is zeroed. Not true of a peer's mcpId; see the residual below |
-| a peer's Rule A hello, forwarded by the host (`:425`, the hello answering the current extension nonce) | the relayed-extension-hello handler (`peer.ts:349-351`), committed under Rule D while `extensionHello` is still that frame | `server-hello.ts:148` or `approval.ts:163` | that mint | it is zeroed on `extension-disconnected` (`peer.ts:356-363`), or displaced by a LATER session mint at its commit point — never by an earlier one resolving late, which Rule D makes zero its own half. Those are the events that end this extension session; a `ready` arriving after one of them names a superseded `sessionPub` and is discarded by Rule C, not refused |
+| a peer's Rule A hello, forwarded by the host (`host.ts:425`, the hello answering the current extension nonce) | the relayed-extension-hello handler (`peer.ts:349-351`), ONCE per extension session — Rule B's mirror on `host.ts:428` is what makes it once — committed under Rule D while `extensionHello` is still that frame | `server-hello.ts:148` or `approval.ts:163` | that mint | it is zeroed on `extension-disconnected` (`peer.ts:356-363`), or displaced by a LATER session mint at its commit point — never by an earlier one resolving late, which Rule D makes zero its own half. Those are the events that end this extension session; a `ready` arriving after one of them names a superseded `sessionPub` and is discarded by Rule C, not refused |
 | a peer's **registration** hello | `startPeer` (bootstrap) | — | nothing | it says so on the wire (`answersExtNonce` = 32 zero bytes), so Rule B will not forward it and Rule C's extension-side check would refuse it anyway; no `ready` can name it |
-| a peer's cached hello, replayed to a newly connected extension (`:374-376`) | — | — | — | **path removed** by Task 2.2 |
+| a peer's cached hello, replayed to a newly connected extension (`host.ts:374-376`) | — | — | — | **path removed** by Task 2.2 |
 
 Zeroing at the peer's own socket close (`peer.ts:507-513`) is on that list in
 Task 2.2 and deliberately **not** in this table's last column. It is a teardown
@@ -649,7 +769,7 @@ nothing" half by construction.
 
 | Action | Path | Why |
 |---|---|---|
-| Modify | `packages/protocol/src/frames.ts` | `PROTOCOL_VERSION` 4, `HKDF_SESSION_INFO`, `sessionPub` + `answersExtNonce` on the server hello, `mcpSessionPub` on the ready, `helloSignaturePayload`, widened `readySignaturePayload`, `transcriptHash`, `frameAad`, `Direction`, the standing v4 paragraph in the header |
+| Modify | `packages/protocol/src/frames.ts` | `PROTOCOL_VERSION` 4, `HKDF_SESSION_INFO`, `sessionPub` + `answersExtNonce` on the server hello, `ANSWERS_NO_EXT_SESSION` + `answersNoExtSession`, `mcpSessionPub` on the ready, `helloSignaturePayload`, widened `readySignaturePayload`, `transcriptHash`, `frameAad`, `Direction`, the standing v4 paragraph in the header |
 | Modify | `packages/protocol/src/validate.ts` | require `sessionPub`, `answersExtNonce` and the ready's `mcpSessionPub`; `peekHelloVersion` |
 | Modify | `packages/protocol/src/crypto.ts` | `aesGcmSeal`/`aesGcmOpen` take `aad` |
 | Modify | `packages/protocol/src/seal.ts` | `direction` required on seal/open; AAD threaded; `sealedFrameWireBytes` unchanged |
@@ -707,6 +827,26 @@ comment saying which version widened it, in the style `frames.ts:50-57` already
 uses. `answersExtNonce` and `mcpSessionPub` are both required, fixed-length
 fields — §2 says why the first is 32 zero bytes rather than absent when a hello
 answers no extension session, and that reason belongs in its doc comment.
+Export the "answers nothing" value and its test **once**, as
+`ANSWERS_NO_EXT_SESSION` plus `answersNoExtSession(b64)`, per the wire
+section's one-function-per-fact rule. The shipped population is small enough to
+state exactly, and worth stating because two of the places that look like
+readers are not: **one place writes the value** — the peer's bootstrap hello
+(§1a) — and **one place reads it**, Rule B's mirror on `host.ts:428`
+(Task 2.2). Rule B's own gate at `host.ts:425` is
+`frame.answersExtNonce === extensionHello.sessionNonce`, a fixed comparison
+against the live nonce that takes no branch on this value and which §1a
+forbids taking one; and Rule C's extension-side refusal (Task 3.1) is
+`answersExtNonce !== link.sessionNonce`, which the zero value fails without a
+second call, because `link.sessionNonce` comes from a CSPRNG and is never that
+value. So the export exists for the writer, that one reader, and the vectors
+below — a value that crosses a wire and is asserted in two suites is exactly
+what this rule says to name once, and a literal spelled at both ends of it is
+the drift the rule exists to prevent. Its assertions go in `frames.test.ts` beside the payload
+facts: the constant is 32 zero bytes, the predicate is true of exactly that
+value and false of a hundred CSPRNG nonces, and (in `validate.test.ts`) a hello
+carrying the zero value VALIDATES — it is a registration hello, not a malformed
+one.
 
 **Task 1.2 — the AAD.** Where: `packages/protocol/src/crypto.ts` (`aesGcmSeal`,
 `aesGcmOpen`), `seal.ts:140` (`sealInnerFrame`) and both `openEncryptedFrame*`.
@@ -746,8 +886,9 @@ break.
 wrong.** The session transcript (§3) contains `extSessionPub`, which arrives in
 the `ready`; the pair code has to be shown at the pair *prompt*, before any
 `ready` exists. The extension has no ephemeral of its own yet at
-`hello.ts:369-373` (the auto-trust path mints one at `:303`, the approval path
-at `:135` — both after this point), and the host derives at `:358` the moment
+`hello.ts:369-373` (the auto-trust path mints one at `hello.ts:303`, the
+approval path at `approval.ts:135` — both after this point), and the host
+derives at `host.ts:358` the moment
 the extension hello lands, with no `ready` in hand either. So this is a SECOND,
 separate function over the values both ends do hold at the prompt:
 
@@ -799,7 +940,7 @@ vector must never be. Row by row, plus the comment that pins the reduction:
 | `:5-9` `produces XXX-XXX format` (`^\d{3}-\d{3}$`, `:8`) | becomes the `^\d{4}-\d{4}$` assertion over `pairTranscript`'s output |
 | `:11-16` deterministic for the same input | kept, restated over the five inputs |
 | `:18-22` different inputs → different codes | subsumed by the five one-input-apiece assertions |
-| `:24-29` comment pinning "first 4 bytes → big-endian uint32 → mod 1_000_000" | rewritten to pin the 8-byte BigInt reduction, keeping the *reason* (a refactor that moves the hash, the endianness or the width must fail here, not at pair time) |
+| `:24-29` comment pinning "first 4 bytes of SHA-256(pub) → big-endian uint32 → mod 1_000_000 → XXX-XXX" | rewritten to pin the 8-byte BigInt reduction, keeping the *reason* (a refactor that moves the hash, the endianness or the width must fail here, not at pair time) |
 | `:30-33` known answer `123-181` (all-zero pub) | **deleted.** Its input is a single pub, which `pairTranscript` has no argument for, and a new vector is hard-coded in its place from the five-input encoding |
 | `:35-42` known answer `848-182`, the `>>> 0` high-bit regression | **deleted, and this one is a deliberate loss of coverage.** Its whole subject is the signed/unsigned slip in a 32-bit read, and reading 8 bytes as a `BigInt` removes the read that could slip. Say so in the replacement file's comment, so the next reader does not restore a test for a hazard the code no longer has |
 | `:44-49` known answer `425-966` (1..32 pub) | **deleted**, same reason as `:30-33` |
@@ -837,7 +978,7 @@ each with the task that owns it:
 | `packages/protocol/src/frames.ts:455-457` | "the same 6-digit joint pair code", the joint derivation spelled out, and "formatted `XXX-XXX`" | **this task** (the earlier draft named only the inline `:472` comment) |
 | `packages/protocol/src/frames.ts:472` | `// formatted "XXX-XXX"` | **this task** |
 | `packages/extension-core/src/background/server-hello.ts:300`, `packages/server/src/ws-server.ts:1663`, `packages/extension-core/tests/multi-link.test.ts:414` | comments reading "the same XXX-XXX the popup is displaying" | **this task** — comments, so one sed, but they are the sentences a reader trusts |
-| `CLAUDE.md:79` (§Security model summary item **3**) | the derivation and `XXX-XXX` | **Task 6.4**, which named only "items 2 and 3b" and is corrected below |
+| `CLAUDE.md:78-80` (§Security model summary item **3**) | the derivation (`:78`) and `XXX-XXX` (`:79`) | **Task 6.4**, which named only "items 2 and 3b" and is corrected below |
 | `docs/SECURITY.md:65` | "The 6-digit pair code (SAS …) is `SHA256(identityX25519Pub)[0..3] mod 1_000_000` formatted as `XXX-XXX`" — and note it states the *single-pub* v3 derivation, which has not been the shipped one since 0.4.0 | **Task 6.3** |
 | `docs/PROTOCOL.md:418-419` | `mod 1_000_000` / `formatted "XXX-XXX"` | **Task 6.2** |
 | `README.md:44`, `packages/cli/README.md:37`, `packages/extension-chrome/README.md:79` | "6-digit" in the pair-flow walkthrough | **Task 6.5**, extended below to cover them |
@@ -878,8 +1019,8 @@ previous `sessionPriv` (assert through the exported surface or an injected
 zeroing hook — do **not** add an accessor that exists only for the test).
 Then Rule C on this path, and note that the two outcomes must be asserted
 apart: a `ready` whose `mcpSessionPub` is the host's CURRENT ephemeral but
-whose `sessionSig` does not verify closes 1008 (`:470-476`, unchanged) and
-rejects the pending session, while a `ready` whose `mcpSessionPub` is a
+whose `sessionSig` does not verify closes 1008 (`host.ts:470-476`, unchanged)
+and rejects the pending session, while a `ready` whose `mcpSessionPub` is a
 SUPERSEDED one is **discarded** — the socket stays open, `ownSession` and the
 pending promise are untouched (assert the promise is still pending against a
 fake clock), and a genuine `ready` arriving afterwards still establishes the
@@ -900,8 +1041,8 @@ only "E1 gets nothing after its close" passes without Rule D, because a closed
 socket swallows the send; the load-bearing assertion is about E2's session
 opening.
 Do: mint `{nonce, pub, priv}` per extension connection — after the liveness
-re-check at `:337-345` and immediately before the send, so a hello the trust
-decision refuses mints nothing; set `answersExtNonce` from the triggering
+re-check at `host.ts:337-345` and immediately before the send, so a hello the
+trust decision refuses mints nothing; set `answersExtNonce` from the triggering
 extension hello's `sessionNonce` (it is `frame.sessionNonce`, in scope in that
 handler) and sign it. Do **all** of that into locals — `generateX25519` and the
 `ed25519Sign` over the widened payload both await — and then commit under
@@ -984,14 +1125,17 @@ socket to the host) does not — it ends this process's part in it, and zeroing
 there is a teardown obligation rather than part of §1a's invariant. §1a's table
 says which, and why the difference matters for the approval path.
 
-**Five consequences, all required for that to work.** The first three are in
-the host: the first two are one rule — Rule B of §1a — and the third is a guard
-that becomes load-bearing. The last two are back in the peer, and they are
-Rules C and D. Rule D is listed last and is not optional garnish on Rule C: it
-is what stops Rule C's discard from being the only thing that happens.
+**Six consequences, all required for that to work.** The first four are in the
+host: the first three are one rule — Rule B of §1a, gating BOTH directions —
+and the fourth is a guard that becomes load-bearing. The last two are back in
+the peer, and they are Rules C and D. Rule D is listed last and is not optional
+garnish on Rule C: it is what stops Rule C's discard from being the only thing
+that happens. (Reading key for these six bullets: a bare `:NNN` is in `host.ts`
+unless the sentence names the file it is in.)
 
 - The host caches each peer's hello (`peers.set(mcpId, {ws, helloFrame})`,
-  `:424`) and **replays it to every newly connected extension** (`:374-376`).
+  `host.ts:424`) and **replays it to every newly connected extension**
+  (`host.ts:374-376`).
   Under v4 the cached frame is stale by construction — the private half it
   names is gone or about to be — so the extension would derive against a key
   nobody holds. Drop the replay: the relay the host already performs at `:370`
@@ -1017,6 +1161,22 @@ is what stops Rule C's discard from being the only thing that happens.
   extension is attached now rather than which one this frame was minted for. An
   echo the peer signed says the second thing, which is the question the gate is
   asking.
+- **`:428` is itself a mint trigger, so it needs the MIRROR of that gate or the
+  dial fix loops.** `if (extensionHello) ws.send(JSON.stringify(extensionHello));`
+  runs at the tail of this branch unconditionally, on every peer hello —
+  including the Rule A re-hello the bullet above exists to let through. So
+  gating `:425` alone converts the dial from one stale hello into an unbounded
+  exchange: re-hello → forwarded → cached extension hello sent back → mint →
+  re-hello. Send it only when the arriving hello answers NO extension session
+  (`answersNoExtSession(frame.answersExtNonce)`, Task 1.1): a REGISTRATION hello
+  is the one case
+  where this peer has not been told about the extension and needs to be, and
+  `:370` covers every other peer for every extension session already. Read off
+  the frame alone — this gate touches no authoritative variable, which is one
+  fewer moving part than its mirror at `:425`. §1a Rule B traces the loop, the
+  two trigger paths it runs on, why the two relays are mutually exclusive per
+  (peer, extension session) once gated, and why the peer-side alternative was
+  declined.
 - A same-socket, same-identity re-hello must REPLACE the slot rather than be
   refused, because that re-hello is now the *only* way a peer's session hello
   reaches the extension. It already does — the squat guard at `:411-420` fires
@@ -1032,7 +1192,7 @@ is what stops Rule C's discard from being the only thing that happens.
   `peer.ts:374-381`: a 1008 close plus `rejectFirstReady`, which strands the
   bridged MCP on a failure an MV3 eviction caused. Compare
   `frame.mcpSessionPub` against the ephemeral this peer currently holds before
-  `authenticateExtension` at `:374`; a mismatch logs and returns, touching
+  `authenticateExtension` at `peer.ts:374`; a mismatch logs and returns, touching
   neither `session` nor `extensionGone` nor the promise, and the socket to the
   host stays up because the host is not the party at fault. The 1008 stays for
   the case it was written for — a `ready` naming the current ephemeral whose
@@ -1063,7 +1223,7 @@ is what stops Rule C's discard from being the only thing that happens.
 `peer.ts:209-215` says a renegotiation most commonly happens "after MV3
 service-worker eviction reconnects the browser side and **the host replays our
 hello**". After this task there is no replay: the trigger is the host relaying
-the new extension hello at `:370` and the peer hellos again. Update that
+the new extension hello at `host.ts:370` and the peer hellos again. Update that
 comment in the same task — a comment naming a path this task deletes is how the
 next reader concludes the replay is still there.
 
@@ -1103,13 +1263,28 @@ then. Plus the ordering control: with **no** extension attached at dial, the
 extension that connects afterwards receives one server hello for that peer and
 it is the post-relay one.
 
+Then `host.ts:428`'s gate, which is what makes that "exactly one" reachable at
+all — un-gated, the dial never settles, so the assertion above is not merely
+unproven but unsatisfiable. Two assertions on one gate, one per direction, so a gate
+deleted either way fails: a peer's **registration** hello (echoing 32 zero
+bytes) is not forwarded to the extension and **does** draw the cached extension
+hello back; a peer's **re-hello** (echoing the live extension nonce) **is**
+forwarded and draws **nothing** back. Then the property itself, end to end, on
+**both** trigger paths — a dial into a live extension AND an extension
+reconnect — asserted over a rig run to QUIESCENCE rather than for a fixed
+number of turns, because the bug's signature is an exchange that never settles:
+the extension receives exactly one server hello per peer per extension session,
+and the injected keypair generator was called exactly once per peer per
+extension session. A rig that takes its counts after N turns records a clean
+number on the looping code.
+
 Then the RACE, which the un-interleaved sequence above does not reach and which
 is what a per-peer mark passed: **a peer hello minted for the previous
-extension session, arriving at the host after `:370` has fanned the next
+extension session, arriving at the host after `host.ts:370` has fanned the next
 extension's hello out, is not forwarded.** Drive it at the host with two mock
 extensions and a peer whose hello is held: peer told of E1 → its hello for E1 is
-withheld → E1's socket closes → E2 connects (so `:370` has run for this peer and
-`extensionHello` is E2's) → release the peer's hello for E1. Assert that E2
+withheld → E1's socket closes → E2 connects (so `host.ts:370` has run for this peer
+and `extensionHello` is E2's) → release the peer's hello for E1. Assert that E2
 receives **no** frame for that `mcpId` from it, that the peer then hellos again
 off E2's relay, and that **that** hello is forwarded. Two controls keep it
 honest: with E1 still attached the same withheld hello **is** forwarded, so the
@@ -1142,9 +1317,11 @@ shapes — `extensionHello` newer and `extensionHello` null — are covered.
 Do: the derivation, salt, direction and zeroing changes of Task 2.1, mounted
 on the two mint points above, each with the `answersExtNonce` the table gives
 it, and each committing under Rule D (`extensionHello === frame`, zero-and-drop
-on a mismatch); the host changes (drop the replay, gate `:425` on Rule B, assert
-the same-socket re-hello overwrite, Rule C's discard on the ready branch); and
-the comment repair.
+on a mismatch); the host changes (drop the replay, gate `host.ts:425` on Rule B,
+gate `host.ts:428` on Rule B's mirror — send the cached extension hello only in
+answer to a hello whose `answersExtNonce` is 32 zero bytes, without which the
+gate on `:425` turns the dial into a livelock — assert the same-socket re-hello
+overwrite, Rule C's discard on the ready branch); and the comment repair.
 
 Commit: `feat(server)!: mint a session ephemeral per extension connection and authenticate every frame against its own identity`.
 
@@ -1203,15 +1380,17 @@ key, which is why a stored record sufficed under v3 and does not under v4. So
 `PendingPairRecord` gains `sessionPubs: Record<string, string>` beside
 `sessionNonces` (`pending-records.ts:51`, written at `server-hello.ts:270`),
 refreshed per `mcpId` on every hello exactly as the nonce is
-(`applyNeedsPairRecord` case 1, `:147-151`) — the refresh is what keeps a
-record from naming a superseded ephemeral after a reconnect. Then derive
+(`applyNeedsPairRecord` case 1, `pending-records.ts:147-151` — that function
+lives in that file, not in the `server-hello.ts` cited in front of it) — the
+refresh is what keeps a record from naming a superseded ephemeral after a
+reconnect. Then derive
 against `sessionPubs[mcpId]`, salt with `transcriptHash(storedNonce,
 link.sessionNonce, storedSessionPub, ephemeral.publicKey)`, and sign the ready
 over all four. An entry with **no** `sessionPubs` value — every pending record
 already in `chrome.storage.local` when the extension is reloaded — is skipped
-with the same warn as a missing nonce (`:119-122`), and the MCP hellos again;
-do not fall back to `identityX25519Pub`, which is the v3 derivation reinstated
-under a v4 signature.
+with the same warn as a missing nonce (`approval.ts:119-122`), and the MCP hellos
+again; do not fall back to `identityX25519Pub`, which is the v3 derivation
+reinstated under a v4 signature.
 Test (`packages/extension-core/tests/background.test.ts`, which is where
 `onApproval` is exercised today — there is no `approval.test.ts` and this task
 should not invent one; check with `grep -rln onApproval
@@ -1220,9 +1399,9 @@ record refreshed by a second hello uses the **second** hello's `sessionPub`, not
 the first; a record carrying no `sessionPubs` entry is skipped rather than
 derived from the identity key; and the key the approval path derives opens a
 frame sealed by the MCP that sent that hello.
-Pin the `:127-130` guard with a test that a dead link produces no `ready` — but
-do **not** write down that the guard proves the MCP's ephemeral is still live,
-because for a PEER's mcpId it does not: `linkForMcp` is `mcpLink.get(mcpId)`
+Pin the `approval.ts:127-130` guard with a test that a dead link produces no
+`ready` — but do **not** write down that the guard proves the MCP's ephemeral
+is still live, because for a PEER's mcpId it does not: `linkForMcp` is `mcpLink.get(mcpId)`
 (`links.ts:98-99`), the concentrator socket, which the host's own mcpId and
 every peer's share, so it survives the peer that hello'd on it. §1a states that
 residual and its consequence (the `ready` is dropped at `host.ts:516-517` and
@@ -1260,8 +1439,8 @@ Task 3.1 makes, for the same reason); and a legacy record whose
 `identityEd25519Pub` is absent or empty falls through to needs-pair rather than
 being read as a match.
 Do: add `record.identityEd25519Pub !== hello.identityEd25519Pub` to the
-`scopeIdentityChanged` disjunction at `:261-272` — one clause in the branch
-that is already there, so a mismatch takes the needs-pair path the user can
+`scopeIdentityChanged` disjunction at `hello.ts:261-272` — one clause in the
+branch that is already there, so a mismatch takes the needs-pair path the user can
 answer rather than a `reject` the popup cannot show. Do **not** normalise an
 absent stored value with `?? hello.identityEd25519Pub`, which turns the check
 into a tautology; an absent one must mismatch. Nothing has to be migrated —
@@ -1381,34 +1560,44 @@ asserting a *clean* outcome within a bounded time and never a timeout:
 **Task 5.3 — the mutation check.** Per
 `~/.claude/projects/.../mutation-testing-needs-a-rebuild.md`: cross-package
 tests run the built `dist/`, so a mutation without `npm run build` always
-survives. Build first, then mutate each of the **ten** v4 facts in turn — drop
+survives. Build first, then mutate each of the **eleven** v4 facts in turn — drop
 `sessionPub` from the hello payload, drop `answersExtNonce` from it (§1a Rule
 B's echo is only as good as the signature over it), drop `mcpSessionPub` from
 the ready payload, drop `direction` from the AAD, leave `HKDF_SESSION_INFO` at
 `1.0.0`, delete the `identityEd25519Pub` comparison Task 3.3 adds, restore the
-cached-peer-hello replay and un-gate the `:425` forward Task 2.2 removes (one
-mutation: put both sends back), turn Rule C's `mcpSessionPub` comparison into
+cached-peer-hello replay and un-gate the `host.ts:425` forward Task 2.2 removes
+(one mutation: put both sends back), turn Rule C's `mcpSessionPub` comparison into
 an unconditional pass on both server paths (the mutation that must fail the
 interleaving test AND the "stale is discarded, forged is refused" pair — if
 only one of the two fails, the other assertion is not pinning what it claims),
 delete Rule D's commit-point re-check on both server paths (one mutation: the
 host's `extensionWs === ws` and the peer's `extensionHello === frame` come out
 together, and a test must fail for EACH path — a suite covering only one leaves
-the other's overwrite unpinned), and — if decision 2 said
+the other's overwrite unpinned), un-gate the host's `host.ts:428` re-send of the
+cached extension hello so it answers every peer hello rather than a
+registration one (§1a Rule B's mirror, Task 2.2), and — if decision 2 said
 yes — drop `mcpSessionPub` from `pairTranscript`
-(Task 1.4) — and confirm a test fails for each. Record the ten results in the
-PR body (nine if Task 1.4 was cut). A fact
+(Task 1.4) — and confirm a test fails for each. Record the eleven results in
+the PR body (ten if Task 1.4 was cut). A fact
 with no failing test is a fact the next refactor removes, which is the whole
 history of the sixth one; the seventh is there because the two sends it restores
 are what the invariant in §1a exists to forbid, and a plan that only *says*
 "drop the replay" is exactly the shape that leaves one of the two behind; the
 eighth is there because Rule C's two outcomes are one branch, and a suite that
 pins only the refusal passes on the code that 1008s a stale `ready`; the ninth
-is the one likeliest to survive a careless suite, because deleting Rule D
+is, with the tenth, the likeliest to survive a careless suite, because deleting
+Rule D
 produces no error and no closed socket — a session that silently never opens —
 so the test it must fail has to assert positively that the LIVE session opens,
 and a suite whose only Rule D assertion is "the stale hello is not sent"
-survives the mutation on a closed socket's swallowed write.
+survives the mutation on a closed socket's swallowed write. The tenth is the
+ninth's hazard one turn further out: un-gated, `host.ts:428` raises no error,
+closes no socket and rejects nothing — only an exchange that never settles, and
+on the ordinary path rather than an interleaved one — so
+the test it must fail is the one that counts server hellos and keygens after
+QUIESCENCE, and a rig that takes its counts after a fixed number of turns
+records a clean number on the looping code. Anything that bounds turns rather
+than asserting settlement leaves this fact unpinned.
 
 Commit: `test(server,extension): prove a v3 peer meets a v4 host with a clean refusal, against frozen v3 bytes`.
 
@@ -1426,12 +1615,16 @@ unmoved. State the package-major off-by-one from decision 1 here, once.
 encodings, the verification rule that goes with them (a hello is trusted only
 when **both** long-term keys match the pinned record — Task 3.3 — stated beside
 the signature it makes meaningful, not in a footnote), the two refusal paths and
-their message texts, the ephemeral-lifetime invariant of §1a with its table and its four rules —
-including which `ready` is discarded and which is refused, the residual on
-the approval path the table names, and **Rule D**, which is the one rule with no
-wire footprint at all and is therefore stated as what it is: an implementation
-obligation on both ends, without which the invariant above it is unprovable and
-the discard of Rule C becomes a hang. Those are the
+their message texts, the ephemeral-lifetime invariant of §1a — **both halves**,
+the safety one and the liveness one — with its two tables (the hellos the
+extension can act on, and which frames reaching a peer are mint TRIGGERS) and
+its four rules, including which `ready` is discarded and which is refused, the
+residual on the approval path the table names, Rule B's SECOND half (the gate
+on the host's re-send of the cached extension hello, whose absence is not a
+stale key but an exchange that never settles), and **Rule D**, which is the one
+rule with no wire footprint at all and is therefore stated as what it is: an
+implementation obligation on both ends, without which the invariant above it is
+unprovable and the discard of Rule C becomes a hang. Those are the
 facts a reader of the wire spec alone cannot reconstruct. Then the `mod
 1_000_000` / `XXX-XXX` lines at `:418-419`, the pair code's
 new derivation and the honest version of what it buys if Task 1.4 shipped, and a
@@ -1439,10 +1632,10 @@ table of `PROTOCOL_VERSION` → package major → what changed, so the off-by-on
 readable rather than inferred.
 
 **Task 6.3 — `docs/SECURITY.md`.** Retract what v3 could not support and state
-the new residual precisely. Retract: `:236` "Hosting an MCP does not give the
+the new residual precisely. Retract: `:239` "Hosting an MCP does not give the
 host the user's cookies, requests or responses" was **true only of a host that
 does not also hold the identity** — under v4 it is true of an identity holder
-too, and say what changed and when. `:197`/`:326` on replay: v4's AAD closes
+too, and say what changed and when. `:198`/`:327` on replay: v4's AAD closes
 it; say so and stop overstating it as already closed. Record Task 3.3: under v3
 the extension's trust match could omit the Ed25519 half because the ECDH proved
 possession of the pinned key, and under v4 it cannot — so the doc must not carry
@@ -1537,7 +1730,8 @@ this paragraph in the answer.
 
 ### The sequence
 
-1. **Gate.** Decisions 1–4 answered. mcp-host PR H1 (the cohort bump to 2.11.3)
+1. **Gate.** Decisions 1–3 answered (4 already is, and its answer is what
+   makes step 6 one reload). mcp-host PR H1 (the cohort bump to 2.11.3)
    is *merged and landed on the fleet*, so this operation moves one range, not
    two. mcp-host's `readEnvelope` change (Group 7 §prerequisite, below) is
    **live in the gateway**, not merely merged.
@@ -1606,9 +1800,15 @@ would mean every mid-window straggler in step 5 looks like a dead connector
 rather than a version mismatch, and the message this whole plan exists to
 deliver never reaches anyone.
 
-That change is **on mcp-host `main`**: it landed as **#756**
-(`fix(bridge): forward the extension's rejection and disconnect frames to the
-child instead of dropping them`, commit `a2133a5`), so `BridgeFrameType` now
+That change is **on mcp-host `main`**: it landed as **#756**, commit
+`a2133a5` — whose squash subject is
+`fix(gateway): delete a row whose secret is gone, bound the login reaper's IN clause, stop echoing the runner's tools error`
+and mentions none of this. The bridge repair is one of the three commits inside
+that squash (`fix(bridge): forward the extension's rejection and disconnect
+frames to the child instead of dropping them`, in the squash BODY, not its
+subject), which is exactly why the citation is the hash and the PR number and
+why a reader grepping mcp-host's one-line log for the bridge sentence finds
+nothing. So `BridgeFrameType` now
 carries `hello-rejected` and `extension-disconnected`
 (`bridge-frames.ts:63-70`) and `readEnvelope` routes both (`:127-136`). It is
 **not** an ancestor of the `0.62.0` release commit this plan's other mcp-host
@@ -1626,7 +1826,9 @@ The extension is distributed today as an unpacked sideload and a GitHub-release
 submitted: `README.md:62` still links
 `chromewebstore.google.com/detail/transporter/EXTENSION_ID_PLACEHOLDER`. So
 there is no auto-update channel, and step 6 above is a single reload because
-there is essentially a single install.
+there is a single install: **nothing has left the operator's walls** (decision
+4, answered 2026-09-12), which is the operator's own statement rather than an
+inference from the absence of a listing.
 
 **That is a property with an expiry date, and it is the argument for shipping
 v4 now rather than after the beta.** The moment mcp-host's beta hands
@@ -1639,8 +1841,12 @@ why it is still a worse outcome than shipping first.
 
 Concretely: **either v4 lands before the beta distributes the extension, or the
 CWS submission lands before v4 does.** There is no third arrangement in which
-the next wire break is cheap. Chris's call (decision 4); this plan assumes the
-first.
+the next wire break is cheap. Decision 4 has taken the first, so this section
+describes the fleet as it is today and step 6 costs one keystroke. It describes
+a fact with an expiry date and not a standing one: on the day Transporter
+reaches somebody who is not Chris, the second arrangement is the only one left
+and Group 7 is no longer the operation written above — which is the argument
+for not letting this plan sit.
 
 ### Rollback
 
