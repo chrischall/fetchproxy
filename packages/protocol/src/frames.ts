@@ -1,5 +1,5 @@
 /**
- * Frame types for fetchproxy protocol v2 (0.4.0+).
+ * Frame types for fetchproxy protocol v4 (3.0.0+).
  *
  * Top-level frames on the wire: hello, ready, frame (encrypted).
  * Inner frames (inside ciphertext): ping, pong, request, response.
@@ -35,38 +35,197 @@
  * actually used. Same class of fix as 0.4.0's, and the same handling —
  * a hard break, all packages released together, no downgrade path
  * (a negotiated variant would just let a rewriting relay ask for v2).
+ *
+ * 3.0.0: PROTOCOL_VERSION bumps 3 → 4. The MCP now contributes a
+ * PER-SESSION X25519 ephemeral (`HelloFrameFromServer.sessionPub`) and
+ * the session key is derived ephemeral × ephemeral, salted with a
+ * transcript over both nonces and both ephemerals. Under v3 the MCP's
+ * half of the ECDH was its LONG-TERM identity key, so anyone holding an
+ * MCP's identity plus a recording of its frames decrypted them
+ * afterwards, passively and retroactively — the identity was a standing
+ * decryption capability rather than only an authenticator. v4 makes the
+ * identities authenticate ONLY: `sessionSig` widens to cover the
+ * ephemeral ({@link helloSignaturePayload}), `ReadyFrame.sessionSig`
+ * widens to cover the MCP's ({@link readySignaturePayload}), and the
+ * AEAD's additional data binds each frame to `mcpId || seq || direction`.
+ * Because the ECDH no longer proves possession of the long-term key, the
+ * proof is now explicit on both sides: a verifier MUST check the hello
+ * signature against the Ed25519 key its trust record holds, not merely
+ * against the one carried in the same frame. A hard break, all packages
+ * released together, and v3 refused at the hello for #222's reason.
+ *
+ * A note on numbering, because the two numbers do not match and that is
+ * deliberate. The PACKAGE major and the PROTOCOL version are off by one:
+ * package 2.x spoke protocol 3, package 3.x speaks protocol 4. Renumbering
+ * either to line them up would desynchronise the changelog from
+ * release-please's own arithmetic for one cosmetic gain, so the offset
+ * stays and is written down here instead. Read a version string as a
+ * package version; `PROTOCOL_VERSION` is the only protocol number.
  */
 
-export const PROTOCOL_VERSION = 3 as const;
+import { sha256 } from './crypto.js';
+
+export const PROTOCOL_VERSION = 4 as const;
 
 /**
  * HKDF info label for session-key derivation. Both sides (MCP server
  * and browser extension) must use the same value or the derived keys
  * diverge and AES-GCM decryption fails silently.
+ *
+ * Moves with the protocol version (3.0.0: `1.0.0` → `4.0.0`) so that even a
+ * hypothetical key confusion between two versions' inputs yields different
+ * bytes rather than one key under two sets of rules.
  */
-export const HKDF_SESSION_INFO = 'fetchproxy/1.0.0/session' as const;
+export const HKDF_SESSION_INFO = 'fetchproxy/4.0.0/session' as const;
+
+const enc = new TextEncoder();
+
+/**
+ * The bytes `HelloFrameFromServer.sessionSig` signs, in one place so the two
+ * server paths that produce it and the extension paths that verify it cannot
+ * drift apart. The exact mirror of {@link readySignaturePayload}.
+ *
+ * `utf8(mcpId) || sessionNonce || sessionPub || answersExtNonce` (3.0.0+;
+ * before that it was `utf8(mcpId) || sessionNonce`, with no ephemeral to cover
+ * and no echo to gate on).
+ *
+ * `sessionPub` is the whole reason v4 widened this: the session key is derived
+ * from it, so without a signature over it a relay substitutes an ephemeral it
+ * holds the private half of, the extension derives against the relay's key,
+ * and forward secrecy is fiction.
+ *
+ * `answersExtNonce` is signed because the host's forwarding gate READS it —
+ * an unsigned echo is one a relay re-points at whichever extension session it
+ * wants the hello delivered to. It is always 32 bytes, 32 zero bytes for a
+ * hello that answers no extension session: `mcpId` is variable-length and
+ * first, so an omitted trailing field would let two different
+ * (mcpId, answers) pairs concatenate to the same signed message.
+ *
+ * The last two fields are the same length and adjacent, so which is which is
+ * a fact only this function states; every producer and verifier reads it from
+ * here rather than concatenating its own.
+ */
+export function helloSignaturePayload(
+  mcpId: string,
+  sessionNonce: Uint8Array,
+  sessionPub: Uint8Array,
+  answersExtNonce: Uint8Array,
+): Uint8Array {
+  const id = enc.encode(mcpId);
+  const out = new Uint8Array(
+    id.length + sessionNonce.length + sessionPub.length + answersExtNonce.length,
+  );
+  out.set(id, 0);
+  out.set(sessionNonce, id.length);
+  out.set(sessionPub, id.length + sessionNonce.length);
+  out.set(answersExtNonce, id.length + sessionNonce.length + sessionPub.length);
+  return out;
+}
 
 /**
  * The bytes `ReadyFrame.sessionSig` signs, in one place so the extension that
  * produces it and the two server paths that verify it cannot drift apart.
  *
- * `mcpHelloNonce || extHelloNonce || extensionSessionPub` (2.0.0+). The
- * ephemeral pub is what makes this worth signing: the nonces prove freshness
- * of the two endpoints, and only this third field commits to the key the
- * session is actually derived from.
+ * `mcpHelloNonce || extHelloNonce || extensionSessionPub || mcpSessionPub`.
+ * The extension's ephemeral pub arrived in 2.0.0 — the nonces prove freshness
+ * of the two endpoints, and only that third field committed to the key the
+ * session is actually derived from. 3.0.0 adds the fourth, the MCP's own
+ * ephemeral, so the transcript is bound SYMMETRICALLY: after v4 neither side's
+ * contribution to the ECDH can be substituted without a signature from a
+ * long-term key the relay does not hold.
  */
 export function readySignaturePayload(
   mcpHelloNonce: Uint8Array,
   extHelloNonce: Uint8Array,
   extensionSessionPub: Uint8Array,
+  mcpSessionPub: Uint8Array,
 ): Uint8Array {
   const out = new Uint8Array(
-    mcpHelloNonce.length + extHelloNonce.length + extensionSessionPub.length,
+    mcpHelloNonce.length +
+      extHelloNonce.length +
+      extensionSessionPub.length +
+      mcpSessionPub.length,
   );
   out.set(mcpHelloNonce, 0);
   out.set(extHelloNonce, mcpHelloNonce.length);
   out.set(extensionSessionPub, mcpHelloNonce.length + extHelloNonce.length);
+  out.set(
+    mcpSessionPub,
+    mcpHelloNonce.length + extHelloNonce.length + extensionSessionPub.length,
+  );
   return out;
+}
+
+/**
+ * The handshake transcript, in one place so both sides salt HKDF with the
+ * same bytes: `SHA256(mcpNonce || extNonce || mcpSessionPub || extSessionPub)`
+ * (3.0.0+; v3 salted with the MCP's hello nonce alone).
+ *
+ * Used as the HKDF salt for the session key, and — since it already contains
+ * two fresh nonces and two fresh ephemerals — as the input the pair code is
+ * derived from. As a salt it closes the replayed-`ready` case: under v3 a
+ * replayed old `ready` re-established an old key with a reset counter, and
+ * with both nonces and both ephemerals in the salt a replayed one derives a
+ * key nothing else holds.
+ *
+ * The order is load-bearing rather than tidy — each side concatenates the
+ * same four values in the same order or the two salts differ and every
+ * decryption fails with nothing to point at.
+ */
+export async function transcriptHash(
+  mcpNonce: Uint8Array,
+  extNonce: Uint8Array,
+  mcpSessionPub: Uint8Array,
+  extSessionPub: Uint8Array,
+): Promise<Uint8Array> {
+  const out = new Uint8Array(
+    mcpNonce.length + extNonce.length + mcpSessionPub.length + extSessionPub.length,
+  );
+  out.set(mcpNonce, 0);
+  out.set(extNonce, mcpNonce.length);
+  out.set(mcpSessionPub, mcpNonce.length + extNonce.length);
+  out.set(extSessionPub, mcpNonce.length + extNonce.length + mcpSessionPub.length);
+  return sha256(out);
+}
+
+/**
+ * Which way an encrypted frame is travelling. `'s2e'` is server (the MCP) to
+ * extension, `'e2s'` is extension to server.
+ *
+ * Not on the wire, and deliberately so: it is AAD input, so each end knows
+ * which value it is entitled to use from the socket the frame arrived on and
+ * a frame reflected back at its sender authenticates under neither.
+ */
+export type Direction = 's2e' | 'e2s';
+
+/**
+ * The additional authenticated data every encrypted frame is sealed under, in
+ * one place so the four paths that seal and open frames cannot drift apart:
+ *
+ * `utf8('fetchproxy/4/frame' || NUL || mcpId || NUL || decimal(seq) || NUL ||
+ * direction)` (3.0.0+; before that `sealInnerFrame` passed no additional data
+ * at all).
+ *
+ * `mcpId` and `seq` ride on the ENVELOPE, outside the ciphertext, so until v4
+ * nothing the tag covered committed to either: a party in the path could
+ * replay a recorded frame under a bumped counter, re-file one under another
+ * MCP's id on the shared concentrator socket, or reflect one back at its
+ * sender — all three now fail the tag rather than being caught, or not
+ * caught, by a check downstream. Note what this does NOT change: GCM's
+ * additional data is authenticated and never transmitted, so the wire size
+ * is byte for byte what it was — `sealedFrameWireBytes` in `seal.ts` returns
+ * the same number as it did under v3, and `MAX_FRAME_BYTES` is derived from
+ * it, so neither is the AAD's to move.
+ *
+ * NUL-separated because `mcpId`'s charset (`ID_RE` in `mcp-id.ts`) excludes
+ * NUL and `seq` is rendered decimal, so no value of one field can spell the
+ * boundary of another and the encoding is unambiguous — the same
+ * `scope\u0000name` convention, for the same reason, as the AAD mcp-host's
+ * sealed secrets use. The domain label in front means an AAD can never be
+ * mistaken for any other signed or authenticated string in this protocol.
+ */
+export function frameAad(mcpId: string, seq: number, direction: Direction): Uint8Array {
+  return enc.encode(`fetchproxy/4/frame\u0000${mcpId}\u0000${seq}\u0000${direction}`);
 }
 
 export type Platform = 'chrome' | 'safari' | 'firefox';
@@ -391,10 +550,74 @@ export interface HelloFrameFromServer {
    * in `capabilities`.
    */
   graphqlOps?: GraphqlOpDeclaration[];
-  identityX25519Pub: string;      // base64 raw 32B
-  identityEd25519Pub: string;     // base64 raw 32B
-  sessionNonce: string;           // base64 raw ≥16B
-  sessionSig: string;             // base64 — Ed25519Sign(identityEd25519Priv, mcpId || sessionNonce)
+  /**
+   * Long-term X25519 identity public key, base64 raw 32B. Still the TRUST
+   * KEY: the extension pins `sha256(identityX25519Pub)` and the pair code
+   * commits to both identities. 3.0.0 stops deriving the session key from it
+   * — see `sessionPub` — so what it does now is name the MCP, not open the
+   * session.
+   */
+  identityX25519Pub: string;
+  /**
+   * Long-term Ed25519 identity public key, base64 raw 32B. Signs
+   * `sessionSig`. 3.0.0 makes this the ONLY proof that the far end holds the
+   * pinned identity, so a verifier must check the signature against the key
+   * its own trust record holds — the key carried in this frame is
+   * self-consistent with a signature anyone can make.
+   */
+  identityEd25519Pub: string;
+  /** Per-connection nonce, base64 raw ≥16B. */
+  sessionNonce: string;
+  /**
+   * 3.0.0+: per-session EPHEMERAL X25519 public key, base64 raw 32B. Beside
+   * the identity, never a replacement for it — pinning, trust records and
+   * re-pair prompts all still key on `identityX25519Pub`, which is what keeps
+   * v4 from re-pairing the fleet.
+   *
+   * The session key is derived from THIS key against the extension's own
+   * ephemeral, which is what buys forward secrecy: a fresh keypair per
+   * extension session, its private half discarded when that session ends, so
+   * an identity holder with a recording of the frames has nothing to derive
+   * with. Minted per extension session rather than per process — a
+   * per-process ephemeral would bound forward secrecy at the process lifetime
+   * and is not worth claiming as forward secrecy.
+   */
+  sessionPub: string;
+  /**
+   * 3.0.0+: the `sessionNonce` of the EXTENSION hello this hello was minted
+   * against, base64 raw 32B — or 32 zero bytes for a hello that answers no
+   * extension session (a peer's registration hello, minted at dial before any
+   * extension is known).
+   *
+   * Required and fixed-length, never absent, for two separate reasons.
+   *
+   * On the WIRE it makes a hello self-describing about which extension
+   * session its `sessionPub` belongs to, which is what two gates are owed
+   * (stated as requirements, because they live outside this package): a host
+   * relaying a server hello onward MUST forward it only when this field
+   * equals the current extension session's `sessionNonce`, and the extension
+   * MUST refuse a hello answering a nonce it did not send, before it binds
+   * the `mcpId`. Both are 32-byte equalities with no branch for an absent
+   * field — and a nonce minted from a CSPRNG is not 32 zero bytes, so
+   * "answers nothing" fails them by arithmetic rather than by a special
+   * case.
+   *
+   * In the SIGNED PAYLOAD ({@link helloSignaturePayload}) it is a value
+   * rather than an absence of bytes because `mcpId` is variable-length and
+   * sits in front of it: an omitted trailing field would let two different
+   * (mcpId, answers) pairs concatenate to the same signed message. It is
+   * inside the signature because those gates read it — an unsigned echo is
+   * one a relay re-points at whichever extension session it wants the hello
+   * delivered to.
+   */
+  answersExtNonce: string;
+  /**
+   * base64 — `Ed25519Sign(identityEd25519Priv,
+   * helloSignaturePayload(mcpId, sessionNonce, sessionPub, answersExtNonce))`.
+   * See {@link helloSignaturePayload}; 3.0.0 widened the payload to cover
+   * `sessionPub` and `answersExtNonce`.
+   */
+  sessionSig: string;
 }
 
 export interface HelloFrameFromExtension {
@@ -429,12 +652,38 @@ export interface ReadyFrame {
   mcpId: string;
   extensionSessionPub: string;    // base64 raw 32B (ephemeral extension X25519 pub)
   /**
-   * 2.0.0+: `Ed25519Sign(extEdPriv, mcpHelloSessionNonce ||
-   * extHello.sessionNonce || extensionSessionPub)` — see
-   * {@link readySignaturePayload}. Before 2.0.0 the ephemeral pub was NOT
-   * covered, so a relay could swap it and share the session.
-   * Verified by the MCP host's connection handler against the
-   * extension's claimed `identityEd25519Pub` (from its earlier hello).
+   * 3.0.0+: the MCP ephemeral (`HelloFrameFromServer.sessionPub`) this ready
+   * was derived against, base64 raw 32B. Named explicitly, rather than left
+   * implicit in the signature, so that a server can tell a STALE ready from a
+   * forged one — which is a requirement on the server paths rather than
+   * something this field does by itself, and they live outside this package:
+   * a server MUST compare this to the ephemeral it currently holds BEFORE
+   * verifying the signature, and MUST *discard* a mismatch — log it, close
+   * nothing, reject nothing — where an invalid signature still closes 1008.
+   * Under v3 the two were one refusal, so an ordinary extension reconnect
+   * that raced a re-hello stranded a bridged MCP. That branch is reached
+   * before any signature has been checked, so anything able to put a frame on
+   * the socket can reach it; costing nothing and changing nothing is what
+   * makes it safe there.
+   */
+  mcpSessionPub: string;
+  /**
+   * `Ed25519Sign(extEdPriv, readySignaturePayload(mcpHelloSessionNonce,
+   * extHello.sessionNonce, extensionSessionPub, mcpHello.sessionPub))` — see
+   * {@link readySignaturePayload}. Before 2.0.0 the extension's ephemeral pub
+   * was NOT covered, so a relay could swap it and share the session; 3.0.0
+   * adds the MCP's ephemeral so the same is true of the other half.
+   * Verified by each server path against the `identityEd25519Pub` the
+   * extension sent in its OWN hello, which the server's trust decision
+   * (`decideExtensionTrust`) separately holds to the pinned record — both
+   * keys, not either, since a half-match would let an attacker keep the key
+   * it needs and swap the one it does not hold. What this field is worth is
+   * therefore that decision's, never the signature's alone, and it is worth
+   * less in two states the decision names rather than hides: a FIRST pairing
+   * has nothing pinned to compare against (the user's own approval of the
+   * pair code stands in its place), and a peer behind a pre-1.12.0
+   * concentrator with `requireExtensionIdentity` off is never forwarded an
+   * extension hello and so verifies nothing at all.
    * Binds both endpoints' fresh-per-connection nonces, so a relay
    * MITM can neither replay a captured signature nor substitute its
    * own keypair without producing a visible pair-code mismatch.

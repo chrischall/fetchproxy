@@ -49,13 +49,29 @@ describe('crypto', () => {
     const key = new Uint8Array(32).fill(7);
     const iv = new Uint8Array(12).fill(3);
     const pt = new TextEncoder().encode('{"x":1}');
-    const ct = await aesGcmSeal(key, iv, pt);
+    const aad = new TextEncoder().encode('an-aad');
+    const ct = await aesGcmSeal(key, iv, pt, aad);
     expect(ct.byteLength).toBe(pt.byteLength + 16); // GCM tag
-    const dec = await aesGcmOpen(key, iv, ct);
+    const dec = await aesGcmOpen(key, iv, ct, aad);
     expect(new TextDecoder().decode(dec)).toBe('{"x":1}');
     const tampered = new Uint8Array(ct);
     tampered[0] ^= 1;
-    await expect(aesGcmOpen(key, iv, tampered)).rejects.toThrow();
+    await expect(aesGcmOpen(key, iv, tampered, aad)).rejects.toThrow();
+  });
+
+  it('AES-GCM authenticates the additional data, and it costs no ciphertext', async () => {
+    // The aad is authenticated, never transmitted: it changes no length and
+    // appears in no output. What it changes is whether the tag verifies —
+    // which is the whole mechanism 3.0.0's `frameAad` rests on to bind a
+    // frame to its (mcpId, seq, direction).
+    const key = new Uint8Array(32).fill(7);
+    const iv = new Uint8Array(12).fill(3);
+    const pt = new TextEncoder().encode('{"x":1}');
+    const e = new TextEncoder();
+    const ct = await aesGcmSeal(key, iv, pt, e.encode('aad-a'));
+    expect(ct.byteLength).toBe((await aesGcmSeal(key, iv, pt, e.encode(''))).byteLength);
+    await expect(aesGcmOpen(key, iv, ct, e.encode('aad-b'))).rejects.toThrow();
+    await expect(aesGcmOpen(key, iv, ct, e.encode(''))).rejects.toThrow();
   });
 
   it('sha256 produces 32 bytes', async () => {

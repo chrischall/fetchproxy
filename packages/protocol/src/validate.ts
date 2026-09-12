@@ -79,6 +79,40 @@ function assertBase64(x: unknown, label: string): asserts x is string {
   if (!BASE64_RE.test(x)) throw new ProtocolError(`${label}: invalid base64`);
 }
 
+/**
+ * How many raw bytes a canonically padded base64 string decodes to, or `null`
+ * if its length is not one base64 can produce. Computed from the length
+ * rather than by decoding: this runs on an untrusted frame, and `atob` on a
+ * bad length throws a DOMException rather than a `ProtocolError`.
+ */
+function base64ByteLength(s: string): number | null {
+  if (s.length % 4 !== 0) return null;
+  const pad = s.endsWith('==') ? 2 : s.endsWith('=') ? 1 : 0;
+  return (s.length / 4) * 3 - pad;
+}
+
+/**
+ * Base64 of exactly `bytes` raw bytes. For a value whose LENGTH is
+ * load-bearing — a session ephemeral of the wrong size is a key the ECDH
+ * cannot use, and refusing it at the frame beats discovering it at derivation
+ * with nothing to name.
+ *
+ * The encoding must be CANONICALLY PADDED: {@link base64ByteLength} is
+ * length arithmetic over a multiple of four, so a 43-character unpadded
+ * spelling of the same 32 bytes is refused. Every producer in this cohort
+ * encodes through `toB64` (`encoding.ts`), which is `btoa` and always pads,
+ * and these fields are new in protocol 4 so no legacy producer exists — but
+ * a producer that is not JavaScript has to pad, and this is where it is
+ * told rather than left to debug a length message that says nothing about
+ * padding.
+ */
+function assertBase64Bytes(x: unknown, label: string, bytes: number): asserts x is string {
+  assertBase64(x, label);
+  if (base64ByteLength(x) !== bytes) {
+    throw new ProtocolError(`${label}: expected base64 of ${bytes} raw bytes`);
+  }
+}
+
 function assertBoolean(x: unknown, label: string): asserts x is boolean {
   if (typeof x !== 'boolean') {
     throw new ProtocolError(`${label}: must be boolean`);
@@ -630,6 +664,19 @@ function validateHello(raw: Record<string, unknown>): HelloFrame {
     assertBase64(raw.identityX25519Pub, 'hello.identityX25519Pub');
     assertBase64(raw.identityEd25519Pub, 'hello.identityEd25519Pub');
     assertBase64(raw.sessionNonce, 'hello.sessionNonce');
+    // 3.0.0 / protocol 4: the per-session X25519 ephemeral. Required — the
+    // session key is derived from it, so a hello without one is not a hello a
+    // v4 session can be opened from. Length-checked where the identity pubs
+    // are not, because this is the one key whose bytes go into the ECDH.
+    assertBase64Bytes(raw.sessionPub, 'hello.sessionPub', 32);
+    // 3.0.0 / protocol 4: the echo of the extension session this hello was
+    // minted against. Required and length-checked because the two gates owed
+    // it are 32-byte equalities with no branch for an absent field, and
+    // because 32 zero bytes ("answers no extension session") has to be a
+    // VALUE here rather than a shorter frame. Accepted as a value: refusing
+    // it is those gates' job, and they never see a frame this function threw
+    // away.
+    assertBase64Bytes(raw.answersExtNonce, 'hello.answersExtNonce', 32);
     assertBase64(raw.sessionSig, 'hello.sessionSig');
     return raw as unknown as HelloFrame;
   }
@@ -652,14 +699,78 @@ function validateHello(raw: Record<string, unknown>): HelloFrame {
   throw new ProtocolError(`hello.role: must be 'server' or 'extension', got ${String(role)}`);
 }
 
+/**
+ * What {@link peekHelloVersion} recovers, and the whole of it.
+ *
+ * `mcpId` is `null` unless it is a well-formed one (an extension hello carries
+ * none at all); `accepts` is `[]` for an absent or malformed list, so a caller
+ * asks `.includes(...)` without a branch for absence.
+ */
+export interface HelloVersionPeek {
+  protocolVersion: number;
+  mcpId: string | null;
+  accepts: string[];
+}
+
+/**
+ * 3.0.0 / protocol 4: read the version, the id and the `accepts` list out of a
+ * hello {@link validateFrame} has just REFUSED, so a version mismatch can be
+ * answered instead of dropped. Returns `null` for anything that is not a hello
+ * carrying an integer `protocolVersion` — including a frame refused for some
+ * other reason, which keeps the silent-drop path for everything but a version
+ * mismatch.
+ *
+ * **It grants nothing, and its only two callers are the refusal paths** — the
+ * extension answering a v3 MCP with `hello-rejected`, and the server closing
+ * on a v3 extension with a reason naming both versions. Nothing may start a
+ * session, bind an `mcpId` slot, read or write a trust record, or move a
+ * counter from this output: every field here comes from a frame no validator
+ * accepted. It judges no version either; comparing against
+ * {@link PROTOCOL_VERSION} is the caller's decision.
+ *
+ * Rebuilt member by member rather than cast from the parsed object — the
+ * `readEnvelope` pattern — so a field a later version puts on a hello is
+ * DROPPED rather than echoed out of a refused frame to a caller that logs it,
+ * renders it or forwards it, and so the result shares no array with the frame
+ * it read.
+ */
+export function peekHelloVersion(raw: unknown): HelloVersionPeek | null {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return null;
+  const frame = raw as Record<string, unknown>;
+  if (frame.type !== 'hello') return null;
+  const protocolVersion = frame.protocolVersion;
+  if (typeof protocolVersion !== 'number' || !Number.isInteger(protocolVersion)) return null;
+  const accepts: string[] = [];
+  if (Array.isArray(frame.accepts)) {
+    for (const a of frame.accepts as unknown[]) {
+      if (typeof a === 'string') accepts.push(a);
+    }
+  }
+  return {
+    protocolVersion,
+    mcpId: isValidMcpId(frame.mcpId) ? frame.mcpId : null,
+    accepts,
+  };
+}
+
 function validateReady(raw: Record<string, unknown>): ReadyFrame {
   assertString(raw.mcpId, 'ready.mcpId');
   if (!isValidMcpId(raw.mcpId)) throw new ProtocolError('ready.mcpId: invalid format');
   assertBase64(raw.extensionSessionPub, 'ready.extensionSessionPub');
-  // 0.4.0+: ready frame carries the mutual-auth signature over
-  // `(mcpHelloSessionNonce || extHello.sessionNonce)`. The host verifies
-  // this against the extension's claimed identityEd25519Pub before
-  // deriving the session key.
+  // 3.0.0 / protocol 4: the MCP ephemeral this ready was derived against.
+  // Required and length-checked because the server paths are required to
+  // compare it, byte for byte, to the ephemeral they currently hold — before
+  // verifying the signature — so a stale ready is DISCARDED where a forged
+  // one is refused. See `ReadyFrame.mcpSessionPub`.
+  assertBase64Bytes(raw.mcpSessionPub, 'ready.mcpSessionPub', 32);
+  // 0.4.0+: ready frame carries the mutual-auth signature, over
+  // `readySignaturePayload(mcpHelloSessionNonce, extHello.sessionNonce,
+  // extensionSessionPub, mcpHello.sessionPub)` as of 3.0.0. Each server path
+  // verifies it against the identityEd25519Pub the extension sent in its own
+  // hello; what holds that key to the PINNED record is the server's separate
+  // trust decision (`decideExtensionTrust`, both keys and not either), so the
+  // strength here is that decision's rather than this signature's — see
+  // `ReadyFrame.sessionSig` for the two states in which it is weaker.
   assertBase64(raw.sessionSig, 'ready.sessionSig');
   return raw as unknown as ReadyFrame;
 }

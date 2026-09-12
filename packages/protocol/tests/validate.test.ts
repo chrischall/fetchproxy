@@ -3,14 +3,36 @@ import {
   validateFrame,
   validateInnerFrame,
   validateCaptureHeaderDecls,
+  peekHelloVersion,
   ProtocolError,
 } from '../src/validate.js';
+import * as barrel from '../src/index.js';
+
+/**
+ * base64 of 32 raw bytes — the exact shape `hello.sessionPub`,
+ * `hello.answersExtNonce` and `ready.mcpSessionPub` are each held to. The
+ * other identity pubs are documented as 32 bytes but only checked as base64;
+ * these three are length-checked because v4 derives the session key from the
+ * ephemerals and compares the echo byte for byte.
+ */
+const SESSION_PUB = 'AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=';
+
+/** base64 of 32 raw bytes — a plausible extension `sessionNonce` echo. */
+const ANSWERS_EXT_NONCE = 'AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI=';
+
+/**
+ * base64 of 32 ZERO bytes — the wire value for "this hello answers no
+ * extension session" (a peer's registration hello). Fixed-shape rather than
+ * absent, so it is a VALUE in the signed payload; the validator must accept
+ * it exactly as it accepts a real nonce.
+ */
+const ANSWERS_NOTHING = 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=';
 
 describe('validateFrame', () => {
-  describe('hello (server, v3)', () => {
+  describe('hello (server, v4)', () => {
     const validHello = {
       type: 'hello',
-      protocolVersion: 3,
+      protocolVersion: 4,
       role: 'server',
       mcpId: 'opentable-mcp:0.9.1:a3f7c91d2e8b4f56',
       serverName: 'opentable-mcp',
@@ -19,6 +41,8 @@ describe('validateFrame', () => {
       identityX25519Pub: 'AAAA',
       identityEd25519Pub: 'AAAA',
       sessionNonce: 'AAAA',
+      sessionPub: SESSION_PUB,
+      answersExtNonce: ANSWERS_EXT_NONCE,
       sessionSig: 'AAAA',
     };
 
@@ -56,12 +80,81 @@ describe('validateFrame', () => {
     });
 
     it('rejects wrong protocolVersion', () => {
-      // v2 included: 2.0.0 is a hard break, and a v2 peer must be refused at
-      // the hello rather than negotiated down to a signature that does not
-      // cover the ephemeral key.
+      // v3 included: 3.0.0 is a hard break, and a v3 peer must be REFUSED at
+      // the hello rather than negotiated down — under v3 the session key came
+      // from the MCP's long-term key and the ready signature did not cover the
+      // MCP's ephemeral, so a downgrade is exactly what a rewriting relay
+      // would ask for. Same reason 2.0.0 refused v2 (#222), one version along.
       expect(() => validateFrame({ ...validHello, protocolVersion: 1 })).toThrow(/protocolVersion/);
       expect(() => validateFrame({ ...validHello, protocolVersion: 2 })).toThrow(/protocolVersion/);
-      expect(() => validateFrame({ ...validHello, protocolVersion: 4 })).toThrow(/protocolVersion/);
+      expect(() => validateFrame({ ...validHello, protocolVersion: 3 })).toThrow(/protocolVersion/);
+      expect(() => validateFrame({ ...validHello, protocolVersion: 5 })).toThrow(/protocolVersion/);
+    });
+
+    // 3.0.0 / protocol 4: the server hello carries a per-session X25519
+    // ephemeral. It is the key the session is derived from, so it is required
+    // and its length is checked — a short or long value would be a key the
+    // ECDH cannot use, discovered at derivation rather than at the frame.
+    it('rejects a server hello missing sessionPub', () => {
+      const { sessionPub: _drop, ...bad } = validHello;
+      expect(() => validateFrame(bad)).toThrow(/sessionPub/);
+    });
+
+    it('rejects a sessionPub that is not 32 raw bytes', () => {
+      const short = 'AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQ==';  // 31 bytes
+      const long = 'AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEB';   // 33 bytes
+      expect(() => validateFrame({ ...validHello, sessionPub: short })).toThrow(/sessionPub/);
+      expect(() => validateFrame({ ...validHello, sessionPub: long })).toThrow(/sessionPub/);
+      expect(() => validateFrame({ ...validHello, sessionPub: 'AAAA' })).toThrow(/sessionPub/);
+      expect(() => validateFrame({ ...validHello, sessionPub: '' })).toThrow(/sessionPub/);
+    });
+
+    it('rejects a non-base64 sessionPub', () => {
+      expect(() => validateFrame({ ...validHello, sessionPub: '!!!' })).toThrow(
+        /sessionPub.*base64/,
+      );
+    });
+
+    // 3.0.0 / protocol 4: the echo of the extension `sessionNonce` this hello
+    // was minted against (§1a Rule B). Required and fixed at 32 bytes — the
+    // host's forwarding gate is a byte comparison with no branch for an absent
+    // field, and the field is inside the signed payload precisely so a relay
+    // cannot re-point it at another extension session.
+    it('rejects a server hello missing answersExtNonce', () => {
+      const { answersExtNonce: _drop, ...bad } = validHello;
+      expect(() => validateFrame(bad)).toThrow(/answersExtNonce/);
+    });
+
+    it('rejects an answersExtNonce that is not 32 raw bytes', () => {
+      const short = 'AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg==';  // 31 bytes
+      const long = 'AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIC';   // 33 bytes
+      expect(() => validateFrame({ ...validHello, answersExtNonce: short })).toThrow(
+        /answersExtNonce/,
+      );
+      expect(() => validateFrame({ ...validHello, answersExtNonce: long })).toThrow(
+        /answersExtNonce/,
+      );
+      expect(() => validateFrame({ ...validHello, answersExtNonce: 'AAAA' })).toThrow(
+        /answersExtNonce/,
+      );
+      expect(() => validateFrame({ ...validHello, answersExtNonce: '' })).toThrow(
+        /answersExtNonce/,
+      );
+    });
+
+    it('rejects a non-base64 answersExtNonce', () => {
+      expect(() => validateFrame({ ...validHello, answersExtNonce: '!!!' })).toThrow(
+        /answersExtNonce.*base64/,
+      );
+    });
+
+    it('accepts 32 zero bytes — "answers no extension session" is a value, not an absence', () => {
+      // A peer's registration hello. It must PARSE: the refusal of it belongs
+      // to the host's forwarding gate and the extension's own check, which
+      // never see a frame the validator threw away.
+      expect(() =>
+        validateFrame({ ...validHello, answersExtNonce: ANSWERS_NOTHING }),
+      ).not.toThrow();
     });
 
     it('rejects non-base64 identityX25519Pub', () => {
@@ -189,7 +282,7 @@ describe('validateFrame', () => {
   describe('hello (server, 0.3.0 scope decls)', () => {
     const validHello = {
       type: 'hello',
-      protocolVersion: 3,
+      protocolVersion: 4,
       role: 'server',
       mcpId: 'ofw-mcp:0.5.0:a3f7c91d2e8b4f56',
       serverName: 'ofw-mcp',
@@ -198,6 +291,8 @@ describe('validateFrame', () => {
       identityX25519Pub: 'AAAA',
       identityEd25519Pub: 'AAAA',
       sessionNonce: 'AAAA',
+      sessionPub: SESSION_PUB,
+      answersExtNonce: ANSWERS_EXT_NONCE,
       sessionSig: 'AAAA',
     };
 
@@ -435,7 +530,7 @@ describe('validateFrame', () => {
   describe('hello (extension, v3)', () => {
     const validExtHello = {
       type: 'hello',
-      protocolVersion: 3,
+      protocolVersion: 4,
       role: 'extension',
       platform: 'chrome',
       extensionId: 'fetchproxy',
@@ -478,11 +573,12 @@ describe('validateFrame', () => {
     });
   });
 
-  describe('ready (v2)', () => {
+  describe('ready (v4)', () => {
     const validReady = {
       type: 'ready',
       mcpId: 'opentable-mcp:0.9.1:a3f7c91d2e8b4f56',
       extensionSessionPub: 'AAAA',
+      mcpSessionPub: SESSION_PUB,
       sessionSig: 'AAAA',
     };
 
@@ -513,6 +609,40 @@ describe('validateFrame', () => {
 
     it('rejects non-base64 sessionSig', () => {
       expect(() => validateFrame({ ...validReady, sessionSig: '!!!' })).toThrow(/sessionSig.*base64/);
+    });
+
+    // 3.0.0 / protocol 4: the ready names the MCP ephemeral it was derived
+    // against (§1a Rule C), so the MCP can tell a STALE ready from a forged
+    // one — it compares this field to the ephemeral it currently holds before
+    // verifying any signature, and discards a mismatch rather than closing.
+    // That comparison is a 32-byte equality, so the field is required and
+    // length-checked here.
+    it('rejects when mcpSessionPub is missing', () => {
+      const { mcpSessionPub: _drop, ...bad } = validReady;
+      expect(() => validateFrame(bad)).toThrow(/mcpSessionPub/);
+    });
+
+    it('rejects an mcpSessionPub that is not 32 raw bytes', () => {
+      const short = 'AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQ==';  // 31 bytes
+      const long = 'AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEB';   // 33 bytes
+      expect(() => validateFrame({ ...validReady, mcpSessionPub: short })).toThrow(
+        /mcpSessionPub/,
+      );
+      expect(() => validateFrame({ ...validReady, mcpSessionPub: long })).toThrow(
+        /mcpSessionPub/,
+      );
+      expect(() => validateFrame({ ...validReady, mcpSessionPub: 'AAAA' })).toThrow(
+        /mcpSessionPub/,
+      );
+      expect(() => validateFrame({ ...validReady, mcpSessionPub: '' })).toThrow(
+        /mcpSessionPub/,
+      );
+    });
+
+    it('rejects a non-base64 mcpSessionPub', () => {
+      expect(() => validateFrame({ ...validReady, mcpSessionPub: '!!!' })).toThrow(
+        /mcpSessionPub.*base64/,
+      );
     });
   });
 
@@ -1464,7 +1594,7 @@ describe('validateInnerFrame', () => {
       expect(() =>
         validateFrame({
           type: 'hello',
-          protocolVersion: 3,
+          protocolVersion: 4,
           role: 'mystery',
           // Pad with the rest of the v2 extension/server fields so the
           // role check is what trips, not a missing-field check.
@@ -1507,7 +1637,7 @@ describe('validateInnerFrame', () => {
 describe('validateFrame (0.4.0 IndexedDb scope decls)', () => {
   const validHello = {
     type: 'hello',
-    protocolVersion: 3,
+    protocolVersion: 4,
     role: 'server',
     mcpId: 'resy-mcp:0.0.1:a3f7c91d2e8b4f56',
     serverName: 'resy-mcp',
@@ -1516,6 +1646,8 @@ describe('validateFrame (0.4.0 IndexedDb scope decls)', () => {
     identityX25519Pub: 'AAAA',
     identityEd25519Pub: 'AAAA',
     sessionNonce: 'AAAA',
+    sessionPub: SESSION_PUB,
+    answersExtNonce: ANSWERS_EXT_NONCE,
     sessionSig: 'AAAA',
   };
 
@@ -1607,7 +1739,7 @@ describe('validateFrame (0.4.0 IndexedDb scope decls)', () => {
 describe('validateFrame (0.4.0 storage pointers)', () => {
   const validHello = {
     type: 'hello',
-    protocolVersion: 3,
+    protocolVersion: 4,
     role: 'server',
     mcpId: 'honeybook-mcp:0.1.0:a3f7c91d2e8b4f56',
     serverName: 'honeybook-mcp',
@@ -1616,6 +1748,8 @@ describe('validateFrame (0.4.0 storage pointers)', () => {
     identityX25519Pub: 'AAAA',
     identityEd25519Pub: 'AAAA',
     sessionNonce: 'AAAA',
+    sessionPub: SESSION_PUB,
+    answersExtNonce: ANSWERS_EXT_NONCE,
     sessionSig: 'AAAA',
   };
 
@@ -1924,7 +2058,7 @@ describe('validateCaptureHeaderDecls', () => {
 describe('validateFrame (1.4.0 read_dom domSelectors)', () => {
   const validHello = {
     type: 'hello',
-    protocolVersion: 3,
+    protocolVersion: 4,
     role: 'server',
     mcpId: 'easytable-mcp:0.0.1:a3f7c91d2e8b4f56',
     serverName: 'easytable-mcp',
@@ -1933,6 +2067,8 @@ describe('validateFrame (1.4.0 read_dom domSelectors)', () => {
     identityX25519Pub: 'AAAA',
     identityEd25519Pub: 'AAAA',
     sessionNonce: 'AAAA',
+    sessionPub: SESSION_PUB,
+    answersExtNonce: ANSWERS_EXT_NONCE,
     sessionSig: 'AAAA',
   };
 
@@ -2080,7 +2216,7 @@ describe('validateFrame (1.4.0 read_dom domSelectors)', () => {
 describe('validateFrame (graphql graphqlOps)', () => {
   const validHello = {
     type: 'hello',
-    protocolVersion: 3,
+    protocolVersion: 4,
     role: 'server',
     mcpId: 'opentable-mcp:0.0.1:a3f7c91d2e8b4f56',
     serverName: 'opentable-mcp',
@@ -2089,6 +2225,8 @@ describe('validateFrame (graphql graphqlOps)', () => {
     identityX25519Pub: 'AAAA',
     identityEd25519Pub: 'AAAA',
     sessionNonce: 'AAAA',
+    sessionPub: SESSION_PUB,
+    answersExtNonce: ANSWERS_EXT_NONCE,
     sessionSig: 'AAAA',
   };
 
@@ -2398,5 +2536,136 @@ describe('validateInnerFrame (graphql graphql_query)', () => {
         error: 'x',
       }),
     ).toThrow(/inner\.op/);
+  });
+});
+
+/**
+ * 3.0.0 / protocol 4: the narrow reader the two refusal paths use on a hello
+ * `validateFrame` has just REFUSED — the extension answering a v3 MCP with
+ * `hello-rejected`, and the server closing on a v3 extension with a reason
+ * naming both versions. Reading fields out of a frame you have already refused
+ * is the kind of thing that goes wrong, so the contract is narrow on purpose:
+ * three members, rebuilt one at a time, and no authority of any kind.
+ */
+describe('peekHelloVersion (3.0.0)', () => {
+  const v3ServerHello = {
+    type: 'hello',
+    protocolVersion: 3,
+    role: 'server',
+    mcpId: 'opentable-mcp:0.9.1:a3f7c91d2e8b4f56',
+    serverName: 'opentable-mcp',
+    version: '0.9.1',
+    domains: ['opentable.com'],
+    identityX25519Pub: 'AAAA',
+    identityEd25519Pub: 'AAAA',
+    sessionNonce: 'AAAA',
+    sessionSig: 'AAAA',
+    accepts: ['extension-disconnected', 'hello-rejected'],
+  };
+
+  it('reads the version, the id and the accepts list off a refused v3 hello', () => {
+    expect(peekHelloVersion(v3ServerHello)).toEqual({
+      protocolVersion: 3,
+      mcpId: 'opentable-mcp:0.9.1:a3f7c91d2e8b4f56',
+      accepts: ['extension-disconnected', 'hello-rejected'],
+    });
+  });
+
+  it('returns exactly three keys, so a field added to the hello later is not echoed out', () => {
+    // The whole point of rebuilding member by member. A refused frame is
+    // attacker-shaped input; whatever a future version puts on a hello must
+    // not travel out of this function to a caller that logs or renders it.
+    const peeked = peekHelloVersion({
+      ...v3ServerHello,
+      capabilities: ['fetch'],
+      somethingAddedInV5: { secret: 'do not echo me' },
+    });
+    expect(peeked).not.toBeNull();
+    expect(Object.keys(peeked!).sort()).toEqual(['accepts', 'mcpId', 'protocolVersion']);
+  });
+
+  it('holds no reference to the frame it read, so a caller cannot reach back through it', () => {
+    const peeked = peekHelloVersion(v3ServerHello);
+    expect(peeked!.accepts).not.toBe(v3ServerHello.accepts);
+    peeked!.accepts.push('mutated');
+    expect(v3ServerHello.accepts).toEqual(['extension-disconnected', 'hello-rejected']);
+  });
+
+  it('nulls a malformed mcpId rather than passing the string through', () => {
+    // A refusal addressed to a bad id is a frame nobody can route; the
+    // callers answer only when this is non-null.
+    expect(peekHelloVersion({ ...v3ServerHello, mcpId: 'no-colons' })?.mcpId).toBeNull();
+    expect(peekHelloVersion({ ...v3ServerHello, mcpId: 'a:b:nothex' })?.mcpId).toBeNull();
+    expect(peekHelloVersion({ ...v3ServerHello, mcpId: 42 })?.mcpId).toBeNull();
+    const { mcpId: _drop, ...noId } = v3ServerHello;
+    expect(peekHelloVersion(noId)?.mcpId).toBeNull();
+  });
+
+  it('reads an EXTENSION hello too — that is the server-side refusal path', () => {
+    // The extension hello carries no `mcpId` and no `accepts`, and the
+    // server's close reason needs only the version.
+    expect(
+      peekHelloVersion({
+        type: 'hello',
+        protocolVersion: 3,
+        role: 'extension',
+        platform: 'chrome',
+        extensionId: 'abc',
+        version: '2.11.3',
+        identityX25519Pub: 'AAAA',
+        identityEd25519Pub: 'AAAA',
+        sessionNonce: 'AAAA',
+      }),
+    ).toEqual({ protocolVersion: 3, mcpId: null, accepts: [] });
+  });
+
+  it('judges no version itself — a v4 hello peeks like any other', () => {
+    expect(peekHelloVersion({ ...v3ServerHello, protocolVersion: 4 })?.protocolVersion).toBe(4);
+  });
+
+  it('drops a non-string accepts entry and keeps the rest', () => {
+    expect(
+      peekHelloVersion({ ...v3ServerHello, accepts: ['hello-rejected', 7, null, 'x'] })?.accepts,
+    ).toEqual(['hello-rejected', 'x']);
+  });
+
+  it('answers an empty accepts list for an absent or non-array one', () => {
+    const { accepts: _drop, ...noAccepts } = v3ServerHello;
+    expect(peekHelloVersion(noAccepts)?.accepts).toEqual([]);
+    expect(peekHelloVersion({ ...v3ServerHello, accepts: 'hello-rejected' })?.accepts).toEqual([]);
+    expect(peekHelloVersion({ ...v3ServerHello, accepts: {} })?.accepts).toEqual([]);
+  });
+
+  it('returns null for anything that is not an object', () => {
+    for (const raw of [undefined, null, 'hello', 3, true, [], () => {}]) {
+      expect(peekHelloVersion(raw)).toBeNull();
+    }
+  });
+
+  it('returns null for a frame that is not a hello', () => {
+    expect(peekHelloVersion({ ...v3ServerHello, type: 'ready' })).toBeNull();
+    expect(peekHelloVersion({ ...v3ServerHello, type: 'frame' })).toBeNull();
+    const { type: _drop, ...noType } = v3ServerHello;
+    expect(peekHelloVersion(noType)).toBeNull();
+  });
+
+  it('is reachable from the package root, which is what the refusal paths import', () => {
+    // Both callers live in other workspaces and import `@fetchproxy/protocol`,
+    // so a function exported only from `validate.js` is a function they cannot
+    // reach — and `index.ts` lists this module's exports by name rather than
+    // re-exporting the whole of it.
+    expect(barrel.peekHelloVersion).toBe(peekHelloVersion);
+  });
+
+  it('returns null when protocolVersion is missing or is not an integer', () => {
+    // Without a version there is nothing to say in a version-mismatch
+    // reason, and the callers' comparison against PROTOCOL_VERSION would
+    // read a mismatch out of a field that never carried a number.
+    const { protocolVersion: _drop, ...noVersion } = v3ServerHello;
+    expect(peekHelloVersion(noVersion)).toBeNull();
+    expect(peekHelloVersion({ ...v3ServerHello, protocolVersion: '3' })).toBeNull();
+    expect(peekHelloVersion({ ...v3ServerHello, protocolVersion: 3.5 })).toBeNull();
+    expect(peekHelloVersion({ ...v3ServerHello, protocolVersion: NaN })).toBeNull();
+    expect(peekHelloVersion({ ...v3ServerHello, protocolVersion: null })).toBeNull();
   });
 });

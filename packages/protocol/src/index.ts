@@ -4,9 +4,11 @@ export {
   validateFrame,
   validateInnerFrame,
   validateCaptureHeaderDecls,
+  peekHelloVersion,
   ProtocolError,
   HOSTNAME_RE,
 } from './validate.js';
+export type { HelloVersionPeek } from './validate.js';
 export * from './crypto.js';
 export * from './mcp-id.js';
 export * from './pair-code.js';

@@ -143,34 +143,49 @@ export async function hkdfSha256(
  * AES-256-GCM encrypt. `key` must be 32 bytes; `iv` must be 12. The
  * returned ciphertext bundles the GCM authentication tag in the last
  * 16 bytes — pass it straight into `aesGcmOpen` to recover the plaintext.
+ *
+ * `aad` is additional authenticated data (3.0.0+): covered by the tag and
+ * never transmitted, so it costs no ciphertext, and the same bytes must be
+ * handed to {@link aesGcmOpen} or the tag fails. REQUIRED, with no default:
+ * a default is the one answer that would be wrong at whichever call site
+ * forgot to think about it. To bind nothing, pass an empty `Uint8Array` and
+ * mean it. In this protocol the value comes from `frameAad` in `frames.ts`
+ * and from nowhere else.
  */
 export async function aesGcmSeal(
   key: Uint8Array,
   iv: Uint8Array,
   plaintext: Uint8Array,
+  aad: Uint8Array,
 ): Promise<Uint8Array> {
   const k = await subtle.importKey('raw', key as BufferSource, { name: 'AES-GCM' }, false, [
     'encrypt',
   ]);
   const ct = await subtle.encrypt(
-    { name: 'AES-GCM', iv: iv as BufferSource },
+    { name: 'AES-GCM', iv: iv as BufferSource, additionalData: aad as BufferSource },
     k,
     plaintext as BufferSource,
   );
   return new Uint8Array(ct);
 }
 
-/** AES-256-GCM decrypt. Throws on tag mismatch — never returns junk. */
+/**
+ * AES-256-GCM decrypt. Throws on tag mismatch — never returns junk — and
+ * `aad` bytes that differ from the ones sealed under ARE a tag mismatch,
+ * which is the whole of what additional data buys. Required for the same
+ * reason it is required on {@link aesGcmSeal}.
+ */
 export async function aesGcmOpen(
   key: Uint8Array,
   iv: Uint8Array,
   ciphertext: Uint8Array,
+  aad: Uint8Array,
 ): Promise<Uint8Array> {
   const k = await subtle.importKey('raw', key as BufferSource, { name: 'AES-GCM' }, false, [
     'decrypt',
   ]);
   const pt = await subtle.decrypt(
-    { name: 'AES-GCM', iv: iv as BufferSource },
+    { name: 'AES-GCM', iv: iv as BufferSource, additionalData: aad as BufferSource },
     k,
     ciphertext as BufferSource,
   );
