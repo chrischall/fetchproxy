@@ -3,9 +3,13 @@ import { WebSocketServer, WebSocket } from 'ws';
 import {
   ecdhX25519,
   ed25519Verify,
-  concatBytes,
+  answersNoExtSession,
+  generateX25519,
+  helloSignaturePayload,
   readySignaturePayload,
+  transcriptHash,
   fromB64,
+  toB64,
   hkdfSha256,
   openEncryptedFrame,
   sealInnerFrame,
@@ -238,6 +242,19 @@ export interface HostOpts {
    * 1009 arrive tests the size of the constant rather than the behaviour.
    */
   maxPayloadBytes?: number;
+  /**
+   * Mint the per-connection X25519 session ephemeral. Tests only, and the
+   * only seam through which two of v4's properties can be asserted at all:
+   * a test that holds the buffer this returns can check the private half was
+   * ZEROED when the session ended, and a test that HOLDS the first call can
+   * put two mints inside one process, which is the whole of Rule D (§1a).
+   * Neither is reachable from the exported surface, and the alternative —
+   * an accessor that exists only for the test — would be a readable copy of
+   * the very key this task exists to make unreadable.
+   *
+   * @default generateX25519
+   */
+  generateSessionKeypair?: () => Promise<{ publicKey: Uint8Array; privateKey: Uint8Array }>;
 }
 
 export interface HostHandle {
@@ -314,11 +331,13 @@ export async function startHost(opts: HostOpts): Promise<HostHandle> {
     },
   });
 
-  // Build own hello once at startup. The session nonce inside is what
-  // the eventual ECDH session-key derivation will salt with, so we
-  // recover it from the frame rather than threading it as a second
-  // return value from the helper.
-  const ownHello: HelloFrameFromServer = await buildServerHello({
+  // 3.0.0 (protocol 4): everything about our own hello EXCEPT the two values
+  // that are minted per extension session. The hello used to be built once at
+  // startup and sent to every connection for the life of the process; under
+  // v4 the session key is derived from `sessionPub`, so one hello per process
+  // would bound forward secrecy at the process lifetime — worth having, not
+  // worth calling forward secrecy (§1a Rule A).
+  const ownHelloBase = {
     // 2.6.0: tell the extension it can say WHY it refused a hello, instead of
     // leaving us to time out and guess.
     accepts: ['hello-rejected'],
@@ -337,8 +356,8 @@ export async function startHost(opts: HostOpts): Promise<HostHandle> {
     sessionStoragePointers: opts.ownSessionStoragePointers,
     domSelectors: opts.ownDomSelectors,
     graphqlOps: opts.ownGraphqlOps,
-  });
-  const ownSessionNonce = fromB64(ownHello.sessionNonce);
+  };
+  const generateSessionKeypair = opts.generateSessionKeypair ?? generateX25519;
 
   let extensionWs: WebSocket | null = null;
   const peers = new Map<string, PeerSlot>();
@@ -346,6 +365,40 @@ export async function startHost(opts: HostOpts): Promise<HostHandle> {
   const disconnectListeners: (() => void)[] = [];
   const pendingPairListeners: ((code: string) => void)[] = [];
   let ownSession: SessionState | null = null;
+  /**
+   * The session ephemeral this host currently holds — minted per extension
+   * connection (§1a Rule A), committed only while it is still the current one
+   * (Rule D), and the ONLY thing a `ready` may be derived against. `null`
+   * between extension sessions, which is also what makes a `ready` naming a
+   * superseded `sessionPub` a discard rather than a derivation (Rule C).
+   */
+  let ownEphemeral: { nonce: Uint8Array; pub: Uint8Array; priv: Uint8Array } | null = null;
+
+  /**
+   * Zero the private half and drop it, answering `null` so the caller clears
+   * `ownSession` in the SAME statement. Forward secrecy is the property that
+   * an identity holder cannot open a PAST session, and it is false if the
+   * process keeps every ephemeral private key it ever minted — so the drop
+   * and the zeroing must not be two steps somebody can end up performing one
+   * of.
+   */
+  function dropOwnSessionAndEphemeral(): null {
+    if (ownEphemeral) ownEphemeral.priv.fill(0);
+    ownEphemeral = null;
+    return null;
+  }
+
+  /**
+   * Install a mint that has passed Rule D's check. Zeroes whatever it
+   * displaces: on this path the close handler has normally done that already,
+   * but "normally" is not a property, and an install that leaked the previous
+   * private half would be the same loss as never zeroing at all.
+   */
+  function installOwnEphemeral(next: { nonce: Uint8Array; pub: Uint8Array; priv: Uint8Array }): void {
+    if (ownEphemeral) ownEphemeral.priv.fill(0);
+    ownEphemeral = next;
+  }
+
   // 0.5.2+: latest pair code the extension reported for our own mcpId via
   // a `pair-pending` frame. Cleared when our session derives (the user
   // approved) and on host close. Surface to MCP-level callers so they can
@@ -544,16 +597,55 @@ export async function startHost(opts: HostOpts): Promise<HostHandle> {
               console.error('[fetchproxy] onPairCode threw:', e);
             }
           }
+          // 3.0.0 (protocol 4), §1a Rule A: mint a session ephemeral for THIS
+          // extension session and build the hello from it. Placed after the
+          // liveness re-check above and immediately before the send, so a
+          // hello the trust decision refused mints nothing.
+          //
+          // All of the crypto goes into LOCALS, because both calls below
+          // await: `ws` does not serialise this handler, so a second
+          // extension hello can arrive, complete, and install its own mint
+          // inside this window.
+          const mintedKeypair = await generateSessionKeypair();
+          const mintedHello: HelloFrameFromServer = await buildServerHello({
+            ...ownHelloBase,
+            sessionPub: mintedKeypair.publicKey,
+            // The echo Rule B's gate reads, inside the signed payload: this
+            // hello answers the extension session whose hello triggered it.
+            answersExtNonce: fromB64(frame.sessionNonce),
+          });
+          // §1a Rule D — the commit, and the whole of it is that it is
+          // SYNCHRONOUS and re-reads the single authoritative variable. The
+          // idiom is `if (extensionWs !== ws) return;` at the v3 derivation
+          // below, one handshake later; this is the same guard moved to the
+          // mint. Without it, a mint for an extension session that has since
+          // ended overwrites the live one when its crypto resolves — and
+          // because the only thing that mints is an extension hello, and the
+          // live extension has already sent its, nothing re-mints: the
+          // session never opens and no error is raised.
+          if (extensionWs !== ws) {
+            mintedKeypair.privateKey.fill(0);
+            return;
+          }
+          installOwnEphemeral({
+            nonce: fromB64(mintedHello.sessionNonce),
+            pub: mintedKeypair.publicKey,
+            priv: mintedKeypair.privateKey,
+          });
           // 1.12.0 (#208): relay this hello to every peer, so a peer can
           // authenticate the extension behind us instead of taking whatever
           // `ready` we hand it on trust. Peers before 1.12.0 ignore the frame.
+          // 3.0.0: it is also each peer's Rule A trigger — one per extension
+          // session, to every peer in the map at this moment.
           for (const slot of peers.values()) slot.ws.send(JSON.stringify(frame));
-          // Send own hello first.
-          ws.send(JSON.stringify(ownHello));
-          // Then forward any peer hellos that arrived earlier.
-          for (const slot of peers.values()) {
-            ws.send(JSON.stringify(slot.helloFrame));
-          }
+          // Send own hello.
+          ws.send(JSON.stringify(mintedHello));
+          // 3.0.0: the replay of each peer's CACHED hello is GONE. Under v4
+          // that frame is stale by construction — the `sessionPub` it names
+          // is one the peer has already superseded or is about to — so the
+          // extension would derive against a key nobody holds. The relay
+          // above is what prompts each peer to hello afresh, and those are
+          // forwarded as they arrive (§1a, Task 2.2).
           return;
         }
         if (frame.type === 'hello' && frame.role === 'server') {
@@ -561,13 +653,22 @@ export async function startHost(opts: HostOpts): Promise<HostHandle> {
           // table. Peer registration was unauthenticated — any local process
           // could `peers.set` a foreign mcpId and overwrite a legit peer's
           // routing slot (cross-server DoS / mcpId squatting). The hello
-          // already carries an Ed25519 identity + a signature over
-          // `mcpId || sessionNonce`; verify it (proves the dialer holds the
-          // private key it presents) before mapping the slot.
+          // already carries an Ed25519 identity + a signature over its own
+          // hello payload; verify it (proves the dialer holds the private key
+          // it presents) before mapping the slot.
+          // 3.0.0 (protocol 4): the payload comes from
+          // `helloSignaturePayload`, so it covers the peer's `sessionPub` and
+          // the extension session its hello answers. Verifying the v3
+          // concatenation here would leave both fields unauthenticated while
+          // compiling perfectly well — the ephemeral substitutable by
+          // anything in the path, and the echo re-pointable at whichever
+          // extension session a relay wanted the hello delivered to.
           const peerEdPub = fromB64(frame.identityEd25519Pub);
-          const peerSigMsg = concatBytes(
-            enc.encode(frame.mcpId),
+          const peerSigMsg = helloSignaturePayload(
+            frame.mcpId,
             fromB64(frame.sessionNonce),
+            fromB64(frame.sessionPub),
+            fromB64(frame.answersExtNonce),
           );
           const peerSig = fromB64(frame.sessionSig);
           let peerSigOk = false;
@@ -613,8 +714,33 @@ export async function startHost(opts: HostOpts): Promise<HostHandle> {
           // identity is on this socket long before it — but the two lines read
           // in the order the peer consumes them, and nothing later can reorder
           // them by accident.
-          if (extensionHello) ws.send(JSON.stringify(extensionHello));
-          if (extensionWs) extensionWs.send(JSON.stringify(frame));
+          // §1a Rule B, MIRRORED: hand a peer the cached extension hello only
+          // in answer to a hello that answers NO extension session — i.e. a
+          // registration hello. Un-gated, this send is itself a Rule A
+          // trigger on every peer hello, including the re-hello the gate
+          // below exists to let through: re-hello → forwarded → extension
+          // hello sent back → mint → re-hello, unbounded. A peer already in
+          // the map when an extension connects is triggered once by the
+          // fan-out above instead, so nothing else needs this re-send.
+          if (extensionHello && answersNoExtSession(frame.answersExtNonce)) {
+            ws.send(JSON.stringify(extensionHello));
+          }
+          // §1a Rule B: forward a peer's hello to the extension only when the
+          // hello NAMES the current extension session. Both operands are read
+          // HERE — one off the frame, one off the single authoritative
+          // variable — and nothing is recorded on `PeerSlot`. A per-peer mark
+          // cannot do this job: this line runs after the `await ed25519Verify`
+          // above, and the extension-hello handler re-points every peer's mark
+          // inside that window, so a mark says which extension is attached NOW
+          // rather than which one this frame was minted for. A registration
+          // hello answers 32 zero bytes and so never matches a CSPRNG nonce.
+          if (
+            extensionWs &&
+            extensionHello &&
+            frame.answersExtNonce === extensionHello.sessionNonce
+          ) {
+            extensionWs.send(JSON.stringify(frame));
+          }
           return;
         }
 
@@ -642,12 +768,38 @@ export async function startHost(opts: HostOpts): Promise<HostHandle> {
               ws.close(1002, 'ready before extension hello');
               return;
             }
+            // 3.0.0 (protocol 4), §1a Rule C: is this `ready` for the
+            // ephemeral we currently hold? Asked BEFORE the signature check,
+            // and answered by a DISCARD rather than a refusal.
+            //
+            // Under v3 a stale `ready` and a forged one were the same 1008,
+            // so an ordinary MV3 reconnect that raced a re-hello stranded a
+            // bridged MCP. A mismatch here changes nothing, closes nothing
+            // and rejects nothing, because the hello that superseded it is
+            // already on its way. This branch is reached before anything has
+            // been verified, so anything that can put a frame on the socket
+            // can reach it — which is exactly why it must cost nothing.
+            //
+            // It is before the verify for a second reason: the extension
+            // signs over the pub it derived against, so a stale `ready`'s
+            // signature is ALWAYS over the stale pub, and checking the
+            // signature first would refuse every stale one for the wrong
+            // reason.
+            const held = ownEphemeral;
+            if (!held || frame.mcpSessionPub !== toB64(held.pub)) {
+              console.warn(
+                '[fetchproxy] discarding a ready for a session ephemeral this host no longer ' +
+                  'holds (the extension reconnected while a hello was in flight)',
+              );
+              return;
+            }
             const extEdPub = fromB64(extensionHello.identityEd25519Pub);
             const extNonce = fromB64(extensionHello.sessionNonce);
             const msg = readySignaturePayload(
-              ownSessionNonce,
+              held.nonce,
               extNonce,
               fromB64(frame.extensionSessionPub),
+              held.pub,
             );
             const sig = fromB64(frame.sessionSig);
             let sigOk = false;
@@ -686,11 +838,20 @@ export async function startHost(opts: HostOpts): Promise<HostHandle> {
             // and yield to the event loop — the extension WS may close
             // during derivation. Guard afterward to avoid resolving the
             // session promise with a stale key.
+            // 3.0.0 (protocol 4): ephemeral × ephemeral, and the salt is the
+            // TRANSCRIPT over both nonces and both ephemerals rather than our
+            // own hello nonce. Under v3 our half of the ECDH was the
+            // long-term identity key, so anyone holding this MCP's identity
+            // plus a recording decrypted its sessions afterwards. Swapping
+            // the salt is not a compile error either, which is why the test
+            // beside this derives the key the browser's way and opens a real
+            // frame with it.
             const extPub = fromB64(frame.extensionSessionPub);
-            const shared = await ecdhX25519(opts.ownIdentity.x25519Priv, extPub);
+            const shared = await ecdhX25519(held.priv, extPub);
+            const salt = await transcriptHash(held.nonce, extNonce, held.pub, extPub);
             const key = await hkdfSha256(
               shared,
-              ownSessionNonce,
+              salt,
               enc.encode(HKDF_SESSION_INFO),
               32,
             );
@@ -726,7 +887,10 @@ export async function startHost(opts: HostOpts): Promise<HostHandle> {
               if (!session.claimInboundSeq(frame.seq)) return;
               let inner;
               try {
-                inner = await openEncryptedFrame(session.sessionKey, frame);
+                // 'e2s': this socket is the extension's, so a frame the host
+                // itself sealed and had reflected back at it fails the tag
+                // rather than arriving as a well-formed inner frame.
+                inner = await openEncryptedFrame(session.sessionKey, frame, 'e2s');
               } catch (e) {
                 // A frame that fails GCM authentication never happened: give
                 // the claim back and leave the counter where it was —
@@ -841,7 +1005,12 @@ export async function startHost(opts: HostOpts): Promise<HostHandle> {
         if (!ownSession) {
           rejectOwnSession(new Error('extension disconnected before ready'));
         }
-        ownSession = null;
+        // 3.0.0 (protocol 4): the session and the private half it was derived
+        // from go in ONE statement. This close IS the end of the extension
+        // session the ephemeral was minted for, and from here no `ready` can
+        // name it usefully — so keeping the key would buy nothing and cost
+        // the forward secrecy this version exists for.
+        ownSession = dropOwnSessionAndEphemeral();
         // A pair code the user never approved is not actionable once the
         // browser holding the popup is gone — and `bridgeHealth().session`
         // ranks `pair_pending` above "extension not attached", so leaving it
@@ -916,6 +1085,7 @@ export async function startHost(opts: HostOpts): Promise<HostHandle> {
         opts.ownMcpId,
         session.nextOutboundSeq(),
         plaintext,
+        's2e',
       );
       extensionWs.send(JSON.stringify(sealed));
     },

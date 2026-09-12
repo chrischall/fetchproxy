@@ -1,25 +1,15 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
-import { WebSocketServer, WebSocket } from 'ws';
 import type { AddressInfo } from 'node:net';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import {
-  ecdhX25519,
-  generateX25519,
-  hkdfSha256,
-  sealInnerFrame,
-  validateFrame,
-  HKDF_SESSION_INFO,
-  type InnerFrame,
-  type ReadyFrame,
-} from '@fetchproxy/protocol';
+import { sealInnerFrame, type InnerFrame } from '@fetchproxy/protocol';
 import { startHost, type HostHandle } from '../src/host.js';
 import { startPeer, type InternalPeerHandle } from '../src/peer.js';
 import { electRole } from '../src/election.js';
 import { loadOrCreateIdentity } from '../src/identity.js';
 import { connectMockExtension } from './helpers/mock-extension.js';
-import { listenEphemeral, loopbackWss } from './helpers/ephemeral-port.js';
+import { linkedPeer, type FakeConcentrator } from './helpers/concentrator.js';
 import type { ExtensionPin, ExtensionTrustPort } from '../src/extension-trust.js';
 
 /**
@@ -77,7 +67,7 @@ function inOneWrite(ws: WebSocket, send: () => void): void {
 describe('a duplicate frame in one read is processed exactly once', () => {
   let host: HostHandle | null = null;
   let peer: InternalPeerHandle | null = null;
-  let wss: WebSocketServer | null = null;
+  let rig: FakeConcentrator | null = null;
 
   afterEach(async () => {
     vi.restoreAllMocks();
@@ -85,10 +75,8 @@ describe('a duplicate frame in one read is processed exactly once', () => {
     host = null;
     if (peer) peer.close();
     peer = null;
-    if (wss) {
-      await new Promise<void>((r) => wss!.close(() => r()));
-      wss = null;
-    }
+    if (rig) await rig.close();
+    rig = null;
   });
 
   it('host: two copies of one frame in a single write are delivered once', async () => {
@@ -116,7 +104,9 @@ describe('a duplicate frame in one read is processed exactly once', () => {
     const received: InnerFrame[] = [];
     host.onOwnInner((inner) => received.push(inner));
 
-    const dup = JSON.stringify(await sealInnerFrame(sessionKey, mcpId, 1, { type: 'pong' }));
+    const dup = JSON.stringify(
+      await sealInnerFrame(sessionKey, mcpId, 1, { type: 'pong' }, 'e2s'),
+    );
     inOneWrite(ext.ws, () => {
       ext.ws.send(dup);
       ext.ws.send(dup);
@@ -129,7 +119,9 @@ describe('a duplicate frame in one read is processed exactly once', () => {
     expect(received).toHaveLength(1);
 
     // And the session is not wedged by its own claim: the next seq is taken.
-    ext.ws.send(JSON.stringify(await sealInnerFrame(sessionKey, mcpId, 2, { type: 'pong' })));
+    ext.ws.send(
+      JSON.stringify(await sealInnerFrame(sessionKey, mcpId, 2, { type: 'pong' }, 'e2s')),
+    );
     await vi.waitFor(() => expect(received).toHaveLength(2));
     ext.close();
   });
@@ -139,52 +131,28 @@ describe('a duplicate frame in one read is processed exactly once', () => {
     const identity = await loadOrCreateIdentity('opentable-mcp', idDir);
     const mcpId = 'opentable-mcp:0.9.1:a3f7c91d2e8b4f56';
 
-    wss = loopbackWss();
-    const port = await listenEphemeral(wss);
-
-    let hostWs: WebSocket | null = null;
-    let sessionKey: Uint8Array | null = null;
-    const enc = new TextEncoder();
-
-    wss.on('connection', (ws: WebSocket) => {
-      hostWs = ws;
-      ws.on('message', async (data) => {
-        const frame = validateFrame(JSON.parse(data.toString()));
-        if (frame.type !== 'hello' || frame.role !== 'server') return;
-        const identityX25519Pub = new Uint8Array(Buffer.from(frame.identityX25519Pub, 'base64'));
-        const peerNonce = new Uint8Array(Buffer.from(frame.sessionNonce, 'base64'));
-        const ephemeral = await generateX25519();
-        const shared = await ecdhX25519(ephemeral.privateKey, identityX25519Pub);
-        sessionKey = await hkdfSha256(shared, peerNonce, enc.encode(HKDF_SESSION_INFO), 32);
-        const ready: ReadyFrame = {
-          type: 'ready',
-          mcpId: frame.mcpId,
-          extensionSessionPub: Buffer.from(ephemeral.publicKey).toString('base64'),
-          sessionSig: Buffer.from('placeholder-sig').toString('base64'),
-        };
-        ws.send(JSON.stringify(ready));
-      });
-    });
-
-    peer = await startPeer({
-      host: '127.0.0.1',
-      port,
-      identity,
+    // 3.0.0: the full v4 handshake, because there is no shorter route to a
+    // session key — a placeholder signature, no relayed extension hello and
+    // an ECDH against the peer's long-term identity are all gone.
+    const linked = await linkedPeer({
       mcpId,
-      serverName: 'opentable-mcp',
-      version: '0.9.1',
-      domains: ['opentable.com'],
+      identity,
+      startPeer: startPeer as unknown as Parameters<typeof linkedPeer>[0]['startPeer'],
     });
+    rig = linked.rig;
+    peer = linked.peer as unknown as InternalPeerHandle;
+    const sessionKey = linked.sessionKey;
+    const hostWs = await linked.rig.socket();
 
     const received: InnerFrame[] = [];
     peer.onInner((inner) => received.push(inner));
-    await peer.sendInner({ type: 'ping' });
-    expect(sessionKey).not.toBeNull();
 
-    const dup = JSON.stringify(await sealInnerFrame(sessionKey!, mcpId, 1, { type: 'pong' }));
-    inOneWrite(hostWs!, () => {
-      hostWs!.send(dup);
-      hostWs!.send(dup);
+    const dup = JSON.stringify(
+      await sealInnerFrame(sessionKey, mcpId, 1, { type: 'pong' }, 'e2s'),
+    );
+    inOneWrite(hostWs, () => {
+      hostWs.send(dup);
+      hostWs.send(dup);
     });
 
     await vi.waitFor(() => expect(received).toHaveLength(1));
@@ -195,9 +163,11 @@ describe('a duplicate frame in one read is processed exactly once', () => {
     // named is still open to the genuine frame that carries it. This is the
     // property the split gate exists for, and the claim must not cost it.
     const warns = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    hostWs!.send(JSON.stringify(forgedFrame(mcpId, 7)));
+    hostWs.send(JSON.stringify(forgedFrame(mcpId, 7)));
     await new Promise((r) => setTimeout(r, 20));
-    hostWs!.send(JSON.stringify(await sealInnerFrame(sessionKey!, mcpId, 7, { type: 'pong' })));
+    hostWs.send(
+      JSON.stringify(await sealInnerFrame(sessionKey, mcpId, 7, { type: 'pong' }, 'e2s')),
+    );
     await vi.waitFor(() => expect(received).toHaveLength(2));
     warns.mockRestore();
   });

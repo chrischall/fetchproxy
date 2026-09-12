@@ -5,9 +5,11 @@ import {
   helloSignaturePayload,
   readySignaturePayload,
   transcriptHash,
+  ANSWERS_NO_EXT_SESSION,
+  answersNoExtSession,
 } from '../src/frames.js';
 import { sha256 } from '../src/crypto.js';
-import { toHex } from '../src/encoding.js';
+import { toHex, toB64, fromB64 } from '../src/encoding.js';
 
 const enc = new TextEncoder();
 
@@ -177,5 +179,59 @@ describe('transcriptHash', () => {
     const a = toHex(await transcriptHash(mcpNonce, extNonce, mcpSessionPub, extSessionPub));
     const b = toHex(await transcriptHash(mcpNonce, extNonce, extSessionPub, mcpSessionPub));
     expect(a).not.toBe(b);
+  });
+});
+
+describe('answers-no-extension-session ("answers nothing")', () => {
+  it('is 32 zero bytes', () => {
+    // Fixed-shape rather than absent, so that "this hello answers no
+    // extension session" is a VALUE inside the signed payload. §1a.
+    expect(ANSWERS_NO_EXT_SESSION.length).toBe(32);
+    expect([...ANSWERS_NO_EXT_SESSION].every((b) => b === 0)).toBe(true);
+  });
+
+  it('recognises exactly that value', () => {
+    expect(answersNoExtSession(toB64(ANSWERS_NO_EXT_SESSION))).toBe(true);
+  });
+
+  it('is false of a hundred CSPRNG nonces', () => {
+    // The predicate's whole job is telling a registration hello apart from
+    // one answering a live session, and a live session's nonce comes from a
+    // CSPRNG. A hundred of them is a cheap proof that it never confuses the
+    // two — which is what `host.ts`'s mirror gate depends on.
+    for (let i = 0; i < 100; i++) {
+      const nonce = new Uint8Array(32);
+      (globalThis.crypto as Crypto).getRandomValues(nonce);
+      expect(answersNoExtSession(toB64(nonce))).toBe(false);
+    }
+  });
+
+  it('is false of a right-length value with one bit set, and of a wrong length', () => {
+    const almost = new Uint8Array(32);
+    almost[31] = 1;
+    expect(answersNoExtSession(toB64(almost))).toBe(false);
+    expect(answersNoExtSession(toB64(new Uint8Array(31)))).toBe(false);
+    expect(answersNoExtSession(toB64(new Uint8Array(33)))).toBe(false);
+  });
+
+  it('answers false rather than throwing on a value it cannot decode', () => {
+    // It is read off a frame, so a caller must never have to guard it: a
+    // gate that throws here is a gate that takes the socket down instead of
+    // withholding one frame. Fail CLOSED — "not a registration hello".
+    expect(answersNoExtSession('not base64 at all!!')).toBe(false);
+    expect(answersNoExtSession('')).toBe(false);
+  });
+
+  it('judges the BYTES, not the spelling', () => {
+    // base64 of 32 bytes leaves two slack bits in the final character, so
+    // more than one string decodes to 32 zeroes. The predicate decodes
+    // rather than comparing strings, so a non-canonical spelling of the zero
+    // value is still read as "answers nothing" rather than silently becoming
+    // a hello the mirror gate withholds.
+    const canonical = toB64(ANSWERS_NO_EXT_SESSION);
+    const alternate = `${canonical.slice(0, 42)}B=`;
+    expect(alternate).not.toBe(canonical);
+    expect([...fromB64(alternate)].every((b) => b === 0)).toBe(true);
+    expect(answersNoExtSession(alternate)).toBe(true);
   });
 });

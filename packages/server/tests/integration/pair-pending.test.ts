@@ -57,9 +57,7 @@ async function connectMockExtensionThatNeverApproves(port: number) {
             extIdX.publicKey,
           );
           codes.set(frame.serverName, code);
-          ws.send(
-            JSON.stringify({ type: 'pair-pending', mcpId: frame.mcpId, pairCode: code }),
-          );
+          ws.send(JSON.stringify({ type: 'pair-pending', mcpId: frame.mcpId, pairCode: code }));
           // Counted AFTER the send so `helloCountReached` means "the frame is
           // on the wire", not "the derivation started".
           helloCount += 1;
@@ -72,7 +70,7 @@ async function connectMockExtensionThatNeverApproves(port: number) {
 
   const extHello: HelloFrameFromExtension = {
     type: 'hello',
-    protocolVersion: 3,
+    protocolVersion: 4,
     role: 'extension',
     platform: 'chrome',
     extensionId: 'fetchproxy',

@@ -9,6 +9,8 @@ import {
   generateEd25519,
   ed25519Sign,
   readySignaturePayload,
+  transcriptHash,
+  fromB64,
   ecdhX25519,
   hkdfSha256,
   sealInnerFrame,
@@ -76,7 +78,7 @@ describe('integration: two MCPs through one host', () => {
       mcpId: string;
       domains: string[];
     }
-    const tracks = new Map<string, Track>();      // by mcpId
+    const tracks = new Map<string, Track>(); // by mcpId
     const serverNameToMcpId = new Map<string, string>();
 
     // Track session keys as base64 strings for the distinct-keys assertion.
@@ -111,15 +113,28 @@ describe('integration: two MCPs through one host', () => {
           const frame = validateFrame(parsed);
 
           if (frame.type === 'hello' && frame.role === 'server') {
-            const identityX25519Pub = new Uint8Array(Buffer.from(frame.identityX25519Pub, 'base64'));
+            const identityX25519Pub = new Uint8Array(
+              Buffer.from(frame.identityX25519Pub, 'base64'),
+            );
             const mcpSessionNonce = new Uint8Array(Buffer.from(frame.sessionNonce, 'base64'));
 
             // Auto-approve in this test (the pair-code gate is unit-tested elsewhere).
             const ephemeral = await generateX25519();
-            const shared = await ecdhX25519(ephemeral.privateKey, identityX25519Pub);
+            // 3.0.0 (protocol 4): the ECDH is ephemeral x ephemeral — the MCP's
+            // half is `sessionPub` on the hello, not its long-term identity key —
+            // and the HKDF salt is the transcript over both nonces and both
+            // ephemerals. Neither change is a compile error, so this mock is
+            // what holds the server to them.
+            const mcpSessionPub = fromB64(frame.sessionPub);
+            const shared = await ecdhX25519(ephemeral.privateKey, mcpSessionPub);
             const sessionKey = await hkdfSha256(
               shared,
-              mcpSessionNonce,
+              await transcriptHash(
+                mcpSessionNonce,
+                extSessionNonce,
+                mcpSessionPub,
+                ephemeral.publicKey,
+              ),
               enc.encode(HKDF_SESSION_INFO),
               32,
             );
@@ -134,12 +149,20 @@ describe('integration: two MCPs through one host', () => {
 
             const sig = await ed25519Sign(
               extIdEd.privateKey,
-              readySignaturePayload(mcpSessionNonce, extSessionNonce, ephemeral.publicKey),
+              readySignaturePayload(
+                mcpSessionNonce,
+                extSessionNonce,
+                ephemeral.publicKey,
+                mcpSessionPub,
+              ),
             );
             const ready: ReadyFrame = {
               type: 'ready',
               mcpId: frame.mcpId,
               extensionSessionPub: Buffer.from(ephemeral.publicKey).toString('base64'),
+              // 3.0.0: names the MCP ephemeral this ready answers, so a server
+              // can tell a stale one (discard) from a forged one (1008).
+              mcpSessionPub: frame.sessionPub,
               sessionSig: Buffer.from(sig).toString('base64'),
             };
             extWs!.send(JSON.stringify(ready));
@@ -152,7 +175,7 @@ describe('integration: two MCPs through one host', () => {
           if (frame.type === 'frame') {
             const track = tracks.get(frame.mcpId);
             if (!track?.sessionKey) return;
-            const inner = await openEncryptedFrame(track.sessionKey, frame);
+            const inner = await openEncryptedFrame(track.sessionKey, frame, 's2e');
             if (inner.type === 'request') {
               // Echo a synthetic 200 response.
               const respInner = {
@@ -168,6 +191,7 @@ describe('integration: two MCPs through one host', () => {
                 frame.mcpId,
                 nextSeq(frame.mcpId),
                 respInner,
+                'e2s',
               );
               extWs!.send(JSON.stringify(sealed));
             }
@@ -180,7 +204,7 @@ describe('integration: two MCPs through one host', () => {
       // Send the extension hello to trigger the host to forward server hellos.
       const extHello: HelloFrameFromExtension = {
         type: 'hello',
-        protocolVersion: 3,
+        protocolVersion: 4,
         role: 'extension',
         platform: 'chrome',
         extensionId: 'fetchproxy',

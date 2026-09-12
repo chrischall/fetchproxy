@@ -64,6 +64,7 @@
  */
 
 import { sha256 } from './crypto.js';
+import { fromB64 } from './encoding.js';
 
 export const PROTOCOL_VERSION = 4 as const;
 
@@ -120,6 +121,60 @@ export function helloSignaturePayload(
   out.set(sessionPub, id.length + sessionNonce.length);
   out.set(answersExtNonce, id.length + sessionNonce.length + sessionPub.length);
   return out;
+}
+
+/**
+ * The value `HelloFrameFromServer.answersExtNonce` carries when the hello
+ * answers NO extension session — 32 zero bytes (3.0.0+).
+ *
+ * One hello in shipped code writes it: a peer's REGISTRATION hello, sent at
+ * dial before any extension has been heard of, which must still carry a
+ * `sessionPub` because the field is required and the host verifies the
+ * signature over it before it will map the slot. Saying "this answers
+ * nothing" on the wire is what makes that frame self-describing rather than
+ * merely un-forwarded by convention: the host's gate refuses to forward it,
+ * so the ephemeral it names can never be the one a `ready` is derived
+ * against, and the bootstrap keypair is a registration credential rather
+ * than a session ephemeral.
+ *
+ * Zero bytes rather than an absent field because the two gates owed this
+ * value are fixed 32-byte comparisons with no branch for an absence — see
+ * {@link helloSignaturePayload} for why the signed payload cannot afford a
+ * variable-length tail either.
+ */
+export const ANSWERS_NO_EXT_SESSION: Uint8Array = new Uint8Array(32);
+
+/**
+ * Whether a base64 `answersExtNonce` is {@link ANSWERS_NO_EXT_SESSION} — i.e.
+ * whether this hello answers no extension session and is therefore a
+ * registration hello.
+ *
+ * Exported so the one place that READS the fact and the one place that WRITES
+ * it share a definition rather than spelling a literal at each end. The
+ * shipped population is deliberately small: the peer's bootstrap hello writes
+ * it, and the host's mirror gate — "hand a peer the cached extension hello
+ * only in answer to a hello that answers nothing" — reads it. Two places that
+ * look like further readers are not: the host's forwarding gate compares
+ * against the LIVE extension nonce and takes no branch on this value, and the
+ * extension's staleness refusal compares against its own nonce, which comes
+ * from a CSPRNG and so fails the equality without a second check.
+ *
+ * Judges the BYTES, not the spelling: base64 of 32 bytes leaves slack bits in
+ * its final character, so more than one string decodes to 32 zeroes. And it
+ * answers `false` rather than throwing on anything it cannot decode to 32
+ * bytes — it is read off a frame, and a predicate that threw here would take
+ * a socket down where the gate it feeds only has to withhold one frame.
+ */
+export function answersNoExtSession(answersExtNonce: string): boolean {
+  let bytes: Uint8Array;
+  try {
+    bytes = fromB64(answersExtNonce);
+  } catch {
+    return false;
+  }
+  if (bytes.length !== ANSWERS_NO_EXT_SESSION.length) return false;
+  for (const b of bytes) if (b !== 0) return false;
+  return true;
 }
 
 /**

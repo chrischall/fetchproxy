@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import { WebSocket } from 'ws';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -9,6 +9,8 @@ import {
   generateEd25519,
   ed25519Sign,
   readySignaturePayload,
+  transcriptHash,
+  fromB64,
   ecdhX25519,
   hkdfSha256,
   sealInnerFrame,
@@ -54,7 +56,7 @@ async function connectMockExtension(
 
   const extHello: HelloFrameFromExtension = {
     type: 'hello',
-    protocolVersion: 3,
+    protocolVersion: 4,
     role: 'extension',
     platform: 'chrome',
     extensionId: 'fetchproxy',
@@ -74,25 +76,29 @@ async function connectMockExtension(
         const parsed = JSON.parse(data.toString());
         const frame = validateFrame(parsed);
         if (frame.type === 'hello' && frame.role === 'server') {
-          const mcpPub = new Uint8Array(Buffer.from(frame.identityX25519Pub, 'base64'));
-          const mcpNonce = new Uint8Array(Buffer.from(frame.sessionNonce, 'base64'));
+          // 3.0.0 (protocol 4): the ECDH is against the hello's EPHEMERAL,
+          // not the MCP's long-term identity key, and the HKDF salt is the
+          // transcript over both nonces and both ephemerals.
+          const mcpSessionPub = fromB64(frame.sessionPub);
+          const mcpNonce = fromB64(frame.sessionNonce);
           const ephemeral = await generateX25519();
-          const shared = await ecdhX25519(ephemeral.privateKey, mcpPub);
+          const shared = await ecdhX25519(ephemeral.privateKey, mcpSessionPub);
           sessionKey = await hkdfSha256(
             shared,
-            mcpNonce,
+            await transcriptHash(mcpNonce, extSessionNonce, mcpSessionPub, ephemeral.publicKey),
             enc.encode(HKDF_SESSION_INFO),
             32,
           );
           mcpId = frame.mcpId;
           const sig = await ed25519Sign(
             extIdEd.privateKey,
-            readySignaturePayload(mcpNonce, extSessionNonce, ephemeral.publicKey),
+            readySignaturePayload(mcpNonce, extSessionNonce, ephemeral.publicKey, mcpSessionPub),
           );
           const readyFrame: ReadyFrame = {
             type: 'ready',
             mcpId,
             extensionSessionPub: Buffer.from(ephemeral.publicKey).toString('base64'),
+            mcpSessionPub: frame.sessionPub,
             sessionSig: Buffer.from(sig).toString('base64'),
           };
           ws.send(JSON.stringify(readyFrame));
@@ -109,9 +115,15 @@ async function connectMockExtension(
 
   return {
     ws,
-    get sessionKey() { return sessionKey!; },
-    get mcpId() { return mcpId!; },
-    nextSeq() { return ++outboundSeq; },
+    get sessionKey() {
+      return sessionKey!;
+    },
+    get mcpId() {
+      return mcpId!;
+    },
+    nextSeq() {
+      return ++outboundSeq;
+    },
   };
 }
 
@@ -149,20 +161,28 @@ describe('extension reconnect (session-key renegotiation)', () => {
           const parsed = JSON.parse(data.toString());
           const frame = validateFrame(parsed);
           if (frame.type !== 'frame' || frame.mcpId !== ext1.mcpId) return;
-          const inner = await openEncryptedFrame(ext1.sessionKey, frame);
+          const inner = await openEncryptedFrame(ext1.sessionKey, frame, 's2e');
           if (inner.type === 'request' && inner.op === 'fetch') {
-            const sealed = await sealInnerFrame(ext1.sessionKey, ext1.mcpId, ext1.nextSeq(), {
-              type: 'response',
-              id: inner.id,
-              ok: true,
-              op: 'fetch',
-              status: 200,
-              url: inner.init.url,
-              body: 'first-session',
-            });
+            const sealed = await sealInnerFrame(
+              ext1.sessionKey,
+              ext1.mcpId,
+              ext1.nextSeq(),
+              {
+                type: 'response',
+                id: inner.id,
+                ok: true,
+                op: 'fetch',
+                status: 200,
+                url: inner.init.url,
+                body: 'first-session',
+              },
+              'e2s',
+            );
             ext1.ws.send(JSON.stringify(sealed));
           }
-        } catch { /* ignore */ }
+        } catch {
+          /* ignore */
+        }
       })();
     };
     ext1.ws.on('message', ext1Handler);
@@ -191,20 +211,28 @@ describe('extension reconnect (session-key renegotiation)', () => {
           const parsed = JSON.parse(data.toString());
           const frame = validateFrame(parsed);
           if (frame.type !== 'frame' || frame.mcpId !== ext2.mcpId) return;
-          const inner = await openEncryptedFrame(ext2.sessionKey, frame);
+          const inner = await openEncryptedFrame(ext2.sessionKey, frame, 's2e');
           if (inner.type === 'request' && inner.op === 'fetch') {
-            const sealed = await sealInnerFrame(ext2.sessionKey, ext2.mcpId, ext2.nextSeq(), {
-              type: 'response',
-              id: inner.id,
-              ok: true,
-              op: 'fetch',
-              status: 200,
-              url: inner.init.url,
-              body: 'second-session',
-            });
+            const sealed = await sealInnerFrame(
+              ext2.sessionKey,
+              ext2.mcpId,
+              ext2.nextSeq(),
+              {
+                type: 'response',
+                id: inner.id,
+                ok: true,
+                op: 'fetch',
+                status: 200,
+                url: inner.init.url,
+                body: 'second-session',
+              },
+              'e2s',
+            );
             ext2.ws.send(JSON.stringify(sealed));
           }
-        } catch { /* ignore */ }
+        } catch {
+          /* ignore */
+        }
       })();
     });
 
@@ -310,20 +338,28 @@ describe('extension reconnect (session-key renegotiation)', () => {
           const parsed = JSON.parse(data.toString());
           const frame = validateFrame(parsed);
           if (frame.type !== 'frame' || frame.mcpId !== ext2.mcpId) return;
-          const inner = await openEncryptedFrame(ext2.sessionKey, frame);
+          const inner = await openEncryptedFrame(ext2.sessionKey, frame, 's2e');
           if (inner.type === 'request' && inner.op === 'fetch') {
-            const sealed = await sealInnerFrame(ext2.sessionKey, ext2.mcpId, ext2.nextSeq(), {
-              type: 'response',
-              id: inner.id,
-              ok: true,
-              op: 'fetch',
-              status: 200,
-              url: inner.init.url,
-              body: 'alive-after-reconnect',
-            });
+            const sealed = await sealInnerFrame(
+              ext2.sessionKey,
+              ext2.mcpId,
+              ext2.nextSeq(),
+              {
+                type: 'response',
+                id: inner.id,
+                ok: true,
+                op: 'fetch',
+                status: 200,
+                url: inner.init.url,
+                body: 'alive-after-reconnect',
+              },
+              'e2s',
+            );
             ext2.ws.send(JSON.stringify(sealed));
           }
-        } catch { /* ignore */ }
+        } catch {
+          /* ignore */
+        }
       })();
     });
 
@@ -370,7 +406,9 @@ async function connectMockExtensionMulti(
 
   // Resolve once we've handshaked with `expectedMcps` distinct MCPs.
   let resolveReady!: () => void;
-  const ready = new Promise<void>((r) => { resolveReady = r; });
+  const ready = new Promise<void>((r) => {
+    resolveReady = r;
+  });
 
   ws.on('message', (data) => {
     void (async () => {
@@ -378,13 +416,15 @@ async function connectMockExtensionMulti(
         const parsed = JSON.parse(data.toString());
         const frame = validateFrame(parsed);
         if (frame.type === 'hello' && frame.role === 'server') {
-          const mcpPub = new Uint8Array(Buffer.from(frame.identityX25519Pub, 'base64'));
-          const mcpNonce = new Uint8Array(Buffer.from(frame.sessionNonce, 'base64'));
+          // 3.0.0 (protocol 4): as above — ephemeral x ephemeral, salted with
+          // the transcript.
+          const mcpSessionPub = fromB64(frame.sessionPub);
+          const mcpNonce = fromB64(frame.sessionNonce);
           const ephemeral = await generateX25519();
-          const shared = await ecdhX25519(ephemeral.privateKey, mcpPub);
+          const shared = await ecdhX25519(ephemeral.privateKey, mcpSessionPub);
           const sessionKey = await hkdfSha256(
             shared,
-            mcpNonce,
+            await transcriptHash(mcpNonce, extSessionNonce, mcpSessionPub, ephemeral.publicKey),
             enc.encode(HKDF_SESSION_INFO),
             32,
           );
@@ -394,12 +434,13 @@ async function connectMockExtensionMulti(
           sessions.set(frame.mcpId, { sessionKey, outboundSeq: 0 });
           const sig = await ed25519Sign(
             extIdEd.privateKey,
-            readySignaturePayload(mcpNonce, extSessionNonce, ephemeral.publicKey),
+            readySignaturePayload(mcpNonce, extSessionNonce, ephemeral.publicKey, mcpSessionPub),
           );
           const readyFrame: ReadyFrame = {
             type: 'ready',
             mcpId: frame.mcpId,
             extensionSessionPub: Buffer.from(ephemeral.publicKey).toString('base64'),
+            mcpSessionPub: frame.sessionPub,
             sessionSig: Buffer.from(sig).toString('base64'),
           };
           ws.send(JSON.stringify(readyFrame));
@@ -413,7 +454,7 @@ async function connectMockExtensionMulti(
 
   const extHello: HelloFrameFromExtension = {
     type: 'hello',
-    protocolVersion: 3,
+    protocolVersion: 4,
     role: 'extension',
     platform: 'chrome',
     extensionId: 'fetchproxy',
@@ -491,7 +532,7 @@ describe('extension reconnect (peer MCPs)', () => {
             if (frame.type !== 'frame') return;
             const sess = sessions.get(frame.mcpId);
             if (!sess) return;
-            const inner = await openEncryptedFrame(sess.sessionKey, frame);
+            const inner = await openEncryptedFrame(sess.sessionKey, frame, 's2e');
             if (inner.type !== 'request' || inner.op !== 'fetch') return;
             sess.outboundSeq += 1;
             const sealed = await sealInnerFrame(
@@ -507,9 +548,12 @@ describe('extension reconnect (peer MCPs)', () => {
                 url: inner.init.url,
                 body: `${sessionLabel}:${frame.mcpId}`,
               },
+              'e2s',
             );
             ws.send(JSON.stringify(sealed));
-          } catch { /* ignore */ }
+          } catch {
+            /* ignore */
+          }
         })();
       });
     }
@@ -538,6 +582,21 @@ describe('extension reconnect (peer MCPs)', () => {
     // ephemeral keys, fresh session keys on both ends of each pair.
     const ext2 = await connectMockExtensionMulti(port, 2, browser);
     wireResponder(ext2.ws, ext2.sessions, 'second');
+
+    // 3.0.0 (protocol 4): WAIT for the peer to be re-linked before fetching
+    // through it. Under v3 the host replayed the peer's cached hello the
+    // instant the extension connected, so the peer's new key had landed by
+    // the time the mock had two sessions. Under v4 there is no replay and the
+    // chain is one round trip longer — relayed extension hello, the peer
+    // mints and hellos again, the host forwards, the extension answers — so
+    // the mock can have sent the peer's `ready` before the peer has
+    // processed it. A fetch issued in that window is sealed under the OLD key
+    // and then correctly rejected by the renegotiation that arrives behind
+    // it ("extension disconnected"), which is the documented behaviour for an
+    // in-flight request rather than the bug this test is about.
+    await vi.waitFor(() =>
+      expect(peer!.bridgeHealth().session.state).toBe('linked'),
+    );
 
     // The host MCP's fetch should keep working (covered by the host-side
     // reconnect test above; included here as a regression guard against

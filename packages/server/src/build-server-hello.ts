@@ -1,7 +1,7 @@
 import {
   PROTOCOL_VERSION,
-  concatBytes,
   ed25519Sign,
+  helloSignaturePayload,
   toB64,
   type Capability,
   type CaptureHeaderDecl,
@@ -43,17 +43,44 @@ export interface BuildServerHelloOpts {
   graphqlOps?: GraphqlOpDeclaration[];
   /** 2.5.0: extra host→peer frame types this server accepts (peers only). */
   accepts?: string[];
+  /**
+   * 3.0.0+ (protocol 4): the PUBLIC half of the X25519 ephemeral this hello
+   * offers. Required, and deliberately not minted in here: the caller holds
+   * the private half, so the caller is the only thing that can mint it, hold
+   * it for exactly the extension session it was minted for, and zero it when
+   * that session ends (§1a).
+   */
+  sessionPub: Uint8Array;
+  /**
+   * 3.0.0+ (protocol 4): the `sessionNonce` of the EXTENSION hello this hello
+   * was minted against, or {@link ANSWERS_NO_EXT_SESSION} (32 zero bytes) for
+   * a hello that answers none — a peer's registration hello at dial.
+   *
+   * Always 32 bytes, never absent: the host's forwarding gate reads it as a
+   * fixed comparison against the live extension nonce, and it rides inside
+   * the signed payload so a relay cannot re-point a hello at whichever
+   * extension session it would like the frame delivered to.
+   */
+  answersExtNonce: Uint8Array;
 }
 
 /**
- * Build a `HelloFrameFromServer` frame, including a fresh 32-byte
- * session nonce and the Ed25519 signature over `mcpId || sessionNonce`.
+ * Build a `HelloFrameFromServer` frame, including a fresh 32-byte session
+ * nonce and the Ed25519 signature over
+ * `helloSignaturePayload(mcpId, sessionNonce, sessionPub, answersExtNonce)`.
  *
- * Both `startHost` (concentrator path) and `startPeer` (joiner path)
- * emit this frame on startup with identical structure; consolidating
- * the construction here keeps the nonce length, signing payload, and
- * field defaults in one place. Callers should NOT cache the result —
- * `sessionNonce` is fresh per call and must remain fresh per session.
+ * Both `startHost` (concentrator path) and `startPeer` (joiner path) emit
+ * this frame with identical structure; consolidating the construction here
+ * keeps the nonce length, signing payload, and field defaults in one place.
+ * Callers should NOT cache the result — `sessionNonce` is fresh per call and
+ * must remain fresh per session, and under v4 so must the `sessionPub` the
+ * caller hands in.
+ *
+ * 3.0.0+: the payload goes through {@link helloSignaturePayload} rather than
+ * being concatenated here. That is not tidiness — it is the only thing that
+ * makes the signature cover the ephemeral the session key is derived from,
+ * and the compiler applies no pressure to it: adding the two new fields to
+ * the object literal below compiles perfectly well beside a v3 signature.
  */
 export async function buildServerHello(
   opts: BuildServerHelloOpts,
@@ -62,7 +89,7 @@ export async function buildServerHello(
   (globalThis.crypto as Crypto).getRandomValues(sessionNonce);
   const sig = await ed25519Sign(
     opts.identity.ed25519Priv,
-    concatBytes(new TextEncoder().encode(opts.mcpId), sessionNonce),
+    helloSignaturePayload(opts.mcpId, sessionNonce, opts.sessionPub, opts.answersExtNonce),
   );
   const hello: HelloFrameFromServer = {
     type: 'hello',
@@ -76,6 +103,8 @@ export async function buildServerHello(
     identityX25519Pub: toB64(opts.identity.x25519Pub),
     identityEd25519Pub: toB64(opts.identity.ed25519Pub),
     sessionNonce: toB64(sessionNonce),
+    sessionPub: toB64(opts.sessionPub),
+    answersExtNonce: toB64(opts.answersExtNonce),
     sessionSig: toB64(sig),
   };
   // 2.5.0: a peer advertises the host→peer frames it can take. Emitted

@@ -9,6 +9,8 @@ import {
   generateEd25519,
   ed25519Sign,
   readySignaturePayload,
+  transcriptHash,
+  fromB64,
   ecdhX25519,
   hkdfSha256,
   sealInnerFrame,
@@ -58,7 +60,12 @@ describe('integration: 0.4.0 mutual auth + read_indexed_db', () => {
       domains: ['resy.com'],
       capabilities: ['fetch', 'read_indexed_db'],
       indexedDbScopes: [
-        { origin: 'https://resy.com', database: 'resy', store: 'auth', keys: ['userToken', 'userId'] },
+        {
+          origin: 'https://resy.com',
+          database: 'resy',
+          store: 'auth',
+          keys: ['userToken', 'userId'],
+        },
       ],
       identityDir: idDir,
       onPairCode: (code) => {
@@ -93,27 +100,44 @@ describe('integration: 0.4.0 mutual auth + read_indexed_db', () => {
 
           if (frame.type === 'hello' && frame.role === 'server') {
             helloFrame = frame;
-            mcpIdentityX25519Pub = new Uint8Array(
-              Buffer.from(frame.identityX25519Pub, 'base64'),
-            );
+            mcpIdentityX25519Pub = new Uint8Array(Buffer.from(frame.identityX25519Pub, 'base64'));
             const mcpSessionNonce = new Uint8Array(Buffer.from(frame.sessionNonce, 'base64'));
             const ephemeral = await generateX25519();
-            const shared = await ecdhX25519(ephemeral.privateKey, mcpIdentityX25519Pub);
+            // 3.0.0 (protocol 4): the ECDH is ephemeral x ephemeral — the MCP's
+            // half is `sessionPub` on the hello, not its long-term identity key —
+            // and the HKDF salt is the transcript over both nonces and both
+            // ephemerals. Neither change is a compile error, so this mock is
+            // what holds the server to them.
+            const mcpSessionPub = fromB64(frame.sessionPub);
+            const shared = await ecdhX25519(ephemeral.privateKey, mcpSessionPub);
             sessionKey = await hkdfSha256(
               shared,
-              mcpSessionNonce,
+              await transcriptHash(
+                mcpSessionNonce,
+                extSessionNonce,
+                mcpSessionPub,
+                ephemeral.publicKey,
+              ),
               new TextEncoder().encode(HKDF_SESSION_INFO),
               32,
             );
             mcpId = frame.mcpId;
             const sig = await ed25519Sign(
               extIdEd.privateKey,
-              readySignaturePayload(mcpSessionNonce, extSessionNonce, ephemeral.publicKey),
+              readySignaturePayload(
+                mcpSessionNonce,
+                extSessionNonce,
+                ephemeral.publicKey,
+                mcpSessionPub,
+              ),
             );
             const readyFrame: ReadyFrame = {
               type: 'ready',
               mcpId,
               extensionSessionPub: Buffer.from(ephemeral.publicKey).toString('base64'),
+              // 3.0.0: names the MCP ephemeral this ready answers, so a server
+              // can tell a stale one (discard) from a forged one (1008).
+              mcpSessionPub: frame.sessionPub,
               sessionSig: Buffer.from(sig).toString('base64'),
             };
             extWs!.send(JSON.stringify(readyFrame));
@@ -122,16 +146,22 @@ describe('integration: 0.4.0 mutual auth + read_indexed_db', () => {
           }
           if (frame.type === 'frame') {
             if (!sessionKey || !mcpId || frame.mcpId !== mcpId) return;
-            const inner = await openEncryptedFrame(sessionKey, frame);
+            const inner = await openEncryptedFrame(sessionKey, frame, 's2e');
             if (inner.type === 'request' && inner.op === 'read_indexed_db') {
               outboundSeq += 1;
-              const sealed = await sealInnerFrame(sessionKey, mcpId, outboundSeq, {
-                type: 'response',
-                id: inner.id,
-                ok: true,
-                op: 'read_indexed_db',
-                values: { userToken: 'ey...token', userId: 'u-7' },
-              });
+              const sealed = await sealInnerFrame(
+                sessionKey,
+                mcpId,
+                outboundSeq,
+                {
+                  type: 'response',
+                  id: inner.id,
+                  ok: true,
+                  op: 'read_indexed_db',
+                  values: { userToken: 'ey...token', userId: 'u-7' },
+                },
+                'e2s',
+              );
               extWs!.send(JSON.stringify(sealed));
             }
           }
@@ -143,7 +173,7 @@ describe('integration: 0.4.0 mutual auth + read_indexed_db', () => {
       // Extension hello with v2 identity claims + per-WS nonce.
       const extHello: HelloFrameFromExtension = {
         type: 'hello',
-        protocolVersion: 3,
+        protocolVersion: 4,
         role: 'extension',
         platform: 'chrome',
         extensionId: 'fetchproxy',
@@ -176,7 +206,12 @@ describe('integration: 0.4.0 mutual auth + read_indexed_db', () => {
     // Server-hello must have surfaced the IndexedDB scope declaration on the wire.
     expect(helloFrame).not.toBeNull();
     expect(helloFrame!.indexedDbScopes).toEqual([
-      { origin: 'https://resy.com', database: 'resy', store: 'auth', keys: ['userToken', 'userId'] },
+      {
+        origin: 'https://resy.com',
+        database: 'resy',
+        store: 'auth',
+        keys: ['userToken', 'userId'],
+      },
     ]);
   }, 30_000);
 
@@ -228,6 +263,12 @@ describe('integration: 0.4.0 mutual auth + read_indexed_db', () => {
             type: 'ready',
             mcpId: frame.mcpId,
             extensionSessionPub: Buffer.from(ephemeral.publicKey).toString('base64'),
+            // 3.0.0: it has to name the CURRENT MCP ephemeral, or §1a's Rule C
+            // discards it before any signature is checked — which is the right
+            // v4 behaviour for a stale ready and the wrong test for a forged
+            // one. The two outcomes are deliberately different, so this case
+            // has to reach the second.
+            mcpSessionPub: frame.sessionPub,
             sessionSig: Buffer.from(badSig).toString('base64'),
           };
           extWs!.send(JSON.stringify(readyFrame));
@@ -239,7 +280,7 @@ describe('integration: 0.4.0 mutual auth + read_indexed_db', () => {
 
     const extHello: HelloFrameFromExtension = {
       type: 'hello',
-      protocolVersion: 3,
+      protocolVersion: 4,
       role: 'extension',
       platform: 'chrome',
       extensionId: 'fetchproxy',

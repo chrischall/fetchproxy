@@ -9,6 +9,8 @@ import {
   generateEd25519,
   ed25519Sign,
   readySignaturePayload,
+  transcriptHash,
+  fromB64,
   ecdhX25519,
   hkdfSha256,
   sealInnerFrame,
@@ -52,9 +54,7 @@ describe('integration: graphql capability', () => {
       version: '1.0.0',
       domains: ['opentable.com'],
       capabilities: ['fetch', 'graphql'],
-      graphqlOps: [
-        { name: 'availability', operationName: 'RestaurantsAvailability' },
-      ],
+      graphqlOps: [{ name: 'availability', operationName: 'RestaurantsAvailability' }],
       identityDir: idDir,
     });
     await server.listen();
@@ -90,22 +90,41 @@ describe('integration: graphql capability', () => {
             );
             const mcpSessionNonce = new Uint8Array(Buffer.from(frame.sessionNonce, 'base64'));
             const ephemeral = await generateX25519();
-            const shared = await ecdhX25519(ephemeral.privateKey, identityX25519Pub);
+            // 3.0.0 (protocol 4): the ECDH is ephemeral x ephemeral — the MCP's
+            // half is `sessionPub` on the hello, not its long-term identity key —
+            // and the HKDF salt is the transcript over both nonces and both
+            // ephemerals. Neither change is a compile error, so this mock is
+            // what holds the server to them.
+            const mcpSessionPub = fromB64(frame.sessionPub);
+            const shared = await ecdhX25519(ephemeral.privateKey, mcpSessionPub);
             sessionKey = await hkdfSha256(
               shared,
-              mcpSessionNonce,
+              await transcriptHash(
+                mcpSessionNonce,
+                extSessionNonce,
+                mcpSessionPub,
+                ephemeral.publicKey,
+              ),
               new TextEncoder().encode(HKDF_SESSION_INFO),
               32,
             );
             mcpId = frame.mcpId;
             const sig = await ed25519Sign(
               extIdEd.privateKey,
-              readySignaturePayload(mcpSessionNonce, extSessionNonce, ephemeral.publicKey),
+              readySignaturePayload(
+                mcpSessionNonce,
+                extSessionNonce,
+                ephemeral.publicKey,
+                mcpSessionPub,
+              ),
             );
             const readyFrame: ReadyFrame = {
               type: 'ready',
               mcpId,
               extensionSessionPub: Buffer.from(ephemeral.publicKey).toString('base64'),
+              // 3.0.0: names the MCP ephemeral this ready answers, so a server
+              // can tell a stale one (discard) from a forged one (1008).
+              mcpSessionPub: frame.sessionPub,
               sessionSig: Buffer.from(sig).toString('base64'),
             };
             extWs!.send(JSON.stringify(readyFrame));
@@ -114,18 +133,24 @@ describe('integration: graphql capability', () => {
           }
           if (frame.type === 'frame') {
             if (!sessionKey || !mcpId || frame.mcpId !== mcpId) return;
-            const inner = await openEncryptedFrame(sessionKey, frame);
+            const inner = await openEncryptedFrame(sessionKey, frame, 's2e');
             if (inner.type !== 'request') return;
             outboundSeq += 1;
             if (inner.op === 'graphql_query') {
               capturedInit = inner.init;
-              const sealed = await sealInnerFrame(sessionKey, mcpId, outboundSeq, {
-                type: 'response',
-                id: inner.id,
-                ok: true,
-                op: 'graphql_query',
-                data: { availability: [{ time: '17:00', tableType: 'Standard' }] },
-              });
+              const sealed = await sealInnerFrame(
+                sessionKey,
+                mcpId,
+                outboundSeq,
+                {
+                  type: 'response',
+                  id: inner.id,
+                  ok: true,
+                  op: 'graphql_query',
+                  data: { availability: [{ time: '17:00', tableType: 'Standard' }] },
+                },
+                'e2s',
+              );
               extWs!.send(JSON.stringify(sealed));
             }
           }
@@ -136,7 +161,7 @@ describe('integration: graphql capability', () => {
 
       const extHello: HelloFrameFromExtension = {
         type: 'hello',
-        protocolVersion: 3,
+        protocolVersion: 4,
         role: 'extension',
         platform: 'chrome',
         extensionId: 'fetchproxy',
@@ -194,9 +219,7 @@ describe('integration: graphql capability', () => {
       version: '1.0.0',
       domains: ['opentable.com'],
       capabilities: ['fetch', 'graphql'],
-      graphqlOps: [
-        { name: 'availability', operationName: 'RestaurantsAvailability' },
-      ],
+      graphqlOps: [{ name: 'availability', operationName: 'RestaurantsAvailability' }],
       identityDir: idDir,
     });
     await server.listen();
@@ -229,22 +252,41 @@ describe('integration: graphql capability', () => {
             );
             const mcpSessionNonce = new Uint8Array(Buffer.from(frame.sessionNonce, 'base64'));
             const ephemeral = await generateX25519();
-            const shared = await ecdhX25519(ephemeral.privateKey, identityX25519Pub);
+            // 3.0.0 (protocol 4): the ECDH is ephemeral x ephemeral — the MCP's
+            // half is `sessionPub` on the hello, not its long-term identity key —
+            // and the HKDF salt is the transcript over both nonces and both
+            // ephemerals. Neither change is a compile error, so this mock is
+            // what holds the server to them.
+            const mcpSessionPub = fromB64(frame.sessionPub);
+            const shared = await ecdhX25519(ephemeral.privateKey, mcpSessionPub);
             sessionKey = await hkdfSha256(
               shared,
-              mcpSessionNonce,
+              await transcriptHash(
+                mcpSessionNonce,
+                extSessionNonce,
+                mcpSessionPub,
+                ephemeral.publicKey,
+              ),
               new TextEncoder().encode(HKDF_SESSION_INFO),
               32,
             );
             mcpId = frame.mcpId;
             const sig = await ed25519Sign(
               extIdEd.privateKey,
-              readySignaturePayload(mcpSessionNonce, extSessionNonce, ephemeral.publicKey),
+              readySignaturePayload(
+                mcpSessionNonce,
+                extSessionNonce,
+                ephemeral.publicKey,
+                mcpSessionPub,
+              ),
             );
             const readyFrame: ReadyFrame = {
               type: 'ready',
               mcpId,
               extensionSessionPub: Buffer.from(ephemeral.publicKey).toString('base64'),
+              // 3.0.0: names the MCP ephemeral this ready answers, so a server
+              // can tell a stale one (discard) from a forged one (1008).
+              mcpSessionPub: frame.sessionPub,
               sessionSig: Buffer.from(sig).toString('base64'),
             };
             extWs!.send(JSON.stringify(readyFrame));
@@ -253,20 +295,26 @@ describe('integration: graphql capability', () => {
           }
           if (frame.type === 'frame') {
             if (!sessionKey || !mcpId || frame.mcpId !== mcpId) return;
-            const inner = await openEncryptedFrame(sessionKey, frame);
+            const inner = await openEncryptedFrame(sessionKey, frame, 's2e');
             if (inner.type !== 'request') return;
             outboundSeq += 1;
             if (inner.op === 'graphql_query') {
               // The documented, expected-on-first-run failure — an
               // ok:false, op:'graphql_query' response.
-              const sealed = await sealInnerFrame(sessionKey, mcpId, outboundSeq, {
-                type: 'response',
-                id: inner.id,
-                ok: false,
-                op: 'graphql_query',
-                error:
-                  'operation RestaurantsAvailability not yet observed on this tab — open a page on the site that triggers this GraphQL operation, then retry',
-              });
+              const sealed = await sealInnerFrame(
+                sessionKey,
+                mcpId,
+                outboundSeq,
+                {
+                  type: 'response',
+                  id: inner.id,
+                  ok: false,
+                  op: 'graphql_query',
+                  error:
+                    'operation RestaurantsAvailability not yet observed on this tab — open a page on the site that triggers this GraphQL operation, then retry',
+                },
+                'e2s',
+              );
               extWs!.send(JSON.stringify(sealed));
             }
           }
@@ -277,7 +325,7 @@ describe('integration: graphql capability', () => {
 
       const extHello: HelloFrameFromExtension = {
         type: 'hello',
-        protocolVersion: 3,
+        protocolVersion: 4,
         role: 'extension',
         platform: 'chrome',
         extensionId: 'fetchproxy',
@@ -315,16 +363,22 @@ describe('integration: graphql capability', () => {
         const parsed = JSON.parse(data.toString());
         const frame = validateFrame(parsed);
         if (frame.type !== 'frame' || !sessionKey || !mcpId || frame.mcpId !== mcpId) return;
-        const inner = await openEncryptedFrame(sessionKey, frame);
+        const inner = await openEncryptedFrame(sessionKey, frame, 's2e');
         if (inner.type !== 'request' || inner.op !== 'graphql_query') return;
         outboundSeq += 1;
-        const sealed = await sealInnerFrame(sessionKey, mcpId, outboundSeq, {
-          type: 'response',
-          id: inner.id,
-          ok: true,
-          op: 'graphql_query',
-          data: { availability: [{ time: '17:00', tableType: 'Standard' }] },
-        });
+        const sealed = await sealInnerFrame(
+          sessionKey,
+          mcpId,
+          outboundSeq,
+          {
+            type: 'response',
+            id: inner.id,
+            ok: true,
+            op: 'graphql_query',
+            data: { availability: [{ time: '17:00', tableType: 'Standard' }] },
+          },
+          'e2s',
+        );
         extWs!.send(JSON.stringify(sealed));
       } catch (e) {
         console.error('mock extension error (second call):', e);

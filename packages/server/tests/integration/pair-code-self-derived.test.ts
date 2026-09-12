@@ -8,6 +8,7 @@ import {
   generateX25519,
   generateEd25519,
   derivePairCodeFromIds,
+  answersNoExtSession,
   type HelloFrameFromExtension,
   type HelloFrameFromServer,
 } from '@fetchproxy/protocol';
@@ -71,7 +72,7 @@ async function connectMockExtension(
 
   const extHello: HelloFrameFromExtension = {
     type: 'hello',
-    protocolVersion: 3,
+    protocolVersion: 4,
     role: 'extension',
     platform: 'chrome',
     extensionId: 'fetchproxy',
@@ -144,7 +145,9 @@ describe('the MCP surfaces only the pair code it derived itself (M1)', () => {
     extWs = ext.ws;
     await ext.helloCountReached(1);
 
-    await vi.waitFor(() => expect(host!.bridgeHealth().session.pairCode).toBe(ext.sentFor('host-mcp')));
+    await vi.waitFor(() =>
+      expect(host!.bridgeHealth().session.pairCode).toBe(ext.sentFor('host-mcp')),
+    );
     expect(host!.bridgeHealth().session.pairCode).toMatch(/^\d{3}-\d{3}$/);
     expect(ext.closes).toHaveLength(0);
 
@@ -242,9 +245,7 @@ describe('the MCP surfaces only the pair code it derived itself (M1)', () => {
     const second = await connectMockExtension(port, (derived) => derived);
     extWs = second.ws;
     await second.helloCountReached(2);
-    await vi.waitFor(() =>
-      expect(peer!.bridgeHealth().session.extensionConnected).toBe(true),
-    );
+    await vi.waitFor(() => expect(peer!.bridgeHealth().session.extensionConnected).toBe(true));
   }, 15_000);
 
   it('peer: an agreeing pair code is accepted and surfaced', async () => {
@@ -265,7 +266,9 @@ describe('the MCP surfaces only the pair code it derived itself (M1)', () => {
     extWs = ext.ws;
     await ext.helloCountReached(2);
 
-    await vi.waitFor(() => expect(peer!.bridgeHealth().session.pairCode).toBe(ext.sentFor('peer-mcp')));
+    await vi.waitFor(() =>
+      expect(peer!.bridgeHealth().session.pairCode).toBe(ext.sentFor('peer-mcp')),
+    );
     expect(peer!.bridgeHealth().session.pairCode).toMatch(/^\d{3}-\d{3}$/);
     // Each MCP's code commits to its OWN identity, so the two differ.
     expect(peer!.bridgeHealth().session.pairCode).not.toBe(ext.sentFor('host-mcp'));
@@ -369,10 +372,17 @@ async function startFakeConcentrator(opts: {
           mcpId: frame.mcpId,
           pairCode: sent,
         });
-        if (opts.relayExtensionHello) {
+        // 3.0.0 (protocol 4): relay the extension hello only in answer to a
+        // hello that answers NO extension session — §1a's Rule B mirrored, as
+        // the real host does it. Un-gated, a v4 peer answers every relayed
+        // extension hello with a fresh one of its own and this stand-in
+        // relays another: re-hello → relay → mint → re-hello, unbounded. That
+        // livelock is what the gate exists for, and a stand-in without it
+        // models a host nobody ships.
+        if (opts.relayExtensionHello && answersNoExtSession(frame.answersExtNonce)) {
           const extHello: HelloFrameFromExtension = {
             type: 'hello',
-            protocolVersion: 3,
+            protocolVersion: 4,
             role: 'extension',
             platform: 'chrome',
             extensionId: 'fetchproxy',
@@ -471,9 +481,7 @@ describe('a peer judging a pair code it did not receive from our own host (M1)',
     const codeOfTheBrowserThatLeft = fake.sentCode()!;
 
     fake.sendToPeer({ type: 'extension-disconnected' });
-    await vi.waitFor(() =>
-      expect(peer!.bridgeHealth().session.extensionConnected).toBe(false),
-    );
+    await vi.waitFor(() => expect(peer!.bridgeHealth().session.extensionConnected).toBe(false));
 
     fake.sendToPeer({
       type: 'pair-pending',

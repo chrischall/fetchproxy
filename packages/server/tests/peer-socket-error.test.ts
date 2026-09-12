@@ -1,19 +1,10 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
-import { WebSocketServer, WebSocket } from 'ws';
-import {
-  ecdhX25519,
-  generateX25519,
-  hkdfSha256,
-  validateFrame,
-  HKDF_SESSION_INFO,
-  type ReadyFrame,
-} from '@fetchproxy/protocol';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { startPeer, type InternalPeerHandle } from '../src/peer.js';
 import { loadOrCreateIdentity } from '../src/identity.js';
-import { listenEphemeral, loopbackWss } from './helpers/ephemeral-port.js';
+import { linkedPeer, type FakeConcentrator } from './helpers/concentrator.js';
 
 /**
  * A peer's socket keeps a PERSISTENT 'error' listener once the handshake is
@@ -35,15 +26,15 @@ import { listenEphemeral, loopbackWss } from './helpers/ephemeral-port.js';
 
 describe('a peer survives a socket error after the handshake', () => {
   let peer: InternalPeerHandle | null = null;
-  let wss: WebSocketServer | null = null;
+  let rig: FakeConcentrator | null = null;
 
   afterEach(async () => {
     vi.restoreAllMocks();
     if (peer) peer.close();
     peer = null;
-    if (wss) {
-      await new Promise<void>((r) => wss!.close(() => r()));
-      wss = null;
+    if (rig) {
+      await rig.close();
+      rig = null;
     }
   });
 
@@ -53,38 +44,15 @@ describe('a peer survives a socket error after the handshake', () => {
     const identity = await loadOrCreateIdentity('opentable-mcp', idDir);
     const mcpId = 'opentable-mcp:0.9.1:a3f7c91d2e8b4f56';
 
-    wss = loopbackWss();
-    const port = await listenEphemeral(wss);
-    const enc = new TextEncoder();
-
-    wss.on('connection', (ws: WebSocket) => {
-      ws.on('message', async (data) => {
-        const frame = validateFrame(JSON.parse(data.toString()));
-        if (frame.type !== 'hello' || frame.role !== 'server') return;
-        const identityX25519Pub = new Uint8Array(Buffer.from(frame.identityX25519Pub, 'base64'));
-        const peerNonce = new Uint8Array(Buffer.from(frame.sessionNonce, 'base64'));
-        const ephemeral = await generateX25519();
-        const shared = await ecdhX25519(ephemeral.privateKey, identityX25519Pub);
-        await hkdfSha256(shared, peerNonce, enc.encode(HKDF_SESSION_INFO), 32);
-        const ready: ReadyFrame = {
-          type: 'ready',
-          mcpId: frame.mcpId,
-          extensionSessionPub: Buffer.from(ephemeral.publicKey).toString('base64'),
-          sessionSig: Buffer.from('placeholder-sig').toString('base64'),
-        };
-        ws.send(JSON.stringify(ready));
-      });
-    });
-
-    peer = await startPeer({
-      host: '127.0.0.1',
-      port,
-      identity,
+    // 3.0.0: a real v4 handshake — the placeholder-signature shortcut this
+    // used to take cannot open a session any more.
+    const linked = await linkedPeer({
       mcpId,
-      serverName: 'opentable-mcp',
-      version: '0.9.1',
-      domains: ['opentable.com'],
+      identity,
+      startPeer: startPeer as unknown as Parameters<typeof linkedPeer>[0]['startPeer'],
     });
+    rig = linked.rig;
+    peer = linked.peer as unknown as InternalPeerHandle;
     await peer.session;
 
     const socketErrors = (): string[] =>
