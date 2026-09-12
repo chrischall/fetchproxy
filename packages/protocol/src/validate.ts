@@ -425,9 +425,17 @@ function assertIndexedDbScopesArray(value: unknown, label: string): void {
  * selector syntax (brackets, quotes, `:`, `.`, `#`, spaces are all legal
  * CSS) but rejects control chars that have no place in a selector and
  * would only muddy the pair popup.
+ *
+ * Written with \x ESCAPES rather than the raw bytes this line used to
+ * carry. With a literal NUL in it the whole file was `data` to `file(1)`,
+ * so `grep` treated it as binary and printed NOTHING for any pattern --
+ * no match, and not even a "binary file matches" notice. This is the file
+ * every new protocol field is validated in, so a grep-driven review of one
+ * silently concluded the validation was absent. Byte-different, identical
+ * to the regex engine.
  */
 // eslint-disable-next-line no-control-regex
-const DOM_SELECTOR_RE = /^[^ -]{1,512}$/;
+const DOM_SELECTOR_RE = /^[^\x00-\x1f\x7f]{1,512}$/;
 /** Attribute name for a `domSelectors` entry. Same shape as an HTML attr. */
 const DOM_ATTRIBUTE_RE = /^[A-Za-z_:][A-Za-z0-9_:.\-]{0,127}$/;
 /**

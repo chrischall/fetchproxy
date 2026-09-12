@@ -734,6 +734,24 @@ export async function startHost(opts: HostOpts): Promise<HostHandle> {
           // inside that window, so a mark says which extension is attached NOW
           // rather than which one this frame was minted for. A registration
           // hello answers 32 zero bytes and so never matches a CSPRNG nonce.
+          //
+          // On the SPELLING rather than the bytes, and deliberately, because
+          // the sibling predicate read one gate up decodes and says in its own
+          // doc why ("base64 of 32 bytes leaves slack bits in its final
+          // character"). What differs is what each compares against:
+          // `answersNoExtSession` judges a value against a CONSTANT, whose
+          // canonical spelling is not the writer's to choose, while this gate
+          // judges two values that both came out of `toB64` — the one base64
+          // encoder in this cohort, exported from `@fetchproxy/protocol` and
+          // used by every producer of both fields — so here they round-trip
+          // canonically. The residual is interop, not security: the echo is
+          // inside the signed hello payload, so nothing in the path can
+          // re-point it, and a divergent encoder makes this gate WITHHOLD (a
+          // hang, never a stale ephemeral forwarded). If a second
+          // implementation with its own encoder ever appears, the repair is to
+          // compare `fromB64(...)` bytes at BOTH readers of this field — here
+          // and `extension-core/src/background/server-hello.ts`'s Rule C
+          // refusal — which is why they are named together.
           if (
             extensionWs &&
             extensionHello &&

@@ -597,6 +597,15 @@ describe('host (concentrator)', () => {
     // that forwards nothing at all, and the extension would then never hear
     // about the peer; a test that only asserted the forwarding would pass
     // against the un-gated v3 code.
+    //
+    // Both hellos leave on ONE socket, which is also what pins the overwrite
+    // the dial path now rests on: a same-socket, same-identity re-hello must
+    // REPLACE the slot rather than be refused as a squatter, because it is
+    // the only route a peer's session hello takes to the extension. So the
+    // forwarding assertion is on the re-hello's OWN ephemeral rather than on
+    // its mcpId — a host that answered by re-sending the slot's cached
+    // registration frame would satisfy an mcpId-only check while handing the
+    // extension the bootstrap pub again — and the socket is asserted open.
     const el = await electRole({ host: '127.0.0.1', port: 0 });
     if (el.role !== 'host') throw new Error('expected host');
     const port = (el.server.address() as AddressInfo).port;
@@ -631,11 +640,16 @@ describe('host (concentrator)', () => {
     ext.send(JSON.stringify(extHello));
 
     // Capture every server-hello the extension sees, so we can prove which
-    // of the peer's two hellos reached it.
+    // of the peer's two hellos reached it — the whole frame, because which
+    // ephemeral it names is the point.
+    const seenServerHellos: Record<string, unknown>[] = [];
     const seenHellos: string[] = [];
     ext.on('message', (data: Buffer) => {
       const parsed = JSON.parse(data.toString());
-      if (parsed.type === 'hello' && parsed.role === 'server') seenHellos.push(parsed.mcpId);
+      if (parsed.type === 'hello' && parsed.role === 'server') {
+        seenServerHellos.push(parsed as Record<string, unknown>);
+        seenHellos.push(parsed.mcpId);
+      }
     });
 
     // Wait briefly for extension's hello to be processed.
@@ -650,17 +664,18 @@ describe('host (concentrator)', () => {
     peer.on('message', (data: Buffer) => {
       relayedToPeer.push(JSON.parse(data.toString()));
     });
-    peer.send(
-      JSON.stringify(
-        await buildTestPeerHello({
-          identity: peerId,
-          mcpId: 'resy-mcp:0.0.1:abc1234567890de2',
-          serverName: 'resy-mcp',
-          version: '0.0.1',
-          domains: ['resy.com'],
-        }),
-      ),
-    );
+    let peerClosed = false;
+    peer.once('close', () => {
+      peerClosed = true;
+    });
+    const registration = await buildTestPeerHello({
+      identity: peerId,
+      mcpId: 'resy-mcp:0.0.1:abc1234567890de2',
+      serverName: 'resy-mcp',
+      version: '0.0.1',
+      domains: ['resy.com'],
+    });
+    peer.send(JSON.stringify(registration));
     await new Promise((r) => setTimeout(r, 60));
     // Direction 1: withheld from the extension, and the cached extension
     // hello came back — which is the peer's Rule A trigger and the reason
@@ -673,20 +688,25 @@ describe('host (concentrator)', () => {
     // Direction 2: the re-hello the peer now mints echoes the live extension
     // nonce, so it IS forwarded — and draws NOTHING back, which is what
     // stops the exchange from looping.
-    peer.send(
-      JSON.stringify(
-        await buildTestPeerHello({
-          identity: peerId,
-          mcpId: 'resy-mcp:0.0.1:abc1234567890de2',
-          serverName: 'resy-mcp',
-          version: '0.0.1',
-          domains: ['resy.com'],
-          answersExtNonce: extHello.sessionNonce,
-        }),
-      ),
-    );
+    const reHello = await buildTestPeerHello({
+      identity: peerId,
+      mcpId: 'resy-mcp:0.0.1:abc1234567890de2',
+      serverName: 'resy-mcp',
+      version: '0.0.1',
+      domains: ['resy.com'],
+      answersExtNonce: extHello.sessionNonce,
+    });
+    expect(reHello.sessionPub).not.toBe(registration.sessionPub);
+    peer.send(JSON.stringify(reHello));
     await new Promise((r) => setTimeout(r, 60));
-    expect(seenHellos).toContain('resy-mcp:0.0.1:abc1234567890de2');
+    const forwarded = seenServerHellos.filter(
+      (f) => f.mcpId === 'resy-mcp:0.0.1:abc1234567890de2',
+    );
+    expect(forwarded).toHaveLength(1);
+    // The slot was REPLACED, not refused: what the extension holds is the
+    // re-hello's session ephemeral, and the socket that sent it is still up.
+    expect(forwarded[0].sessionPub).toBe(reHello.sessionPub);
+    expect(peerClosed).toBe(false);
     expect(
       relayedToPeer.filter((f) => f.type === 'hello' && f.role === 'extension').length,
     ).toBe(1);

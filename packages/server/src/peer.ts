@@ -256,9 +256,15 @@ export async function startPeer(opts: PeerOpts): Promise<InternalPeerHandle> {
   // `session` is the LATEST session derived from a ready frame. Every ready
   // frame for our mcpId replaces it — the extension can renegotiate at any
   // time (most commonly after MV3 service-worker eviction reconnects the
-  // browser side and the host replays our hello). `sendInner` reads
-  // `session` at call time, not at handshake time, so sealing always uses
-  // the current key.
+  // browser side, which the host answers by relaying the NEW extension hello
+  // to us; we mint a fresh session ephemeral and hello again, and the ready
+  // for THAT hello is what lands here). 3.0.0 (protocol 4): this used to say
+  // "and the host replays our hello", and there is no such replay any more —
+  // under v4 a cached hello names an ephemeral whose private half has been
+  // zeroed, so the extension would derive against a key nobody holds. A
+  // comment naming a deleted path is how the next reader concludes it is
+  // still there. `sendInner` reads `session` at call time, not at handshake
+  // time, so sealing always uses the current key.
   let session: SessionState | null = null;
   /**
    * The SESSION ephemeral — minted when a relayed extension hello arrives
@@ -366,16 +372,39 @@ export async function startPeer(opts: PeerOpts): Promise<InternalPeerHandle> {
 
   /**
    * Decide whether the extension behind this host may open a session with us:
-   * its signature over `(ourHelloNonce || itsHelloNonce)` must verify, and its
-   * identity must be the one we pinned (or the first we have seen). Pins on
-   * success, since the signature is what makes committing meaningful.
+   * its signature must verify, and its identity must be the one we pinned (or
+   * the first we have seen). Pins on success, since the signature is what
+   * makes committing meaningful.
+   *
+   * 3.0.0 (protocol 4): the payload is `readySignaturePayload(ourHelloNonce,
+   * itsHelloNonce, itsSessionPub, ourSessionPub)` — this comment used to name
+   * `(ourHelloNonce || itsHelloNonce)` alone, which has not been the payload
+   * since 2.0.0 and is now two fields short. Both ephemerals are in it, which
+   * is what stops either half of the ECDH being substituted in the path.
+   *
+   * BOTH of the values this reads about the far end are PARAMETERS, captured
+   * by the caller at Rule C's synchronous point: `held` is the ephemeral, and
+   * `hello` is the relayed extension hello. Neither is re-read off the
+   * enclosing `let` here, because this function awaits — `ed25519Verify` and,
+   * once per peer, the pin read — and a relayed hello for a LATER extension
+   * session lands inside that window on the ordinary MV3 path (it is assigned
+   * synchronously, before its own mint's first await). Re-reading made the
+   * signature and the trust decision disagree about which browser connection
+   * this `ready` belongs to, and it is `extensionHello`'s mutability rather
+   * than any check that made that possible.
+   *
+   * It RETURNS the hello it authenticated rather than a boolean, so the
+   * caller's derivation cannot salt its transcript with a different one: the
+   * nonce in the HKDF salt is then the nonce in the verified payload by
+   * construction, which is exactly the property that was silently false.
    */
   const authenticateExtension = async (
     sessionSig: string,
     extensionSessionPub: string,
     held: { nonce: Uint8Array; pub: Uint8Array; priv: Uint8Array },
-  ): Promise<boolean> => {
-    if (!extensionHello) {
+    hello: HelloFrameFromExtension | null,
+  ): Promise<HelloFrameFromExtension | null> => {
+    if (!hello) {
       // 3.0.0 (protocol 4): a hard refusal, and not because the policy got
       // stricter — because the alternative became uncomputable. The HKDF salt
       // is a transcript over BOTH nonces, and the extension's arrives only on
@@ -388,19 +417,19 @@ export async function startPeer(opts: PeerOpts): Promise<InternalPeerHandle> {
           `there is nothing to derive a v4 session from — refusing. Upgrade the MCP holding the ` +
           `bridge port to 3.0.0 or later.`,
       );
-      return false;
+      return null;
     }
 
     const payload = readySignaturePayload(
       held.nonce,
-      fromB64(extensionHello.sessionNonce),
+      fromB64(hello.sessionNonce),
       fromB64(extensionSessionPub),
       held.pub,
     );
     let sigOk = false;
     try {
       sigOk = await ed25519Verify(
-        fromB64(extensionHello.identityEd25519Pub),
+        fromB64(hello.identityEd25519Pub),
         payload,
         fromB64(sessionSig),
       );
@@ -412,7 +441,7 @@ export async function startPeer(opts: PeerOpts): Promise<InternalPeerHandle> {
         `[fetchproxy] ${opts.serverName}: extension session signature invalid — refusing ` +
           `(the concentrator may be answering in the browser's place)`,
       );
-      return false;
+      return null;
     }
 
     // Read the pin ONCE per peer, not once per ready. The extension
@@ -427,27 +456,27 @@ export async function startPeer(opts: PeerOpts): Promise<InternalPeerHandle> {
         cachedPin = await opts.extensionTrust.read();
       } catch (e) {
         console.error(`[fetchproxy] ${String(e)}`);
-        return false;
+        return null;
       }
     }
     const pin = cachedPin;
     const outcome = decideExtensionTrust({
       pin,
-      hello: extensionHello,
+      hello,
       allowNew: opts.extensionTrust.allowNew,
       serverName: opts.serverName,
       location: opts.extensionTrust.location,
     });
     if (outcome.decision === 'refused') {
       console.warn(outcome.message);
-      return false;
+      return null;
     }
     if (outcome.decision === 'replace') console.warn(outcome.message);
     if (outcome.decision !== 'pinned') {
       try {
         const written = {
-          identityX25519Pub: extensionHello.identityX25519Pub,
-          identityEd25519Pub: extensionHello.identityEd25519Pub,
+          identityX25519Pub: hello.identityX25519Pub,
+          identityEd25519Pub: hello.identityEd25519Pub,
           pinnedAt: Date.now(),
         };
         await opts.extensionTrust.write(written);
@@ -456,7 +485,7 @@ export async function startPeer(opts: PeerOpts): Promise<InternalPeerHandle> {
         console.error(`[fetchproxy] could not persist the extension pin: ${String(e)}`);
       }
     }
-    return true;
+    return hello;
   };
 
   const onMessage = async (data: WebSocket.RawData): Promise<void> => {
@@ -548,6 +577,18 @@ export async function startPeer(opts: PeerOpts): Promise<InternalPeerHandle> {
         // The 1008 below stays for the case it was written for: a `ready`
         // naming the CURRENT ephemeral whose signature does not verify.
         const held = sessionEphemeral;
+        // Captured in the SAME synchronous breath as the ephemeral, and for
+        // the same reason: everything below awaits, and `extensionHello` is
+        // reassigned by the next relayed hello — synchronously, before that
+        // mint's own first await — so a hello for a LATER extension session
+        // lands inside this handler's window on the ordinary MV3 path. The
+        // two values are one fact ("the extension session this `ready`
+        // belongs to") and reading one of them later is how they came apart:
+        // the signature was verified against E1's nonce while the salt took
+        // E2's, which installs a key the browser does not hold and resolves
+        // the first-ready promise with it. `host.ts` captures the same value
+        // at the same point (`extNonce`, one line above its verify).
+        const heldExtHello = extensionHello;
         if (!held || frame.mcpSessionPub !== toB64(held.pub)) {
           console.warn(
             `[fetchproxy] ${opts.serverName}: discarding a ready for a session ephemeral this ` +
@@ -566,12 +607,16 @@ export async function startPeer(opts: PeerOpts): Promise<InternalPeerHandle> {
         // could not, and that was the whole of the remaining MITM. 3.0.0
         // extends it to OUR ephemeral, so neither half of the ECDH can be
         // substituted.
-        const authorised = await authenticateExtension(
+        // Both of the far end's values are handed over rather than read from
+        // in here, and the hello it authenticated comes back out — see its
+        // doc comment.
+        const authenticated = await authenticateExtension(
           frame.sessionSig,
           frame.extensionSessionPub,
           held,
+          heldExtHello,
         );
-        if (!authorised) {
+        if (!authenticated) {
           ws.close(1008, 'extension identity refused');
           rejectFirstReady(new Error('peer: extension identity refused'));
           return;
@@ -581,15 +626,17 @@ export async function startPeer(opts: PeerOpts): Promise<InternalPeerHandle> {
         // long-term identity key, which under v3 made the identity a standing
         // decryption capability for every session it ever opened.
         //
-        // The ephemeral is the one CAPTURED at Rule C, not re-read: a mint
-        // that commits while this derivation is in flight zeroes the private
-        // half we are holding, and re-reading would mean deriving against
-        // whichever value won a race.
+        // EVERY input is one captured at Rule C, not re-read: the ephemeral,
+        // because a mint that commits while this derivation is in flight
+        // zeroes the private half we are holding; and the extension nonce,
+        // because a relayed hello for a later session reassigns
+        // `extensionHello` in the same window — and the nonce in this salt
+        // has to be the one in the payload the signature was just verified
+        // over, or the two ends derive different keys and nothing says so.
+        // Taking it off `authenticated` rather than off the binding is what
+        // makes that structural instead of remembered.
         const extPub = fromB64(frame.extensionSessionPub);
-        // Non-null: `authenticateExtension` refuses when it is null, and
-        // `extension-disconnected` — the only thing that nulls it — also
-        // zeroes the ephemeral, which Rule C above compares against.
-        const extNonce = fromB64(extensionHello!.sessionNonce);
+        const extNonce = fromB64(authenticated.sessionNonce);
         const shared = await ecdhX25519(held.priv, extPub);
         const salt = await transcriptHash(held.nonce, extNonce, held.pub, extPub);
         const sessionKey = await hkdfSha256(
@@ -705,11 +752,11 @@ export async function startPeer(opts: PeerOpts): Promise<InternalPeerHandle> {
         let result;
         try {
           // 'e2s': a frame reaching this peer was sealed by the EXTENSION and
-        // relayed by the host, so one this peer sealed itself and had
-        // reflected back fails the tag rather than arriving well-formed. The
-        // direction names the two ends of the MCP-to-extension session, not
-        // the socket hop — a peer is a server exactly as the host is.
-        result = await openEncryptedFrameDetailed(inboundSession.sessionKey, frame, 'e2s');
+          // relayed by the host, so one this peer sealed itself and had
+          // reflected back fails the tag rather than arriving well-formed. The
+          // direction names the two ends of the MCP-to-extension session, not
+          // the socket hop — a peer is a server exactly as the host is.
+          result = await openEncryptedFrameDetailed(inboundSession.sessionKey, frame, 'e2s');
         } catch (e) {
           // `openEncryptedFrameDetailed` reports both failures in its result
           // rather than throwing, so this is the unexpected path — but the

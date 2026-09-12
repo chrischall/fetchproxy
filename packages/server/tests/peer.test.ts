@@ -498,6 +498,37 @@ describe('peer: a bootstrap keypair and a session ephemeral (v4)', () => {
     expect(minted[2]!.privateKey.every((b) => b === 0)).toBe(true);
   });
 
+  it('zeroes the bootstrap half at its own socket close when no session mint ever commits', async () => {
+    // The peer that dials, is never told an extension exists, and exits. §1a
+    // gives the bootstrap half two deaths — "at the first session mint that
+    // COMMITS, or at the peer socket's close if none ever does" — and the
+    // test above can only reach the first, because there the bootstrap has
+    // already died to the winning mint before the close arrives.
+    //
+    // No key is ever derived from this half by construction (the frame
+    // carrying it says it answers nothing, Rule B refuses to forward it, so
+    // no `ready` can name it), so what is at stake is the teardown
+    // obligation rather than a decryptable session — which is exactly why
+    // nothing else would ever report its absence.
+    const minted: { publicKey: Uint8Array; privateKey: Uint8Array }[] = [];
+    const { rig } = await startTestPeer({
+      generateSessionKeypair: async () => {
+        const kp = await generateX25519();
+        minted.push(kp);
+        return kp;
+      },
+    });
+    await rig.waitForHello();
+    // One mint, and it is the bootstrap: no extension hello is ever relayed.
+    expect(minted.length).toBe(1);
+    expect(minted[0]!.privateKey.some((b) => b !== 0)).toBe(true);
+
+    peerHandle!.close();
+    await new Promise((r) => setTimeout(r, 80));
+    expect(minted.length).toBe(1);
+    expect(minted[0]!.privateKey.every((b) => b === 0)).toBe(true);
+  });
+
   it('never warns-and-proceeds when no extension hello has been relayed', async () => {
     // The `warnedUnverifiable` branch cannot survive v4: the transcript salt
     // contains the EXTENSION's nonce, and that arrives only on the relayed
@@ -627,6 +658,142 @@ describe('peer: a bootstrap keypair and a session ephemeral (v4)', () => {
     // E2's ready opens the session, and the key it opens is the live one.
     const key = await rig.answerReady(ext2, second);
     await p.sendInner({ type: 'ping' });
+    const sealed = await rig.waitForFrames(1);
+    expect(
+      (await openEncryptedFrame(key, sealed[0] as unknown as EncryptedFrame, 's2e')).type,
+    ).toBe('ping');
+  });
+
+  it('derives against the extension hello the ready ANSWERS, not one that landed mid-derivation', async () => {
+    // The test above drives the window in which E2's mint has COMMITTED, so
+    // the `sessionEphemeral !== held` guard catches it. This one drives the
+    // window one step earlier, which that guard cannot see: E2's relayed
+    // hello has LANDED — `extensionHello` is reassigned synchronously, before
+    // the mint's first await — while its mint is still inside
+    // `generateSessionKeypair`, so `sessionEphemeral` is still E1's and the
+    // guard passes.
+    //
+    // Every value the ready branch reads must therefore be the one captured
+    // at Rule C rather than re-read off the mutable binding afterwards. The
+    // ready's signature is verified against E1's nonce (the payload is built
+    // synchronously on entry), so a salt carrying E2's nonce derives a key
+    // the browser does not hold — and does it SILENTLY: the session installs
+    // and the first-ready promise resolves. Hence a POSITIVE assertion — the
+    // frame the peer seals must open under the key E1's extension derived —
+    // rather than "nothing bad was sent".
+    let releaseRead: (() => void) | null = null;
+    const readHeld = new Promise<void>((resolve) => {
+      releaseRead = resolve;
+    });
+    let reads = 0;
+    let releaseMint: (() => void) | null = null;
+    const mintHeld = new Promise<void>((resolve) => {
+      releaseMint = resolve;
+    });
+    let mints = 0;
+    const { rig, peer: p } = await startTestPeer({
+      generateSessionKeypair: async () => {
+        // 1 = the bootstrap, 2 = E1's mint, 3 = E2's — held, so E2's hello
+        // is in hand while its ephemeral is not.
+        if (++mints === 3) await mintHeld;
+        return generateX25519();
+      },
+      extensionTrust: {
+        allowNew: false,
+        read: async () => {
+          if (++reads === 1) await readHeld;
+          return null;
+        },
+        write: async () => undefined,
+      },
+    });
+    await rig.waitForHello();
+
+    const ext1 = await newFakeExtension();
+    await rig.relayExtensionHello(ext1);
+    const first = await rig.waitForHello(1);
+    // Genuine, for the ephemeral the peer holds: Rule C passes and the
+    // handler suspends inside the held pin read.
+    const key1 = await rig.answerReady(ext1, first);
+    await vi.waitFor(() => expect(reads).toBe(1));
+
+    const ext2 = await newFakeExtension(ext1);
+    await rig.relayExtensionHello(ext2);
+    await new Promise((r) => setTimeout(r, 50));
+    // Two hellos, not three: E2's mint is held, so nothing has committed and
+    // the peer still holds E1's ephemeral. That is the window.
+    expect(rig.hellos().length).toBe(2);
+
+    releaseRead!();
+    await vi.waitFor(() => expect(p.sessionLinked()).toBe(true));
+    await p.sendInner({ type: 'ping' });
+    const sealed = await rig.waitForFrames(1);
+    expect(
+      (await openEncryptedFrame(key1, sealed[0] as unknown as EncryptedFrame, 's2e')).type,
+    ).toBe('ping');
+    releaseMint!();
+  });
+
+  it('drops the session cleanly when the extension leaves mid-derivation, rather than faulting on it', async () => {
+    // The other shape of the same read-after-await, and the one TypeScript
+    // actively hides: `extensionHello` is narrowed non-null by a check at the
+    // top of `authenticateExtension` and the narrowing is NOT reset across
+    // the awaits below it, so a read after the pin fetch compiles as
+    // non-nullable and is `null` at runtime the moment an
+    // `extension-disconnected` lands in that window. Reading it inside
+    // `decideExtensionTrust` then faulted the handler, and `onMessage`'s
+    // catch turns any throw into `rejectFirstReady` — so an ordinary browser
+    // disconnect failed the caller's pending call with a TypeError instead of
+    // being the supersession drop it is.
+    let releaseRead: (() => void) | null = null;
+    const readHeld = new Promise<void>((resolve) => {
+      releaseRead = resolve;
+    });
+    let reads = 0;
+    const ext1 = await newFakeExtension();
+    const { rig, peer: p } = await startTestPeer({
+      // A PIN, deliberately: with none, `decideExtensionTrust` answers
+      // `first-use` before it looks at the hello at all, and the fault this
+      // pins needs the comparison to be reached.
+      extensionTrust: {
+        allowNew: false,
+        read: async () => {
+          if (++reads === 1) await readHeld;
+          return ext1.pin();
+        },
+        write: async () => undefined,
+      },
+    });
+    await rig.waitForHello();
+    await rig.relayExtensionHello(ext1);
+    const first = await rig.waitForHello(1);
+
+    const sending = p.sendInner({ type: 'ping' });
+    await rig.answerReady(ext1, first);
+    await vi.waitFor(() => expect(reads).toBe(1));
+    await rig.relayExtensionDisconnected();
+    // Wait for the peer to have PROCESSED it before releasing the read:
+    // `extensionConnected()` is exactly `extensionHello !== null`, so this is
+    // the window the fault lives in. Releasing without it lands the notice
+    // during the ECDH instead, where the trust decision has already been
+    // taken and the read-after-await is invisible.
+    await vi.waitFor(() => expect(p.extensionConnected()).toBe(false));
+    releaseRead!();
+    await new Promise((r) => setTimeout(r, 60));
+
+    // No session, no fault: the caller's call is still waiting for one rather
+    // than having been failed with whatever the handler threw.
+    expect(p.sessionLinked()).toBe(false);
+    expect(await stillPending(sending)).toBe(true);
+    expect((await rig.socket()).readyState).toBe(WebSocket.OPEN);
+
+    // And the next extension session opens normally, which is what makes
+    // "dropped" different from "wedged".
+    const ext2 = await newFakeExtension(ext1);
+    await rig.relayExtensionHello(ext2);
+    const second = await rig.waitForHello(2);
+    const key = await rig.answerReady(ext2, second);
+    await sending;
     const sealed = await rig.waitForFrames(1);
     expect(
       (await openEncryptedFrame(key, sealed[0] as unknown as EncryptedFrame, 's2e')).type,
