@@ -93,6 +93,14 @@ export interface PendingPairRecord extends PendingRecordBase {
     localStoragePointers: StoragePointerDecl[];
     sessionStoragePointers: StoragePointerDecl[];
   };
+  /**
+   * The code the user compares against the MCP's own.
+   *
+   * 3.0.0 (protocol 4): per HELLO, not per identity — it commits to both hello
+   * nonces and the MCP's session ephemeral ({@link pairTranscript}) — so it is
+   * refreshed on every collapse, and a record covering several mcpIds holds
+   * the most recent hello's number rather than one they all share.
+   */
   pairCode: string;
 }
 
@@ -170,6 +178,18 @@ export function applyNeedsPairRecord(
     if (sessionPub !== undefined) {
       currentEntry.sessionPubs = { ...(currentEntry.sessionPubs ?? {}), [mcpId]: sessionPub };
     }
+    // 3.0.0 (protocol 4): so does the pair code. It commits to the two hello
+    // nonces and the MCP's ephemeral, so it CHANGES on every re-hello where
+    // v3's — over two long-term identity pubs — changed never, and the frame
+    // this collapse answers carries the FRESH number to the MCP. A record
+    // keeping the first hello's code would put a stale number on the screen
+    // the user is asked to compare against the MCP's, and the one thing a SAS
+    // must never manufacture is a false mismatch. This is scalar where the
+    // two above are keyed by mcpId, so what it holds is the most recent
+    // hello's code: several PROCESSES sharing one identity and scope collapse
+    // into this one record and no longer share one number, which is inherent
+    // to a per-session code and is why the popup shows the latest.
+    currentEntry.pairCode = newRecord.pairCode;
   } else if (!currentEntry) {
     // Case 2: New entry.
     existing[pendingKey] = newRecord;

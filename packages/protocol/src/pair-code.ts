@@ -1,47 +1,92 @@
 import { sha256 } from './crypto.js';
-import { concatBytes } from './encoding.js';
+
+const enc = new TextEncoder();
 
 /**
- * Derive a human-verifiable 6-digit pair code from a public key.
- * SAS (Short Authentication String) pattern: code commits to the key,
- * so verifying code matches MCP's terminal output authenticates the key.
- *
- * code = first 4 bytes of SHA256(pub) → uint32 → mod 1_000_000 → "XXX-XXX"
- *
- * 0.4.0+: prefer `derivePairCodeFromIds(mcpPub, extPub)` for new
- * code — that variant commits to BOTH endpoints' identities and
- * defeats a MITM-as-extension relay attempt. This single-arg variant
- * is retained as the SHA-256-then-digits primitive for both code
- * paths.
+ * Domain label, so a pair transcript can never be mistaken for any other
+ * hashed or signed string in this protocol. Same convention as `frameAad`.
  */
-export async function derivePairCode(pub: Uint8Array): Promise<string> {
-  const h = await sha256(pub);
-  // Read first 4 bytes as big-endian uint32, then mod 1_000_000 for 6 digits.
-  // sha256 returns 32 bytes, so h[0..3] are guaranteed present.
-  const b0 = h[0] ?? 0;
-  const b1 = h[1] ?? 0;
-  const b2 = h[2] ?? 0;
-  const b3 = h[3] ?? 0;
-  const u32 = ((b0 << 24) | (b1 << 16) | (b2 << 8) | b3) >>> 0;
-  const n = u32 % 1_000_000;
-  const s = n.toString().padStart(6, '0');
-  return `${s.slice(0, 3)}-${s.slice(3)}`;
+const PAIR_LABEL = 'fetchproxy/4/pair';
+
+/**
+ * The human-verifiable pair code (SAS — Short Authentication String), in one
+ * place so the MCP that prints the number and the extension that shows it
+ * cannot drift apart.
+ *
+ * ```
+ * pairTranscript(mcpIdentityPub, extIdentityPub, mcpNonce, extNonce, mcpSessionPub)
+ *   = SHA256(utf8('fetchproxy/4/pair') || NUL || mcpIdentityPub
+ *            || extIdentityPub || mcpNonce || extNonce || mcpSessionPub)
+ * code = first 8 bytes, big-endian → BigInt → mod 100_000_000 → "XXXX-XXXX"
+ * ```
+ *
+ * **Why this is not {@link transcriptHash}.** The session transcript contains
+ * the EXTENSION's ephemeral, which arrives in the `ready`; the pair code has
+ * to be on screen at the pair PROMPT, before any `ready` exists. At that
+ * moment the extension has minted no ephemeral of its own and the MCP has no
+ * `ready` in hand either, so this is a second, separate transcript over the
+ * five values both ends do hold there: the two long-term identity pubs, the
+ * two hello nonces, and the MCP's session ephemeral.
+ *
+ * **What it buys, stated honestly.** It does NOT remove the grind. A MITM
+ * posing as the extension chooses its own identity, its own nonce and its own
+ * ephemeral, so it can always grind its own side against a code it wants to
+ * hit. What changes is:
+ *
+ * 1. the grind is ONLINE and PER-PAIRING. The v3 derivation was
+ *    `SHA256(mcpPub || extPub)` over two public, LONG-TERM values, so one
+ *    OFFLINE grind against a given MCP identity produced a code that stayed
+ *    usable against that MCP forever. A transcript carrying both fresh nonces
+ *    and the MCP's per-session ephemeral makes every pairing attempt its own
+ *    puzzle, inside the pairing window; and
+ * 2. the cost of that online grind rises from ~10⁶ to ~10⁸ hashes (6 digits
+ *    to 8).
+ *
+ * Eight bytes read as a BigInt rather than v3's `h[0..3]` uint32: `2**32 %
+ * 10**8` leaves a 2.4% skew across the digit space, which is sloppy in a SAS
+ * and free to avoid. From 64 bits the bias is ~5e-12.
+ *
+ * Both orders are fixed — the MCP's identity before the extension's, the
+ * MCP's nonce before the extension's — and both ends must agree on them or
+ * the codes diverge. Only the label is variable-length, and a single NUL ends
+ * it; every field after it is 32 octets, so the encoding is unambiguous with
+ * no separators between them.
+ */
+export async function pairTranscript(
+  mcpIdentityPub: Uint8Array,
+  extIdentityPub: Uint8Array,
+  mcpNonce: Uint8Array,
+  extNonce: Uint8Array,
+  mcpSessionPub: Uint8Array,
+): Promise<string> {
+  const label = enc.encode(PAIR_LABEL);
+  const parts = [mcpIdentityPub, extIdentityPub, mcpNonce, extNonce, mcpSessionPub];
+  const out = new Uint8Array(label.length + 1 + parts.reduce((n, p) => n + p.length, 0));
+  out.set(label, 0);
+  // The NUL that ends the label. `out` is zero-filled, so this byte is
+  // already zero — written explicitly because the separator is part of the
+  // encoding rather than an accident of how the buffer was allocated.
+  out[label.length] = 0;
+  let at = label.length + 1;
+  for (const p of parts) {
+    out.set(p, at);
+    at += p.length;
+  }
+  return digits(await sha256(out));
 }
 
 /**
- * Derive a 6-digit pair code committed to BOTH endpoints' X25519
- * identity pubs (MCP || extension). Used by the 0.4.0 mutual-auth
- * design: a MITM-as-extension process X cannot produce the same code
- * as the real extension because its identity pub differs, so the
- * user sees a code mismatch when comparing the MCP terminal output
- * against the browser popup.
- *
- * Concatenation is fixed: `mcpPub || extPub` in that order. Both
- * sides must agree on the order or the codes diverge.
+ * The digit reduction. Module-private on purpose: a second exported entry
+ * point over the raw primitive is exactly how v3's derivation stayed
+ * reachable after the wrapper above it was deprecated, and there is only one
+ * number in this protocol a person reads off a screen.
  */
-export async function derivePairCodeFromIds(
-  mcpPub: Uint8Array,
-  extPub: Uint8Array,
-): Promise<string> {
-  return derivePairCode(concatBytes(mcpPub, extPub));
+function digits(hash: Uint8Array): string {
+  // sha256 returns 32 bytes, so hash[0..7] are guaranteed present. Read them
+  // big-endian into a BigInt: there is no 32-bit intermediate, so there is no
+  // signed/unsigned slip of the kind v3's `>>> 0` existed to prevent.
+  let n = 0n;
+  for (let i = 0; i < 8; i++) n = (n << 8n) | BigInt(hash[i] ?? 0);
+  const s = (n % 100_000_000n).toString().padStart(8, '0');
+  return `${s.slice(0, 4)}-${s.slice(4)}`;
 }

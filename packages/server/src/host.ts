@@ -14,7 +14,7 @@ import {
   openEncryptedFrame,
   sealInnerFrame,
   validateFrame,
-  derivePairCodeFromIds,
+  pairTranscript,
   HKDF_SESSION_INFO,
   MAX_FRAME_BYTES,
   type Capability,
@@ -431,9 +431,10 @@ export async function startHost(opts: HostOpts): Promise<HostHandle> {
   let extensionClaim: WebSocket | null = null;
 
   /**
-   * The joint pair code for an extension hello — `SHA256(ownPub || extPub)`,
-   * the order the popup derives it in. The only code this MCP ever shows a
-   * user, and the value every `pair-pending` frame is judged against.
+   * The joint pair code for an extension hello — `pairTranscript(ownPub,
+   * extPub, ourNonce, itsNonce, ourSessionPub)`, the five values in the order
+   * the popup derives them in. The only code this MCP ever shows a user, and
+   * the value every `pair-pending` frame is judged against.
    *
    * M1 (bridge review 2026-09-10): computed FROM THE LIVE HELLO on demand
    * rather than cached beside it, for the two reasons `peer.ts`'s twin gives —
@@ -443,14 +444,29 @@ export async function startHost(opts: HostOpts): Promise<HostHandle> {
    * clearing `extensionHello` when the browser goes is the whole of retiring
    * it. A stale code left behind here would be one identity's number
    * vouching for the next connection's.
+   *
+   * 3.0.0 (protocol 4): the transcript also commits to OUR side of this
+   * extension session — the hello nonce and the ephemeral we minted for it —
+   * so `mint` is a PARAMETER rather than a read of `ownEphemeral` inside an
+   * async function. At the hello the caller passes the locals it has just
+   * minted, because `ownEphemeral` can be replaced by a second extension
+   * hello inside this function's own await; everywhere else it passes
+   * `ownEphemeral`, which is by then the one the live extension holds. No
+   * mint, no code: the user has nothing to compare a number against, and
+   * every caller already fails closed on the null.
    */
   const pairCodeFor = async (
     hello: HelloFrameFromExtension,
+    mint: { nonce: Uint8Array; pub: Uint8Array } | null,
   ): Promise<string | null> => {
+    if (!mint) return null;
     try {
-      return await derivePairCodeFromIds(
+      return await pairTranscript(
         opts.ownIdentity.x25519Pub,
         fromB64(hello.identityX25519Pub),
+        mint.nonce,
+        fromB64(hello.sessionNonce),
+        mint.pub,
       );
     } catch (e) {
       // Nothing to compare against and nothing to show. Every caller fails
@@ -578,25 +594,6 @@ export async function startHost(opts: HostOpts): Promise<HostHandle> {
           identified = 'extension';
           extensionWs = ws;
           extensionHello = frame;
-          // 0.4.0: surface the joint pair code now that we know both
-          // identities. The popup is derived from the same inputs in
-          // the same order, so the two codes match iff there's no
-          // MITM between this MCP and the real extension.
-          //
-          // M1 (bridge review 2026-09-10): the hook is handed OUR derivation
-          // and never the wire's number — a code taken off a `pair-pending`
-          // is the relay's claim about itself, which is precisely what the
-          // SAS comparison is supposed to catch. What the hook is shown and
-          // what a frame is judged against are the same function of the same
-          // hello, so a deployment with no hook is judged identically.
-          const helloPairCode = await pairCodeFor(frame);
-          if (opts.onPairCode && helloPairCode !== null) {
-            try {
-              opts.onPairCode(helloPairCode);
-            } catch (e) {
-              console.error('[fetchproxy] onPairCode threw:', e);
-            }
-          }
           // 3.0.0 (protocol 4), §1a Rule A: mint a session ephemeral for THIS
           // extension session and build the hello from it. Placed after the
           // liveness re-check above and immediately before the send, so a
@@ -627,11 +624,11 @@ export async function startHost(opts: HostOpts): Promise<HostHandle> {
             mintedKeypair.privateKey.fill(0);
             return;
           }
-          installOwnEphemeral({
+          const mint = {
             nonce: fromB64(mintedHello.sessionNonce),
             pub: mintedKeypair.publicKey,
-            priv: mintedKeypair.privateKey,
-          });
+          };
+          installOwnEphemeral({ ...mint, priv: mintedKeypair.privateKey });
           // 1.12.0 (#208): relay this hello to every peer, so a peer can
           // authenticate the extension behind us instead of taking whatever
           // `ready` we hand it on trust. Peers before 1.12.0 ignore the frame.
@@ -646,6 +643,37 @@ export async function startHost(opts: HostOpts): Promise<HostHandle> {
           // extension would derive against a key nobody holds. The relay
           // above is what prompts each peer to hello afresh, and those are
           // forwarded as they arrive (§1a, Task 2.2).
+
+          // 0.4.0: surface the joint pair code now that we know both
+          // identities. The popup is derived from the same inputs in
+          // the same order, so the two codes match iff there's no
+          // MITM between this MCP and the real extension.
+          //
+          // M1 (bridge review 2026-09-10): the hook is handed OUR derivation
+          // and never the wire's number — a code taken off a `pair-pending`
+          // is the relay's claim about itself, which is precisely what the
+          // SAS comparison is supposed to catch. What the hook is shown and
+          // what a frame is judged against are the same function of the same
+          // hello, so a deployment with no hook is judged identically.
+          //
+          // 3.0.0 (protocol 4): derived from the MINT's locals, because the
+          // transcript commits to the nonce and the ephemeral of the hello
+          // just sent — under v3 it read two long-term identity pubs and so
+          // could be, and was, derived before that hello existed. It is also
+          // LAST rather than first: the derivation awaits a SHA-256, and an
+          // await placed before the send would let a second extension hello
+          // install its own mint and send its own hello inside the window,
+          // after which this one's arrives second and the extension derives
+          // against an ephemeral nobody holds. The code is for a human to
+          // read; the hello is what the session is made of.
+          const helloPairCode = await pairCodeFor(frame, mint);
+          if (opts.onPairCode && helloPairCode !== null) {
+            try {
+              opts.onPairCode(helloPairCode);
+            } catch (e) {
+              console.error('[fetchproxy] onPairCode threw:', e);
+            }
+          }
           return;
         }
         if (frame.type === 'hello' && frame.role === 'server') {
@@ -975,13 +1003,20 @@ export async function startHost(opts: HostOpts): Promise<HostHandle> {
             // this judgement never sees a code half-written by the hello
             // handler it interleaves with, nor one left over from a browser
             // that has gone (see `pairCodeFor`).
+            //
+            // 3.0.0 (protocol 4): the ephemeral is read the same way and at
+            // the same moment, off `ownEphemeral` — the mint the live hello
+            // named. Both halves are captured here, synchronously, so the
+            // transcript this frame is judged against is one pairing's worth
+            // of values rather than two.
             const hello = extensionHello;
-            const derived = hello === null ? null : await pairCodeFor(hello);
+            const mint = ownEphemeral;
+            const derived = hello === null ? null : await pairCodeFor(hello, mint);
             if (derived === null || frame.pairCode !== derived) {
               console.error(
                 `[fetchproxy] ${opts.ownServerName}: the extension's pair code ` +
-                  `(${frame.pairCode}) does not match the one derived from both ` +
-                  `identities` +
+                  `(${frame.pairCode}) does not match the one this MCP derived ` +
+                  `from the pair transcript` +
                   (derived === null
                     ? ' (none — this MCP could not derive its own)'
                     : ` (${derived})`) +

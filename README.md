@@ -41,7 +41,7 @@ So instead of a bot-evasion arms race, an MCP server can use fetchproxy to ask t
 
 Every MCP races `bind(127.0.0.1:37149)` on startup. The first one wins (`role: 'host'`); the rest dial in as peers (`role: 'peer'`). One extension, one port, N MCPs. Frames between each MCP and the extension are AES-256-GCM encrypted end-to-end using a per-session key derived via X25519+HKDF from a long-term Ed25519/X25519 identity that lives on disk in `~/.fetchproxy/identity/<server-name>.json`. The host routes; it cannot read or modify peer traffic.
 
-When the extension first sees a new identity it triggers a pair flow: the MCP prints a 6-digit SAS code to stderr and the extension popup shows the same code. The user clicks Approve. Subsequent connections from the same identity skip the prompt.
+When the extension first sees a new identity it triggers a pair flow: the MCP prints an 8-digit SAS code to stderr and the extension popup shows the same code. The user clicks Approve. Subsequent connections from the same identity skip the prompt. The code commits to that pairing attempt — both identities, both hello nonces and the MCP's session ephemeral — so it is a different number every time.
 
 Three pieces, one repo:
 

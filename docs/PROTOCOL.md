@@ -410,16 +410,31 @@ The extension does **not** persist a long-term identity in 0.2.x. It generates a
 
 ### Pair code (SAS)
 
-Derived deterministically from the MCP's X25519 public key:
+Derived deterministically from the PAIR TRANSCRIPT — both identities, both
+hello nonces and the MCP's session ephemeral (protocol 4; `pairTranscript` in
+`@fetchproxy/protocol`):
 
 ```
-pairCode = SHA256(identityX25519Pub)[0..3]
-           interpreted as big-endian uint32
-           mod 1_000_000
-           formatted "XXX-XXX"
+pairCode = SHA256(utf8("fetchproxy/4/pair") || NUL
+                  || mcpIdentityX25519Pub || extIdentityX25519Pub
+                  || mcpHelloNonce || extHelloNonce || mcpSessionPub)[0..7]
+           interpreted as a big-endian BigInt
+           mod 100_000_000
+           formatted "XXXX-XXXX"
 ```
 
-Same code every time for the same identity. The MCP prints it to stderr at startup. The extension shows the same code in the pair popup. The user compares the two and clicks Approve — that is the SAS verification.
+A DIFFERENT code on every pairing attempt. The MCP prints it to stderr when
+the extension's hello arrives. The extension shows the same code in the pair
+popup. The user compares the two and clicks Approve — that is the SAS
+verification.
+
+Protocol 3 and earlier derived six digits from the two long-term identity pubs
+alone (`SHA256(mcpPub || extPub)[0..3] mod 1_000_000`, `XXX-XXX`). Both inputs
+were public and never changed, so one OFFLINE grind produced a code usable
+against that MCP forever; committing to a transcript makes the grind online
+and per-pairing, and eight digits raise its cost from ~10⁶ to ~10⁸. It does not
+remove the grind: a party posing as the extension picks its own side of the
+inputs.
 
 ### Session key derivation
 

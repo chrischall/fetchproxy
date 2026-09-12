@@ -29,7 +29,7 @@ request leaves the machine from Chrome, with your session — not from Node.
    `127.0.0.1:37149`.
 
 2. **An MCP server connects.** On first contact, Transporter shows a pair prompt
-   in the extension popup displaying a 6-digit code (e.g. `482-931`). The same code
+   in the extension popup displaying an 8-digit code (e.g. `4829-3176`). The same code
    appears in the MCP server's logs.
 
 3. **You confirm the code.** Matching codes prove both sides are talking to each
@@ -65,8 +65,9 @@ visible diff so you can decide whether to approve the change.
 ### Security model
 
 - **Pair-before-trust.** A new MCP server can't do anything until you confirm the
-  6-digit pair code. The code is derived from a SHA-256 hash of both parties'
-  public keys, so it binds both identities.
+  8-digit pair code. The code is derived from a SHA-256 hash of both parties'
+  public keys together with fresh per-connection values from each side, so it
+  binds both identities AND that one pairing attempt.
 
 - **End-to-end encryption.** Every frame on the localhost WebSocket is encrypted
   with AES-256-GCM using a session key derived via X25519 ECDH + HKDF-SHA-256.

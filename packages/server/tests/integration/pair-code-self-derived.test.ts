@@ -7,7 +7,7 @@ import {
   validateFrame,
   generateX25519,
   generateEd25519,
-  derivePairCodeFromIds,
+  pairTranscript,
   answersNoExtSession,
   type HelloFrameFromExtension,
   type HelloFrameFromServer,
@@ -52,9 +52,16 @@ async function connectMockExtension(
       try {
         const frame = validateFrame(JSON.parse(data.toString()));
         if (frame.type !== 'hello' || frame.role !== 'server') return;
-        const derived = await derivePairCodeFromIds(
-          Buffer.from(frame.identityX25519Pub, 'base64'),
+        // 3.0.0 (protocol 4): the code commits to the whole pair transcript,
+        // so it is derived from THIS hello's nonce and ephemeral — one
+        // number per MCP per extension session, where v3 had one per pair of
+        // identities forever.
+        const derived = await pairTranscript(
+          new Uint8Array(Buffer.from(frame.identityX25519Pub, 'base64')),
           extIdX.publicKey,
+          new Uint8Array(Buffer.from(frame.sessionNonce, 'base64')),
+          extSessionNonce,
+          new Uint8Array(Buffer.from(frame.sessionPub, 'base64')),
         );
         const code = codeFor(derived, frame);
         sent.set(frame.serverName, code);
@@ -102,9 +109,9 @@ async function connectMockExtension(
   };
 }
 
-/** A valid-shaped six-digit code that is not `code`. */
+/** A valid-shaped eight-digit code that is not `code`. */
 function otherCode(code: string): string {
-  return code === '000-000' ? '999-999' : '000-000';
+  return code === '0000-0000' ? '9999-9999' : '0000-0000';
 }
 
 describe('the MCP surfaces only the pair code it derived itself (M1)', () => {
@@ -148,7 +155,7 @@ describe('the MCP surfaces only the pair code it derived itself (M1)', () => {
     await vi.waitFor(() =>
       expect(host!.bridgeHealth().session.pairCode).toBe(ext.sentFor('host-mcp')),
     );
-    expect(host!.bridgeHealth().session.pairCode).toMatch(/^\d{3}-\d{3}$/);
+    expect(host!.bridgeHealth().session.pairCode).toMatch(/^\d{4}-\d{4}$/);
     expect(ext.closes).toHaveLength(0);
 
     const result = await host!.fetch({
@@ -269,7 +276,7 @@ describe('the MCP surfaces only the pair code it derived itself (M1)', () => {
     await vi.waitFor(() =>
       expect(peer!.bridgeHealth().session.pairCode).toBe(ext.sentFor('peer-mcp')),
     );
-    expect(peer!.bridgeHealth().session.pairCode).toMatch(/^\d{3}-\d{3}$/);
+    expect(peer!.bridgeHealth().session.pairCode).toMatch(/^\d{4}-\d{4}$/);
     // Each MCP's code commits to its OWN identity, so the two differ.
     expect(peer!.bridgeHealth().session.pairCode).not.toBe(ext.sentFor('host-mcp'));
     expect(ext.closes).toHaveLength(0);
@@ -353,25 +360,6 @@ async function startFakeConcentrator(opts: {
         const frame = validateFrame(JSON.parse(data.toString()));
         if (frame.type !== 'hello' || frame.role !== 'server') return;
         peerMcpId = frame.mcpId;
-        // Derived BEFORE a byte goes out, so the relayed hello and the
-        // `pair-pending` behind it leave in ONE synchronous turn. That is the
-        // arrival order M1 has to hold against, and the hostile one: `ws` does
-        // not serialise an async message handler, so both frames reach the
-        // peer's handler before the first has finished with the identity it
-        // carries.
-        // Deriving BETWEEN the two sends raced the peer's own derivation
-        // instead of pinning anything, which is what made this file flaky
-        // (reviewer finding on F4.3).
-        const derived = await derivePairCodeFromIds(
-          Buffer.from(frame.identityX25519Pub, 'base64'),
-          extIdX.publicKey,
-        );
-        sent = opts.codeFor(derived);
-        const pairPending = JSON.stringify({
-          type: 'pair-pending',
-          mcpId: frame.mcpId,
-          pairCode: sent,
-        });
         // 3.0.0 (protocol 4): relay the extension hello only in answer to a
         // hello that answers NO extension session — §1a's Rule B mirrored, as
         // the real host does it. Un-gated, a v4 peer answers every relayed
@@ -391,8 +379,34 @@ async function startFakeConcentrator(opts: {
             identityEd25519Pub: Buffer.from(extIdEd.publicKey).toString('base64'),
             sessionNonce: Buffer.from(extSessionNonce).toString('base64'),
           };
+          // The registration hello names an ephemeral the peer supersedes the
+          // moment this relay lands, so there is no code to send for it: the
+          // pair-pending rides the SESSION hello the peer mints in answer,
+          // which is the one the real extension derives from too.
           ws.send(JSON.stringify(extHello));
+          return;
         }
+        // Derived BEFORE a byte goes out, so the code and the frame carrying
+        // it leave in ONE synchronous turn. That is the arrival order M1 has
+        // to hold against, and the hostile one: `ws` does not serialise an
+        // async message handler, so the peer's own hello handler may still be
+        // inside its awaits when this lands.
+        // Deriving BETWEEN the two sends raced the peer's own derivation
+        // instead of pinning anything, which is what made this file flaky
+        // (reviewer finding on F4.3).
+        const derived = await pairTranscript(
+          new Uint8Array(Buffer.from(frame.identityX25519Pub, 'base64')),
+          extIdX.publicKey,
+          new Uint8Array(Buffer.from(frame.sessionNonce, 'base64')),
+          extSessionNonce,
+          new Uint8Array(Buffer.from(frame.sessionPub, 'base64')),
+        );
+        sent = opts.codeFor(derived);
+        const pairPending = JSON.stringify({
+          type: 'pair-pending',
+          mcpId: frame.mcpId,
+          pairCode: sent,
+        });
         ws.send(pairPending);
         sends += 1;
         // A second, identical frame: the extension re-announces on every
@@ -460,7 +474,7 @@ describe('a peer judging a pair code it did not receive from our own host (M1)',
     await fake.sendsReached(2);
 
     await vi.waitFor(() => expect(peer!.bridgeHealth().session.pairCode).toBe(fake!.sentCode()));
-    expect(peer.bridgeHealth().session.pairCode).toMatch(/^\d{3}-\d{3}$/);
+    expect(peer.bridgeHealth().session.pairCode).toMatch(/^\d{4}-\d{4}$/);
     expect(fake.closes).toHaveLength(0);
   }, 15_000);
 

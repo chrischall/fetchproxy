@@ -15,7 +15,7 @@ import {
   hkdfSha256,
   sealInnerFrame,
   openEncryptedFrame,
-  derivePairCodeFromIds,
+  pairTranscript,
   HKDF_SESSION_INFO,
   type HelloFrameFromExtension,
   type HelloFrameFromServer,
@@ -187,11 +187,20 @@ describe('integration: 0.4.0 mutual auth + read_indexed_db', () => {
 
     await ready;
 
-    // The pair code MCP-side derived from (mcpPub || extPub) must
-    // match the joint derivation. This is the user-visible signal.
+    // The pair code the MCP derived must match the joint derivation, which
+    // since 3.0.0 (protocol 4) is the whole pair transcript: both identities,
+    // both hello nonces and the MCP's session ephemeral. This is the
+    // user-visible signal.
     expect(receivedPairCode).not.toBeNull();
     expect(mcpIdentityX25519Pub).not.toBeNull();
-    const expected = await derivePairCodeFromIds(mcpIdentityX25519Pub!, extIdX.publicKey);
+    expect(helloFrame).not.toBeNull();
+    const expected = await pairTranscript(
+      mcpIdentityX25519Pub!,
+      extIdX.publicKey,
+      new Uint8Array(Buffer.from(helloFrame!.sessionNonce, 'base64')),
+      extSessionNonce,
+      new Uint8Array(Buffer.from(helloFrame!.sessionPub, 'base64')),
+    );
     expect(receivedPairCode).toBe(expected);
 
     // Read_indexed_db round-trip — the gated server method against

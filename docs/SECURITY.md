@@ -75,12 +75,14 @@ If unknown, the extension does NOT respond with a `ready` frame. Instead it show
 > Server: `opentable-mcp v0.10.0`
 > Domains: `opentable.com`
 > Capabilities: HTTP fetches
-> Pair code: `123-456`
+> Pair code: `1234-5678`
 > [Approve] [Cancel]
 
-The 6-digit pair code (SAS — Short Authentication String) is `SHA256(identityX25519Pub)[0..3] mod 1_000_000` formatted as `XXX-XXX`. The MCP prints it to stderr; the extension shows the same value. The user compares them and clicks Approve. Same identity → same code, every time. Approving stores the identity-key hash plus the declared `domains` and `capabilities` set in `chrome.storage.local`; subsequent connections with the same hash skip the prompt.
+The 8-digit pair code (SAS — Short Authentication String) is the first 8 bytes of `SHA256('fetchproxy/4/pair' || NUL || mcpIdentityX25519Pub || extIdentityX25519Pub || mcpHelloNonce || extHelloNonce || mcpSessionPub)`, read big-endian and reduced `mod 100_000_000`, formatted as `XXXX-XXXX`. The MCP prints it to stderr; the extension shows the same value. The user compares them and clicks Approve. Approving stores the identity-key hash plus the declared `domains` and `capabilities` set in `chrome.storage.local`; subsequent connections with the same hash skip the prompt.
 
-A malicious process *can* connect, but it can't produce a valid signature without the legitimate MCP's private key, and it can't fake a pair code that matches a code the user is willing to approve.
+3.0.0 (protocol 4) changed both the inputs and the width, and the number is no longer stable: it commits to a TRANSCRIPT, so it differs on every pairing attempt where the v3 code — `SHA256(mcpPub || extPub)[0..3] mod 1_000_000`, formatted `XXX-XXX` — was the same six digits for the life of the two identities. Both v3 inputs were public and long-term, so ONE offline grind of ~10⁶ keygens produced a code that stayed usable against that MCP identity forever. What v4 buys, exactly: the grind becomes ONLINE and per-pairing (a fresh nonce from each side and the MCP's ephemeral are in the hash), and its cost rises to ~10⁸. It does NOT abolish the grind — a party posing as the extension chooses its own identity, nonce and ephemeral, and can always grind its own side inside the pairing window.
+
+A malicious process *can* connect, but it can't produce a valid signature without the legitimate MCP's private key, and it can't cheaply fake a pair code that matches the one the user is being shown (see the grind above for what "cheaply" is worth).
 
 **Residual risk:** A user who hits Approve without comparing the code is still vulnerable to social engineering. We can't fix that. The popup is intentionally interruptive and shows the domain in large type.
 

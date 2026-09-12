@@ -11,7 +11,7 @@ import {
   ed25519Verify,
   ecdhX25519,
   hkdfSha256,
-  derivePairCodeFromIds,
+  pairTranscript,
   helloSignaturePayload,
   transcriptHash,
   sha256,
@@ -38,9 +38,9 @@ import { enc } from '../lib/text.js';
 export interface HandleHelloDeps {
   trust: TrustStore;
   /**
-   * 0.4.0+: the extension's long-term X25519 identity pub. Used to
-   * derive the joint pair code (`SHA256(mcpPub || extPub)`) so the
-   * popup and the MCP terminal both compute the same code. Required.
+   * 0.4.0+: the extension's long-term X25519 identity pub. One of the five
+   * inputs to the joint pair code ({@link pairTranscript}), so the popup and
+   * the MCP terminal both compute the same code. Required.
    */
   extensionIdentityX25519Pub: Uint8Array;
   /**
@@ -443,9 +443,22 @@ export async function handleServerHello(
   }
 
   // 3. Need pairing.
-  const pairCode = await derivePairCodeFromIds(
+  //
+  // 3.0.0 (protocol 4): the code commits to the whole pair transcript — both
+  // identities, both hello nonces and the MCP's session ephemeral — and the
+  // MCP derives it from exactly the same five values, in the same order. Under
+  // v3 both inputs were long-term and public, so ONE offline grind produced a
+  // code that stayed usable against that MCP identity forever; a code that
+  // moves with every pairing attempt makes the grind online and per-pairing.
+  // It does not abolish it: a party posing as the extension picks its own
+  // identity, nonce and ephemeral, and can grind its own side. Eight digits
+  // raise that online cost from ~10^6 to ~10^8.
+  const pairCode = await pairTranscript(
     identityX25519Pub,
     deps.extensionIdentityX25519Pub,
+    sessionNonce,
+    deps.extensionSessionNonce,
+    mcpSessionPub,
   );
   return {
     kind: 'needs-pair',

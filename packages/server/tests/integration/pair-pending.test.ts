@@ -7,7 +7,7 @@ import {
   validateFrame,
   generateX25519,
   generateEd25519,
-  derivePairCodeFromIds,
+  pairTranscript,
   type HelloFrameFromExtension,
 } from '@fetchproxy/protocol';
 import { FetchproxyServer, FetchproxyProtocolError } from '../../src/index.js';
@@ -52,9 +52,14 @@ async function connectMockExtensionThatNeverApproves(port: number) {
         const frame = validateFrame(parsed);
         if (frame.type === 'hello' && frame.role === 'server') {
           // Pair-pending instead of ready — extension is waiting on user.
-          const code = await derivePairCodeFromIds(
-            Buffer.from(frame.identityX25519Pub, 'base64'),
+          // 3.0.0 (protocol 4): the whole pair transcript — both identities,
+          // both hello nonces and this hello's session ephemeral.
+          const code = await pairTranscript(
+            new Uint8Array(Buffer.from(frame.identityX25519Pub, 'base64')),
             extIdX.publicKey,
+            new Uint8Array(Buffer.from(frame.sessionNonce, 'base64')),
+            extSessionNonce,
+            new Uint8Array(Buffer.from(frame.sessionPub, 'base64')),
           );
           codes.set(frame.serverName, code);
           ws.send(JSON.stringify({ type: 'pair-pending', mcpId: frame.mcpId, pairCode: code }));

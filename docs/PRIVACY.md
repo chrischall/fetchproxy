@@ -60,7 +60,7 @@ Trust records are stored in `chrome.storage.local`. You can revoke any trust rec
 
 ### 3.3 Pending-Pair State
 
-While a pair confirmation is in progress (the 6-digit code dialog is showing), a transient pending-pair entry is held in `chrome.storage.local`. It is removed as soon as the pair is approved, rejected, or times out.
+While a pair confirmation is in progress (the 8-digit code dialog is showing), a transient pending-pair entry is held in `chrome.storage.local`. It is removed as soon as the pair is approved, rejected, or times out.
 
 ---
 

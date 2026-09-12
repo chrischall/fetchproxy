@@ -2,7 +2,7 @@ import { WebSocket } from 'ws';
 import {
   ecdhX25519,
   readySignaturePayload,
-  derivePairCodeFromIds,
+  pairTranscript,
   ed25519Verify,
   fromB64,
   toB64,
@@ -339,9 +339,10 @@ export async function startPeer(opts: PeerOpts): Promise<InternalPeerHandle> {
   let cachedPin: ExtensionPin | null | undefined = undefined;
 
   /**
-   * The joint pair code for a relayed extension hello — `SHA256(ourPub ||
-   * extPub)`, the order the popup uses. The only code this peer will ever
-   * show, and what every `pair-pending` frame is judged against.
+   * The joint pair code for a relayed extension hello —
+   * `pairTranscript(ourPub, extPub, ourNonce, itsNonce, ourSessionPub)`, the
+   * five values in the order the popup uses. The only code this peer will
+   * ever show, and what every `pair-pending` frame is judged against.
    *
    * M1 (bridge review 2026-09-10): computed FROM THE LIVE HELLO on demand
    * rather than cached beside it, which is what makes two properties
@@ -355,14 +356,26 @@ export async function startPeer(opts: PeerOpts): Promise<InternalPeerHandle> {
    * outlive the pair of identities it commits to, because there is no stored
    * code to forget to clear when that extension goes — clearing
    * `extensionHello` is the whole of it.
+   *
+   * 3.0.0 (protocol 4): the transcript also commits to OUR side of this
+   * extension session — the nonce and ephemeral of the hello we minted in
+   * answer to the relayed one — so `mint` is a PARAMETER rather than a read of
+   * `sessionEphemeral` inside an async function, for the reason (1) above: the
+   * caller captures both halves synchronously and this function cannot be
+   * handed one pairing's hello and another's ephemeral. No mint, no code.
    */
   const pairCodeFor = async (
     hello: HelloFrameFromExtension,
+    mint: { nonce: Uint8Array; pub: Uint8Array } | null,
   ): Promise<string | null> => {
+    if (!mint) return null;
     try {
-      return await derivePairCodeFromIds(
+      return await pairTranscript(
         opts.identity.x25519Pub,
         fromB64(hello.identityX25519Pub),
+        mint.nonce,
+        fromB64(hello.sessionNonce),
+        mint.pub,
       );
     } catch (e) {
       console.error('[fetchproxy] could not derive the pair code:', e);
@@ -703,21 +716,28 @@ export async function startPeer(opts: PeerOpts): Promise<InternalPeerHandle> {
         // handler runs interleaved with the hello's, so a code remembered by
         // that one is a code this one may find half-written (see
         // `pairCodeFor`).
+        //
+        // 3.0.0 (protocol 4): the ephemeral is captured in the same breath,
+        // so the transcript judged against is one pairing's worth of values.
         const hello = extensionHello;
-        const derived = hello === null ? null : await pairCodeFor(hello);
+        const mint = sessionEphemeral;
+        const derived = hello === null ? null : await pairCodeFor(hello, mint);
         if (derived === null) {
           // Nothing to judge against: no extension identity is on this handle
           // — a pre-1.12.0 host relays none at all, and a host that has told
-          // us the browser went has taken back the one it relayed. Refusing
-          // the socket would take down a working (if unverifiable) bridge for
-          // a hint; displaying the frame's number is the hole itself. So say
-          // so once and show nothing — the same trade `authenticateExtension`
-          // makes about such a host.
+          // us the browser went has taken back the one it relayed; 3.0.0 adds
+          // a third, the window before this peer has minted its answer to a
+          // relayed hello, since the transcript needs that ephemeral too.
+          // Refusing the socket would take down a working (if unverifiable)
+          // bridge for a hint; displaying the frame's number is the hole
+          // itself. So say so once and show nothing — the same trade
+          // `authenticateExtension` makes about such a host.
           if (!warnedUnverifiablePairCode) {
             warnedUnverifiablePairCode = true;
             console.warn(
               `[fetchproxy] ${opts.serverName}: a pair code arrived that this peer cannot ` +
-                `derive for itself (no extension identity has been relayed to it), so it is ` +
+                `derive for itself (no extension identity has been relayed to it, or no ` +
+                `session ephemeral has been minted in answer to one), so it is ` +
                 `not being shown. If the MCP holding the bridge port is older than 1.12.0, ` +
                 `upgrading it closes this.`,
             );
@@ -727,7 +747,8 @@ export async function startPeer(opts: PeerOpts): Promise<InternalPeerHandle> {
         if (frame.pairCode !== derived) {
           console.error(
             `[fetchproxy] ${opts.serverName}: the extension's pair code (${frame.pairCode}) ` +
-              `does not match the one derived from both identities (${derived}) — refusing ` +
+              `does not match the one this peer derived from the pair transcript ` +
+              `(${derived}) — refusing ` +
               `to pair (possible MITM between this MCP and the extension)`,
           );
           ws.close(1008, 'pair code mismatch');

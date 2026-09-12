@@ -83,6 +83,6 @@ upgrade.
 1. Install Transporter from the Chrome Web Store.
 2. Remove the sideloaded extension from `chrome://extensions`.
 3. Each MCP will trigger a fresh pair prompt on its next connection.
-   Verify the 6-digit code and click Approve.
+   Verify the 8-digit code and click Approve.
 
 No data is lost. The one-time re-pair takes a few seconds per MCP.

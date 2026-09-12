@@ -56,7 +56,7 @@ import {
   helloSignaturePayload,
   transcriptHash,
   sha256,
-  derivePairCodeFromIds,
+  pairTranscript,
   toB64,
   fromB64,
   HKDF_SESSION_INFO,
@@ -189,8 +189,16 @@ describe('handleServerHello', () => {
     expect(result.kind).toBe('needs-pair');
     if (result.kind === 'needs-pair') {
       const expectedPub = new Uint8Array(Buffer.from(hello.identityX25519Pub, 'base64'));
+      // 3.0.0 (protocol 4): the whole pair transcript — both identities, both
+      // hello nonces and the MCP's session ephemeral, in that order.
       expect(result.pairCode).toBe(
-        await derivePairCodeFromIds(expectedPub, FAKE_EXT_X25519_PUB),
+        await pairTranscript(
+          expectedPub,
+          FAKE_EXT_X25519_PUB,
+          new Uint8Array(Buffer.from(hello.sessionNonce, 'base64')),
+          FAKE_EXT_NONCE,
+          new Uint8Array(Buffer.from(hello.sessionPub, 'base64')),
+        ),
       );
       expect(result.serverName).toBe('opentable-mcp');
       expect(result.domains).toEqual(['opentable.com']);
@@ -1907,5 +1915,52 @@ describe('applyNeedsPairRecord and the stored session ephemeral (v4)', () => {
     expect(stored.mcpIds).toEqual(['foo-mcp:1.0.0:aaaa000000000001']);
     expect(stored.sessionNonces['foo-mcp:1.0.0:aaaa000000000001']).toBe('nonce-2');
     expect(stored.sessionPubs['foo-mcp:1.0.0:aaaa000000000001']).toBe('pub-2');
+  });
+
+  it('refreshes the pair code too — the popup may not show a number from the previous hello', () => {
+    // 3.0.0 (protocol 4): the code commits to the hello nonces and the MCP's
+    // ephemeral, so it CHANGES on every re-hello where v3's changed never.
+    // The frame sent to the MCP carries the fresh code (`result.pairCode`,
+    // never re-read from storage) and the MCP judges against its own fresh
+    // derivation — so a record that kept the first hello's number would put a
+    // stale code on the screen the user is asked to compare, and the one
+    // failure a SAS must never manufacture is a false mismatch.
+    const existing: Record<string, unknown> = {};
+    const base = {
+      key: 'k',
+      kind: 'pair' as const,
+      identityHash: 'h',
+      serverName: 'foo-mcp',
+      version: '1.0.0',
+      domains: ['foo.com'],
+      capabilities: ['fetch'],
+      cookieKeys: [],
+      localStorageKeys: [],
+      sessionStorageKeys: [],
+      captureHeaders: [],
+      indexedDbScopes: [],
+      domSelectors: [],
+      graphqlOps: [],
+      localStoragePointers: [],
+      sessionStoragePointers: [],
+      identityX25519Pub: 'aaaa',
+      identityEd25519Pub: 'bbbb',
+      mcpIds: ['foo-mcp:1.0.0:aaaa000000000001'],
+      sessionNonces: { 'foo-mcp:1.0.0:aaaa000000000001': 'nonce-1' },
+      sessionPubs: { 'foo-mcp:1.0.0:aaaa000000000001': 'pub-1' },
+    };
+    applyNeedsPairRecord(existing as never, 'k', { ...base, pairCode: '1111-2222' } as never);
+    applyNeedsPairRecord(
+      existing as never,
+      'k',
+      {
+        ...base,
+        pairCode: '3333-4444',
+        sessionNonces: { 'foo-mcp:1.0.0:aaaa000000000001': 'nonce-2' },
+        sessionPubs: { 'foo-mcp:1.0.0:aaaa000000000001': 'pub-2' },
+      } as never,
+    );
+
+    expect((existing['k'] as { pairCode: string }).pairCode).toBe('3333-4444');
   });
 });

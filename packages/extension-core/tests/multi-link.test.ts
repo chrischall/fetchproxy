@@ -494,7 +494,7 @@ describe('pair-pending delivery (mcp-host#639)', () => {
   // The MCP learns a pair code exists ONLY from this frame. When it does not
   // arrive, `awaitSessionReady` times out and reports the `not-ready` branch,
   // whose hint says "sign in to the target site" — so the user is sent to
-  // check a browser session that is fine while a live XXX-XXX sits in the
+  // check a browser session that is fine while a live XXXX-XXXX sits in the
   // popup. That is the shape observed on resy-mcp#166: a code on screen, and
   // `pairCode: null` at the MCP on every one of four attempts.
   it('sends the code to an untrusted MCP that needs pairing', async () => {
@@ -512,7 +512,7 @@ describe('pair-pending delivery (mcp-host#639)', () => {
     const pending = localWs.frames<{ mcpId: string; pairCode: string }>('pair-pending');
     expect(pending).toHaveLength(1);
     expect(pending[0]!.mcpId).toBe(mcp.mcpId);
-    expect(pending[0]!.pairCode).toMatch(/^[0-9]{3}-[0-9]{3}$/);
+    expect(pending[0]!.pairCode).toMatch(/^[0-9]{4}-[0-9]{4}$/);
     expect(localWs.frames('ready')).toHaveLength(0);
   });
 
@@ -550,7 +550,7 @@ describe('pair-pending delivery (mcp-host#639)', () => {
 
     const pending = localWs.frames<{ pairCode: string }>('pair-pending');
     expect(pending).toHaveLength(1);
-    expect(pending[0]!.pairCode).toMatch(/^[0-9]{3}-[0-9]{3}$/);
+    expect(pending[0]!.pairCode).toMatch(/^[0-9]{4}-[0-9]{4}$/);
   });
 
   // `sendOnLink` returns false on a closed socket and the caller discarded it,
@@ -688,7 +688,7 @@ describe('a refused hello', () => {
     const pending = localWs.frames<{ mcpId: string; pairCode: string }>('pair-pending');
     expect(pending).toHaveLength(1);
     expect(pending[0]!.mcpId).toBe(mcp.mcpId);
-    expect(pending[0]!.pairCode).toMatch(/^[A-Z0-9]{3}-[A-Z0-9]{3}$/);
+    expect(pending[0]!.pairCode).toMatch(/^[A-Z0-9]{4}-[A-Z0-9]{4}$/);
   });
 });
 

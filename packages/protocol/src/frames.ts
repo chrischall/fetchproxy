@@ -756,10 +756,16 @@ export interface EncryptedFrame {
 
 /**
  * 0.5.2+: extension → MCP notification that the user has been asked to
- * approve a pair for `mcpId`. Carries the same 6-digit joint pair code
- * the popup is showing (`SHA256(mcpPub || extPub)[0..3] mod 1_000_000`,
- * formatted `XXX-XXX`) so the MCP can surface it back to its caller
- * (typically as a tool error like "pairing required, code: 845-237").
+ * approve a pair for `mcpId`. Carries the same joint pair code the popup is
+ * showing ({@link pairTranscript}, formatted `XXXX-XXXX`) so the MCP can
+ * surface it back to its caller (typically as a tool error like "pairing
+ * required, code: 8452-3719").
+ *
+ * 3.0.0 (protocol 4): eight digits, not six, and committed to a transcript
+ * rather than to the two long-term identity pubs alone — so the code a user
+ * compares changes with every pairing attempt. A person who has paired before
+ * WILL see a number of a different shape; that is the one v4 change visible to
+ * the naked eye.
  *
  * Routed by mcpId on the host (own → fire onPairCode + record, peer →
  * forward to peer WS). Unencrypted — the pair code is not a secret on
@@ -771,7 +777,7 @@ export interface EncryptedFrame {
  * it crosses whatever sits between the MCP and the browser, so an MCP that
  * showed its caller this number would be showing what the middle chose — and
  * the two "channels" the user is asked to compare would be one. Both the host
- * and the peer derive the code themselves from the two identity pubs, display
+ * and the peer derive the code themselves from the pair transcript, display
  * only that, and close the connection with a logged alarm on a `pairCode`
  * that disagrees.
  *
@@ -782,7 +788,7 @@ export interface EncryptedFrame {
 export interface PairPendingFrame {
   type: 'pair-pending';
   mcpId: string;
-  pairCode: string;               // formatted "XXX-XXX"
+  pairCode: string;               // formatted "XXXX-XXXX"
 }
 
 /**

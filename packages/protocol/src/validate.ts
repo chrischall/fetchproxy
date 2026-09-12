@@ -792,14 +792,15 @@ function validateEncrypted(raw: Record<string, unknown>): EncryptedFrame {
   return raw as unknown as EncryptedFrame;
 }
 
-const PAIR_CODE_RE = /^\d{3}-\d{3}$/;
+// 3.0.0 (protocol 4): eight digits, the width `pairTranscript` produces.
+const PAIR_CODE_RE = /^\d{4}-\d{4}$/;
 
 function validatePairPending(raw: Record<string, unknown>): import('./frames.js').PairPendingFrame {
   assertString(raw.mcpId, 'pair-pending.mcpId');
   if (!isValidMcpId(raw.mcpId)) throw new ProtocolError('pair-pending.mcpId: invalid format');
   assertString(raw.pairCode, 'pair-pending.pairCode');
   if (!PAIR_CODE_RE.test(raw.pairCode)) {
-    throw new ProtocolError(`pair-pending.pairCode: must match XXX-XXX, got ${String(raw.pairCode)}`);
+    throw new ProtocolError(`pair-pending.pairCode: must match XXXX-XXXX, got ${String(raw.pairCode)}`);
   }
   return { type: 'pair-pending', mcpId: raw.mcpId, pairCode: raw.pairCode };
 }

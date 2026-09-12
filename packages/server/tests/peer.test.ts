@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   validateFrame,
-  derivePairCodeFromIds,
+  pairTranscript,
   ed25519Verify,
   generateX25519,
   aesGcmSeal,
@@ -308,12 +308,16 @@ describe('peer client', () => {
     // 2.5.0: the host says the extension left — both go back to false, and
     // stay there until the extension is seen again. The session key is
     // kept (sendInner's invariant), only the report changes.
-    // M1: the peer surfaces only the code it derived from its own identity
-    // pub and the relayed extension hello's, so a frame must carry that
-    // number — one of its own would be an alarm and a closed upstream.
-    const pairCode = await derivePairCodeFromIds(
+    // M1: the peer surfaces only the code it derived itself, so a frame must
+    // carry that number — one of its own would be an alarm and a closed
+    // upstream. 3.0.0 (protocol 4): derived from the pair transcript, which
+    // includes the hello THIS peer minted in answer to the relayed one.
+    const pairCode = await pairTranscript(
       identity.x25519Pub,
       fromB64(ext.hello.identityX25519Pub),
+      fromB64(sessionHello.sessionNonce),
+      fromB64(ext.hello.sessionNonce),
+      fromB64(sessionHello.sessionPub),
     );
     await rig.send({ type: 'pair-pending', mcpId, pairCode });
     await vi.waitFor(() => expect(peer!.pendingPairCode()).toBe(pairCode));

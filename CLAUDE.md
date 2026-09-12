@@ -14,7 +14,7 @@ capability). Concentrator architecture: the first MCP to boot binds
 multiplexes all of them through one WebSocket to one browser
 extension. Each MCP ↔ extension session has its own AES-256-GCM key
 derived via X25519 ECDH at handshake. Trust is identity-keyed
-(Ed25519) with a 6-digit pair code the user confirms on first contact.
+(Ed25519) with an 8-digit pair code the user confirms on first contact.
 
 Current line: **1.x** (mutual auth + JSON-pointer storage extraction
 + MV3 SW keepalive + storageDomain selector + host-or-subdomain tab
@@ -76,9 +76,18 @@ the bind fails with `EADDRINUSE`, the MCP dials the existing host as a
    `~/.fetchproxy/identity/<server-name>.json` (mode 0600).
 2. Per-session **AES-256-GCM** key derived via X25519 ECDH +
    HKDF-SHA256, scoped to one WS connection.
-3. **Pair code** = `SHA256(mcpPub || extPub)[0..3] mod 1_000_000`
-   formatted as `XXX-XXX`. Binds both identities so a relay can't
-   pose as the extension to a real MCP (or vice versa). 0.4.0+.
+3. **Pair code** = `pairTranscript(...)` — the first 8 bytes of
+   `SHA256('fetchproxy/4/pair' || NUL || mcpPub || extPub ||
+   mcpHelloNonce || extHelloNonce || mcpSessionPub)` as a big-endian
+   BigInt `mod 100_000_000`, formatted `XXXX-XXXX`. Binds both
+   identities so a relay can't pose as the extension to a real MCP (or
+   vice versa) — 0.4.0+ — and, since 3.0.0 (protocol 4), binds the
+   SESSION too: both fresh nonces and the MCP's ephemeral are in the
+   hash, so the number differs on every pairing attempt. v3's six
+   digits over two long-term public keys could be ground ONCE offline
+   (~10⁶) and reused against that MCP forever; this makes the grind
+   online, per-pairing and ~10⁸. It does not abolish it — a party
+   posing as the extension picks its own side of the inputs.
 3b. **The MCP pins the extension too** (1.12.0+, #208) —
    `~/.fetchproxy/identity/<server-name>.extension-trust.json`, TOFU,
    written only after the ready signature verifies, refused with 1008

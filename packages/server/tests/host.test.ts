@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   validateFrame,
-  derivePairCodeFromIds,
+  pairTranscript,
   ed25519Verify,
   concatBytes,
   fromB64,
@@ -308,6 +308,17 @@ describe('host (concentrator)', () => {
     });
     const ws = new WebSocket(`ws://127.0.0.1:${port}`);
     await new Promise<void>((r) => ws.once('open', () => r()));
+    // 3.0.0 (protocol 4): the pair code commits to the hello this host mints
+    // for THIS extension session, so the test has to read that hello rather
+    // than derive from the two identity pubs alone.
+    const serverHellos: { sessionNonce: string; sessionPub: string }[] = [];
+    ws.on('message', (d) => {
+      const f = JSON.parse(d.toString()) as { type?: string; role?: string } & Record<string, string>;
+      if (f.type === 'hello' && f.role === 'server') {
+        serverHellos.push({ sessionNonce: f.sessionNonce!, sessionPub: f.sessionPub! });
+      }
+    });
+    const extNonceB64 = 'AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA=';
     ws.send(
       JSON.stringify({
         type: 'hello',
@@ -318,16 +329,21 @@ describe('host (concentrator)', () => {
         version: '0.4.0',
         identityX25519Pub: 'AAAA',
         identityEd25519Pub: 'AAAA',
-        sessionNonce: 'AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA=',
+        sessionNonce: extNonceB64,
       } satisfies HelloFrameFromExtension),
     );
     await vi.waitFor(() => expect(host!.extensionConnected()).toBe(true));
-    // M1: the host judges the frame's code against the one it derives from
-    // the two identity pubs, so a code the extension made up would be an
-    // alarm and a closed socket rather than a pending pair.
-    const code = await derivePairCodeFromIds(
+    await vi.waitFor(() => expect(serverHellos).toHaveLength(1));
+    // M1: the host judges the frame's code against the one it derives itself,
+    // so a code the extension made up would be an alarm and a closed socket
+    // rather than a pending pair.
+    const b = (s: string): Uint8Array => new Uint8Array(Buffer.from(s, 'base64'));
+    const code = await pairTranscript(
       id.x25519Pub,
-      new Uint8Array(Buffer.from('AAAA', 'base64')),
+      b('AAAA'),
+      b(serverHellos[0]!.sessionNonce),
+      b(extNonceB64),
+      b(serverHellos[0]!.sessionPub),
     );
     ws.send(
       JSON.stringify({

@@ -347,7 +347,7 @@ export async function onServerHello(link: Link, hello: HelloFrameFromServer): Pr
   setPairPendingBadge();
   // 0.5.2+: notify the MCP-side server (host or peer) that the user has
   // been asked to approve. The MCP can then include `pairCode` in tool
-  // errors so the chat shows the same XXX-XXX the popup is displaying.
+  // errors so the chat shows the same XXXX-XXXX the popup is displaying.
   // We send one pair-pending notification per mcpId — each process's MCP
   // host needs to know its own pairing is pending. Best-effort: if the WS
   // dropped between the hello and here, the next reconnect triggers a fresh
