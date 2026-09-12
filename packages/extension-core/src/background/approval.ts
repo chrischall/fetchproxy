@@ -28,6 +28,7 @@ import {
   toB64,
   fromB64,
   readySignaturePayload,
+  transcriptHash,
   HKDF_SESSION_INFO,
   type ReadyFrame,
 } from '@fetchproxy/protocol';
@@ -110,15 +111,31 @@ export async function onApproval(approved: AnyPendingRecord): Promise<void> {
 
   if (approved.kind === 'pair') {
     // 0.6.0+: replay the post-approval session setup for EVERY mcpId in the
-    // entry. Each process had its own hello nonce (for ECDH uniqueness), but
-    // they share the same identity pub and approval outcome — so we drive the
-    // same session-key derivation + ReadyFrame send independently for each.
-    const identityPub = fromB64(approved.identityX25519Pub);
+    // entry. Each process had its own hello nonce (for ECDH uniqueness), and
+    // since 3.0.0 its own session EPHEMERAL too; they share only the identity
+    // and the approval outcome — so the derivation and the ReadyFrame are
+    // driven independently for each, from that process's own stored pair.
+    //
+    // `approved.identityX25519Pub` is deliberately NOT read here any more: it
+    // was the MCP's half of the ECDH under v3, and reaching for it again is
+    // the v3 derivation reinstated under a v4 signature.
     const mcpIdsToUnblock = approved.mcpIds ?? [];
     for (const mcpId of mcpIdsToUnblock) {
       const sessionNonceB64 = approved.sessionNonces?.[mcpId];
       if (!sessionNonceB64) {
         console.warn(`[fetchproxy] onApproval: missing sessionNonce for mcpId ${mcpId}; skipping`);
+        continue;
+      }
+      // 3.0.0 (protocol 4): the MCP's session ephemeral, stored beside the
+      // nonce when the hello arrived. Skipped with the same warn as a missing
+      // nonce — every pending record already in `chrome.storage.local` when
+      // the extension is reloaded has no value here, and the MCP hellos again.
+      // NOT falling back to `identityX25519Pub`, which is the v3 derivation
+      // reinstated under a v4 signature: the key would be one the MCP cannot
+      // compute, so the session would look established and every frame fail.
+      const mcpSessionPubB64 = approved.sessionPubs?.[mcpId];
+      if (!mcpSessionPubB64) {
+        console.warn(`[fetchproxy] onApproval: missing sessionPub for mcpId ${mcpId}; skipping`);
         continue;
       }
       // The bridge this MCP said hello on, and the nonce it said it on. Both
@@ -130,13 +147,23 @@ export async function onApproval(approved: AnyPendingRecord): Promise<void> {
         continue;
       }
       const sessionNonce = fromB64(sessionNonceB64);
+      const mcpSessionPub = fromB64(mcpSessionPubB64);
       // Each process gets its own fresh ephemeral keypair so the resulting
       // session keys are independent.
+      //
+      // 3.0.0: against the STORED ephemeral and salted with the transcript,
+      // exactly as the auto-trust path derives. These are two code paths
+      // deriving one thing and they have drifted before.
       const ephemeral = await generateX25519();
-      const shared = await ecdhX25519(ephemeral.privateKey, identityPub);
+      const shared = await ecdhX25519(ephemeral.privateKey, mcpSessionPub);
       const sessionKey = await hkdfSha256(
         shared,
-        sessionNonce,
+        await transcriptHash(
+          sessionNonce,
+          link.sessionNonce,
+          mcpSessionPub,
+          ephemeral.publicKey,
+        ),
         enc.encode(HKDF_SESSION_INFO),
         32,
       );
@@ -152,12 +179,21 @@ export async function onApproval(approved: AnyPendingRecord): Promise<void> {
       // session-key derivation on it.
       const sessionSig = await ed25519Sign(
         state.extIdentity.ed25519Priv,
-        readySignaturePayload(sessionNonce, link.sessionNonce, ephemeral.publicKey),
+        readySignaturePayload(
+          sessionNonce,
+          link.sessionNonce,
+          ephemeral.publicKey,
+          mcpSessionPub,
+        ),
       );
       const ready: ReadyFrame = {
         type: 'ready',
         mcpId,
         extensionSessionPub: toB64(ephemeral.publicKey),
+        // The STORED pub, which is what Rule C's other end needs: an MCP that
+        // has re-minted since the prompt discards this instead of reading it
+        // as a forgery.
+        mcpSessionPub: mcpSessionPubB64,
         sessionSig: toB64(sessionSig),
       };
       sendOnLink(link, JSON.stringify(ready));

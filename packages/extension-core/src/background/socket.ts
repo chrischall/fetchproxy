@@ -275,7 +275,8 @@ async function onEncryptedFrame(link: Link, frame: EncryptedFrame): Promise<void
   flashActivity();
   let opened;
   try {
-    opened = await openEncryptedFrameDetailed(entry.sessionKey, frame);
+    // 's2e': every frame reaching the extension was sealed by an MCP.
+    opened = await openEncryptedFrameDetailed(entry.sessionKey, frame, 's2e');
   } catch (e) {
     // It reports both failures in its result rather than throwing, so this is
     // the unexpected path — but a claim must not leak out of it.

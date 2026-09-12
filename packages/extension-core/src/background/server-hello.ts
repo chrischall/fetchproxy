@@ -88,6 +88,40 @@ function tellServerWhy(link: Link, hello: HelloFrameFromServer, reason: string):
 
 export async function onServerHello(link: Link, hello: HelloFrameFromServer): Promise<void> {
   if (!state.trust || !state.sessions || !state.extIdentity || !link.sessionNonce) return;
+  // 3.0.0 (protocol 4), §1a Rule C, extension side: refuse a hello that
+  // answers a nonce this link did not send.
+  //
+  // Before the mcpId binding, so a stale hello costs nothing and blocks
+  // nothing: no binding, no trust read, no pair prompt, and a later CORRECT
+  // hello for the same id is not queued behind a rejection. The host has a
+  // gate of its own, and a gate that fails open must not be the only thing
+  // standing — so the rule is enforced at both ends, by the party each
+  // failure lands on.
+  //
+  // A hello answering 32 zero bytes — a peer's registration hello, which no
+  // session may be opened from — is refused here too, and by this same
+  // comparison rather than a second check: `link.sessionNonce` comes from a
+  // CSPRNG and is never that value, so "answers nothing" fails the equality
+  // like any other wrong answer.
+  //
+  // On the SPELLING rather than the bytes, like Rule B's gate at the host
+  // (`server/src/host.ts`, which carries the full reasoning and the repair):
+  // `answersNoExtSession` decodes because it judges a value against a
+  // CONSTANT with more than one valid spelling, while this comparison judges
+  // two values that both came out of `toB64`, the cohort's single base64
+  // encoder. A divergent third-party encoder would make this refusal fire on a
+  // hello that signed the right bytes — interop, not security, since the
+  // outcome is a refusal rather than a session opened against a key nobody
+  // holds — and the repair is to compare `fromB64(...)` bytes at both readers
+  // of the field at once.
+  if (hello.answersExtNonce !== toB64(link.sessionNonce)) {
+    console.warn(
+      `[fetchproxy] dropped hello for ${hello.mcpId} on ${link.label}: it answers an extension ` +
+        `session this link did not open (the MCP minted it for a previous connection)`,
+    );
+    tellServerWhy(link, hello, 'this hello answers a different extension session');
+    return;
+  }
   // Bind before deciding anything. An mcpId another live link already holds is
   // not this link's to speak for, and the refusal has to happen before a
   // session key, a scope grant or a pair prompt exists for it.
@@ -101,6 +135,9 @@ export async function onServerHello(link: Link, hello: HelloFrameFromServer): Pr
   const result = await handleServerHello(hello, {
     trust: state.trust,
     extensionIdentityX25519Pub: state.extIdentity.x25519Pub,
+    // 3.0.0: this LINK's nonce, which the transcript salt needs. Per link,
+    // never a module global.
+    extensionSessionNonce: link.sessionNonce,
   });
   if (result.kind === 'reject') {
     // Give the binding back. It was taken before the decision — deliberately,
@@ -131,18 +168,27 @@ export async function onServerHello(link: Link, hello: HelloFrameFromServer): Pr
     // 0.4.0: ready frame carries the binding signature so the MCP
     // host can verify before proceeding. 2.0.0: it covers the ephemeral
     // pub too, so the key the session is derived from is the one we signed.
+    // 3.0.0: the payload gains the MCP's ephemeral, so the transcript is
+    // bound SYMMETRICALLY — after v4 neither side's contribution to the ECDH
+    // can be substituted without a signature from a long-term key a relay
+    // does not hold.
     const sessionSig = await ed25519Sign(
       state.extIdentity.ed25519Priv,
       readySignaturePayload(
         result.mcpSessionNonce,
         link.sessionNonce,
         result.extensionSessionPub,
+        result.mcpSessionPub,
       ),
     );
     const ready: ReadyFrame = {
       type: 'ready',
       mcpId: result.mcpId,
       extensionSessionPub: toB64(result.extensionSessionPub),
+      // On the wire as well as inside the signature: the server's
+      // stale-vs-forged distinction is made BEFORE any signature is checked,
+      // so it needs the value as a field.
+      mcpSessionPub: toB64(result.mcpSessionPub),
       sessionSig: toB64(sessionSig),
     };
     sendOnLink(link, JSON.stringify(ready));
@@ -268,6 +314,10 @@ export async function onServerHello(link: Link, hello: HelloFrameFromServer): Pr
     version: result.version,
     mcpIds: [result.mcpId],
     sessionNonces: { [result.mcpId]: sessionNonceB64 },
+    // 3.0.0 (protocol 4): the MCP's ephemeral, beside its nonce. The approval
+    // path answers this hello minutes later and can no longer fall back to
+    // the long-term key — that fallback IS the v3 derivation.
+    sessionPubs: { [result.mcpId]: result.sessionPub },
     domains: [...result.domains],
     capabilities: [...result.capabilities],
     cookieKeys: [...result.cookieKeys],

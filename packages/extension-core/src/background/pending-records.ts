@@ -49,6 +49,20 @@ export interface PendingPairRecord extends PendingRecordBase {
    * approval. Each process sends its own hello with its own nonce.
    */
   sessionNonces: Record<string, string>;
+  /**
+   * 3.0.0+ (protocol 4): per-process MCP session EPHEMERAL pub (b64), beside
+   * the nonce and refreshed with it.
+   *
+   * The approval path answers a hello it read back out of storage, minutes
+   * after it arrived. Under v3 a stored record sufficed because the MCP's half
+   * of the ECDH was its long-term `identityX25519Pub`; under v4 it is this
+   * per-session value, so it has to be stored or the approval has nothing to
+   * derive against. Refreshing it on every hello is what keeps a record from
+   * naming a superseded ephemeral after a reconnect — and an entry with no
+   * value here is SKIPPED rather than falling back to the identity key, which
+   * would be the v3 derivation reinstated under a v4 signature.
+   */
+  sessionPubs: Record<string, string>;
   capabilities: string[];
   cookieKeys: string[];
   localStorageKeys: string[];
@@ -149,6 +163,13 @@ export function applyNeedsPairRecord(
       currentEntry.mcpIds.push(mcpId);
     }
     currentEntry.sessionNonces[mcpId] = nonce;
+    // 3.0.0: the ephemeral moves with the nonce. A record that kept the FIRST
+    // hello's pub and the SECOND hello's nonce would derive a key nothing
+    // holds, which is the same failure as not storing it at all.
+    const sessionPub = newRecord.sessionPubs[mcpId];
+    if (sessionPub !== undefined) {
+      currentEntry.sessionPubs = { ...(currentEntry.sessionPubs ?? {}), [mcpId]: sessionPub };
+    }
   } else if (!currentEntry) {
     // Case 2: New entry.
     existing[pendingKey] = newRecord;

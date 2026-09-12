@@ -99,6 +99,15 @@ export async function sendInner(mcpId: string, inner: InnerFrame): Promise<void>
     if (!refusal) return;
     toSend = refusal;
   }
-  const sealed = await sealInnerFrame(entry.sessionKey, mcpId, entry.nextOutboundSeq(), toSend);
+  // 'e2s': this end is the extension, so a frame it sealed and had reflected
+  // back at it fails the tag rather than arriving as a well-formed inner frame
+  // the dispatcher has to ignore.
+  const sealed = await sealInnerFrame(
+    entry.sessionKey,
+    mcpId,
+    entry.nextOutboundSeq(),
+    toSend,
+    'e2s',
+  );
   sendOnLink(link, JSON.stringify(sealed));
 }

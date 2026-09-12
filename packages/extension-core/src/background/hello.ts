@@ -12,12 +12,13 @@ import {
   ecdhX25519,
   hkdfSha256,
   derivePairCodeFromIds,
+  helloSignaturePayload,
+  transcriptHash,
   sha256,
   generateX25519,
   toB64,
   fromB64,
   toHex,
-  concatBytes,
   HKDF_SESSION_INFO,
   type Capability,
   type GraphqlOpDeclaration,
@@ -42,6 +43,17 @@ export interface HandleHelloDeps {
    * popup and the MCP terminal both compute the same code. Required.
    */
   extensionIdentityX25519Pub: Uint8Array;
+  /**
+   * 3.0.0+ (protocol 4): this LINK's own hello nonce — `link.sessionNonce` in
+   * `onServerHello`.
+   *
+   * A new member rather than a body change, because the HKDF salt is now a
+   * transcript over BOTH nonces and both ephemerals, and this function has
+   * never been handed the extension's half. Per link, never a module global:
+   * signing or salting from one shared value is the single easiest way to
+   * rebuild the bug the multi-link design removed.
+   */
+  extensionSessionNonce: Uint8Array;
 }
 
 export type HandleHelloResult =
@@ -67,6 +79,13 @@ export type HandleHelloResult =
       identityX25519Pub: string;
       identityEd25519Pub: string;
       sessionNonce: Uint8Array;
+      /**
+       * 3.0.0+ (protocol 4): the MCP's per-session ephemeral, base64 as it
+       * arrived. Carried out of here so the pending record can store it
+       * beside the nonce: the approval path answers this hello minutes later
+       * and can no longer derive from the long-term key.
+       */
+      sessionPub: string;
       /**
        * 0.4.0+: the previously approved scope, when this is a re-pair
        * (a trust record exists but the scope changed). Used by the
@@ -114,6 +133,13 @@ export type HandleHelloResult =
        * produce a `ReadyFrame.sessionSig`.
        */
       mcpSessionNonce: Uint8Array;
+      /**
+       * 3.0.0+ (protocol 4): the MCP ephemeral this session was derived
+       * against. The caller signs it into the `ready` AND puts it on the wire
+       * — the second is what lets the server tell a STALE ready from a forged
+       * one, which is a fact about the frame rather than about the signature.
+       */
+      mcpSessionPub: Uint8Array;
       /**
        * Part 2 (scope-growth): present when declared scope exceeds
        * approved scope. The caller should queue a non-blocking
@@ -219,13 +245,26 @@ export async function handleServerHello(
   const identityEd25519Pub = fromB64(hello.identityEd25519Pub);
   const sessionNonce = fromB64(hello.sessionNonce);
   const sessionSig = fromB64(hello.sessionSig);
+  const mcpSessionPub = fromB64(hello.sessionPub);
 
   // 1. Verify signature.
+  //
+  // 3.0.0 (protocol 4): over `helloSignaturePayload`, which covers the
+  // EPHEMERAL the session key is derived from and the extension session this
+  // hello answers. Verifying the v3 payload here would compile and pass every
+  // test while leaving `sessionPub` unauthenticated — a relay substitutes one
+  // it holds the private half of, this extension derives against the relay's
+  // key, and the forward secrecy v4 exists to buy is fiction.
   let sigOk = false;
   try {
     sigOk = await ed25519Verify(
       identityEd25519Pub,
-      concatBytes(enc.encode(hello.mcpId), sessionNonce),
+      helloSignaturePayload(
+        hello.mcpId,
+        sessionNonce,
+        mcpSessionPub,
+        fromB64(hello.answersExtNonce),
+      ),
       sessionSig,
     );
   } catch {
@@ -258,9 +297,33 @@ export async function handleServerHello(
     // so the widened set stays unreachable until the user approves it. The
     // change is to whether they are ASKED, never to what is served while
     // they have not answered.
+    // 3.0.0 (protocol 4), L6: the identity that SIGNS must be the identity
+    // that is PINNED. Under v3 this comparison was belt-and-braces — the
+    // session key came from `identityX25519Pub`, the very key this record is
+    // keyed on, so completing a session was itself a proof of possession and a
+    // swapped signing key could not compute the key. v4 inverts that: the key
+    // comes from an ephemeral, and a signature under `identityEd25519Pub` is
+    // the ONLY thing binding that ephemeral to a trusted identity. Without
+    // this clause an attacker holding nothing but public values — the X25519
+    // pub is plaintext on every wire — presents its own Ed25519 key and its
+    // own ephemeral, signs the hello payload with its own key (which verifies,
+    // against the key in the same frame), hits the genuine record on the
+    // X25519 hash, and auto-trusts with no prompt.
+    //
+    // The MCP side has held both keys to this rule since 1.12.0, and says why
+    // in `decideExtensionTrust` (`server/src/extension-trust.ts`): "Both keys,
+    // not either: a rotation of one is a different extension, and accepting a
+    // half-match would let an attacker keep the ECDH key it needs while
+    // swapping the signing key it doesn't hold, or the reverse." That is the
+    // sentence this comparison was missing. After this the two halves of one
+    // rule live in two packages, and only these comments say so.
+    //
+    // An absent stored value MISMATCHES rather than being normalised to the
+    // hello's — normalising would make the check a tautology.
     const scopeIdentityChanged =
       record.serverName !== hello.serverName ||
-      !sameDomainSet(record.domains, hello.domains);
+      !sameDomainSet(record.domains, hello.domains) ||
+      record.identityEd25519Pub !== hello.identityEd25519Pub;
     // 0.4.0: if the stored trust record's extension identity differs
     // from this extension's current identity, force re-pair. This
     // catches a wholesale extension reinstall as well as legacy 0.3.0
@@ -300,11 +363,23 @@ export async function handleServerHello(
       const granted = intersectScope(approvedScope, declaredScopeObj);
       const scopeGrew = !isScopeSubset(declaredScopeObj, approvedScope);
       // Derive session key with fresh ephemeral keypair.
+      //
+      // 3.0.0 (protocol 4): ephemeral x EPHEMERAL — against `hello.sessionPub`
+      // rather than the MCP's long-term `identityX25519Pub` — and salted with
+      // the TRANSCRIPT over both nonces and both ephemerals rather than the
+      // MCP's hello nonce alone. Under v3 anyone holding an MCP's identity
+      // plus a recording of its frames decrypted them afterwards, passively
+      // and retroactively; the identity is now an authenticator only.
       const ephemeral = await generateX25519();
-      const shared = await ecdhX25519(ephemeral.privateKey, identityX25519Pub);
+      const shared = await ecdhX25519(ephemeral.privateKey, mcpSessionPub);
       const sessionKey = await hkdfSha256(
         shared,
-        sessionNonce,
+        await transcriptHash(
+          sessionNonce,
+          deps.extensionSessionNonce,
+          mcpSessionPub,
+          ephemeral.publicKey,
+        ),
         enc.encode(HKDF_SESSION_INFO),
         32,
       );
@@ -326,6 +401,7 @@ export async function handleServerHello(
         sessionKey,
         extensionSessionPub: ephemeral.publicKey,
         mcpSessionNonce: sessionNonce,
+        mcpSessionPub,
         // Signal the caller to queue a scope-update offer only when growth occurred.
         ...(scopeGrew ? {
           pendingScopeUpdate: {
@@ -384,5 +460,6 @@ export async function handleServerHello(
     identityX25519Pub: hello.identityX25519Pub,
     identityEd25519Pub: hello.identityEd25519Pub,
     sessionNonce,
+    sessionPub: hello.sessionPub,
   };
 }
