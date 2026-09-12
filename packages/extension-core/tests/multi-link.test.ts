@@ -726,14 +726,23 @@ describe('a hello that answers a different extension session', () => {
     // extension session looks like when it arrives late.
     const someoneElsesNonce = new Uint8Array(32).fill(0x5a);
     const stale = await helloFrom(mcp, someoneElsesNonce);
+    // The refusal has to land in FRONT of the decision, and the observable
+    // proof of that is a trust store that is never read: `handleServerHello`
+    // is the only reader on this path and `bindMcpToLink` runs immediately
+    // before it, so one unread record pins both halves. The "id is free
+    // afterwards" assertion below does NOT pin it — the reject path unbinds,
+    // so a gate moved below the binding leaves that one passing.
+    const trustRead = vi.spyOn(state.trust!, 'get');
     localWs.message({ ...stale, accepts: ['hello-rejected'] });
     await new Promise((r) => setTimeout(r, 20));
 
-    // No session, no binding, no pair prompt.
+    // No session, no binding, no pair prompt — and no trust record read.
     expect(localWs.frames('ready')).toHaveLength(0);
     expect(localWs.frames('pair-pending')).toHaveLength(0);
     expect(linkForMcp(mcp.mcpId)).toBeNull();
     expect(state.sessions!.get(mcp.mcpId)).toBeNull();
+    expect(trustRead).not.toHaveBeenCalled();
+    trustRead.mockRestore();
     const rejected = localWs.frames<{ mcpId: string; reason: string }>('hello-rejected');
     expect(rejected).toHaveLength(1);
     expect(rejected[0]!.reason).toMatch(/extension session/i);
