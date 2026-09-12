@@ -29,6 +29,7 @@
 
 import {
   openEncryptedFrameDetailed,
+  peekHelloVersion,
   validateFrame,
   toB64,
   PROTOCOL_VERSION,
@@ -49,7 +50,7 @@ import {
 import { state } from './state.js';
 import { setConnectionStatus, flashActivity } from './badge.js';
 import { sendInner } from './send-inner.js';
-import { onServerHello } from './server-hello.js';
+import { onServerHello, sendHelloRejected } from './server-hello.js';
 import { handleRequest } from './handlers/dispatch.js';
 import { broadcastConnectionsChanged, clearSessionScopeFor } from './session-scope.js';
 import {
@@ -238,14 +239,81 @@ function scheduleReconnect(link: Link): void {
   setTimeout(() => connectLink(link), ms);
 }
 
+/**
+ * The npm version of `@fetchproxy/server` at which protocol 4 lands, named in
+ * the refusal below because a version number with no remedy beside it is a
+ * diagnosis the reader cannot act on. A literal rather than a derived value:
+ * this extension cannot read the MCP's package version, and the number it must
+ * print is a fact about the cohort release, not about this build.
+ */
+const MIN_SERVER_VERSION = '3.0.0';
+
+/**
+ * A v3 MCP meeting this v4 extension (Task 4.1).
+ *
+ * `validateFrame` refuses a hello whose `protocolVersion` is not
+ * {@link PROTOCOL_VERSION}, and until 3.0.0 that was the end of the story: the
+ * frame was dropped with a `console.warn` in a service worker nobody has open,
+ * and the MCP then waited out its 30-second `SESSION_READY_TIMEOUT_MS` before
+ * reporting `not-ready` with a hint blaming a signed-out session or a changed
+ * scope. A hang is the worst failure mode a version mismatch can have — the
+ * person seeing it has nothing to act on and no reason to suspect a version —
+ * and on a hosted relay, across a fleet whose pins move on a nightly cron,
+ * that is the shape a v4 rollout would otherwise take.
+ *
+ * `hello-rejected` is the vehicle because it PREDATES the break: it landed in
+ * 2.6.0, the cohort declares `accepts: ['hello-rejected']`, and the frame
+ * carries no authority — a forged one can make a session fail, which a silent
+ * peer could do anyway by never answering. So a v3 MCP needs no change at all
+ * to hear this; only this side does.
+ *
+ * It GRANTS NOTHING, which is the contract `peekHelloVersion` is written to
+ * and the reason this lives in the catch rather than anywhere a session could
+ * be started from: no binding, no trust read or write, no counter, no session.
+ * Every field it reads came out of a frame no validator accepted, so the
+ * `mcpId` is used only to address the answer back down the socket it arrived
+ * on and the `accepts` list only to decide whether to speak at all.
+ *
+ * Returns whether it answered FOR the mismatch — false leaves the caller on
+ * the pre-existing silent-drop path, so the version mismatch is the only case
+ * that gets new treatment and a malformed-frame flood is not a send amplifier.
+ */
+function refuseVersionMismatch(link: Link, raw: unknown): boolean {
+  const peek = peekHelloVersion(raw);
+  if (!peek || peek.protocolVersion === PROTOCOL_VERSION) return false;
+  // No id, nothing to address an answer to — and nothing worth claiming a
+  // version mismatch about either, since `peekHelloVersion` also answers for
+  // an EXTENSION hello, which carries no `mcpId` by construction.
+  if (!peek.mcpId) return false;
+  const reason =
+    `protocol version mismatch: this browser extension speaks fetchproxy protocol ` +
+    `${PROTOCOL_VERSION}, this MCP speaks ${peek.protocolVersion} — upgrade ` +
+    `@fetchproxy/server to >= ${MIN_SERVER_VERSION}`;
+  // Said on this side whether or not it can be said on the wire: an MCP older
+  // than 2.6.0 cannot hear `hello-rejected`, and the browser user still has
+  // the console and the popup.
+  console.warn(`[fetchproxy] refused hello for ${peek.mcpId} on ${link.label}: ${reason}`);
+  sendHelloRejected(link, peek.mcpId, peek.accepts, reason);
+  return true;
+}
+
 async function onMessage(link: Link, data: string): Promise<void> {
   if (!state.trust) return;
   if (link.closed) return;
-  let frame: Frame;
+  let raw: unknown;
   try {
-    frame = validateFrame(JSON.parse(data));
+    raw = JSON.parse(data);
   } catch (e) {
     console.warn('[fetchproxy] dropped malformed frame:', e);
+    return;
+  }
+  let frame: Frame;
+  try {
+    frame = validateFrame(raw);
+  } catch (e) {
+    if (!refuseVersionMismatch(link, raw)) {
+      console.warn('[fetchproxy] dropped malformed frame:', e);
+    }
     return;
   }
   if (frame.type === 'hello' && frame.role === 'server') {

@@ -77,13 +77,31 @@ declare const chrome: ChromeApi;
  * and carries no authority, and a refusal that cannot be delivered still has
  * to leave the session unestablished.
  */
-function tellServerWhy(link: Link, hello: HelloFrameFromServer, reason: string): void {
-  if (!hello.accepts?.includes('hello-rejected')) return;
+export function sendHelloRejected(
+  link: Link,
+  mcpId: string,
+  accepts: readonly string[] | undefined,
+  reason: string,
+): void {
+  if (!accepts?.includes('hello-rejected')) return;
   try {
-    sendOnLink(link, JSON.stringify({ type: 'hello-rejected', mcpId: hello.mcpId, reason }));
+    sendOnLink(link, JSON.stringify({ type: 'hello-rejected', mcpId, reason }));
   } catch (e) {
     console.warn('[fetchproxy] hello-rejected send failed:', e);
   }
+}
+
+/**
+ * The same refusal for a hello this module holds as a VALIDATED frame.
+ *
+ * 3.0.0 (protocol 4) split the sender out above so `socket.ts` can answer a
+ * hello `validateFrame` refused — a v3 MCP's — where the only fields to hand
+ * are the three `peekHelloVersion` rebuilds. Both callers go through one
+ * sender deliberately: the `accepts` gate is the whole safety of this frame,
+ * and a second copy of it is a second place to forget it.
+ */
+function tellServerWhy(link: Link, hello: HelloFrameFromServer, reason: string): void {
+  sendHelloRejected(link, hello.mcpId, hello.accepts, reason);
 }
 
 export async function onServerHello(link: Link, hello: HelloFrameFromServer): Promise<void> {

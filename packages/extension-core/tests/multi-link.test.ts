@@ -637,6 +637,151 @@ describe('telling the server why (#300)', () => {
   });
 });
 
+/**
+ * A v3 MCP meeting this v4 extension (Task 4.1).
+ *
+ * Measured on this branch before the fix: `validateFrame` throws
+ * `hello.protocolVersion: must be 4`, `onMessage` drops the frame with a
+ * `console.warn` in a service worker nobody has open, and the MCP waits out
+ * `SESSION_READY_TIMEOUT_MS` = 30 s before reporting `not-ready` with a hint
+ * that blames being signed out or a changed scope. A hang is the worst failure
+ * mode a version mismatch can have: the person seeing it has nothing to act on
+ * and no reason to suspect a version at all.
+ *
+ * `hello-rejected` is the right vehicle because it PREDATES the break — it
+ * landed in 2.6.0, the whole cohort declares `accepts: ['hello-rejected']`, and
+ * the frame carries no authority: a forged one can make a session fail, which a
+ * silent peer could do anyway by never answering. So the v3 MCP on the other
+ * end needs no change at all; only this side does.
+ */
+describe('a v3 MCP meeting a v4 extension (Task 4.1)', () => {
+  async function freshLink(): Promise<FakeSocket> {
+    FakeSocket.opened = [];
+    unbindAll();
+    links.clear();
+    reconcileRemoteLinks([REMOTE]);
+    const localWs = FakeSocket.opened.find((s) => s.url.startsWith('ws://127.0.0.1'))!;
+    localWs.open();
+    return localWs;
+  }
+
+  /**
+   * A hello no v4 validator accepts: protocol 3, and the v3 hello's shape —
+   * no `sessionPub`, no `answersExtNonce`. Built by hand rather than by
+   * mutating `helloFrom`, because the point is a frame from BEFORE those
+   * fields existed.
+   */
+  function v3Hello(mcpId: string, extra: Record<string, unknown> = {}): Record<string, unknown> {
+    return {
+      type: 'hello',
+      role: 'server',
+      protocolVersion: 3,
+      mcpId,
+      serverName: 'alltrails-mcp',
+      version: '2.11.3',
+      domains: ['alltrails.com'],
+      capabilities: ['fetch'],
+      identityX25519Pub: toB64(new Uint8Array(32).fill(1)),
+      identityEd25519Pub: toB64(new Uint8Array(32).fill(2)),
+      sessionNonce: toB64(new Uint8Array(32).fill(3)),
+      sessionSig: toB64(new Uint8Array(64)),
+      ...extra,
+    };
+  }
+
+  it('answers hello-rejected naming both versions, and grants nothing doing it', async () => {
+    const localWs = await freshLink();
+    const mcpId = 'alltrails-mcp:2.11.3:1234123412341234';
+
+    // The trust store is the observable proof that the refusal is a REFUSAL
+    // and not a handshake with a complaint attached: nothing on this path may
+    // read a record, and `handleServerHello` is the only reader.
+    const trustRead = vi.spyOn(state.trust!, 'get');
+    const trustWrite = vi.spyOn(state.trust!, 'put');
+    localWs.message(v3Hello(mcpId, { accepts: ['hello-rejected'] }));
+    await new Promise((r) => setTimeout(r, 20));
+
+    const rejected = localWs.frames<{ mcpId: string; reason: string }>('hello-rejected');
+    expect(rejected).toHaveLength(1);
+    expect(rejected[0]!.mcpId).toBe(mcpId);
+    // Both numbers and the remedy — a refusal naming one version tells the
+    // reader nothing they can act on.
+    expect(rejected[0]!.reason).toBe(
+      'protocol version mismatch: this browser extension speaks fetchproxy protocol 4, ' +
+        'this MCP speaks 3 — upgrade @fetchproxy/server to >= 3.0.0',
+    );
+
+    // No session, no binding, no pair prompt, no trust record touched.
+    expect(localWs.frames('ready')).toHaveLength(0);
+    expect(localWs.frames('pair-pending')).toHaveLength(0);
+    expect(linkForMcp(mcpId)).toBeNull();
+    expect(state.sessions!.get(mcpId)).toBeNull();
+    expect(trustRead).not.toHaveBeenCalled();
+    expect(trustWrite).not.toHaveBeenCalled();
+    trustRead.mockRestore();
+    trustWrite.mockRestore();
+  });
+
+  it('answers exactly once, and only on the link the hello arrived on', async () => {
+    FakeSocket.opened = [];
+    unbindAll();
+    links.clear();
+    reconcileRemoteLinks([REMOTE]);
+    const localWs = FakeSocket.opened.find((s) => s.url.startsWith('ws://127.0.0.1'))!;
+    const remoteWs = FakeSocket.opened.find((s) => s.url === REMOTE.url)!;
+    localWs.open();
+    remoteWs.open();
+
+    remoteWs.message(v3Hello('alltrails-mcp:2.11.3:5555555555555555', { accepts: ['hello-rejected'] }));
+    await new Promise((r) => setTimeout(r, 20));
+
+    expect(remoteWs.frames('hello-rejected')).toHaveLength(1);
+    expect(localWs.frames('hello-rejected')).toHaveLength(0);
+  });
+
+  // The gate the 2.6.0 frame shipped with, and it is load-bearing rather than
+  // politeness: `validateFrame` on a server older than 2.6.0 throws
+  // `unknown frame type` and its caller closes the socket, so answering
+  // unconditionally turns a diagnosable refusal into a dropped connection.
+  it('stays silent toward a v3 MCP that did not advertise hello-rejected', async () => {
+    const localWs = await freshLink();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    localWs.message(v3Hello('alltrails-mcp:2.11.3:6666666666666666')); // no `accepts`
+    await new Promise((r) => setTimeout(r, 20));
+
+    expect(localWs.frames('hello-rejected')).toHaveLength(0);
+    // Still said out loud on this side — the popup and the console are what
+    // the browser user has when the MCP cannot be told.
+    const said = warn.mock.calls.map((c) => c.join(' ')).join('\n');
+    warn.mockRestore();
+    expect(said).toContain('protocol version mismatch');
+    expect(said).toContain('speaks 3');
+  });
+
+  // The mismatch is the ONLY case that answers. Everything else keeps the
+  // silent-drop path, or a malformed-frame flood becomes a send amplifier.
+  it('drops a frame malformed for any other reason, silently, as before', async () => {
+    const localWs = await freshLink();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    // Right protocol version, wrong everything else.
+    const mcp = await scriptedMcp('alltrails-mcp:2.1.3:7777777777777777');
+    const hello = await helloFrom(mcp, extNonceOf(localWs));
+    delete (hello as Record<string, unknown>).sessionPub;
+    localWs.message({ ...hello, accepts: ['hello-rejected'] });
+    // And a frame that is not a hello at all.
+    localWs.message({ type: 'frame', mcpId: 'not a valid id', seq: 0 });
+    await new Promise((r) => setTimeout(r, 20));
+
+    expect(localWs.frames('hello-rejected')).toHaveLength(0);
+    const said = warn.mock.calls.map((c) => c.join(' ')).join('\n');
+    warn.mockRestore();
+    expect(said).toContain('dropped malformed frame');
+    expect(said).not.toContain('protocol version mismatch');
+  });
+});
+
 describe('a refused hello', () => {
   it('gives its binding back, so the id is not held until the link drops', async () => {
     FakeSocket.opened = [];
