@@ -12,8 +12,10 @@ import {
   ANSWERS_NO_EXT_SESSION,
   HKDF_SESSION_INFO,
   openEncryptedFrameDetailed,
+  peekHelloVersion,
   sealInnerFrame,
   validateFrame,
+  PROTOCOL_VERSION,
   type Capability,
   type CaptureHeaderDecl,
   type IndexedDbScopeDecl,
@@ -26,7 +28,11 @@ import {
 import { buildServerHello } from './build-server-hello.js';
 import { encodeOutboundInnerFrame } from './frame-size.js';
 import { SessionState } from './session.js';
-import { awaitSessionReady, FetchproxyHelloRejectedError } from './session-ready.js';
+import {
+  awaitSessionReady,
+  FetchproxyHelloRejectedError,
+  FetchproxyProtocolVersionError,
+} from './session-ready.js';
 import type { Identity } from './identity.js';
 import {
   decideExtensionTrust,
@@ -502,8 +508,11 @@ export async function startPeer(opts: PeerOpts): Promise<InternalPeerHandle> {
   };
 
   const onMessage = async (data: WebSocket.RawData): Promise<void> => {
+    // Held outside the try so the catch can read the bytes back: a hello this
+    // build refuses is the one frame worth a second look (Task 4.2).
+    let raw: unknown;
     try {
-      const raw = JSON.parse(data.toString());
+      raw = JSON.parse(data.toString());
       const frame = validateFrame(raw);
       // 1.12.0 (#208): the host relays the extension's hello so a peer can
       // authenticate the far end of its own session. Before 1.12.0 no host
@@ -833,7 +842,30 @@ export async function startPeer(opts: PeerOpts): Promise<InternalPeerHandle> {
         }
       }
     } catch (e) {
-      rejectFirstReady(e instanceof Error ? e : new Error(String(e)));
+      // 3.0.0 (protocol 4), Task 4.2: the host's refusal, on the peer path.
+      // A hello whose `protocolVersion` is not ours used to reject this
+      // peer's wait with `hello.protocolVersion: must be 4` — a validator's
+      // sentence, in a tool error, for a person who has an extension and a
+      // sibling MCP and no idea either has a version. The far end is named
+      // from the peek: a relayed EXTENSION hello (no `mcpId`) is the browser,
+      // anything else on this socket is the MCP holding the bridge port.
+      //
+      // The socket is NOT closed here, unlike the host's mirror of this: a
+      // peer's link is to another MCP process, its close is wired to
+      // re-election, and re-electing into a port a v3 host still holds would
+      // dial straight back into the same refusal. Failing the wait is what
+      // the caller needed; the link staying up costs nothing.
+      const peek = peekHelloVersion(raw);
+      const mismatch =
+        peek && peek.protocolVersion !== PROTOCOL_VERSION
+          ? new FetchproxyProtocolVersionError({
+              ourVersion: PROTOCOL_VERSION,
+              theirVersion: peek.protocolVersion,
+              peer: peek.mcpId === null ? 'extension' : 'mcp',
+            })
+          : null;
+      if (mismatch) console.warn(`[fetchproxy] ${opts.serverName}: ${mismatch.message}`);
+      rejectFirstReady(mismatch ?? (e instanceof Error ? e : new Error(String(e))));
     }
   };
   ws.on('message', onMessage);

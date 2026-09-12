@@ -1148,3 +1148,392 @@ describe('host: a session ephemeral per extension connection (v4)', () => {
     ext2.close();
   });
 });
+
+/**
+ * Task 4.2 — a v4 MCP refuses a v3 extension, out loud.
+ *
+ * Measured on this branch before the fix: a v3 extension meeting a v4 MCP did
+ * not get refused, it HUNG. `validateFrame` threw, the host closed
+ * `1002 'protocol error'` — three words that say nothing about a version — and
+ * left `ownSessionReady` pending, so the next `sendOwnInner` waited out
+ * `SESSION_READY_TIMEOUT_MS` (30 s) and then blamed a signed-out session or a
+ * changed scope. These tests are about the two halves of that: the reason on
+ * the wire, and the immediate rejection.
+ */
+describe('host: a v3 extension is refused at the hello, naming both versions (v4)', () => {
+  let host: HostHandle | null = null;
+  const MCP_ID = 'opentable-mcp:0.9.1:abc1234567890de2';
+
+  afterEach(async () => {
+    if (host) await host.close();
+    host = null;
+  });
+
+  async function startTestHost(trust: ExtensionTrustPort = blankTrust()): Promise<number> {
+    const el = await electRole({ host: '127.0.0.1', port: 0 });
+    if (el.role !== 'host') throw new Error('expected host');
+    const port = (el.server.address() as AddressInfo).port;
+    const idDir = mkdtempSync(join(tmpdir(), 'fp-host-v3-'));
+    host = await startHost({
+      httpServer: el.server,
+      ownIdentity: await loadOrCreateIdentity('opentable-mcp', idDir),
+      ownMcpId: MCP_ID,
+      ownServerName: 'opentable-mcp',
+      ownVersion: '0.9.1',
+      ownDomains: ['opentable.com'],
+      extensionTrust: trust,
+    });
+    return port;
+  }
+
+  /** A protocol-3 extension hello: valid v3 bytes, refused by a v4 validator. */
+  function v3ExtensionHello(): Record<string, unknown> {
+    return {
+      type: 'hello',
+      protocolVersion: 3,
+      role: 'extension',
+      platform: 'chrome',
+      extensionId: 'fetchproxy',
+      version: '2.11.3',
+      identityX25519Pub: 'AAAA',
+      identityEd25519Pub: 'AAAA',
+      sessionNonce: 'AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA=',
+    };
+  }
+
+  async function openSocket(port: number): Promise<{
+    ws: WebSocket;
+    closed: Promise<{ code: number; reason: string }>;
+  }> {
+    const ws = new WebSocket(`ws://127.0.0.1:${port}`);
+    await new Promise<void>((resolve, reject) => {
+      ws.once('open', () => resolve());
+      ws.once('error', reject);
+    });
+    ws.on('error', () => {
+      /* expected: the host closes this socket under us */
+    });
+    const closed = new Promise<{ code: number; reason: string }>((resolve) => {
+      ws.once('close', (code: number, reason: Buffer) =>
+        resolve({ code, reason: reason.toString() }),
+      );
+    });
+    return { ws, closed };
+  }
+
+  /** Whether `p` is still pending after the event loop has had a real turn. */
+  async function stillPending(p: Promise<unknown>): Promise<boolean> {
+    const marker = Symbol('pending');
+    const settled = await Promise.race([
+      p.then(
+        () => 'resolved',
+        () => 'rejected',
+      ),
+      new Promise((r) => setTimeout(() => r(marker), 150)),
+    ]);
+    return settled === marker;
+  }
+
+  it('closes 1002 with a reason naming BOTH versions', async () => {
+    const port = await startTestHost();
+    const { ws, closed } = await openSocket(port);
+    ws.send(JSON.stringify(v3ExtensionHello()));
+    const { code, reason } = await closed;
+    // 1002 is the code already there and the right one: RFC 6455's protocol
+    // error, which a version mismatch exactly is. 1008 in this file is spent
+    // on identity and authorization refusals.
+    expect(code).toBe(1002);
+    expect(reason).not.toBe('protocol error');
+    expect(reason).toContain('4');
+    expect(reason).toContain('3');
+    expect(reason).toMatch(/protocol version mismatch/);
+    // The close reason is capped at 123 bytes by RFC 6455 (and `ws` throws
+    // above it), which is why the sentence a person reads is the ERROR's and
+    // not this one.
+    expect(Buffer.byteLength(reason, 'utf8')).toBeLessThanOrEqual(123);
+  });
+
+  it('rejects the pending session IMMEDIATELY, with the version and the remedy', async () => {
+    const port = await startTestHost();
+    // Someone is already waiting — this is the `request()` that would have
+    // hung for thirty seconds.
+    const pending = host!.sendOwnInner({ type: 'ping' });
+    const waiting = pending.catch((e: unknown) => e);
+    expect(await stillPending(waiting.then(() => undefined))).toBe(true);
+
+    const started = Date.now();
+    const { ws } = await openSocket(port);
+    ws.send(JSON.stringify(v3ExtensionHello()));
+
+    // Promptness asserted as a RACE this test owns, rather than as an elapsed
+    // number: `SESSION_READY_TIMEOUT_MS` is 30_000, so a bare `await` on the
+    // un-refused code settles at vitest's own 5 s wall and any elapsed
+    // assertion below it reads that wall rather than this refusal. Racing a
+    // timer of our own means the failure is the assertion, and the 5 s is the
+    // threshold the test chose. The generous per-test timeout is what keeps
+    // vitest from becoming the instrument again.
+    const TIMED_OUT = Symbol('timed out');
+    const settled = await Promise.race([
+      waiting,
+      new Promise((r) => setTimeout(() => r(TIMED_OUT), 5_000)),
+    ]);
+    expect(settled).not.toBe(TIMED_OUT);
+    const err = settled as Error;
+    expect(Date.now() - started).toBeLessThan(5_000);
+    expect(err.name).toBe('FetchproxyProtocolVersionError');
+    expect(err.message).toBe(
+      'protocol version mismatch: this MCP speaks fetchproxy protocol 4, the attached ' +
+        'browser extension speaks 3 — update Transporter (the fetchproxy extension) to ' +
+        '3.0.0 or later',
+    );
+    ws.close();
+  }, 20_000);
+
+  it('fails a request issued AFTERWARDS with the same message', async () => {
+    const port = await startTestHost();
+    const { ws, closed } = await openSocket(port);
+    ws.send(JSON.stringify(v3ExtensionHello()));
+    await closed;
+
+    // The refusal outlives the socket it was made on: the extension is v3 and
+    // reconnecting on its backoff, so every call until it is upgraded must say
+    // so rather than wait out the timeout afresh.
+    const started = Date.now();
+    await expect(host!.sendOwnInner({ type: 'ping' })).rejects.toThrow(
+      /protocol version mismatch: this MCP speaks fetchproxy protocol 4/,
+    );
+    expect(Date.now() - started).toBeLessThan(5_000);
+  });
+
+  it('recovers when a v4 extension attaches, so an upgrade does not need a restart', async () => {
+    const port = await startTestHost();
+    const { ws, closed } = await openSocket(port);
+    ws.send(JSON.stringify(v3ExtensionHello()));
+    await closed;
+    await expect(host!.sendOwnInner({ type: 'ping' })).rejects.toThrow(/version mismatch/);
+
+    const ext = await connectMockExtension(port);
+    await ext.completeHandshake(MCP_ID);
+    await host!.sendOwnInner({ type: 'ping' });
+    expect(host!.sessionLinked()).toBe(true);
+    ext.close();
+  });
+
+  it('never fails a LIVE v4 session — the refusal is for a host with nothing attached', async () => {
+    // The regression this pins: the refusal is made in the `validateFrame`
+    // catch, which runs BEFORE the `extension already connected` guard, so a
+    // v3 hello arrives on any socket at any time — including while a v4
+    // extension holds the slot with a derived session. Resetting and
+    // rejecting `ownSessionReady` there destroys a WORKING bridge and wedges
+    // it permanently: nothing clears the refusal but an accepted extension
+    // hello, the attached extension will not send another, and a new socket
+    // is refused 1008 'extension already connected'. Meanwhile
+    // `sessionLinked()` and `extensionConnected()` both still report true, so
+    // the bridge looks healthy while every call fails with a version sentence
+    // about a version nothing attached speaks.
+    //
+    // Reachability is the rollout itself, not an adversary: an old Transporter
+    // in a second Chrome profile dials the same localhost port and reconnects
+    // on its backoff every few seconds.
+    const port = await startTestHost();
+    const ext = await connectMockExtension(port);
+    await ext.completeHandshake(MCP_ID);
+    await host!.sendOwnInner({ type: 'ping' });
+
+    const { ws, closed } = await openSocket(port);
+    ws.send(JSON.stringify(v3ExtensionHello()));
+    // The stranger is still refused, out loud and with both versions...
+    const { code, reason } = await closed;
+    expect(code).toBe(1002);
+    expect(reason).toMatch(/protocol version mismatch/);
+
+    // ...and the session it arrived beside is untouched.
+    await host!.sendOwnInner({ type: 'ping' });
+    expect(host!.sessionLinked()).toBe(true);
+    expect(host!.extensionConnected()).toBe(true);
+    ext.close();
+  });
+
+  it('never fails a v4 extension still being VETTED, either', async () => {
+    // The same regression one window earlier, and the reason "is an extension
+    // attached?" is not one variable: between a v4 hello arriving and the slot
+    // being taken there is an awaited pin read, during which `extensionWs` is
+    // still null and only `extensionClaim` says a better connection is in
+    // flight. A v3 hello landing in that window must not reject the promise
+    // the handshake about to finish will resolve.
+    let releasePin: () => void = () => {};
+    const held = new Promise<void>((r) => {
+      releasePin = r;
+    });
+    let firstRead = true;
+    const slowTrust: ExtensionTrustPort = {
+      allowNew: false,
+      read: async () => {
+        if (firstRead) {
+          firstRead = false;
+          await held;
+        }
+        return null;
+      },
+      write: async () => {},
+    };
+
+    const port = await startTestHost(slowTrust);
+    // The caller who is already waiting. Under the bug this is the promise the
+    // refusal reaches: it is the one the arriving v4 extension is about to
+    // resolve, and rejecting it hands a version sentence to a request the
+    // working bridge was seconds away from serving.
+    const pending = host!.sendOwnInner({ type: 'ping' });
+    const waiting = pending.then(
+      () => 'sent',
+      (e: unknown) => (e as Error).message,
+    );
+
+    const ext = await connectMockExtension(port);
+    const handshake = ext.completeHandshake(MCP_ID);
+    // The claim is taken synchronously with the hello; the pin read is now
+    // parked, so the host is mid-vetting.
+    await new Promise((r) => setTimeout(r, 50));
+
+    const { ws, closed } = await openSocket(port);
+    ws.send(JSON.stringify(v3ExtensionHello()));
+    const { code, reason } = await closed;
+    expect(code).toBe(1002);
+    expect(reason).toMatch(/protocol version mismatch/);
+
+    releasePin();
+    await handshake;
+    expect(await waiting).toBe('sent');
+    await host!.sendOwnInner({ type: 'ping' });
+    expect(host!.sessionLinked()).toBe(true);
+    ext.close();
+  });
+
+  it('never fails a v4 extension that has the SLOT but not yet a session', async () => {
+    // The third window, and the reason the predicate names `extensionWs` too:
+    // between the hello being accepted and the `ready` deriving the key, the
+    // slot is taken and `ownSession` is still null. A v3 hello landing there
+    // must not reject the promise the ready is about to resolve.
+    const port = await startTestHost();
+    const pending = host!.sendOwnInner({ type: 'ping' });
+    const waiting = pending.then(
+      () => 'sent',
+      (e: unknown) => (e as Error).message,
+    );
+
+    const ext = await connectMockExtension(port);
+    const seen = await ext.waitForServerHello(MCP_ID);
+
+    const { ws, closed } = await openSocket(port);
+    ws.send(JSON.stringify(v3ExtensionHello()));
+    const { code, reason } = await closed;
+    expect(code).toBe(1002);
+    expect(reason).toMatch(/protocol version mismatch/);
+
+    await ext.answerReady(seen);
+    expect(await waiting).toBe('sent');
+    expect(host!.sessionLinked()).toBe(true);
+    ext.close();
+  });
+
+  it('leaves a frame malformed for any OTHER reason on the generic path', async () => {
+    const port = await startTestHost();
+    const pending = host!.sendOwnInner({ type: 'ping' });
+    const waiting = pending.catch((e: unknown) => e);
+
+    const { ws, closed } = await openSocket(port);
+    // A CURRENT-version hello with a field missing: `validateFrame` refuses it,
+    // `peekHelloVersion` reads version 4, and 4 is not a mismatch.
+    const broken = v3ExtensionHello();
+    broken.protocolVersion = 4;
+    delete broken.sessionNonce;
+    ws.send(JSON.stringify(broken));
+
+    const { code, reason } = await closed;
+    expect(code).toBe(1002);
+    expect(reason).toBe('protocol error');
+    // ...and the pending session is untouched: the mismatch is the only case
+    // that gets the new treatment.
+    expect(await stillPending(waiting.then(() => undefined))).toBe(true);
+  });
+
+  it('does not fail our own session for a REGISTERED peer whose hello names no mcpId', async () => {
+    // The same route as the test below, one step further in: this socket is
+    // already a registered peer, so the frame it sends next is a sibling MCP's
+    // whatever it says. A hello with no `mcpId` peeks as 'extension' — that is
+    // what the peek is FOR, telling a browser's hello from a sibling's — so
+    // without judging the socket as well as the frame, a stale v3 sibling
+    // could fail the session we hold with the browser by sending one frame.
+    const port = await startTestHost();
+    const pending = host!.sendOwnInner({ type: 'ping' });
+    const waiting = pending.catch((e: unknown) => e);
+
+    const ws = new WebSocket(`ws://127.0.0.1:${port}`);
+    await new Promise<void>((resolve, reject) => {
+      ws.once('open', () => resolve());
+      ws.once('error', reject);
+    });
+    ws.on('error', () => {
+      /* expected: the host closes this socket under us */
+    });
+    const closed = new Promise<{ code: number; reason: string }>((resolve) => {
+      ws.once('close', (code: number, reason: Buffer) =>
+        resolve({ code, reason: reason.toString() }),
+      );
+    });
+    ws.send(
+      JSON.stringify(
+        await buildTestPeerHello({
+          identity: await loadOrCreateIdentity(
+            'resy-mcp',
+            mkdtempSync(join(tmpdir(), 'fp-host-v3-peer-')),
+          ),
+          mcpId: 'resy-mcp:1.0.0:abc1234567890def',
+          serverName: 'resy-mcp',
+          version: '1.0.0',
+          domains: ['resy.com'],
+        }),
+      ),
+    );
+    // Registered. Now the v3 frame, shaped like a browser's.
+    await new Promise((r) => setTimeout(r, 50));
+    ws.send(JSON.stringify(v3ExtensionHello()));
+
+    const { code, reason } = await closed;
+    expect(code).toBe(1002);
+    expect(reason).toMatch(/protocol version mismatch/);
+    expect(await stillPending(waiting.then(() => undefined))).toBe(true);
+  });
+
+  it('does not fail our own session for a v3 PEER dialing in', async () => {
+    const port = await startTestHost();
+    const pending = host!.sendOwnInner({ type: 'ping' });
+    const waiting = pending.catch((e: unknown) => e);
+
+    const { ws, closed } = await openSocket(port);
+    // A v3 sibling MCP registering on the concentrator. It is refused with a
+    // reason of its own — but our session is with the EXTENSION, and a stale
+    // sibling must not be able to fail it.
+    ws.send(
+      JSON.stringify({
+        type: 'hello',
+        protocolVersion: 3,
+        role: 'server',
+        mcpId: 'resy-mcp:1.0.0:abc1234567890def',
+        serverName: 'resy-mcp',
+        version: '1.0.0',
+        domains: ['resy.com'],
+        capabilities: [],
+        identityX25519Pub: 'AAAA',
+        identityEd25519Pub: 'AAAA',
+        sessionNonce: 'AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA=',
+        sessionSig: 'AAAA',
+        accepts: ['hello-rejected'],
+      }),
+    );
+    const { code, reason } = await closed;
+    expect(code).toBe(1002);
+    expect(reason).toMatch(/protocol version mismatch/);
+    expect(await stillPending(waiting.then(() => undefined))).toBe(true);
+  });
+});

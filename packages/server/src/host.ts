@@ -12,10 +12,12 @@ import {
   toB64,
   hkdfSha256,
   openEncryptedFrame,
+  peekHelloVersion,
   sealInnerFrame,
   validateFrame,
   pairTranscript,
   HKDF_SESSION_INFO,
+  PROTOCOL_VERSION,
   MAX_FRAME_BYTES,
   type Capability,
   type CaptureHeaderDecl,
@@ -31,7 +33,12 @@ import {
 import { buildServerHello } from './build-server-hello.js';
 import { encodeOutboundInnerFrame } from './frame-size.js';
 import { SessionState } from './session.js';
-import { awaitSessionReady, FetchproxyHelloRejectedError } from './session-ready.js';
+import {
+  awaitSessionReady,
+  FetchproxyHelloRejectedError,
+  FetchproxyProtocolVersionError,
+  protocolVersionCloseReason,
+} from './session-ready.js';
 import type { Identity } from './identity.js';
 import { decideExtensionTrust, type ExtensionTrustPort } from './extension-trust.js';
 
@@ -420,6 +427,107 @@ export async function startHost(opts: HostOpts): Promise<HostHandle> {
   }
   resetSessionPromise();
 
+  // 3.0.0 (protocol 4), Task 4.2: the version refusal this host is standing
+  // on, if any. Held because the refusal must OUTLIVE the socket it was made
+  // on — a v3 extension reconnects on its backoff every few seconds, and a
+  // call issued between two of those attempts must say "version mismatch"
+  // rather than start a fresh thirty-second wait — and cleared the moment a
+  // hello this build can actually read arrives, so upgrading the extension
+  // does not also mean restarting every MCP.
+  let ownSessionRefusal: FetchproxyProtocolVersionError | null = null;
+
+  /**
+   * Refuse a hello whose `protocolVersion` is not ours, out loud (Task 4.2).
+   *
+   * Reads the refused frame through {@link peekHelloVersion}, whose contract
+   * is that it GRANTS NOTHING: no session is started, no `mcpId` slot bound,
+   * no trust record read or written, no counter moved. Every field here came
+   * out of a frame no validator accepted, so the version is used only to
+   * decide whether to speak and the presence of an `mcpId` only to tell an
+   * extension's hello (which carries none by construction) from a sibling
+   * MCP's.
+   *
+   * That distinction is the whole reason this is not one branch: our session
+   * is with the EXTENSION, so a stale v3 sibling registering on the
+   * concentrator gets its own reason and its own close and must not be able
+   * to fail our pending session.
+   *
+   * What a caller CAN do with the extension branch is make our next call fail
+   * fast with a version sentence by sending one unsigned frame. That is not a
+   * new boundary: the origin gate admits an extension scheme or no `Origin`
+   * at all, so the population able to reach it is this uid's own processes,
+   * which already hold `~/.fetchproxy/identity/*.json`. And the refusal is
+   * self-clearing — the real extension's next hello ends it.
+   *
+   * That last sentence is only true of a host with NOTHING attached, which is
+   * why the extension branch is gated on exactly that. This runs in the
+   * `validateFrame` catch, upstream of the `extension already connected`
+   * guard, so a v3 hello reaches it on any socket at any time — including
+   * while a v4 extension holds the slot with a derived session. Standing a
+   * refusal up there would destroy a WORKING bridge and wedge it for the life
+   * of the connection: the attached extension has already sent its hello and
+   * will not send another, so nothing clears the refusal, and a new socket is
+   * refused `1008 'extension already connected'` — while `sessionLinked()`
+   * and `extensionConnected()` both keep reporting true, so the bridge looks
+   * healthy while every call fails with a version sentence about a version
+   * nothing attached speaks. The reachable form of that is the rollout this
+   * whole group exists for, not an adversary: an old Transporter in a second
+   * browser profile dials the same port and reconnects on its backoff every
+   * few seconds. The close below is unconditional — the stranger is refused
+   * out loud either way; what is conditional is whether OUR session hears
+   * about it.
+   *
+   * Returns whether it answered FOR the mismatch — false leaves the caller on
+   * the pre-existing `1002 'protocol error'` path.
+   */
+  function refuseVersionMismatch(
+    ws: WebSocket,
+    raw: unknown,
+    identified: 'extension' | 'peer' | null,
+  ): boolean {
+    const peek = peekHelloVersion(raw);
+    if (!peek || peek.protocolVersion === PROTOCOL_VERSION) return false;
+    const err = new FetchproxyProtocolVersionError({
+      ourVersion: PROTOCOL_VERSION,
+      theirVersion: peek.protocolVersion,
+      peer: peek.mcpId === null ? 'extension' : 'mcp',
+    });
+    console.warn(`[fetchproxy] host: ${err.message}`);
+    // Three names for one question — "is something better already here?" —
+    // because the answer lives in a different variable at each stage of an
+    // extension's arrival: `extensionClaim` from the synchronous moment a v4
+    // hello lands, `extensionWs` once the trust read has let it take the slot,
+    // `ownSession` once its `ready` has derived a key. They deliberately
+    // overlap (today the claim is held for the whole life of the connection,
+    // so it alone would answer), because the cost of a redundant conjunct is
+    // nothing and the cost of a missing one is a wedged bridge.
+    const nothingBetterAttached =
+      extensionWs === null && extensionClaim === null && ownSession === null;
+    // ...and the far end is judged on what THIS socket already is, not only on
+    // what the frame claims. A socket that registered as a peer is a sibling
+    // MCP process; a later hello from it carrying no `mcpId` peeks as
+    // 'extension', which would let a stale sibling fail the session we hold
+    // with the browser — the very thing the `peer` branch below exists to
+    // prevent for the hellos that do carry one.
+    if (err.peer === 'extension' && identified !== 'peer' && nothingBetterAttached) {
+      ownSessionRefusal = err;
+      // Two rejections and a reset between them, and each does a different
+      // job: the first fails whoever is waiting NOW (the `request()` that
+      // used to hang for thirty seconds), and the second leaves the fresh
+      // promise already refused so a call issued AFTERWARDS fails fast with
+      // the same message instead of waiting the timeout out again.
+      rejectOwnSession(err);
+      resetSessionPromise();
+      rejectOwnSession(err);
+    }
+    try {
+      ws.close(1002, protocolVersionCloseReason(err));
+    } catch {
+      /* already going down */
+    }
+    return true;
+  }
+
   // 0.4.0: track the extension's hello so we can verify its ReadyFrame
   // signature against the claimed Ed25519 identity. One extension per
   // host instance; cleared on disconnect.
@@ -521,12 +629,22 @@ export async function startHost(opts: HostOpts): Promise<HostHandle> {
 
     ws.on('message', async (data) => {
       try {
-        let frame: Frame;
+        let raw: unknown;
         try {
-          const raw = JSON.parse(data.toString());
-          frame = validateFrame(raw);
+          raw = JSON.parse(data.toString());
         } catch {
           ws.close(1002, 'protocol error');
+          return;
+        }
+        let frame: Frame;
+        try {
+          frame = validateFrame(raw);
+        } catch {
+          // 3.0.0 (protocol 4), Task 4.2: a version mismatch is the ONE
+          // refusal that answers rather than dropping. Everything else keeps
+          // today's generic close, so a malformed-frame flood neither changes
+          // shape nor touches the pending session.
+          if (!refuseVersionMismatch(ws, raw, identified)) ws.close(1002, 'protocol error');
           return;
         }
 
@@ -594,6 +712,18 @@ export async function startHost(opts: HostOpts): Promise<HostHandle> {
           identified = 'extension';
           extensionWs = ws;
           extensionHello = frame;
+          // 3.0.0 (protocol 4), Task 4.2: an extension this build CAN read is
+          // attaching, so the standing version refusal is over. Its promise is
+          // one nothing can resolve (it was rejected the moment the refusal
+          // was made), and the only other thing that ever resets is this
+          // socket's close — which never fires for a socket refused before it
+          // was ever identified. Without this, upgrading the extension would
+          // leave every MCP process wedged on a refusal about a version that
+          // is no longer on the wire.
+          if (ownSessionRefusal) {
+            ownSessionRefusal = null;
+            resetSessionPromise();
+          }
           // 3.0.0 (protocol 4), §1a Rule A: mint a session ephemeral for THIS
           // extension session and build the hello from it. Placed after the
           // liveness re-check above and immediately before the send, so a

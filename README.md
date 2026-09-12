@@ -128,7 +128,7 @@ const fp = new FetchproxyServer({
 
 await fp.listen();
 // First run prints the pair code to stderr:
-//   fetchproxy pair code: 123-456
+//   fetchproxy pair code: 4829-3176
 // Open the extension popup and click Approve.
 
 // Single-domain MCP: `domains[0]` is the implicit base.

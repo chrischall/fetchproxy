@@ -27,9 +27,12 @@ export {
 export type { WaitedOp } from './ws-server.js';
 export {
   FetchproxyHelloRejectedError,
+  FetchproxyProtocolVersionError,
   FetchproxySessionNotReadyError,
+  protocolVersionCloseReason,
   SESSION_READY_TIMEOUT_MS,
 } from './session-ready.js';
+export type { ProtocolVersionPeer } from './session-ready.js';
 export { classifyFetchError } from './error-kind.js';
 export type { FetchErrorKind } from './error-kind.js';
 export { classifyBridgeError } from './classify-bridge-error.js';

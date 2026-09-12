@@ -865,4 +865,58 @@ describe('peer: a bootstrap keypair and a session ephemeral (v4)', () => {
       hostRig = null;
     }
   });
+
+  it('refuses a v3 hello out loud rather than rejecting with a validator sentence (Task 4.2)', async () => {
+    // The peer's mirror of the host's refusal. A v4 peer behind a v3
+    // concentrator used to fail its wait with `hello.protocolVersion: must be
+    // 4` — a validator's sentence, in a claude.ai tool error, for a person who
+    // has a browser and a sibling MCP and no idea either has a version.
+    const { rig, peer: p } = await startTestPeer();
+    await rig.waitForHello();
+    const pending = p.sendInner({ type: 'ping' });
+    const waiting = pending.catch((e: unknown) => e);
+    expect(await stillPending(waiting.then(() => undefined))).toBe(true);
+
+    const started = Date.now();
+    // What a v3 host relays: the v3 extension attached to it.
+    await rig.send({
+      type: 'hello',
+      protocolVersion: 3,
+      role: 'extension',
+      platform: 'chrome',
+      extensionId: 'fetchproxy',
+      version: '2.11.3',
+      identityX25519Pub: 'AAAA',
+      identityEd25519Pub: 'AAAA',
+      sessionNonce: toB64(new Uint8Array(32).fill(7)),
+    });
+
+    const err = (await waiting) as Error;
+    // SESSION_READY_TIMEOUT_MS is 30_000: landing inside a second is proof
+    // this is the refusal path and not the timeout that used to answer here.
+    expect(Date.now() - started).toBeLessThan(5_000);
+    expect(err.name).toBe('FetchproxyProtocolVersionError');
+    expect(err.message).toBe(
+      'protocol version mismatch: this MCP speaks fetchproxy protocol 4, the attached ' +
+        'browser extension speaks 3 — update Transporter (the fetchproxy extension) to ' +
+        '3.0.0 or later',
+    );
+    expect(p.sessionLinked()).toBe(false);
+    // The link is left up on purpose: closing it is wired to re-election, and
+    // re-electing into a port a v3 host still holds dials back into this.
+    //
+    // Asserted as a RACE, not as a `readyState` read: a close the peer issues
+    // travels to this end of the socket asynchronously, so sampling
+    // `readyState` on the same turn reads OPEN whether or not the peer closed
+    // — which is exactly how a `ws.close(1002)` added beside the refusal
+    // survived every one of these seventeen tests. Let a real close have a
+    // quarter-second to arrive and require the timer to win.
+    const sock = await rig.socket();
+    const outcome = await Promise.race([
+      new Promise<'closed'>((r) => sock.once('close', () => r('closed'))),
+      new Promise<'stayed up'>((r) => setTimeout(() => r('stayed up'), 250)),
+    ]);
+    expect(outcome).toBe('stayed up');
+    expect(sock.readyState).toBe(WebSocket.OPEN);
+  });
 });
