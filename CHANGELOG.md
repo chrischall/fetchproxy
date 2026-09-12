@@ -1,5 +1,21 @@
 # Changelog
 
+## [2.11.4](https://github.com/chrischall/fetchproxy/compare/v2.11.3...v2.11.4) (2026-09-12)
+
+
+### Bug Fixes
+
+* **cli:** a cookie value off the command line, hostname-matched profiles, and profile writes that survive an interrupt ([#360](https://github.com/chrischall/fetchproxy/issues/360)) ([c49b81a](https://github.com/chrischall/fetchproxy/commit/c49b81a1481ccc55950af463ce374efad7f4c4a8))
+* **cli:** check the profile before draining stdin, and match a profile's domains the way the server does ([#366](https://github.com/chrischall/fetchproxy/issues/366)) ([da063e7](https://github.com/chrischall/fetchproxy/commit/da063e71aa99cf3224fbd8be1df401b4b416c82c))
+* **server,extension:** refuse a public-suffix domain and a local Origin, and surface only the self-derived pair code ([#364](https://github.com/chrischall/fetchproxy/issues/364)) ([1c457c7](https://github.com/chrischall/fetchproxy/commit/1c457c74c1615efe07c878384f1852251148e8b7))
+* **server:** authenticate before advancing the replay counter, and implement the handshake timeout the docs already claim ([#356](https://github.com/chrischall/fetchproxy/issues/356)) ([a4c940b](https://github.com/chrischall/fetchproxy/commit/a4c940babd54d5cda4f1da47cb897352f6df0124))
+* **server:** refuse a public-suffix domain at the constructor, where it fails loudly ([#367](https://github.com/chrischall/fetchproxy/issues/367)) ([e8ebf09](https://github.com/chrischall/fetchproxy/commit/e8ebf09133143158d3015563525d37ed149424ab))
+
+
+### Documentation
+
+* **plans:** the protocol v4 wire break — forward secrecy, AAD over the frame's identity, and the cohort choreography ([#361](https://github.com/chrischall/fetchproxy/issues/361)) ([21197c3](https://github.com/chrischall/fetchproxy/commit/21197c3e3848feca1a871d5fa0ff9595a3843f34))
+
 ## [2.11.3](https://github.com/chrischall/fetchproxy/compare/v2.11.2...v2.11.3) (2026-09-11)
 
 
