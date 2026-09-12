@@ -131,7 +131,15 @@ row). One variable has no option beside it:
   (`'opentable.com'`) and let the extension match subdomains
   automatically. Multi-domain MCPs (HoneyBook, Resy two-host setups)
   pass every declared domain on every per-call request via
-  `{ domain: 'x.com' }`.
+  `{ domain: 'x.com' }`. An entry that is a **public suffix** (`com`,
+  `co.uk`, `github.io`) is refused by the constructor, naming the entry:
+  it is matched exact-or-subdomain like any other, so it would claim
+  every site anybody can register under it. The extension refuses the
+  same entry when it validates the hello frame, but that refusal is a
+  dropped frame and a line in the service worker's own console — this one
+  fails where the declaration is written. Heuristic, not the Mozilla
+  Public Suffix List; `packages/protocol/src/public-suffix.ts` says what
+  it covers and what it does not.
 - **`port` / `host`.** The defaults are load-bearing — the browser
   extension's connect target is hard-coded to `127.0.0.1:37149`, so
   every MCP that wants to share the concentrator needs to keep the
