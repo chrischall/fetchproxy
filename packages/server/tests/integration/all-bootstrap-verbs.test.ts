@@ -9,6 +9,8 @@ import {
   generateEd25519,
   ed25519Sign,
   readySignaturePayload,
+  transcriptHash,
+  fromB64,
   ecdhX25519,
   hkdfSha256,
   sealInnerFrame,
@@ -63,9 +65,7 @@ describe('integration: all 0.3.0 bootstrap verbs', () => {
       cookieKeys: ['MTOKEN', 'CKAT'],
       localStorageKeys: ['auth', 'tokenExpiry'],
       sessionStorageKeys: ['anon-id'],
-      captureHeaders: [
-        { host: 'api.ourfamilywizard.com', path: '/v1/*', headerName: 'x-csrf' },
-      ],
+      captureHeaders: [{ host: 'api.ourfamilywizard.com', path: '/v1/*', headerName: 'x-csrf' }],
       identityDir: idDir,
     });
     await server.listen();
@@ -102,22 +102,41 @@ describe('integration: all 0.3.0 bootstrap verbs', () => {
             );
             const mcpSessionNonce = new Uint8Array(Buffer.from(frame.sessionNonce, 'base64'));
             const ephemeral = await generateX25519();
-            const shared = await ecdhX25519(ephemeral.privateKey, identityX25519Pub);
+            // 3.0.0 (protocol 4): the ECDH is ephemeral x ephemeral — the MCP's
+            // half is `sessionPub` on the hello, not its long-term identity key —
+            // and the HKDF salt is the transcript over both nonces and both
+            // ephemerals. Neither change is a compile error, so this mock is
+            // what holds the server to them.
+            const mcpSessionPub = fromB64(frame.sessionPub);
+            const shared = await ecdhX25519(ephemeral.privateKey, mcpSessionPub);
             sessionKey = await hkdfSha256(
               shared,
-              mcpSessionNonce,
+              await transcriptHash(
+                mcpSessionNonce,
+                extSessionNonce,
+                mcpSessionPub,
+                ephemeral.publicKey,
+              ),
               new TextEncoder().encode(HKDF_SESSION_INFO),
               32,
             );
             mcpId = frame.mcpId;
             const sig = await ed25519Sign(
               extIdEd.privateKey,
-              readySignaturePayload(mcpSessionNonce, extSessionNonce, ephemeral.publicKey),
+              readySignaturePayload(
+                mcpSessionNonce,
+                extSessionNonce,
+                ephemeral.publicKey,
+                mcpSessionPub,
+              ),
             );
             const readyFrame: ReadyFrame = {
               type: 'ready',
               mcpId,
               extensionSessionPub: Buffer.from(ephemeral.publicKey).toString('base64'),
+              // 3.0.0: names the MCP ephemeral this ready answers, so a server
+              // can tell a stale one (discard) from a forged one (1008).
+              mcpSessionPub: frame.sessionPub,
               sessionSig: Buffer.from(sig).toString('base64'),
             };
             extWs!.send(JSON.stringify(readyFrame));
@@ -126,45 +145,69 @@ describe('integration: all 0.3.0 bootstrap verbs', () => {
           }
           if (frame.type === 'frame') {
             if (!sessionKey || !mcpId || frame.mcpId !== mcpId) return;
-            const inner = await openEncryptedFrame(sessionKey, frame);
+            const inner = await openEncryptedFrame(sessionKey, frame, 's2e');
             if (inner.type !== 'request') return;
             outboundSeq += 1;
             // Reply with a canned payload matched to the inner verb.
             if (inner.op === 'read_cookies' && 'origin' in inner.init) {
-              const sealed = await sealInnerFrame(sessionKey, mcpId, outboundSeq, {
-                type: 'response',
-                id: inner.id,
-                ok: true,
-                op: 'read_cookies',
-                values: { MTOKEN: 'mt-val', CKAT: 'ck-val' },
-              });
+              const sealed = await sealInnerFrame(
+                sessionKey,
+                mcpId,
+                outboundSeq,
+                {
+                  type: 'response',
+                  id: inner.id,
+                  ok: true,
+                  op: 'read_cookies',
+                  values: { MTOKEN: 'mt-val', CKAT: 'ck-val' },
+                },
+                'e2s',
+              );
               extWs!.send(JSON.stringify(sealed));
             } else if (inner.op === 'read_local_storage') {
-              const sealed = await sealInnerFrame(sessionKey, mcpId, outboundSeq, {
-                type: 'response',
-                id: inner.id,
-                ok: true,
-                op: 'read_local_storage',
-                values: { auth: 'ey...', tokenExpiry: '1730000000000' },
-              });
+              const sealed = await sealInnerFrame(
+                sessionKey,
+                mcpId,
+                outboundSeq,
+                {
+                  type: 'response',
+                  id: inner.id,
+                  ok: true,
+                  op: 'read_local_storage',
+                  values: { auth: 'ey...', tokenExpiry: '1730000000000' },
+                },
+                'e2s',
+              );
               extWs!.send(JSON.stringify(sealed));
             } else if (inner.op === 'read_session_storage') {
-              const sealed = await sealInnerFrame(sessionKey, mcpId, outboundSeq, {
-                type: 'response',
-                id: inner.id,
-                ok: true,
-                op: 'read_session_storage',
-                values: { 'anon-id': 'abc-123' },
-              });
+              const sealed = await sealInnerFrame(
+                sessionKey,
+                mcpId,
+                outboundSeq,
+                {
+                  type: 'response',
+                  id: inner.id,
+                  ok: true,
+                  op: 'read_session_storage',
+                  values: { 'anon-id': 'abc-123' },
+                },
+                'e2s',
+              );
               extWs!.send(JSON.stringify(sealed));
             } else if (inner.op === 'capture_request_header') {
-              const sealed = await sealInnerFrame(sessionKey, mcpId, outboundSeq, {
-                type: 'response',
-                id: inner.id,
-                ok: true,
-                op: 'capture_request_header',
-                value: 'csrf-fp-abc',
-              });
+              const sealed = await sealInnerFrame(
+                sessionKey,
+                mcpId,
+                outboundSeq,
+                {
+                  type: 'response',
+                  id: inner.id,
+                  ok: true,
+                  op: 'capture_request_header',
+                  value: 'csrf-fp-abc',
+                },
+                'e2s',
+              );
               extWs!.send(JSON.stringify(sealed));
             }
           }
@@ -176,7 +219,7 @@ describe('integration: all 0.3.0 bootstrap verbs', () => {
       // Send the extension hello so the host forwards the server hello.
       const extHello: HelloFrameFromExtension = {
         type: 'hello',
-        protocolVersion: 3,
+        protocolVersion: 4,
         role: 'extension',
         platform: 'chrome',
         extensionId: 'fetchproxy',

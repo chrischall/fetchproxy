@@ -1,6 +1,7 @@
 import { aesGcmSeal, aesGcmOpen } from './crypto.js';
 import { toB64, fromB64 } from './encoding.js';
-import type { InnerFrame, EncryptedFrame } from './frames.js';
+import { frameAad } from './frames.js';
+import type { InnerFrame, EncryptedFrame, Direction } from './frames.js';
 import { validateInnerFrame } from './validate.js';
 
 const enc = new TextEncoder();
@@ -136,16 +137,25 @@ export const MAX_FRAME_BYTES = 42 * 1024 * 1024;
  * Accepts {@link encodeInnerFrame}'s plaintext as well as the object, so a
  * caller that measured the frame with {@link sealedFrameWireBytes} first can
  * hand over the bytes it already has instead of serialising them again.
+ *
+ * `direction` is REQUIRED and has no default (3.0.0+). It joins `mcpId` and
+ * `seq` in the AEAD's additional data via `frameAad`, which is what binds the
+ * ciphertext to the envelope it is carried in; a default would let a call
+ * site ship the wrong binding while compiling, and the whole point of the
+ * parameter is that every sender states which way its frame is going. It
+ * does not appear on the wire and does not move
+ * {@link sealedFrameWireBytes} by a byte.
  */
 export async function sealInnerFrame(
   sessionKey: Uint8Array,
   mcpId: string,
   seq: number,
   inner: InnerFrameOrPlaintext,
+  direction: Direction,
 ): Promise<EncryptedFrame> {
   const iv = randomIv();
   const pt = plaintextOf(inner);
-  const ct = await aesGcmSeal(sessionKey, iv, pt);
+  const ct = await aesGcmSeal(sessionKey, iv, pt, frameAad(mcpId, seq, direction));
   return {
     type: 'frame',
     mcpId,
@@ -164,12 +174,20 @@ export async function sealInnerFrame(
  * that don't need to distinguish "wrong key" from "malformed payload" (this
  * function's original two consumers, `host.ts` and the extension's own
  * request-decode path) keep the simple throw-only contract unchanged.
+ *
+ * `direction` is the direction the RECEIVER expects a frame on this socket to
+ * have been sent in — `'s2e'` when the extension opens a frame from an MCP,
+ * `'e2s'` when an MCP opens one from the extension. Required, for
+ * {@link sealInnerFrame}'s reason: it is the receiver's half of the binding,
+ * so a frame reflected back at its own sender fails the tag rather than
+ * arriving as a well-formed inner frame the dispatcher has to ignore.
  */
 export async function openEncryptedFrame(
   sessionKey: Uint8Array,
   frame: EncryptedFrame,
+  direction: Direction,
 ): Promise<InnerFrame> {
-  const result = await openEncryptedFrameDetailed(sessionKey, frame);
+  const result = await openEncryptedFrameDetailed(sessionKey, frame, direction);
   if (result.stage === 'ok') return result.inner;
   throw result.error instanceof Error ? result.error : new Error(String(result.error));
 }
@@ -210,10 +228,18 @@ export type OpenFrameResult =
  * whole connection over one malformed response, which would be an
  * over-broad reaction to something decryption just proved came from the
  * current, legitimate peer.
+ *
+ * `direction` is required and means what it means on
+ * {@link openEncryptedFrame}. A frame whose AAD does not match — a bumped
+ * `seq`, another MCP's `mcpId`, the opposite direction — fails at
+ * `decrypt-failed` and not at `validation-failed`, because the tag is what
+ * rejects it. That is the distinction to assert against: a mismatch reaching
+ * `validation-failed` would mean the tag had passed.
  */
 export async function openEncryptedFrameDetailed(
   sessionKey: Uint8Array,
   frame: EncryptedFrame,
+  direction: Direction,
 ): Promise<OpenFrameResult> {
   let pt: Uint8Array;
   try {
@@ -225,7 +251,13 @@ export async function openEncryptedFrameDetailed(
     // function documented as never throwing.
     const iv = fromB64(frame.iv);
     const ct = fromB64(frame.ciphertext);
-    pt = await aesGcmOpen(sessionKey, iv, ct);
+    // The AAD is taken from the ENVELOPE the frame arrived in, which is the
+    // point: if a party in the path moved `mcpId` or `seq`, the bytes the
+    // sender sealed under and the bytes recomputed here differ and the tag
+    // fails, landing this in the `decrypt-failed` bucket below alongside a
+    // wrong key and tampered ciphertext — "nothing about this frame can be
+    // trusted", which is exactly what a rewritten envelope means.
+    pt = await aesGcmOpen(sessionKey, iv, ct, frameAad(frame.mcpId, frame.seq, direction));
   } catch (error) {
     return { stage: 'decrypt-failed', error };
   }

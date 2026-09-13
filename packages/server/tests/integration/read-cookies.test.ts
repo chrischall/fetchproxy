@@ -9,6 +9,8 @@ import {
   generateEd25519,
   ed25519Sign,
   readySignaturePayload,
+  transcriptHash,
+  fromB64,
   ecdhX25519,
   hkdfSha256,
   sealInnerFrame,
@@ -96,22 +98,41 @@ describe('integration: readCookies() round-trip', () => {
             );
             const mcpSessionNonce = new Uint8Array(Buffer.from(frame.sessionNonce, 'base64'));
             const ephemeral = await generateX25519();
-            const shared = await ecdhX25519(ephemeral.privateKey, identityX25519Pub);
+            // 3.0.0 (protocol 4): the ECDH is ephemeral x ephemeral — the MCP's
+            // half is `sessionPub` on the hello, not its long-term identity key —
+            // and the HKDF salt is the transcript over both nonces and both
+            // ephemerals. Neither change is a compile error, so this mock is
+            // what holds the server to them.
+            const mcpSessionPub = fromB64(frame.sessionPub);
+            const shared = await ecdhX25519(ephemeral.privateKey, mcpSessionPub);
             sessionKey = await hkdfSha256(
               shared,
-              mcpSessionNonce,
+              await transcriptHash(
+                mcpSessionNonce,
+                extSessionNonce,
+                mcpSessionPub,
+                ephemeral.publicKey,
+              ),
               new TextEncoder().encode(HKDF_SESSION_INFO),
               32,
             );
             mcpId = frame.mcpId;
             const sig = await ed25519Sign(
               extIdEd.privateKey,
-              readySignaturePayload(mcpSessionNonce, extSessionNonce, ephemeral.publicKey),
+              readySignaturePayload(
+                mcpSessionNonce,
+                extSessionNonce,
+                ephemeral.publicKey,
+                mcpSessionPub,
+              ),
             );
             const readyFrame: ReadyFrame = {
               type: 'ready',
               mcpId,
               extensionSessionPub: Buffer.from(ephemeral.publicKey).toString('base64'),
+              // 3.0.0: names the MCP ephemeral this ready answers, so a server
+              // can tell a stale one (discard) from a forged one (1008).
+              mcpSessionPub: frame.sessionPub,
               sessionSig: Buffer.from(sig).toString('base64'),
             };
             extWs!.send(JSON.stringify(readyFrame));
@@ -120,7 +141,7 @@ describe('integration: readCookies() round-trip', () => {
           }
           if (frame.type === 'frame') {
             if (!sessionKey || !mcpId || frame.mcpId !== mcpId) return;
-            const inner = await openEncryptedFrame(sessionKey, frame);
+            const inner = await openEncryptedFrame(sessionKey, frame, 's2e');
             if (inner.type === 'request' && inner.op === 'read_cookies') {
               // Sanity-check the inner-request shape the server sent.
               expect(inner.init.tabUrl).toBe('https://creditkarma.com/');
@@ -132,12 +153,7 @@ describe('integration: readCookies() round-trip', () => {
                 cookies: 'sid=secret; csrf=xyz',
               };
               outboundSeq += 1;
-              const sealed = await sealInnerFrame(
-                sessionKey,
-                mcpId,
-                outboundSeq,
-                respInner,
-              );
+              const sealed = await sealInnerFrame(sessionKey, mcpId, outboundSeq, respInner, 'e2s');
               extWs!.send(JSON.stringify(sealed));
             }
           }
@@ -149,7 +165,7 @@ describe('integration: readCookies() round-trip', () => {
       // Send the extension hello so the host forwards the server hello.
       const extHello: HelloFrameFromExtension = {
         type: 'hello',
-        protocolVersion: 3,
+        protocolVersion: 4,
         role: 'extension',
         platform: 'chrome',
         extensionId: 'fetchproxy',

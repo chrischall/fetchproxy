@@ -65,6 +65,85 @@ export class FetchproxyHelloRejectedError extends Error {
 }
 
 /**
+ * The release at which protocol 4 lands, on both sides of the bridge — the
+ * npm version of `@fetchproxy/server` and the version of the browser
+ * extension, which move together by construction (every package in this
+ * monorepo shares one version, and the extension is built from it).
+ *
+ * Literals rather than derived values: what a refusal must print is a fact
+ * about the COHORT release, not about the build doing the printing, and the
+ * MCP cannot read the extension's version off a hello it has just refused.
+ * The extension's mirror of this constant is `MIN_SERVER_VERSION` in
+ * `extension-core/src/background/socket.ts`.
+ */
+const MIN_VERSION = '3.0.0';
+
+/** Which end of the bridge spoke the other version. */
+export type ProtocolVersionPeer = 'extension' | 'mcp';
+
+/**
+ * Thrown when the far end of the bridge speaks a different protocol version
+ * (3.0.0 / protocol 4, Task 4.2).
+ *
+ * Until 3.0.0 this was not an error at all: `validateFrame` threw, the socket
+ * was closed `1002 'protocol error'` — three words that say nothing about a
+ * version — and the pending session was left alone, so the next call waited
+ * out {@link SESSION_READY_TIMEOUT_MS} and then reported `not-ready` with a
+ * hint blaming a signed-out session or a changed scope. A hang is the worst
+ * failure mode a version mismatch can have: the person seeing it has nothing
+ * to act on and no reason to suspect a version.
+ *
+ * So the message names BOTH versions and the thing to install, and names the
+ * extension by its USER-FACING name — the person reading this in a claude.ai
+ * tool error has a browser, not a package.
+ */
+export class FetchproxyProtocolVersionError extends Error {
+  /** The protocol version this process speaks. */
+  readonly ourVersion: number;
+  /** The protocol version the far end announced in the hello we refused. */
+  readonly theirVersion: number;
+  readonly peer: ProtocolVersionPeer;
+
+  constructor(info: { ourVersion: number; theirVersion: number; peer: ProtocolVersionPeer }) {
+    const far =
+      info.peer === 'extension'
+        ? `the attached browser extension speaks ${info.theirVersion} — update Transporter ` +
+          `(the fetchproxy extension) to ${MIN_VERSION} or later`
+        : `the MCP holding the bridge port speaks ${info.theirVersion} — upgrade ` +
+          `@fetchproxy/server to ${MIN_VERSION} or later in that MCP`;
+    super(
+      `protocol version mismatch: this MCP speaks fetchproxy protocol ${info.ourVersion}, ${far}`,
+    );
+    this.name = 'FetchproxyProtocolVersionError';
+    this.ourVersion = info.ourVersion;
+    this.theirVersion = info.theirVersion;
+    this.peer = info.peer;
+    Object.setPrototypeOf(this, new.target.prototype);
+  }
+}
+
+/**
+ * The same fact, cut to fit a WebSocket close frame.
+ *
+ * RFC 6455 caps a close reason at 123 bytes and `ws` throws above it, so the
+ * sentence a person reads is {@link FetchproxyProtocolVersionError}'s and this
+ * is what the far end's logs get. It still names BOTH versions, which is the
+ * whole of what "out loud" means here — a close with no reason, or one naming
+ * a single version, tells the reader nothing they can act on.
+ */
+export function protocolVersionCloseReason(info: {
+  ourVersion: number;
+  theirVersion: number;
+  peer: ProtocolVersionPeer;
+}): string {
+  const far = info.peer === 'extension' ? 'the extension' : 'the other MCP';
+  return (
+    `protocol version mismatch: this MCP speaks ${info.ourVersion}, ` +
+    `${far} speaks ${info.theirVersion}`
+  );
+}
+
+/**
  * Await a session-ready promise, but reject with a
  * {@link FetchproxySessionNotReadyError} if it hasn't settled within
  * `timeoutMs` — converting an indefinite hang into a bounded, differentiated

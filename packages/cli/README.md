@@ -34,11 +34,11 @@ Each profile gets its own long-term identity, keyed by name: profile `opentable`
 
 ### Pair-code flow
 
-The first time any verb connects under a given profile, the extension doesn't auto-trust it. `fpx` prints a 6-digit pair code to stderr:
+The first time any verb connects under a given profile, the extension doesn't auto-trust it. `fpx` prints an 8-digit pair code to stderr:
 
 ```
 $ fpx health -p opentable
-fetchproxy pair code: 482-913 — approve in the Transporter extension popup
+fetchproxy pair code: 4829-1374 — approve in the Transporter extension popup
 ```
 
 Open the Transporter popup, confirm the code matches, click Approve. Every subsequent command against that profile — from any verb — reuses the same trust record and skips the prompt.

@@ -72,14 +72,14 @@ function closeCodeWithin(ws: WebSocket, ms: number): Promise<number | null> {
 
 const extHello: HelloFrameFromExtension = {
   type: 'hello',
-  protocolVersion: 3,
+  protocolVersion: 4,
   role: 'extension',
   platform: 'chrome',
   extensionId: 'fetchproxy',
   version: '2.6.0',
   identityX25519Pub: 'AAAA',
   identityEd25519Pub: 'AAAA',
-  sessionNonce: 'AAAA',
+  sessionNonce: 'AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA=',
 };
 
 describe('host handshake timeout (docs/SECURITY.md §T2 defense 3)', () => {

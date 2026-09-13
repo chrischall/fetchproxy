@@ -121,7 +121,7 @@ describe('the extension caps the frame it sends', () => {
     expect(ws.sent).toHaveLength(1);
     const sent = sentFrames()[0]!;
     expect(new TextEncoder().encode(ws.sent[0]!).length).toBeLessThanOrEqual(MAX_FRAME_BYTES);
-    const inner = await openEncryptedFrame(KEY, sent);
+    const inner = await openEncryptedFrame(KEY, sent, 'e2s');
     expect(inner).toMatchObject({
       type: 'response',
       id: 12,
@@ -143,7 +143,7 @@ describe('the extension caps the frame it sends', () => {
       const fits = responseOfWireSize(-1024);
       await sendInner(MCP_ID, fits);
       expect(ws.sent).toHaveLength(1);
-      const inner = await openEncryptedFrame(KEY, sentFrames()[0]!);
+      const inner = await openEncryptedFrame(KEY, sentFrames()[0]!, 'e2s');
       expect(inner).toMatchObject({ type: 'response', id: 12, ok: true });
       expect(ws.closeCalls).toBe(0);
     },
@@ -172,7 +172,7 @@ describe('the extension caps the frame it sends', () => {
     await sendInner(MCP_ID, oversize);
 
     expect(ws.sent).toHaveLength(1);
-    const inner = await openEncryptedFrame(KEY, sentFrames()[0]!);
+    const inner = await openEncryptedFrame(KEY, sentFrames()[0]!, 'e2s');
     expect(inner).toMatchObject({ type: 'response', id: 12, ok: false, op: 'read_dom' });
     expect((inner as { error: string }).error).toContain(String(MAX_FRAME_BYTES));
     expect(ws.closeCalls).toBe(0);

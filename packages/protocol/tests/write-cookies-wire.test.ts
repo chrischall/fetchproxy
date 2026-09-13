@@ -33,7 +33,11 @@ describe('write_cookies — over the wire', () => {
       cookies: [{ name: 'CKAT', value: 'rotated' }],
     });
 
-    const opened = await openEncryptedFrame(key, await sealInnerFrame(key, mcpId, 1, inner));
+    const opened = await openEncryptedFrame(
+      key,
+      await sealInnerFrame(key, mcpId, 1, inner, 's2e'),
+      's2e',
+    );
 
     expect(opened).toEqual(inner);
   });
@@ -45,7 +49,9 @@ describe('write_cookies — over the wire', () => {
       cookies: [{ name: 'JSESSIONID', value: 'v' }],
     });
 
-    expect(await openEncryptedFrame(key, await sealInnerFrame(key, mcpId, 2, inner))).toEqual(inner);
+    expect(
+      await openEncryptedFrame(key, await sealInnerFrame(key, mcpId, 2, inner, 's2e'), 's2e'),
+    ).toEqual(inner);
   });
 
   it('round-trips a success response', async () => {
@@ -59,7 +65,9 @@ describe('write_cookies — over the wire', () => {
       written: ['CKAT'],
     } as unknown as InnerFrame;
 
-    expect(await openEncryptedFrame(key, await sealInnerFrame(key, mcpId, 3, inner))).toEqual(inner);
+    expect(
+      await openEncryptedFrame(key, await sealInnerFrame(key, mcpId, 3, inner, 's2e'), 's2e'),
+    ).toEqual(inner);
   });
 
   it('round-trips a gate rejection', async () => {
@@ -71,7 +79,9 @@ describe('write_cookies — over the wire', () => {
       error: 'cookie keys not in declared set: ADMIN',
     } as unknown as InnerFrame;
 
-    expect(await openEncryptedFrame(key, await sealInnerFrame(key, mcpId, 4, inner))).toEqual(inner);
+    expect(
+      await openEncryptedFrame(key, await sealInnerFrame(key, mcpId, 4, inner, 's2e'), 's2e'),
+    ).toEqual(inner);
   });
 });
 

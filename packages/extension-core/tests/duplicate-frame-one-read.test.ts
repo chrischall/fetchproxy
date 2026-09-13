@@ -6,12 +6,13 @@ import {
   generateX25519,
   hkdfSha256,
   openEncryptedFrame,
+  helloSignaturePayload,
+  transcriptHash,
   sealInnerFrame,
   sha256,
   toB64,
   fromB64,
   toHex,
-  concatBytes,
   HKDF_SESSION_INFO,
   PROTOCOL_VERSION,
   type EncryptedFrame,
@@ -131,19 +132,36 @@ interface ScriptedMcp {
   mcpId: string;
   x: RawKeyPair;
   ed: RawKeyPair;
+  /** 3.0.0 (protocol 4): the per-session ephemeral its hello offers. */
+  session: RawKeyPair;
   sessionNonce: Uint8Array;
 }
 
 async function scriptedMcp(mcpId: string): Promise<ScriptedMcp> {
   const nonce = new Uint8Array(32);
   crypto.getRandomValues(nonce);
-  return { mcpId, x: await generateX25519(), ed: await generateEd25519(), sessionNonce: nonce };
+  return {
+    mcpId,
+    x: await generateX25519(),
+    ed: await generateEd25519(),
+    session: await generateX25519(),
+    sessionNonce: nonce,
+  };
 }
 
-async function helloFrom(mcp: ScriptedMcp): Promise<Record<string, unknown>> {
+/**
+ * 3.0.0 (protocol 4): the hello names the extension session it answers (the
+ * nonce off that link's own hello) and signs `helloSignaturePayload` over both
+ * new fields, which is what makes the ephemeral the session key comes from
+ * unsubstitutable.
+ */
+async function helloFrom(
+  mcp: ScriptedMcp,
+  answersExtNonce: Uint8Array,
+): Promise<Record<string, unknown>> {
   const sessionSig = await ed25519Sign(
     mcp.ed.privateKey,
-    concatBytes(new TextEncoder().encode(mcp.mcpId), mcp.sessionNonce),
+    helloSignaturePayload(mcp.mcpId, mcp.sessionNonce, mcp.session.publicKey, answersExtNonce),
   );
   return {
     type: 'hello',
@@ -157,8 +175,15 @@ async function helloFrom(mcp: ScriptedMcp): Promise<Record<string, unknown>> {
     identityX25519Pub: toB64(mcp.x.publicKey),
     identityEd25519Pub: toB64(mcp.ed.publicKey),
     sessionNonce: toB64(mcp.sessionNonce),
+    sessionPub: toB64(mcp.session.publicKey),
+    answersExtNonce: toB64(answersExtNonce),
     sessionSig: toB64(sessionSig),
   };
+}
+
+/** The nonce the extension put on `ws`'s own hello. */
+function extNonceOf(ws: FakeSocket): Uint8Array {
+  return fromB64(ws.frames<{ sessionNonce: string }>('hello')[0]!.sessionNonce);
 }
 
 async function trustMcp(mcp: ScriptedMcp): Promise<void> {
@@ -174,12 +199,20 @@ async function trustMcp(mcp: ScriptedMcp): Promise<void> {
   });
 }
 
+/**
+ * 3.0.0 (protocol 4): ephemeral x ephemeral, salted with the transcript over
+ * both nonces and both ephemerals. Under v3 the MCP's half was its long-term
+ * identity key and the salt was its own nonce.
+ */
 async function sessionKeyFor(
   mcp: ScriptedMcp,
   ready: { extensionSessionPub: string },
+  extNonce: Uint8Array,
 ): Promise<Uint8Array> {
-  const shared = await ecdhX25519(mcp.x.privateKey, fromB64(ready.extensionSessionPub));
-  return hkdfSha256(shared, mcp.sessionNonce, new TextEncoder().encode(HKDF_SESSION_INFO), 32);
+  const extPub = fromB64(ready.extensionSessionPub);
+  const shared = await ecdhX25519(mcp.session.privateKey, extPub);
+  const salt = await transcriptHash(mcp.sessionNonce, extNonce, mcp.session.publicKey, extPub);
+  return hkdfSha256(shared, salt, new TextEncoder().encode(HKDF_SESSION_INFO), 32);
 }
 
 /** A frame that passes `validateFrame` and fails AES-GCM authentication. */
@@ -221,17 +254,18 @@ describe('extension: a duplicate frame in one read is handled exactly once', () 
   it('two copies delivered back to back are answered once', async () => {
     const mcp = await scriptedMcp('alltrails-mcp:2.1.3:5555555555555555');
     await trustMcp(mcp);
-    localWs.message(await helloFrom(mcp));
+    localWs.message(await helloFrom(mcp, extNonceOf(localWs)));
     await vi.waitUntil(() => localWs.frames('ready').length > 0);
     const key = await sessionKeyFor(
       mcp,
       localWs.frames<{ extensionSessionPub: string }>('ready')[0]!,
+      extNonceOf(localWs),
     );
 
     // Nothing is awaited between the two: one read of the socket, two
     // identical frames, exactly as a retransmit or a replaying relay delivers
     // them.
-    const dup = JSON.stringify(await sealInnerFrame(key, mcp.mcpId, 1, { type: 'ping' }));
+    const dup = JSON.stringify(await sealInnerFrame(key, mcp.mcpId, 1, { type: 'ping' }, 's2e'));
     localWs.raw(dup);
     localWs.raw(dup);
 
@@ -240,10 +274,10 @@ describe('extension: a duplicate frame in one read is handled exactly once', () 
     await new Promise((r) => setTimeout(r, 50));
     expect(localWs.frames('frame')).toHaveLength(1);
     const pong = localWs.frames<EncryptedFrame>('frame')[0]!;
-    expect((await openEncryptedFrame(key, pong)).type).toBe('pong');
+    expect((await openEncryptedFrame(key, pong, 'e2s')).type).toBe('pong');
 
     // The claim did not wedge the session behind the seq it took.
-    localWs.message(await sealInnerFrame(key, mcp.mcpId, 2, { type: 'ping' }));
+    localWs.message(await sealInnerFrame(key, mcp.mcpId, 2, { type: 'ping' }, 's2e'));
     await vi.waitUntil(() => localWs.frames('frame').length > 1);
     expect(localWs.frames('frame')).toHaveLength(2);
   });
@@ -252,11 +286,12 @@ describe('extension: a duplicate frame in one read is handled exactly once', () 
     const warns = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const mcp = await scriptedMcp('alltrails-mcp:2.1.3:6666666666666666');
     await trustMcp(mcp);
-    localWs.message(await helloFrom(mcp));
+    localWs.message(await helloFrom(mcp, extNonceOf(localWs)));
     await vi.waitUntil(() => localWs.frames('ready').length > 0);
     const key = await sessionKeyFor(
       mcp,
       localWs.frames<{ extensionSessionPub: string }>('ready')[0]!,
+      extNonceOf(localWs),
     );
 
     // A forged frame claims seq 4 and fails to authenticate. It never
@@ -266,10 +301,10 @@ describe('extension: a duplicate frame in one read is handled exactly once', () 
     await vi.waitUntil(() => warns.mock.calls.length > 0);
     expect(localWs.frames('frame')).toHaveLength(0);
 
-    localWs.message(await sealInnerFrame(key, mcp.mcpId, 4, { type: 'ping' }));
+    localWs.message(await sealInnerFrame(key, mcp.mcpId, 4, { type: 'ping' }, 's2e'));
     await vi.waitUntil(() => localWs.frames('frame').length > 0);
     const pong = localWs.frames<EncryptedFrame>('frame')[0]!;
-    expect((await openEncryptedFrame(key, pong)).type).toBe('pong');
+    expect((await openEncryptedFrame(key, pong, 'e2s')).type).toBe('pong');
 
     warns.mockRestore();
   });

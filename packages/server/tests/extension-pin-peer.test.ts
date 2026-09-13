@@ -4,15 +4,12 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
-  ecdhX25519,
   ed25519Sign,
   fromB64,
   generateEd25519,
   generateX25519,
   readySignaturePayload,
-  hkdfSha256,
   validateFrame,
-  HKDF_SESSION_INFO,
   type HelloFrameFromExtension,
   type HelloFrameFromServer,
 } from '@fetchproxy/protocol';
@@ -39,6 +36,15 @@ import type { ExtensionPin, ExtensionTrustPort } from '../src/extension-trust.js
  * two nonces, so a relay cannot forward genuine frames and swap in an ephemeral
  * key of its own. The last test here is the one that used to record that gap as
  * a known residual; it now asserts the refusal.
+ *
+ * 3.0.0 (protocol 4) changes the SHAPE of every case below, because a peer now
+ * has two keypairs. The hello it sends at dial carries a BOOTSTRAP ephemeral
+ * and answers no extension session; the hello a `ready` may answer is the one
+ * it mints when the relayed extension hello arrives. So each test here relays
+ * the extension hello FIRST and answers the SECOND peer hello — and the test
+ * that used to assert a peer warns-and-proceeds behind a host that relays
+ * nothing now asserts a refusal, because the HKDF salt contains the
+ * extension's nonce and a peer without it cannot compute a key at all.
  */
 
 const MCP_ID = 'opentable-mcp:0.9.1:a3f7c91d2e8b4f56';
@@ -62,27 +68,56 @@ function memoryTrust(initial: ExtensionPin | null = null, allowNew = false): Mem
   };
 }
 
-/** A host stand-in that can forward an extension hello — or decline to. */
+/**
+ * A host stand-in that can forward an extension hello — or decline to.
+ *
+ * 3.0.0: it keeps EVERY peer hello rather than the first, because a v4 peer
+ * sends two — the registration hello at dial and a fresh one per extension
+ * session — and which of them a `ready` answers is the whole subject of §1a.
+ */
 async function fakeHost(): Promise<{
   port: number;
   wss: WebSocketServer;
-  /** Resolves with the peer's hello once it arrives. */
-  peerHello: Promise<HelloFrameFromServer>;
+  /** Wait for peer hello number `nth` (0 = the registration hello). */
+  peerHello(nth?: number): Promise<HelloFrameFromServer>;
+  /** How many peer hellos have arrived so far. */
+  helloCount(): number;
   send(frame: unknown): void;
 }> {
   const wss = loopbackWss();
   const port = await listenEphemeral(wss);
   let socket: WebSocket | null = null;
-  const peerHello = new Promise<HelloFrameFromServer>((resolve) => {
-    wss.on('connection', (ws: WebSocket) => {
-      socket = ws;
-      ws.on('message', (data) => {
-        const frame = validateFrame(JSON.parse(data.toString()));
-        if (frame.type === 'hello' && frame.role === 'server') resolve(frame);
-      });
+  const hellos: HelloFrameFromServer[] = [];
+  const waiters: (() => void)[] = [];
+  wss.on('connection', (ws: WebSocket) => {
+    socket = ws;
+    ws.on('message', (data) => {
+      const frame = validateFrame(JSON.parse(data.toString()));
+      if (frame.type === 'hello' && frame.role === 'server') {
+        hellos.push(frame);
+        for (const wake of waiters.splice(0)) wake();
+      }
     });
   });
-  return { port, wss, peerHello, send: (frame) => socket?.send(JSON.stringify(frame)) };
+  const peerHello = async (nth = 0): Promise<HelloFrameFromServer> => {
+    for (;;) {
+      if (hellos.length > nth) return hellos[nth]!;
+      await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error(`no peer hello #${nth}`)), 5_000);
+        waiters.push(() => {
+          clearTimeout(timer);
+          resolve();
+        });
+      });
+    }
+  };
+  return {
+    port,
+    wss,
+    peerHello,
+    helloCount: () => hellos.length,
+    send: (frame) => socket?.send(JSON.stringify(frame)),
+  };
 }
 
 async function extensionIdentity(): Promise<{
@@ -97,7 +132,7 @@ async function extensionIdentity(): Promise<{
   crypto.getRandomValues(nonce);
   const hello: HelloFrameFromExtension = {
     type: 'hello',
-    protocolVersion: 3,
+    protocolVersion: 4,
     role: 'extension',
     platform: 'chrome',
     extensionId: 'fetchproxy',
@@ -123,14 +158,18 @@ async function readyFor(
   ext: Awaited<ReturnType<typeof extensionIdentity>>,
   opts: { forge?: boolean } = {},
 ): Promise<unknown> {
-  const mcpNonce = new Uint8Array(Buffer.from(peerHello.sessionNonce, 'base64'));
+  const mcpNonce = fromB64(peerHello.sessionNonce);
+  const mcpSessionPub = fromB64(peerHello.sessionPub);
   const eph = await generateX25519();
-  const payload = readySignaturePayload(mcpNonce, ext.nonce, eph.publicKey);
+  // 3.0.0: four fields, and the `mcpSessionPub` on the wire is what lets the
+  // peer tell a STALE ready (discard) from a forged one (1008).
+  const payload = readySignaturePayload(mcpNonce, ext.nonce, eph.publicKey, mcpSessionPub);
   const sig = opts.forge ? new Uint8Array(64).fill(3) : await ed25519Sign(ext.edPriv, payload);
   return {
     type: 'ready',
     mcpId: MCP_ID,
     extensionSessionPub: b64(eph.publicKey),
+    mcpSessionPub: peerHello.sessionPub,
     sessionSig: b64(sig),
   };
 }
@@ -169,9 +208,12 @@ describe('a peer authenticates the extension behind the host', () => {
     const trust = memoryTrust();
     await startTestPeer(trust);
     const ext = await extensionIdentity();
-    const hello = await host.peerHello;
+    await host.peerHello(0);
 
     host.send(ext.hello);
+    // The hello the peer mints in answer to that relay is the one a session
+    // can be opened from; its predecessor named the bootstrap ephemeral.
+    const hello = await host.peerHello(1);
     host.send(await readyFor(hello, ext));
 
     await expect(peer!.session).resolves.toBeDefined();
@@ -189,9 +231,10 @@ describe('a peer authenticates the extension behind the host', () => {
     const trust = memoryTrust();
     await startTestPeer(trust);
     const ext = await extensionIdentity();
-    const hello = await host.peerHello;
+    await host.peerHello(0);
 
     host.send(ext.hello);
+    const hello = await host.peerHello(1);
     host.send(await readyFor(hello, ext, { forge: true }));
 
     await expect(peer!.session).rejects.toThrow();
@@ -204,31 +247,40 @@ describe('a peer authenticates the extension behind the host', () => {
     const trust = memoryTrust(stranger.pin);
     await startTestPeer(trust);
     const ext = await extensionIdentity();
-    const hello = await host.peerHello;
+    await host.peerHello(0);
 
     host.send(ext.hello);
+    const hello = await host.peerHello(1);
     host.send(await readyFor(hello, ext));
 
     await expect(peer!.session).rejects.toThrow();
     expect(trust.writes).toEqual([]);
   });
 
-  it('warns, but still works, behind a host too old to forward the hello', async () => {
+  it('refuses, rather than warning, behind a host too old to forward the hello', async () => {
     // Mixed-version local fleets are normal: whichever MCP wins the port
-    // election is arbitrary, so a new peer regularly finds an old host. It
-    // says so rather than pretending the guarantee holds.
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    // election is arbitrary, so a new peer regularly finds an old host. Under
+    // v3 it warned and proceeded, which was a real if unverifiable bridge.
+    //
+    // 3.0.0 cannot make that trade: the HKDF salt is a transcript containing
+    // the EXTENSION's hello nonce, which arrives only on the relayed hello,
+    // so there is no key to derive rather than an unverified one. A `ready`
+    // here names the peer's BOOTSTRAP ephemeral — the only pub such a host
+    // could have shown the extension — and §1a's Rule C discards it, because
+    // the bootstrap half is never a session candidate.
     host = await fakeHost();
     const trust = memoryTrust();
     await startTestPeer(trust);
     const ext = await extensionIdentity();
-    const hello = await host.peerHello;
+    const registration = await host.peerHello(0);
 
-    host.send(await readyFor(hello, ext));
+    host.send(await readyFor(registration, ext));
 
-    await expect(peer!.session).resolves.toBeDefined();
-    expect(warn.mock.calls.flat().join(' ')).toMatch(/does not forward|cannot verify/i);
+    await new Promise((r) => setTimeout(r, 80));
+    expect(peer!.sessionLinked()).toBe(false);
     expect(trust.writes).toEqual([]);
+    // And no second hello was minted: nothing triggered one.
+    expect(host.helloCount()).toBe(1);
   });
 
   it('refuses a relay that forwards a genuine signature but swaps the ephemeral key', async () => {
@@ -242,31 +294,39 @@ describe('a peer authenticates the extension behind the host', () => {
     const trust = memoryTrust();
     await startTestPeer(trust);
     const ext = await extensionIdentity();
-    const hello = await host.peerHello;
+    await host.peerHello(0);
 
+    const relayKey = await generateX25519();
+    host.send(ext.hello);
+    const hello = await host.peerHello(1);
     const genuine = (await readyFor(hello, ext)) as {
       type: string;
       mcpId: string;
       extensionSessionPub: string;
+      mcpSessionPub: string;
       sessionSig: string;
     };
-    const relayKey = await generateX25519();
-    host.send(ext.hello);
     host.send({ ...genuine, extensionSessionPub: b64(relayKey.publicKey) });
 
     await expect(peer!.session).rejects.toThrow(/identity refused/);
     expect(trust.writes).toEqual([]);
   });
 
-  it('refuses that same case when the caller requires the identity', async () => {
+  it('refuses a host that relays nothing whether or not requireExtensionIdentity is set', async () => {
+    // The option is INERT since 3.0.0 and kept only so the cohort's
+    // constructors compile: the refusal above does not depend on it, and this
+    // is the assertion that says so rather than leaving a flag that looks
+    // like it still decides something.
     host = await fakeHost();
     const trust = memoryTrust();
     await startTestPeer(trust, true);
     const ext = await extensionIdentity();
-    const hello = await host.peerHello;
+    const registration = await host.peerHello(0);
 
-    host.send(await readyFor(hello, ext));
+    host.send(await readyFor(registration, ext));
 
-    await expect(peer!.session).rejects.toThrow();
+    await new Promise((r) => setTimeout(r, 80));
+    expect(peer!.sessionLinked()).toBe(false);
+    expect(trust.writes).toEqual([]);
   });
 });

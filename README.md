@@ -39,9 +39,9 @@ So instead of a bot-evasion arms race, an MCP server can use fetchproxy to ask t
                        └───────────┘     └────────────┘
 ```
 
-Every MCP races `bind(127.0.0.1:37149)` on startup. The first one wins (`role: 'host'`); the rest dial in as peers (`role: 'peer'`). One extension, one port, N MCPs. Frames between each MCP and the extension are AES-256-GCM encrypted end-to-end using a per-session key derived via X25519+HKDF from a long-term Ed25519/X25519 identity that lives on disk in `~/.fetchproxy/identity/<server-name>.json`. The host routes; it cannot read or modify peer traffic.
+Every MCP races `bind(127.0.0.1:37149)` on startup. The first one wins (`role: 'host'`); the rest dial in as peers (`role: 'peer'`). One extension, one port, N MCPs. Frames between each MCP and the extension are AES-256-GCM encrypted end-to-end under a per-session key derived by X25519 ECDH between a fresh **ephemeral** from each side, HKDF-salted with a transcript of the handshake. The long-term Ed25519/X25519 identity on disk at `~/.fetchproxy/identity/<server-name>.json` **authenticates** that exchange and no longer performs it — up to protocol 3 the MCP's half of the ECDH *was* that identity key, so anyone holding it plus a recording decrypted the traffic afterwards, passively and retroactively; since 3.0.0 (protocol 4) they cannot. The host routes; it cannot read or modify peer traffic.
 
-When the extension first sees a new identity it triggers a pair flow: the MCP prints a 6-digit SAS code to stderr and the extension popup shows the same code. The user clicks Approve. Subsequent connections from the same identity skip the prompt.
+When the extension first sees a new identity it triggers a pair flow: the MCP prints an 8-digit SAS code to stderr and the extension popup shows the same code. The user clicks Approve. Subsequent connections from the same identity skip the prompt. The code commits to that pairing attempt — both identities, both hello nonces and the MCP's session ephemeral — so it is a different number every time.
 
 Three pieces, one repo:
 
@@ -63,6 +63,33 @@ Install **Transporter** from the [Chrome Web Store](https://chromewebstore.googl
 
 > In the Chrome Web Store it's listed as **Transporter**; the protocol and npm packages are **fetchproxy**.
 
+**Which extension pairs with which packages.** The extension and the npm
+packages are one cohort released together, and their majors pair one to one:
+
+| Extension | `@fetchproxy/server` | Protocol |
+|---|---|---|
+| **3.x** (3.0.0+) | **3.x** (3.0.0+) | **4** |
+| 2.x | 2.x | 3 |
+
+There is no cross-major pairing and nothing negotiates down. A protocol 3 end
+meeting a protocol 4 end is refused at the handshake, in either direction, with
+both numbers named. A v4 MCP that finds a v3 extension attached closes the
+socket `1002` with
+
+```
+protocol version mismatch: this MCP speaks 4, the extension speaks 3
+```
+
+and fails the call in progress with the same fact and the remedy —
+`update Transporter (the fetchproxy extension) to 3.0.0 or later`. The other
+way round, a v4 extension answers a v3 MCP `upgrade @fetchproxy/server to >= 3.0.0`
+and names it in the popup. A refusal rather than a downgrade is deliberate: a
+relay that can rewrite frames can rewrite the version it advertises, so a
+negotiated fallback would be the attacker's to pick. See
+[`docs/PROTOCOL.md`](docs/PROTOCOL.md) §Versioning for the table of what each
+protocol number changed, and §"A refusal, never a negotiation" for the
+argument. Upgrade both halves together.
+
 <details>
 <summary>Manual / sideload install</summary>
 
@@ -74,6 +101,16 @@ npm --workspace=@fetchproxy/extension-chrome run build
 ```
 
 Then in Chrome: `chrome://extensions` → toggle "Developer mode" → "Load unpacked" → pick `packages/extension-chrome/dist/`.
+
+**Rebuild and reload after every pull. This is a requirement, not hygiene.**
+Chrome keeps running the bundle it loaded until you press **Reload** on
+`chrome://extensions`, so a `git pull` that crosses a protocol major leaves a
+stale extension speaking the old protocol to MCPs you have just upgraded — and
+that pair does not degrade, it stops: every call through the bridge fails at
+once with `protocol version mismatch`, and no amount of retrying changes it.
+Nothing warns you at pull time, because at pull time nothing has connected yet.
+So: `npm --workspace=@fetchproxy/extension-chrome run build`, then Reload,
+before the next call.
 </details>
 
 ### Node library
@@ -128,7 +165,7 @@ const fp = new FetchproxyServer({
 
 await fp.listen();
 // First run prints the pair code to stderr:
-//   fetchproxy pair code: 123-456
+//   fetchproxy pair code: 4829-3176
 // Open the extension popup and click Approve.
 
 // Single-domain MCP: `domains[0]` is the implicit base.

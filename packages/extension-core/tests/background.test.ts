@@ -50,10 +50,17 @@ import { scopeHash } from '../src/lib/scope.js';
 import {
   generateX25519,
   generateEd25519,
+  ecdhX25519,
   ed25519Sign,
+  hkdfSha256,
+  helloSignaturePayload,
+  transcriptHash,
   sha256,
-  derivePairCodeFromIds,
+  pairTranscript,
   toB64,
+  fromB64,
+  HKDF_SESSION_INFO,
+  PROTOCOL_VERSION,
   type HelloFrameFromServer,
 } from '@fetchproxy/protocol';
 
@@ -64,6 +71,23 @@ import {
 // `loadOrCreateExtensionIdentity`.
 const FAKE_EXT_X25519_PUB = new Uint8Array(32).fill(0xab);
 const FAKE_EXT_X25519_PUB_B64 = toB64(FAKE_EXT_X25519_PUB);
+/**
+ * 3.0.0 (protocol 4): the extension's own per-LINK hello nonce. It is a new
+ * `deps` member because the HKDF salt is now a transcript over both nonces,
+ * and `handleServerHello` cannot compute one from values it does not have.
+ * In production it is `link.sessionNonce`.
+ */
+const FAKE_EXT_NONCE = new Uint8Array(32).fill(0xcd);
+const DEPS_EXTRA = { extensionSessionNonce: FAKE_EXT_NONCE } as const;
+
+/**
+ * The private half of each hello's session ephemeral, by its base64 public
+ * half — so a test can derive the key the MCP would derive and compare it to
+ * the one the extension returns. Under v3 the MCP's half was its long-term
+ * identity key and this map would have been pointless; under v4 it is the
+ * only way to check the derivation actually moved.
+ */
+const helloEphemerals = new Map<string, Uint8Array>();
 
 function mockStorage(): void {
   const data: Record<string, unknown> = {};
@@ -110,14 +134,21 @@ async function buildServerHello(
 ): Promise<HelloFrameFromServer> {
   const x = await generateX25519();
   const ed = await generateEd25519();
+  const session = await generateX25519();
   const sessionNonce = new Uint8Array(32).fill(9);
+  // 3.0.0 (protocol 4): the signature goes through `helloSignaturePayload`,
+  // which is the only thing that makes it cover the ephemeral the session key
+  // is derived from — and adding the fields to this literal without changing
+  // the payload compiles, which is why one test below signs the v3 bytes on
+  // purpose and asserts the refusal.
   const sig = await ed25519Sign(
     ed.privateKey,
-    concat(new TextEncoder().encode(mcpId), sessionNonce),
+    helloSignaturePayload(mcpId, sessionNonce, session.publicKey, FAKE_EXT_NONCE),
   );
+  helloEphemerals.set(toB64(session.publicKey), session.privateKey);
   const hello: HelloFrameFromServer = {
     type: 'hello',
-    protocolVersion: 1,
+    protocolVersion: PROTOCOL_VERSION,
     role: 'server',
     mcpId,
     serverName,
@@ -127,6 +158,8 @@ async function buildServerHello(
     identityX25519Pub: Buffer.from(x.publicKey).toString('base64'),
     identityEd25519Pub: Buffer.from(ed.publicKey).toString('base64'),
     sessionNonce: Buffer.from(sessionNonce).toString('base64'),
+    sessionPub: toB64(session.publicKey),
+    answersExtNonce: toB64(FAKE_EXT_NONCE),
     sessionSig: Buffer.from(sig).toString('base64'),
   };
   if (scope?.cookieKeys && scope.cookieKeys.length > 0) hello.cookieKeys = [...scope.cookieKeys];
@@ -152,12 +185,20 @@ describe('handleServerHello', () => {
       ['opentable.com'],
     );
     const trust = new TrustStore('0.2.0');
-    const result = await handleServerHello(hello, { trust, extensionIdentityX25519Pub: FAKE_EXT_X25519_PUB });
+    const result = await handleServerHello(hello, { trust, extensionIdentityX25519Pub: FAKE_EXT_X25519_PUB, ...DEPS_EXTRA });
     expect(result.kind).toBe('needs-pair');
     if (result.kind === 'needs-pair') {
       const expectedPub = new Uint8Array(Buffer.from(hello.identityX25519Pub, 'base64'));
+      // 3.0.0 (protocol 4): the whole pair transcript — both identities, both
+      // hello nonces and the MCP's session ephemeral, in that order.
       expect(result.pairCode).toBe(
-        await derivePairCodeFromIds(expectedPub, FAKE_EXT_X25519_PUB),
+        await pairTranscript(
+          expectedPub,
+          FAKE_EXT_X25519_PUB,
+          new Uint8Array(Buffer.from(hello.sessionNonce, 'base64')),
+          FAKE_EXT_NONCE,
+          new Uint8Array(Buffer.from(hello.sessionPub, 'base64')),
+        ),
       );
       expect(result.serverName).toBe('opentable-mcp');
       expect(result.domains).toEqual(['opentable.com']);
@@ -172,7 +213,7 @@ describe('handleServerHello', () => {
       ['honeybook.com', 'hbsplit.com'],
     );
     const trust = new TrustStore('0.2.0');
-    const result = await handleServerHello(hello, { trust, extensionIdentityX25519Pub: FAKE_EXT_X25519_PUB });
+    const result = await handleServerHello(hello, { trust, extensionIdentityX25519Pub: FAKE_EXT_X25519_PUB, ...DEPS_EXTRA });
     expect(result.kind).toBe('needs-pair');
     if (result.kind === 'needs-pair') {
       expect(result.domains).toEqual(['honeybook.com', 'hbsplit.com']);
@@ -199,7 +240,7 @@ describe('handleServerHello', () => {
       extensionIdentityEd25519Pub: FAKE_EXT_X25519_PUB_B64,
     });
 
-    const result = await handleServerHello(hello, { trust, extensionIdentityX25519Pub: FAKE_EXT_X25519_PUB });
+    const result = await handleServerHello(hello, { trust, extensionIdentityX25519Pub: FAKE_EXT_X25519_PUB, ...DEPS_EXTRA });
     expect(result.kind).toBe('auto-trust');
     if (result.kind === 'auto-trust') {
       expect(result.sessionKey.byteLength).toBe(32);
@@ -229,7 +270,7 @@ describe('handleServerHello', () => {
       extensionIdentityX25519Pub: FAKE_EXT_X25519_PUB_B64,
       extensionIdentityEd25519Pub: FAKE_EXT_X25519_PUB_B64,
     });
-    const result = await handleServerHello(hello, { trust, extensionIdentityX25519Pub: FAKE_EXT_X25519_PUB });
+    const result = await handleServerHello(hello, { trust, extensionIdentityX25519Pub: FAKE_EXT_X25519_PUB, ...DEPS_EXTRA });
     expect(result.kind).toBe('auto-trust');
   });
 
@@ -241,7 +282,7 @@ describe('handleServerHello', () => {
     );
     const bad = { ...hello, sessionSig: Buffer.from(new Uint8Array(64).fill(0)).toString('base64') };
     const trust = new TrustStore('0.2.0');
-    const result = await handleServerHello(bad, { trust, extensionIdentityX25519Pub: FAKE_EXT_X25519_PUB });
+    const result = await handleServerHello(bad, { trust, extensionIdentityX25519Pub: FAKE_EXT_X25519_PUB, ...DEPS_EXTRA });
     expect(result.kind).toBe('reject');
   });
 
@@ -272,7 +313,7 @@ describe('handleServerHello', () => {
       extensionIdentityX25519Pub: FAKE_EXT_X25519_PUB_B64,
       extensionIdentityEd25519Pub: FAKE_EXT_X25519_PUB_B64,
     });
-    const result = await handleServerHello(hello, { trust, extensionIdentityX25519Pub: FAKE_EXT_X25519_PUB });
+    const result = await handleServerHello(hello, { trust, extensionIdentityX25519Pub: FAKE_EXT_X25519_PUB, ...DEPS_EXTRA });
     expect(result.kind).toBe('needs-pair');
     if (result.kind !== 'needs-pair') throw new Error('unreachable');
     expect(result.pairCode).toBeTruthy();
@@ -301,7 +342,7 @@ describe('handleServerHello', () => {
       extensionIdentityX25519Pub: FAKE_EXT_X25519_PUB_B64,
       extensionIdentityEd25519Pub: FAKE_EXT_X25519_PUB_B64,
     });
-    const result = await handleServerHello(hello, { trust, extensionIdentityX25519Pub: FAKE_EXT_X25519_PUB });
+    const result = await handleServerHello(hello, { trust, extensionIdentityX25519Pub: FAKE_EXT_X25519_PUB, ...DEPS_EXTRA });
     expect(result.kind).toBe('needs-pair');
     if (result.kind !== 'needs-pair') throw new Error('unreachable');
     expect(result.pairCode).toBeTruthy();
@@ -332,7 +373,7 @@ describe('handleServerHello', () => {
       extensionIdentityEd25519Pub: FAKE_EXT_X25519_PUB_B64,
     });
     expect(
-      (await handleServerHello(hello, { trust, extensionIdentityX25519Pub: FAKE_EXT_X25519_PUB })).kind,
+      (await handleServerHello(hello, { trust, extensionIdentityX25519Pub: FAKE_EXT_X25519_PUB, ...DEPS_EXTRA })).kind,
     ).toBe('needs-pair');
 
     // What approving from the popup writes.
@@ -345,7 +386,7 @@ describe('handleServerHello', () => {
       extensionIdentityX25519Pub: FAKE_EXT_X25519_PUB_B64,
       extensionIdentityEd25519Pub: FAKE_EXT_X25519_PUB_B64,
     });
-    const after = await handleServerHello(hello, { trust, extensionIdentityX25519Pub: FAKE_EXT_X25519_PUB });
+    const after = await handleServerHello(hello, { trust, extensionIdentityX25519Pub: FAKE_EXT_X25519_PUB, ...DEPS_EXTRA });
     expect(after.kind).toBe('auto-trust');
   });
 
@@ -372,7 +413,7 @@ describe('handleServerHello', () => {
       extensionIdentityX25519Pub: FAKE_EXT_X25519_PUB_B64,
       extensionIdentityEd25519Pub: FAKE_EXT_X25519_PUB_B64,
     });
-    const result = await handleServerHello(hello, { trust, extensionIdentityX25519Pub: FAKE_EXT_X25519_PUB });
+    const result = await handleServerHello(hello, { trust, extensionIdentityX25519Pub: FAKE_EXT_X25519_PUB, ...DEPS_EXTRA });
     expect(result.kind).toBe('needs-pair');
     expect(result).not.toHaveProperty('sessionKey');
   });
@@ -386,7 +427,7 @@ describe('handleServerHello', () => {
         undefined, // no capabilities on the wire
       );
       const trust = new TrustStore('0.2.0');
-      const result = await handleServerHello(hello, { trust, extensionIdentityX25519Pub: FAKE_EXT_X25519_PUB });
+      const result = await handleServerHello(hello, { trust, extensionIdentityX25519Pub: FAKE_EXT_X25519_PUB, ...DEPS_EXTRA });
       expect(result.kind).toBe('needs-pair');
       if (result.kind === 'needs-pair') {
         expect(result.capabilities).toEqual(['fetch']);
@@ -401,7 +442,7 @@ describe('handleServerHello', () => {
         ['fetch', 'read_cookies'],
       );
       const trust = new TrustStore('0.2.0');
-      const result = await handleServerHello(hello, { trust, extensionIdentityX25519Pub: FAKE_EXT_X25519_PUB });
+      const result = await handleServerHello(hello, { trust, extensionIdentityX25519Pub: FAKE_EXT_X25519_PUB, ...DEPS_EXTRA });
       expect(result.kind).toBe('needs-pair');
       if (result.kind === 'needs-pair') {
         expect(result.capabilities).toEqual(['fetch', 'read_cookies']);
@@ -428,7 +469,7 @@ describe('handleServerHello', () => {
         extensionIdentityX25519Pub: FAKE_EXT_X25519_PUB_B64,
         extensionIdentityEd25519Pub: FAKE_EXT_X25519_PUB_B64,
       });
-      const result = await handleServerHello(hello, { trust, extensionIdentityX25519Pub: FAKE_EXT_X25519_PUB });
+      const result = await handleServerHello(hello, { trust, extensionIdentityX25519Pub: FAKE_EXT_X25519_PUB, ...DEPS_EXTRA });
       expect(result.kind).toBe('auto-trust');
       if (result.kind === 'auto-trust') {
         expect(result.capabilities).toEqual(['fetch', 'read_cookies']);
@@ -458,7 +499,7 @@ describe('handleServerHello', () => {
         extensionIdentityX25519Pub: FAKE_EXT_X25519_PUB_B64,
         extensionIdentityEd25519Pub: FAKE_EXT_X25519_PUB_B64,
       });
-      const result = await handleServerHello(hello, { trust, extensionIdentityX25519Pub: FAKE_EXT_X25519_PUB });
+      const result = await handleServerHello(hello, { trust, extensionIdentityX25519Pub: FAKE_EXT_X25519_PUB, ...DEPS_EXTRA });
       // Must be auto-trust (not needs-pair) — the MCP continues to work.
       expect(result.kind).toBe('auto-trust');
       if (result.kind === 'auto-trust') {
@@ -491,7 +532,7 @@ describe('handleServerHello', () => {
         extensionIdentityX25519Pub: FAKE_EXT_X25519_PUB_B64,
         extensionIdentityEd25519Pub: FAKE_EXT_X25519_PUB_B64,
       });
-      const result = await handleServerHello(hello, { trust, extensionIdentityX25519Pub: FAKE_EXT_X25519_PUB });
+      const result = await handleServerHello(hello, { trust, extensionIdentityX25519Pub: FAKE_EXT_X25519_PUB, ...DEPS_EXTRA });
       // Downgrade: declared ⊆ approved → auto-trust with granted = declared, no scope-update.
       expect(result.kind).toBe('auto-trust');
       if (result.kind === 'auto-trust') {
@@ -526,7 +567,7 @@ describe('handleServerHello', () => {
         extensionIdentityX25519Pub: FAKE_EXT_X25519_PUB_B64,
         extensionIdentityEd25519Pub: FAKE_EXT_X25519_PUB_B64,
       });
-      const result = await handleServerHello(hello, { trust, extensionIdentityX25519Pub: FAKE_EXT_X25519_PUB });
+      const result = await handleServerHello(hello, { trust, extensionIdentityX25519Pub: FAKE_EXT_X25519_PUB, ...DEPS_EXTRA });
       expect(result.kind).toBe('auto-trust');
       if (result.kind === 'auto-trust') {
         // Declared ⊆ approved → no scope-update.
@@ -550,7 +591,7 @@ describe('handleServerHello', () => {
         },
       );
       const trust = new TrustStore('0.3.0');
-      const result = await handleServerHello(hello, { trust, extensionIdentityX25519Pub: FAKE_EXT_X25519_PUB });
+      const result = await handleServerHello(hello, { trust, extensionIdentityX25519Pub: FAKE_EXT_X25519_PUB, ...DEPS_EXTRA });
       expect(result.kind).toBe('needs-pair');
       if (result.kind === 'needs-pair') {
         expect(result.localStorageKeys).toEqual(['auth', 'tokenExpiry']);
@@ -587,7 +628,7 @@ describe('handleServerHello', () => {
         extensionIdentityX25519Pub: FAKE_EXT_X25519_PUB_B64,
         extensionIdentityEd25519Pub: FAKE_EXT_X25519_PUB_B64,
       });
-      const result = await handleServerHello(hello, { trust, extensionIdentityX25519Pub: FAKE_EXT_X25519_PUB });
+      const result = await handleServerHello(hello, { trust, extensionIdentityX25519Pub: FAKE_EXT_X25519_PUB, ...DEPS_EXTRA });
       // Scope grew (new key) → auto-trust with intersection, scope-update signalled.
       expect(result.kind).toBe('auto-trust');
       if (result.kind === 'auto-trust') {
@@ -631,7 +672,7 @@ describe('handleServerHello', () => {
         extensionIdentityX25519Pub: FAKE_EXT_X25519_PUB_B64,
         extensionIdentityEd25519Pub: FAKE_EXT_X25519_PUB_B64,
       });
-      const result = await handleServerHello(hello, { trust, extensionIdentityX25519Pub: FAKE_EXT_X25519_PUB });
+      const result = await handleServerHello(hello, { trust, extensionIdentityX25519Pub: FAKE_EXT_X25519_PUB, ...DEPS_EXTRA });
       // Scope grew (new captureHeader) → auto-trust with intersection, scope-update signalled.
       expect(result.kind).toBe('auto-trust');
       if (result.kind === 'auto-trust') {
@@ -667,7 +708,7 @@ describe('handleServerHello', () => {
         extensionIdentityX25519Pub: FAKE_EXT_X25519_PUB_B64,
         extensionIdentityEd25519Pub: FAKE_EXT_X25519_PUB_B64,
       });
-      const result = await handleServerHello(hello, { trust, extensionIdentityX25519Pub: FAKE_EXT_X25519_PUB });
+      const result = await handleServerHello(hello, { trust, extensionIdentityX25519Pub: FAKE_EXT_X25519_PUB, ...DEPS_EXTRA });
       expect(result.kind).toBe('auto-trust');
       if (result.kind === 'auto-trust') {
         expect(result.localStorageKeys.sort()).toEqual(['auth', 'tokenExpiry']);
@@ -700,7 +741,7 @@ describe('handleServerHello', () => {
         extensionIdentityX25519Pub: FAKE_EXT_X25519_PUB_B64,
         extensionIdentityEd25519Pub: FAKE_EXT_X25519_PUB_B64,
       });
-      const result = await handleServerHello(hello, { trust, extensionIdentityX25519Pub: FAKE_EXT_X25519_PUB });
+      const result = await handleServerHello(hello, { trust, extensionIdentityX25519Pub: FAKE_EXT_X25519_PUB, ...DEPS_EXTRA });
       expect(result.kind).toBe('auto-trust');
     });
 
@@ -727,6 +768,7 @@ describe('handleServerHello', () => {
       const result = await handleServerHello(hello, {
         trust,
         extensionIdentityX25519Pub: FAKE_EXT_X25519_PUB,
+        ...DEPS_EXTRA,
       });
       expect(result.kind).toBe('needs-pair');
     });
@@ -751,6 +793,7 @@ describe('handleServerHello', () => {
       const result = await handleServerHello(hello, {
         trust,
         extensionIdentityX25519Pub: FAKE_EXT_X25519_PUB,
+        ...DEPS_EXTRA,
       });
       expect(result.kind).toBe('needs-pair');
     });
@@ -776,7 +819,7 @@ describe('handleServerHello', () => {
         extensionIdentityX25519Pub: FAKE_EXT_X25519_PUB_B64,
         extensionIdentityEd25519Pub: FAKE_EXT_X25519_PUB_B64,
       });
-      const result = await handleServerHello(hello, { trust, extensionIdentityX25519Pub: FAKE_EXT_X25519_PUB });
+      const result = await handleServerHello(hello, { trust, extensionIdentityX25519Pub: FAKE_EXT_X25519_PUB, ...DEPS_EXTRA });
       expect(result.kind).toBe('auto-trust');
     });
   });
@@ -799,13 +842,15 @@ async function buildHelloWithIdentity(
   domains: string[],
 ): Promise<HelloFrameFromServer> {
   const sessionNonce = new Uint8Array(32).fill(7);
+  const session = await generateX25519();
   const sig = await ed25519Sign(
     ed25519Priv,
-    concat(new TextEncoder().encode(mcpId), sessionNonce),
+    helloSignaturePayload(mcpId, sessionNonce, session.publicKey, FAKE_EXT_NONCE),
   );
+  helloEphemerals.set(toB64(session.publicKey), session.privateKey);
   return {
     type: 'hello',
-    protocolVersion: 1,
+    protocolVersion: PROTOCOL_VERSION,
     role: 'server',
     mcpId,
     serverName,
@@ -814,6 +859,8 @@ async function buildHelloWithIdentity(
     identityX25519Pub: Buffer.from(x25519Pub).toString('base64'),
     identityEd25519Pub: Buffer.from(ed25519Pub).toString('base64'),
     sessionNonce: Buffer.from(sessionNonce).toString('base64'),
+    sessionPub: toB64(session.publicKey),
+    answersExtNonce: toB64(FAKE_EXT_NONCE),
     sessionSig: Buffer.from(sig).toString('base64'),
   };
 }
@@ -848,7 +895,7 @@ describe('request handler capability enforcement (granted ≤ approved)', () => 
       extensionIdentityX25519Pub: FAKE_EXT_X25519_PUB_B64,
       extensionIdentityEd25519Pub: FAKE_EXT_X25519_PUB_B64,
     });
-    const result = await handleServerHello(hello, { trust, extensionIdentityX25519Pub: FAKE_EXT_X25519_PUB });
+    const result = await handleServerHello(hello, { trust, extensionIdentityX25519Pub: FAKE_EXT_X25519_PUB, ...DEPS_EXTRA });
     // Decision must be auto-trust (not needs-pair, not reject).
     expect(result.kind).toBe('auto-trust');
     if (result.kind === 'auto-trust') {
@@ -897,7 +944,7 @@ describe('request handler capability enforcement (granted ≤ approved)', () => 
       extensionIdentityX25519Pub: FAKE_EXT_X25519_PUB_B64,
       extensionIdentityEd25519Pub: FAKE_EXT_X25519_PUB_B64,
     });
-    const result = await handleServerHello(hello, { trust, extensionIdentityX25519Pub: FAKE_EXT_X25519_PUB });
+    const result = await handleServerHello(hello, { trust, extensionIdentityX25519Pub: FAKE_EXT_X25519_PUB, ...DEPS_EXTRA });
     expect(result.kind).toBe('auto-trust');
     if (result.kind === 'auto-trust') {
       // Capabilities: only approved ones.
@@ -958,7 +1005,7 @@ describe('dismiss-suppression (scope-update)', () => {
       extensionIdentityX25519Pub: FAKE_EXT_X25519_PUB_B64,
       extensionIdentityEd25519Pub: FAKE_EXT_X25519_PUB_B64,
     });
-    const result = await handleServerHello(hello, { trust, extensionIdentityX25519Pub: FAKE_EXT_X25519_PUB });
+    const result = await handleServerHello(hello, { trust, extensionIdentityX25519Pub: FAKE_EXT_X25519_PUB, ...DEPS_EXTRA });
     expect(result.kind).toBe('auto-trust');
     if (result.kind === 'auto-trust') {
       expect(result.pendingScopeUpdate).toBeDefined();
@@ -1053,8 +1100,8 @@ describe('multi-instance pending-pair dedup (0.6.0+)', () => {
 
     const trust = new TrustStore('0.2.0');
 
-    const result1 = await handleServerHello(hello1, { trust, extensionIdentityX25519Pub: FAKE_EXT_X25519_PUB });
-    const result2 = await handleServerHello(hello2, { trust, extensionIdentityX25519Pub: FAKE_EXT_X25519_PUB });
+    const result1 = await handleServerHello(hello1, { trust, extensionIdentityX25519Pub: FAKE_EXT_X25519_PUB, ...DEPS_EXTRA });
+    const result2 = await handleServerHello(hello2, { trust, extensionIdentityX25519Pub: FAKE_EXT_X25519_PUB, ...DEPS_EXTRA });
 
     expect(result1.kind).toBe('needs-pair');
     expect(result2.kind).toBe('needs-pair');
@@ -1150,8 +1197,8 @@ describe('multi-instance pending-pair dedup (0.6.0+)', () => {
     );
 
     const trust = new TrustStore('0.2.0');
-    const r1 = await handleServerHello(hello1, { trust, extensionIdentityX25519Pub: FAKE_EXT_X25519_PUB });
-    const r2 = await handleServerHello(hello2, { trust, extensionIdentityX25519Pub: FAKE_EXT_X25519_PUB });
+    const r1 = await handleServerHello(hello1, { trust, extensionIdentityX25519Pub: FAKE_EXT_X25519_PUB, ...DEPS_EXTRA });
+    const r2 = await handleServerHello(hello2, { trust, extensionIdentityX25519Pub: FAKE_EXT_X25519_PUB, ...DEPS_EXTRA });
     expect(r1.kind).toBe('needs-pair');
     expect(r2.kind).toBe('needs-pair');
     if (r1.kind !== 'needs-pair' || r2.kind !== 'needs-pair') return;
@@ -1242,7 +1289,7 @@ describe('connectedIdentityHashes (Part 3)', () => {
     // Instead, verify the function is callable and the initial set is empty,
     // and that the result from handleServerHello carries the identityHash
     // in pendingScopeUpdate when applicable.
-    const result = await handleServerHello(hello, { trust, extensionIdentityX25519Pub: FAKE_EXT_X25519_PUB });
+    const result = await handleServerHello(hello, { trust, extensionIdentityX25519Pub: FAKE_EXT_X25519_PUB, ...DEPS_EXTRA });
     expect(result.kind).toBe('auto-trust');
     // The identity hash of the trusted record equals the one we computed.
     expect(idHash).toMatch(/^[0-9a-f]{64}$/);
@@ -1550,5 +1597,370 @@ describe('graphqlTabMatcher (graphql tab match, host-or-subdomain)', () => {
     expect(matches('https://www.opentable.com/')).toBe(true);
     expect(matches('https://app.opentable.com/x')).toBe(true);
     expect(matches('https://evilexample.com/')).toBe(false);
+  });
+});
+
+/**
+ * Tasks 3.1 and 3.3 — what the extension DERIVES from, and what it PINS
+ * (protocol v4, §2).
+ *
+ * `handleServerHello` is the security-critical decision point, and neither of
+ * this group's two facts is a compile error: the hello's new fields can be
+ * read and ignored, and the trust comparison can keep checking one of the two
+ * identity keys. Each is pinned here by a test that fails if the code reverts.
+ */
+describe('handleServerHello under protocol v4', () => {
+  beforeEach(() => mockStorage());
+
+  /** Pre-trust a hello's identity so it auto-trusts instead of prompting. */
+  async function trustHello(
+    trust: TrustStore,
+    hello: HelloFrameFromServer,
+    overrides: Partial<{ identityEd25519Pub: string }> = {},
+  ): Promise<string> {
+    const idHash = Buffer.from(
+      await sha256(new Uint8Array(Buffer.from(hello.identityX25519Pub, 'base64'))),
+    ).toString('hex');
+    await trust.put(idHash, {
+      serverName: hello.serverName,
+      domains: [...hello.domains],
+      capabilities: ['fetch'],
+      identityX25519Pub: hello.identityX25519Pub,
+      identityEd25519Pub: hello.identityEd25519Pub,
+      extensionIdentityX25519Pub: FAKE_EXT_X25519_PUB_B64,
+      extensionIdentityEd25519Pub: FAKE_EXT_X25519_PUB_B64,
+      ...overrides,
+    });
+    return idHash;
+  }
+
+  it('rejects a hello whose signature does not cover the session ephemeral', async () => {
+    // Hazard (a) from the verifier's side: signing `mcpId || sessionNonce` —
+    // the v3 payload — while carrying a `sessionPub` on the wire is exactly
+    // the relay substitution v4 exists to close, and it type-checks.
+    const hello = await buildServerHello(
+      'opentable-mcp:0.9.1:a3f7c91d2e8b4f56',
+      'opentable-mcp',
+      ['opentable.com'],
+    );
+    const ed = await generateEd25519();
+    const v3Sig = await ed25519Sign(
+      ed.privateKey,
+      concat(new TextEncoder().encode(hello.mcpId), fromB64(hello.sessionNonce)),
+    );
+    const forged: HelloFrameFromServer = {
+      ...hello,
+      identityEd25519Pub: toB64(ed.publicKey),
+      sessionSig: toB64(v3Sig),
+    };
+    const trust = new TrustStore('0.4.0');
+    const result = await handleServerHello(forged, {
+      trust,
+      extensionIdentityX25519Pub: FAKE_EXT_X25519_PUB,
+      ...DEPS_EXTRA,
+    });
+    expect(result.kind).toBe('reject');
+    if (result.kind === 'reject') expect(result.reason).toMatch(/sessionSig/);
+  });
+
+  it('derives the session key against the hello ephemeral, salted with the transcript', async () => {
+    // The key the MCP would derive from its own ephemeral private half must
+    // be the key this returns. Under v3 the MCP's half was its long-term
+    // identity key and the salt was its hello nonce; both changed, and
+    // neither change is visible to `tsc`.
+    const hello = await buildServerHello(
+      'opentable-mcp:0.9.1:a3f7c91d2e8b4f56',
+      'opentable-mcp',
+      ['opentable.com'],
+    );
+    const trust = new TrustStore('0.4.0');
+    await trustHello(trust, hello);
+    const result = await handleServerHello(hello, {
+      trust,
+      extensionIdentityX25519Pub: FAKE_EXT_X25519_PUB,
+      ...DEPS_EXTRA,
+    });
+    expect(result.kind).toBe('auto-trust');
+    if (result.kind !== 'auto-trust') return;
+
+    const mcpPriv = helloEphemerals.get(hello.sessionPub)!;
+    const shared = await ecdhX25519(mcpPriv, result.extensionSessionPub);
+    const salt = await transcriptHash(
+      fromB64(hello.sessionNonce),
+      FAKE_EXT_NONCE,
+      fromB64(hello.sessionPub),
+      result.extensionSessionPub,
+    );
+    const expected = await hkdfSha256(
+      shared,
+      salt,
+      new TextEncoder().encode(HKDF_SESSION_INFO),
+      32,
+    );
+    expect(toB64(result.sessionKey)).toBe(toB64(expected));
+
+    // The v3 derivation must NOT produce it, or the swap was cosmetic.
+    const v3Shared = await ecdhX25519(
+      result.extensionSessionPub,
+      fromB64(hello.identityX25519Pub),
+    );
+    const v3Key = await hkdfSha256(
+      v3Shared,
+      fromB64(hello.sessionNonce),
+      new TextEncoder().encode(HKDF_SESSION_INFO),
+      32,
+    );
+    expect(toB64(result.sessionKey)).not.toBe(toB64(v3Key));
+
+    // And it reports the MCP ephemeral it answered, which is what the `ready`
+    // has to carry for the server's stale-vs-forged distinction to exist.
+    expect(toB64(result.mcpSessionPub)).toBe(hello.sessionPub);
+  });
+
+  it('reports the hello ephemeral on the needs-pair path too, so the approval can store it', async () => {
+    // The approval path answers a hello it reads back out of storage minutes
+    // later, and under v4 a long-term key is no longer enough to derive from.
+    const hello = await buildServerHello(
+      'opentable-mcp:0.9.1:a3f7c91d2e8b4f56',
+      'opentable-mcp',
+      ['opentable.com'],
+    );
+    const result = await handleServerHello(hello, {
+      trust: new TrustStore('0.4.0'),
+      extensionIdentityX25519Pub: FAKE_EXT_X25519_PUB,
+      ...DEPS_EXTRA,
+    });
+    expect(result.kind).toBe('needs-pair');
+    if (result.kind === 'needs-pair') expect(result.sessionPub).toBe(hello.sessionPub);
+  });
+
+  it('still auto-trusts a record written under v3 for the same identity, name and domains', async () => {
+    // v4 must not re-pair the fleet: the record is still keyed on
+    // `sha256(identityX25519Pub)` and nothing about trust matching moved.
+    const hello = await buildServerHello(
+      'opentable-mcp:0.9.1:a3f7c91d2e8b4f56',
+      'opentable-mcp',
+      ['opentable.com'],
+    );
+    const trust = new TrustStore('2.0.0');
+    await trustHello(trust, hello);
+    const result = await handleServerHello(hello, {
+      trust,
+      extensionIdentityX25519Pub: FAKE_EXT_X25519_PUB,
+      ...DEPS_EXTRA,
+    });
+    expect(result.kind).toBe('auto-trust');
+  });
+
+  // ---------------------------------------------------------------------
+  // Task 3.3 — L6: the identity that SIGNS must be the identity that is
+  // PINNED. Harmless under v3, where completing a session proved possession
+  // of the pinned X25519 key; load-bearing under v4, where the session key
+  // comes from an ephemeral and a signature under the unchecked Ed25519 key
+  // is the only thing binding it to a trusted identity.
+  // ---------------------------------------------------------------------
+  it('does not auto-trust a hello that keeps the pinned X25519 key and swaps the Ed25519 one', async () => {
+    // The impersonation this closes needs nothing private: copy
+    // `identityX25519Pub` out of any recorded hello (it is plaintext on the
+    // wire, and a hosted relay sees every one), present an Ed25519 key and a
+    // `sessionPub` of your own, and sign the hello payload with your own key.
+    // The signature verifies — against the key in the same frame — and the
+    // trust lookup on the X25519 hash hits the genuine record.
+    const genuine = await buildServerHello(
+      'opentable-mcp:0.9.1:a3f7c91d2e8b4f56',
+      'opentable-mcp',
+      ['opentable.com'],
+    );
+    const trust = new TrustStore('0.4.0');
+    const idHash = await trustHello(trust, genuine);
+
+    const attackerEd = await generateEd25519();
+    const attackerSession = await generateX25519();
+    const impostor: HelloFrameFromServer = {
+      ...genuine,
+      identityEd25519Pub: toB64(attackerEd.publicKey),
+      sessionPub: toB64(attackerSession.publicKey),
+      sessionSig: toB64(
+        await ed25519Sign(
+          attackerEd.privateKey,
+          helloSignaturePayload(
+            genuine.mcpId,
+            fromB64(genuine.sessionNonce),
+            attackerSession.publicKey,
+            FAKE_EXT_NONCE,
+          ),
+        ),
+      ),
+    };
+    const result = await handleServerHello(impostor, {
+      trust,
+      extensionIdentityX25519Pub: FAKE_EXT_X25519_PUB,
+      ...DEPS_EXTRA,
+    });
+    // needs-pair, not reject: the user can answer a prompt, and a `reject`
+    // is something the popup cannot show them.
+    expect(result.kind).toBe('needs-pair');
+    expect('sessionKey' in result).toBe(false);
+    // And the record was not rewritten under the attacker's key.
+    expect((await trust.get(idHash))?.identityEd25519Pub).toBe(genuine.identityEd25519Pub);
+  });
+
+  it('treats a record with no stored Ed25519 key as a mismatch rather than a match', async () => {
+    // Never normalised with `?? hello.identityEd25519Pub`, which turns the
+    // check into a tautology. `TrustRecord.identityEd25519Pub` is required
+    // and written unconditionally, so a record without one is a 0.3.0
+    // leftover that already re-pairs for another reason — its outcome is
+    // unchanged, which is what this asserts.
+    const hello = await buildServerHello(
+      'opentable-mcp:0.9.1:a3f7c91d2e8b4f56',
+      'opentable-mcp',
+      ['opentable.com'],
+    );
+    const empty = new TrustStore('0.4.0');
+    await trustHello(empty, hello, { identityEd25519Pub: '' });
+    expect(
+      (
+        await handleServerHello(hello, {
+          trust: empty,
+          extensionIdentityX25519Pub: FAKE_EXT_X25519_PUB,
+          ...DEPS_EXTRA,
+        })
+      ).kind,
+    ).toBe('needs-pair');
+
+    // And the ABSENT half, which the empty string cannot reach: `??` does not
+    // intercept `''`, so a record with the key set to an empty string tests
+    // the one shape the forbidden normalisation is blind to. A record with
+    // the key OMITTED is the shape it would swallow, and the shape a later
+    // reader is most likely to write the `??` for — `identityEd25519Pub` is
+    // typed required, so a defensive fallback looks free.
+    const absent = new TrustStore('0.4.0');
+    const idHash = Buffer.from(
+      await sha256(new Uint8Array(Buffer.from(hello.identityX25519Pub, 'base64'))),
+    ).toString('hex');
+    await absent.put(idHash, {
+      serverName: hello.serverName,
+      domains: [...hello.domains],
+      capabilities: ['fetch'],
+      identityX25519Pub: hello.identityX25519Pub,
+      extensionIdentityX25519Pub: FAKE_EXT_X25519_PUB_B64,
+      extensionIdentityEd25519Pub: FAKE_EXT_X25519_PUB_B64,
+    } as unknown as Parameters<TrustStore['put']>[1]);
+    expect(
+      (
+        await handleServerHello(hello, {
+          trust: absent,
+          extensionIdentityX25519Pub: FAKE_EXT_X25519_PUB,
+          ...DEPS_EXTRA,
+        })
+      ).kind,
+    ).toBe('needs-pair');
+  });
+});
+
+describe('applyNeedsPairRecord and the stored session ephemeral (v4)', () => {
+  it('refreshes the sessionPub with the nonce when a second hello collapses in', () => {
+    // Case 1 of the collapse. The nonce has always been refreshed here; under
+    // v4 the ephemeral has to move with it, because the approval derives from
+    // the PAIR. A record holding the first hello's pub beside the second
+    // hello's nonce derives a key nothing holds — the same failure as not
+    // storing it, and quieter, since the session looks established.
+    const existing: Record<string, unknown> = {};
+    const base = {
+      key: 'k',
+      kind: 'pair' as const,
+      identityHash: 'h',
+      serverName: 'foo-mcp',
+      version: '1.0.0',
+      domains: ['foo.com'],
+      capabilities: ['fetch'],
+      cookieKeys: [],
+      localStorageKeys: [],
+      sessionStorageKeys: [],
+      captureHeaders: [],
+      indexedDbScopes: [],
+      domSelectors: [],
+      graphqlOps: [],
+      localStoragePointers: [],
+      sessionStoragePointers: [],
+      pairCode: '1111-2222',
+      identityX25519Pub: 'aaaa',
+      identityEd25519Pub: 'bbbb',
+    };
+    const first = {
+      ...base,
+      mcpIds: ['foo-mcp:1.0.0:aaaa000000000001'],
+      sessionNonces: { 'foo-mcp:1.0.0:aaaa000000000001': 'nonce-1' },
+      sessionPubs: { 'foo-mcp:1.0.0:aaaa000000000001': 'pub-1' },
+    };
+    applyNeedsPairRecord(
+      existing as never,
+      'k',
+      first as never,
+    );
+    // The SAME mcpId hellos again with a fresh nonce and a fresh ephemeral.
+    const again = {
+      ...base,
+      mcpIds: ['foo-mcp:1.0.0:aaaa000000000001'],
+      sessionNonces: { 'foo-mcp:1.0.0:aaaa000000000001': 'nonce-2' },
+      sessionPubs: { 'foo-mcp:1.0.0:aaaa000000000001': 'pub-2' },
+    };
+    applyNeedsPairRecord(existing as never, 'k', again as never);
+
+    const stored = existing['k'] as {
+      mcpIds: string[];
+      sessionNonces: Record<string, string>;
+      sessionPubs: Record<string, string>;
+    };
+    expect(stored.mcpIds).toEqual(['foo-mcp:1.0.0:aaaa000000000001']);
+    expect(stored.sessionNonces['foo-mcp:1.0.0:aaaa000000000001']).toBe('nonce-2');
+    expect(stored.sessionPubs['foo-mcp:1.0.0:aaaa000000000001']).toBe('pub-2');
+  });
+
+  it('refreshes the pair code too — the popup may not show a number from the previous hello', () => {
+    // 3.0.0 (protocol 4): the code commits to the hello nonces and the MCP's
+    // ephemeral, so it CHANGES on every re-hello where v3's changed never.
+    // The frame sent to the MCP carries the fresh code (`result.pairCode`,
+    // never re-read from storage) and the MCP judges against its own fresh
+    // derivation — so a record that kept the first hello's number would put a
+    // stale code on the screen the user is asked to compare, and the one
+    // failure a SAS must never manufacture is a false mismatch.
+    const existing: Record<string, unknown> = {};
+    const base = {
+      key: 'k',
+      kind: 'pair' as const,
+      identityHash: 'h',
+      serverName: 'foo-mcp',
+      version: '1.0.0',
+      domains: ['foo.com'],
+      capabilities: ['fetch'],
+      cookieKeys: [],
+      localStorageKeys: [],
+      sessionStorageKeys: [],
+      captureHeaders: [],
+      indexedDbScopes: [],
+      domSelectors: [],
+      graphqlOps: [],
+      localStoragePointers: [],
+      sessionStoragePointers: [],
+      identityX25519Pub: 'aaaa',
+      identityEd25519Pub: 'bbbb',
+      mcpIds: ['foo-mcp:1.0.0:aaaa000000000001'],
+      sessionNonces: { 'foo-mcp:1.0.0:aaaa000000000001': 'nonce-1' },
+      sessionPubs: { 'foo-mcp:1.0.0:aaaa000000000001': 'pub-1' },
+    };
+    applyNeedsPairRecord(existing as never, 'k', { ...base, pairCode: '1111-2222' } as never);
+    applyNeedsPairRecord(
+      existing as never,
+      'k',
+      {
+        ...base,
+        pairCode: '3333-4444',
+        sessionNonces: { 'foo-mcp:1.0.0:aaaa000000000001': 'nonce-2' },
+        sessionPubs: { 'foo-mcp:1.0.0:aaaa000000000001': 'pub-2' },
+      } as never,
+    );
+
+    expect((existing['k'] as { pairCode: string }).pairCode).toBe('3333-4444');
   });
 });

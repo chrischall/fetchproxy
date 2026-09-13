@@ -49,6 +49,20 @@ export interface PendingPairRecord extends PendingRecordBase {
    * approval. Each process sends its own hello with its own nonce.
    */
   sessionNonces: Record<string, string>;
+  /**
+   * 3.0.0+ (protocol 4): per-process MCP session EPHEMERAL pub (b64), beside
+   * the nonce and refreshed with it.
+   *
+   * The approval path answers a hello it read back out of storage, minutes
+   * after it arrived. Under v3 a stored record sufficed because the MCP's half
+   * of the ECDH was its long-term `identityX25519Pub`; under v4 it is this
+   * per-session value, so it has to be stored or the approval has nothing to
+   * derive against. Refreshing it on every hello is what keeps a record from
+   * naming a superseded ephemeral after a reconnect — and an entry with no
+   * value here is SKIPPED rather than falling back to the identity key, which
+   * would be the v3 derivation reinstated under a v4 signature.
+   */
+  sessionPubs: Record<string, string>;
   capabilities: string[];
   cookieKeys: string[];
   localStorageKeys: string[];
@@ -79,6 +93,14 @@ export interface PendingPairRecord extends PendingRecordBase {
     localStoragePointers: StoragePointerDecl[];
     sessionStoragePointers: StoragePointerDecl[];
   };
+  /**
+   * The code the user compares against the MCP's own.
+   *
+   * 3.0.0 (protocol 4): per HELLO, not per identity — it commits to both hello
+   * nonces and the MCP's session ephemeral ({@link pairTranscript}) — so it is
+   * refreshed on every collapse, and a record covering several mcpIds holds
+   * the most recent hello's number rather than one they all share.
+   */
   pairCode: string;
 }
 
@@ -149,6 +171,25 @@ export function applyNeedsPairRecord(
       currentEntry.mcpIds.push(mcpId);
     }
     currentEntry.sessionNonces[mcpId] = nonce;
+    // 3.0.0: the ephemeral moves with the nonce. A record that kept the FIRST
+    // hello's pub and the SECOND hello's nonce would derive a key nothing
+    // holds, which is the same failure as not storing it at all.
+    const sessionPub = newRecord.sessionPubs[mcpId];
+    if (sessionPub !== undefined) {
+      currentEntry.sessionPubs = { ...(currentEntry.sessionPubs ?? {}), [mcpId]: sessionPub };
+    }
+    // 3.0.0 (protocol 4): so does the pair code. It commits to the two hello
+    // nonces and the MCP's ephemeral, so it CHANGES on every re-hello where
+    // v3's — over two long-term identity pubs — changed never, and the frame
+    // this collapse answers carries the FRESH number to the MCP. A record
+    // keeping the first hello's code would put a stale number on the screen
+    // the user is asked to compare against the MCP's, and the one thing a SAS
+    // must never manufacture is a false mismatch. This is scalar where the
+    // two above are keyed by mcpId, so what it holds is the most recent
+    // hello's code: several PROCESSES sharing one identity and scope collapse
+    // into this one record and no longer share one number, which is inherent
+    // to a per-session code and is why the popup shows the latest.
+    currentEntry.pairCode = newRecord.pairCode;
   } else if (!currentEntry) {
     // Case 2: New entry.
     existing[pendingKey] = newRecord;

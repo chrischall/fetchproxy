@@ -2,6 +2,18 @@ import { describe, it, expect } from 'vitest';
 import { isPublicSuffix } from '../src/public-suffix.js';
 import { validateFrame, ProtocolError } from '../src/validate.js';
 
+/**
+ * base64 of 32 raw bytes — the exact shape both of the server hello's v4
+ * fixed-length fields are held to. The identity pubs are documented as 32
+ * bytes but only checked as base64; the session ephemeral and the echoed
+ * extension nonce are length-checked, because v4 derives the session key from
+ * the one and compares the other byte for byte.
+ */
+const SESSION_PUB = 'AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=';
+
+/** base64 of 32 raw bytes — a plausible extension `sessionNonce` echo. */
+const ANSWERS_EXT_NONCE = 'AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI=';
+
 describe('isPublicSuffix', () => {
   it('treats any single-label host as a public suffix (every TLD is one)', () => {
     for (const tld of ['com', 'uk', 'app', 'dev', 'io']) {
@@ -74,7 +86,7 @@ describe('isPublicSuffix', () => {
 describe('hello.domains refuses a public suffix', () => {
   const validHello = {
     type: 'hello',
-    protocolVersion: 3,
+    protocolVersion: 4,
     role: 'server',
     mcpId: 'opentable-mcp:0.9.1:a3f7c91d2e8b4f56',
     serverName: 'opentable-mcp',
@@ -83,6 +95,8 @@ describe('hello.domains refuses a public suffix', () => {
     identityX25519Pub: 'AAAA',
     identityEd25519Pub: 'AAAA',
     sessionNonce: 'AAAA',
+    sessionPub: SESSION_PUB,
+    answersExtNonce: ANSWERS_EXT_NONCE,
     sessionSig: 'AAAA',
   };
 

@@ -66,7 +66,7 @@ describe('sealedFrameWireBytes', () => {
   it.each(cases)('matches the sealed frame exactly: $label', async ({ inner }) => {
     const mcpId = 'alltrails-mcp:2.11.3:0123456789abcdef';
     const seq = 7;
-    const sealed = await sealInnerFrame(key, mcpId, seq, inner);
+    const sealed = await sealInnerFrame(key, mcpId, seq, inner, 's2e');
     expect(sealedFrameWireBytes(mcpId, seq, inner)).toBe(utf8(JSON.stringify(sealed)));
   });
 
@@ -84,9 +84,9 @@ describe('sealedFrameWireBytes', () => {
         sealedFrameWireBytes(mcpId, 7, inner),
       );
       // And the bytes measured really are the bytes sealed.
-      const sealed = await sealInnerFrame(key, mcpId, 7, plaintext);
+      const sealed = await sealInnerFrame(key, mcpId, 7, plaintext, 's2e');
       expect(sealedFrameWireBytes(mcpId, 7, plaintext)).toBe(utf8(JSON.stringify(sealed)));
-      expect(await openEncryptedFrame(key, sealed)).toEqual(inner);
+      expect(await openEncryptedFrame(key, sealed, 's2e')).toEqual(inner);
     },
   );
 

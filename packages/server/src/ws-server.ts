@@ -1679,7 +1679,7 @@ export class FetchproxyServer {
       });
       // 0.5.2+: the extension queued us for pairing; fail in-flight tool
       // calls fast with an actionable error including the joint pair code
-      // so the chat shows the same XXX-XXX the popup is displaying.
+      // so the chat shows the same XXXX-XXXX the popup is displaying.
       // M1 (bridge review 2026-09-10): `code` here is the handle's OWN
       // derivation from the two identity pubs, never the number the
       // `pair-pending` frame carried — the frame is checked against it and

@@ -133,6 +133,20 @@
       }
       .bridge-error:empty { display: none; }
       .bridge-error { color: #b91c1c; }
+      /* 3.0.0 (protocol 4): MCPs refused at the hello for speaking protocol 3.
+         Styled as a warning rather than an error: nothing here is broken in
+         this browser, and there is nothing here for the reader to click. */
+      .mismatch-heading { margin: 0 0 4px; color: #b45309; }
+      ul.mismatch-list { list-style: none; padding: 0; margin: 0 0 10px; }
+      li.version-mismatch {
+        padding: 6px 8px;
+        margin-bottom: 4px;
+        border-left: 3px solid #f59e0b;
+        background: #fffbeb;
+        color: #78350f;
+        border-radius: 3px;
+        word-break: break-word;
+      }
     </style>
   </head>
   <body>

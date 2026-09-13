@@ -8,12 +8,14 @@ import {
   hkdfSha256,
   openEncryptedFrame,
   readySignaturePayload,
+  helloSignaturePayload,
+  transcriptHash,
   sealInnerFrame,
   sha256,
   toB64,
   fromB64,
   toHex,
-  concatBytes,
+  ANSWERS_NO_EXT_SESSION,
   HKDF_SESSION_INFO,
   PROTOCOL_VERSION,
   type RawKeyPair,
@@ -98,9 +100,24 @@ class FakeSocket {
 
 const storage = new Map<string, unknown>();
 
+/**
+ * Every `chrome.runtime.sendMessage` the background made, in order.
+ *
+ * Recorded rather than swallowed because one of them is load-bearing: the
+ * version-mismatch store broadcasts `connections-changed` after each write,
+ * and that broadcast is the whole difference between an open popup
+ * contradicting itself within the same second and only at the next open. A
+ * no-op stub pins nothing — both call sites survived deletion with the whole
+ * extension-core suite green.
+ */
+const runtimeMessages: unknown[] = [];
+
 vi.stubGlobal('WebSocket', FakeSocket);
 vi.stubGlobal('chrome', {
-  runtime: { getManifest: () => ({ version: '2.1.0' }), sendMessage: () => {} },
+  runtime: {
+    getManifest: () => ({ version: '2.1.0' }),
+    sendMessage: (m: unknown) => void runtimeMessages.push(m),
+  },
   storage: {
     local: {
       get: async (k: string | string[]) => {
@@ -126,6 +143,13 @@ const { links, linkForMcp, unbindAll } = await import('../src/background/links.j
 const { TrustStore } = await import('../src/trust-store.js');
 const { SessionKeys } = await import('../src/session-keys.js');
 const { mcpDomains, mcpCapabilities } = await import('../src/background/session-scope.js');
+const { onApproval } = await import('../src/background/approval.js');
+const { VERSION_MISMATCH_KEY, normaliseVersionMismatches } = await import(
+  '../src/lib/version-mismatch.js'
+);
+type VersionMismatch = import('../src/lib/version-mismatch.js').VersionMismatch;
+type AnyPendingRecord =
+  import('../src/background/pending-records.js').AnyPendingRecord;
 
 // ---------------------------------------------------------------------------
 // A scripted MCP: real identity, real signatures, real ECDH.
@@ -135,19 +159,39 @@ interface ScriptedMcp {
   mcpId: string;
   x: RawKeyPair;
   ed: RawKeyPair;
+  /** 3.0.0: the per-session ephemeral this MCP's hello offers. */
+  session: RawKeyPair;
   sessionNonce: Uint8Array;
 }
 
 async function scriptedMcp(mcpId: string): Promise<ScriptedMcp> {
   const nonce = new Uint8Array(32);
   crypto.getRandomValues(nonce);
-  return { mcpId, x: await generateX25519(), ed: await generateEd25519(), sessionNonce: nonce };
+  return {
+    mcpId,
+    x: await generateX25519(),
+    ed: await generateEd25519(),
+    session: await generateX25519(),
+    sessionNonce: nonce,
+  };
 }
 
-async function helloFrom(mcp: ScriptedMcp): Promise<Record<string, unknown>> {
+/**
+ * The hello this MCP sends on `link`.
+ *
+ * 3.0.0 (protocol 4): it names the extension session it answers — the nonce
+ * off that link's own hello — and signs `helloSignaturePayload` over both new
+ * fields. `answersExtNonce` is an argument rather than a constant because
+ * §1a's Rule C is precisely about a hello that names the WRONG one, and a
+ * helper that could only produce the right one could not express the case.
+ */
+async function helloFrom(
+  mcp: ScriptedMcp,
+  answersExtNonce: Uint8Array,
+): Promise<Record<string, unknown>> {
   const sessionSig = await ed25519Sign(
     mcp.ed.privateKey,
-    concatBytes(new TextEncoder().encode(mcp.mcpId), mcp.sessionNonce),
+    helloSignaturePayload(mcp.mcpId, mcp.sessionNonce, mcp.session.publicKey, answersExtNonce),
   );
   return {
     type: 'hello',
@@ -161,8 +205,15 @@ async function helloFrom(mcp: ScriptedMcp): Promise<Record<string, unknown>> {
     identityX25519Pub: toB64(mcp.x.publicKey),
     identityEd25519Pub: toB64(mcp.ed.publicKey),
     sessionNonce: toB64(mcp.sessionNonce),
+    sessionPub: toB64(mcp.session.publicKey),
+    answersExtNonce: toB64(answersExtNonce),
     sessionSig: toB64(sessionSig),
   };
+}
+
+/** The nonce the extension put on `ws`'s own hello. */
+function extNonceOf(ws: FakeSocket): Uint8Array {
+  return fromB64(ws.frames<{ sessionNonce: string }>('hello')[0]!.sessionNonce);
 }
 
 /** Pre-trust an MCP identity so its hello auto-trusts instead of prompting. */
@@ -179,10 +230,29 @@ async function trustMcp(mcp: ScriptedMcp): Promise<void> {
   });
 }
 
-/** The session key the MCP would derive from the ready frame it got back. */
-async function sessionKeyFor(mcp: ScriptedMcp, ready: { extensionSessionPub: string }): Promise<Uint8Array> {
-  const shared = await ecdhX25519(mcp.x.privateKey, fromB64(ready.extensionSessionPub));
-  return hkdfSha256(shared, mcp.sessionNonce, new TextEncoder().encode(HKDF_SESSION_INFO), 32);
+/**
+ * The session key the MCP would derive from the ready frame it got back.
+ *
+ * 3.0.0 (protocol 4): from the MCP's EPHEMERAL private half, salted with the
+ * transcript over both nonces and both ephemerals. Under v3 this used the
+ * long-term identity key and the MCP's nonce alone, and neither change is a
+ * compile error — so a frame sealed with this key, opened by the extension,
+ * is what actually holds the extension to the new derivation.
+ */
+async function sessionKeyFor(
+  mcp: ScriptedMcp,
+  ready: { extensionSessionPub: string },
+  extNonce: Uint8Array,
+): Promise<Uint8Array> {
+  const extPub = fromB64(ready.extensionSessionPub);
+  const shared = await ecdhX25519(mcp.session.privateKey, extPub);
+  const salt = await transcriptHash(
+    mcp.sessionNonce,
+    extNonce,
+    mcp.session.publicKey,
+    extPub,
+  );
+  return hkdfSha256(shared, salt, new TextEncoder().encode(HKDF_SESSION_INFO), 32);
 }
 
 const REMOTE = {
@@ -251,14 +321,14 @@ describe('two bridges at once', () => {
     await trustMcp(onLocal);
     await trustMcp(onRemote);
 
-    localWs.message(await helloFrom(onLocal));
-    remoteWs.message(await helloFrom(onRemote));
+    localWs.message(await helloFrom(onLocal, extNonceOf(localWs)));
+    remoteWs.message(await helloFrom(onRemote, extNonceOf(remoteWs)));
     await vi.waitUntil(() => localWs.frames('ready').length > 0 && remoteWs.frames('ready').length > 0);
 
     const localNonce = fromB64(localWs.frames<{ sessionNonce: string }>('hello')[0]!.sessionNonce);
     const remoteNonce = fromB64(remoteWs.frames<{ sessionNonce: string }>('hello')[0]!.sessionNonce);
-    const localReady = localWs.frames<{ mcpId: string; extensionSessionPub: string; sessionSig: string }>('ready')[0]!;
-    const remoteReady = remoteWs.frames<{ mcpId: string; extensionSessionPub: string; sessionSig: string }>('ready')[0]!;
+    const localReady = localWs.frames<{ mcpId: string; extensionSessionPub: string; mcpSessionPub: string; sessionSig: string }>('ready')[0]!;
+    const remoteReady = remoteWs.frames<{ mcpId: string; extensionSessionPub: string; mcpSessionPub: string; sessionSig: string }>('ready')[0]!;
 
     // Each ready goes back on the link that asked, for the id that asked.
     expect(localReady.mcpId).toBe(onLocal.mcpId);
@@ -266,25 +336,53 @@ describe('two bridges at once', () => {
 
     // And verifies ONLY against its own link's nonce. This is the assertion
     // that fails if the nonce ever goes global again.
+    // 3.0.0: the payload gains the MCP's ephemeral, so a relay cannot
+    // substitute either half of the ECDH.
     const verify = (ready: typeof localReady, mcp: ScriptedMcp, extNonce: Uint8Array) =>
       ed25519Verify(
         state.extIdentity!.ed25519Pub,
-        readySignaturePayload(mcp.sessionNonce, extNonce, fromB64(ready.extensionSessionPub)),
+        readySignaturePayload(
+          mcp.sessionNonce,
+          extNonce,
+          fromB64(ready.extensionSessionPub),
+          mcp.session.publicKey,
+        ),
         fromB64(ready.sessionSig),
       );
     expect(await verify(localReady, onLocal, localNonce)).toBe(true);
     expect(await verify(remoteReady, onRemote, remoteNonce)).toBe(true);
     expect(await verify(remoteReady, onRemote, localNonce)).toBe(false);
+
+    // 3.0.0: the ephemeral is also ON THE WIRE, not merely inside the
+    // signature — §1a's Rule C is decided before any signature is checked,
+    // so the server needs it as a field.
+    expect(localReady.mcpSessionPub).toBe(toB64(onLocal.session.publicKey));
+    expect(remoteReady.mcpSessionPub).toBe(toB64(onRemote.session.publicKey));
+
+    // And the v3 payload — the same three fields, without the MCP's
+    // ephemeral — must NOT verify, or the widening is decorative.
+    expect(
+      await ed25519Verify(
+        state.extIdentity!.ed25519Pub,
+        readySignaturePayload(
+          onLocal.sessionNonce,
+          localNonce,
+          fromB64(localReady.extensionSessionPub),
+          new Uint8Array(0),
+        ),
+        fromB64(localReady.sessionSig),
+      ),
+    ).toBe(false);
   });
 
   it('refuses a second link claiming an mcpId the first already holds', async () => {
     const mcp = await scriptedMcp('alltrails-mcp:2.1.3:3333333333333333');
     await trustMcp(mcp);
 
-    localWs.message(await helloFrom(mcp));
+    localWs.message(await helloFrom(mcp, extNonceOf(localWs)));
     await vi.waitUntil(() => localWs.frames('ready').length > 0);
 
-    remoteWs.message(await helloFrom(mcp));
+    remoteWs.message(await helloFrom(mcp, extNonceOf(remoteWs)));
     await new Promise((r) => setTimeout(r, 20));
 
     // No answer to the impostor, and the binding did not move.
@@ -295,16 +393,16 @@ describe('two bridges at once', () => {
   it('answers a request on the link it arrived on, and nowhere else', async () => {
     const mcp = await scriptedMcp('alltrails-mcp:2.1.3:4444444444444444');
     await trustMcp(mcp);
-    remoteWs.message(await helloFrom(mcp));
+    remoteWs.message(await helloFrom(mcp, extNonceOf(remoteWs)));
     await vi.waitUntil(() => remoteWs.frames('ready').length > 0);
     const ready = remoteWs.frames<{ extensionSessionPub: string }>('ready')[0]!;
-    const key = await sessionKeyFor(mcp, ready);
+    const key = await sessionKeyFor(mcp, ready, extNonceOf(remoteWs));
 
-    remoteWs.message(await sealInnerFrame(key, mcp.mcpId, 1, { type: 'ping' }));
+    remoteWs.message(await sealInnerFrame(key, mcp.mcpId, 1, { type: 'ping' }, 's2e'));
     await vi.waitUntil(() => remoteWs.frames('frame').length > 0);
 
     const pong = remoteWs.frames<Parameters<typeof openEncryptedFrame>[1]>('frame')[0]!;
-    expect((await openEncryptedFrame(key, pong)).type).toBe('pong');
+    expect((await openEncryptedFrame(key, pong, 'e2s')).type).toBe('pong');
     // The loopback link saw nothing of it.
     expect(localWs.frames('frame')).toHaveLength(0);
   });
@@ -312,12 +410,16 @@ describe('two bridges at once', () => {
   it('drops a frame whose mcpId belongs to the other link, before decrypting it', async () => {
     const mcp = await scriptedMcp('alltrails-mcp:2.1.3:5555555555555555');
     await trustMcp(mcp);
-    localWs.message(await helloFrom(mcp));
+    localWs.message(await helloFrom(mcp, extNonceOf(localWs)));
     await vi.waitUntil(() => localWs.frames('ready').length > 0);
-    const key = await sessionKeyFor(mcp, localWs.frames<{ extensionSessionPub: string }>('ready')[0]!);
+    const key = await sessionKeyFor(
+      mcp,
+      localWs.frames<{ extensionSessionPub: string }>('ready')[0]!,
+      extNonceOf(localWs),
+    );
 
     // A well-formed, correctly sealed ping — arriving on the wrong bridge.
-    remoteWs.message(await sealInnerFrame(key, mcp.mcpId, 1, { type: 'ping' }));
+    remoteWs.message(await sealInnerFrame(key, mcp.mcpId, 1, { type: 'ping' }, 's2e'));
     await new Promise((r) => setTimeout(r, 20));
 
     expect(remoteWs.frames('frame')).toHaveLength(0);
@@ -329,8 +431,8 @@ describe('two bridges at once', () => {
     const onRemote = await scriptedMcp('alltrails-mcp:2.1.3:7777777777777777');
     await trustMcp(onLocal);
     await trustMcp(onRemote);
-    localWs.message(await helloFrom(onLocal));
-    remoteWs.message(await helloFrom(onRemote));
+    localWs.message(await helloFrom(onLocal, extNonceOf(localWs)));
+    remoteWs.message(await helloFrom(onRemote, extNonceOf(remoteWs)));
     await vi.waitUntil(() => localWs.frames('ready').length > 0 && remoteWs.frames('ready').length > 0);
 
     remoteWs.remoteClose(1008, 'token revoked');
@@ -347,7 +449,7 @@ describe('two bridges at once', () => {
   it('removing a target closes its link and takes its sessions with it', async () => {
     const onRemote = await scriptedMcp('alltrails-mcp:2.1.3:8888888888888888');
     await trustMcp(onRemote);
-    remoteWs.message(await helloFrom(onRemote));
+    remoteWs.message(await helloFrom(onRemote, extNonceOf(remoteWs)));
     await vi.waitUntil(() => remoteWs.frames('ready').length > 0);
 
     reconcileRemoteLinks([]);
@@ -411,7 +513,7 @@ describe('pair-pending delivery (mcp-host#639)', () => {
   // The MCP learns a pair code exists ONLY from this frame. When it does not
   // arrive, `awaitSessionReady` times out and reports the `not-ready` branch,
   // whose hint says "sign in to the target site" — so the user is sent to
-  // check a browser session that is fine while a live XXX-XXX sits in the
+  // check a browser session that is fine while a live XXXX-XXXX sits in the
   // popup. That is the shape observed on resy-mcp#166: a code on screen, and
   // `pairCode: null` at the MCP on every one of four attempts.
   it('sends the code to an untrusted MCP that needs pairing', async () => {
@@ -423,13 +525,13 @@ describe('pair-pending delivery (mcp-host#639)', () => {
     localWs.open();
 
     const mcp = await scriptedMcp('alltrails-mcp:2.1.3:cccccccccccccccc');
-    localWs.message(await helloFrom(mcp)); // no trust record → needs-pair
+    localWs.message(await helloFrom(mcp, extNonceOf(localWs))); // no trust record → needs-pair
     await new Promise((r) => setTimeout(r, 30));
 
     const pending = localWs.frames<{ mcpId: string; pairCode: string }>('pair-pending');
     expect(pending).toHaveLength(1);
     expect(pending[0]!.mcpId).toBe(mcp.mcpId);
-    expect(pending[0]!.pairCode).toMatch(/^[0-9]{3}-[0-9]{3}$/);
+    expect(pending[0]!.pairCode).toMatch(/^[0-9]{4}-[0-9]{4}$/);
     expect(localWs.frames('ready')).toHaveLength(0);
   });
 
@@ -459,7 +561,7 @@ describe('pair-pending delivery (mcp-host#639)', () => {
       return out;
     };
     try {
-      localWs.message(await helloFrom(mcp));
+      localWs.message(await helloFrom(mcp, extNonceOf(localWs)));
       await new Promise((r) => setTimeout(r, 30));
     } finally {
       (chrome.storage.local as { get: unknown }).get = realGet;
@@ -467,7 +569,7 @@ describe('pair-pending delivery (mcp-host#639)', () => {
 
     const pending = localWs.frames<{ pairCode: string }>('pair-pending');
     expect(pending).toHaveLength(1);
-    expect(pending[0]!.pairCode).toMatch(/^[0-9]{3}-[0-9]{3}$/);
+    expect(pending[0]!.pairCode).toMatch(/^[0-9]{4}-[0-9]{4}$/);
   });
 
   // `sendOnLink` returns false on a closed socket and the caller discarded it,
@@ -485,7 +587,7 @@ describe('pair-pending delivery (mcp-host#639)', () => {
 
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const mcp = await scriptedMcp('alltrails-mcp:2.1.3:eeeeeeeeeeeeeeee');
-    const hello = await helloFrom(mcp);
+    const hello = await helloFrom(mcp, extNonceOf(localWs));
     // Deliver the hello, then close the socket before the async write finishes,
     // so the send finds the link gone — the real-world case is the WS dropping
     // between the hello and the store write.
@@ -515,7 +617,7 @@ describe('telling the server why (#300)', () => {
     localWs.open();
 
     const mcp = await scriptedMcp('alltrails-mcp:2.1.3:aaaaaaaaaaaaaaaa');
-    const hello = await helloFrom(mcp);
+    const hello = await helloFrom(mcp, extNonceOf(localWs));
     // Broken signature → handleServerHello rejects.
     localWs.message({
       ...hello,
@@ -546,11 +648,296 @@ describe('telling the server why (#300)', () => {
     localWs.open();
 
     const mcp = await scriptedMcp('alltrails-mcp:2.1.3:bbbbbbbbbbbbbbbb');
-    const hello = await helloFrom(mcp); // no `accepts`
+    const hello = await helloFrom(mcp, extNonceOf(localWs)); // no `accepts`
     localWs.message({ ...hello, sessionSig: toB64(new Uint8Array(64)) });
     await new Promise((r) => setTimeout(r, 20));
 
     expect(localWs.frames('hello-rejected')).toHaveLength(0);
+  });
+});
+
+/**
+ * A v3 MCP meeting this v4 extension (Task 4.1).
+ *
+ * Measured on this branch before the fix: `validateFrame` throws
+ * `hello.protocolVersion: must be 4`, `onMessage` drops the frame with a
+ * `console.warn` in a service worker nobody has open, and the MCP waits out
+ * `SESSION_READY_TIMEOUT_MS` = 30 s before reporting `not-ready` with a hint
+ * that blames being signed out or a changed scope. A hang is the worst failure
+ * mode a version mismatch can have: the person seeing it has nothing to act on
+ * and no reason to suspect a version at all.
+ *
+ * `hello-rejected` is the right vehicle because it PREDATES the break — it
+ * landed in 2.6.0, the whole cohort declares `accepts: ['hello-rejected']`, and
+ * the frame carries no authority: a forged one can make a session fail, which a
+ * silent peer could do anyway by never answering. So the v3 MCP on the other
+ * end needs no change at all; only this side does.
+ */
+describe('a v3 MCP meeting a v4 extension (Task 4.1)', () => {
+  async function freshLink(): Promise<FakeSocket> {
+    FakeSocket.opened = [];
+    unbindAll();
+    links.clear();
+    reconcileRemoteLinks([REMOTE]);
+    const localWs = FakeSocket.opened.find((s) => s.url.startsWith('ws://127.0.0.1'))!;
+    localWs.open();
+    return localWs;
+  }
+
+  /**
+   * A hello no v4 validator accepts: protocol 3, and the v3 hello's shape —
+   * no `sessionPub`, no `answersExtNonce`. Built by hand rather than by
+   * mutating `helloFrom`, because the point is a frame from BEFORE those
+   * fields existed.
+   */
+  function v3Hello(mcpId: string, extra: Record<string, unknown> = {}): Record<string, unknown> {
+    return {
+      type: 'hello',
+      role: 'server',
+      protocolVersion: 3,
+      mcpId,
+      serverName: 'alltrails-mcp',
+      version: '2.11.3',
+      domains: ['alltrails.com'],
+      capabilities: ['fetch'],
+      identityX25519Pub: toB64(new Uint8Array(32).fill(1)),
+      identityEd25519Pub: toB64(new Uint8Array(32).fill(2)),
+      sessionNonce: toB64(new Uint8Array(32).fill(3)),
+      sessionSig: toB64(new Uint8Array(64)),
+      ...extra,
+    };
+  }
+
+  it('answers hello-rejected naming both versions, and grants nothing doing it', async () => {
+    const localWs = await freshLink();
+    const mcpId = 'alltrails-mcp:2.11.3:1234123412341234';
+
+    // The trust store is the observable proof that the refusal is a REFUSAL
+    // and not a handshake with a complaint attached: nothing on this path may
+    // read a record, and `handleServerHello` is the only reader.
+    const trustRead = vi.spyOn(state.trust!, 'get');
+    const trustWrite = vi.spyOn(state.trust!, 'put');
+    localWs.message(v3Hello(mcpId, { accepts: ['hello-rejected'] }));
+    await new Promise((r) => setTimeout(r, 20));
+
+    const rejected = localWs.frames<{ mcpId: string; reason: string }>('hello-rejected');
+    expect(rejected).toHaveLength(1);
+    expect(rejected[0]!.mcpId).toBe(mcpId);
+    // Both numbers and the remedy — a refusal naming one version tells the
+    // reader nothing they can act on.
+    expect(rejected[0]!.reason).toBe(
+      'protocol version mismatch: this browser extension speaks fetchproxy protocol 4, ' +
+        'this MCP speaks 3 — upgrade @fetchproxy/server to >= 3.0.0',
+    );
+
+    // No session, no binding, no pair prompt, no trust record touched.
+    expect(localWs.frames('ready')).toHaveLength(0);
+    expect(localWs.frames('pair-pending')).toHaveLength(0);
+    expect(linkForMcp(mcpId)).toBeNull();
+    expect(state.sessions!.get(mcpId)).toBeNull();
+    expect(trustRead).not.toHaveBeenCalled();
+    expect(trustWrite).not.toHaveBeenCalled();
+    trustRead.mockRestore();
+    trustWrite.mockRestore();
+  });
+
+  it('answers exactly once, and only on the link the hello arrived on', async () => {
+    FakeSocket.opened = [];
+    unbindAll();
+    links.clear();
+    reconcileRemoteLinks([REMOTE]);
+    const localWs = FakeSocket.opened.find((s) => s.url.startsWith('ws://127.0.0.1'))!;
+    const remoteWs = FakeSocket.opened.find((s) => s.url === REMOTE.url)!;
+    localWs.open();
+    remoteWs.open();
+
+    remoteWs.message(v3Hello('alltrails-mcp:2.11.3:5555555555555555', { accepts: ['hello-rejected'] }));
+    await new Promise((r) => setTimeout(r, 20));
+
+    expect(remoteWs.frames('hello-rejected')).toHaveLength(1);
+    expect(localWs.frames('hello-rejected')).toHaveLength(0);
+  });
+
+  // The gate the 2.6.0 frame shipped with, and it is load-bearing rather than
+  // politeness: `validateFrame` on a server older than 2.6.0 throws
+  // `unknown frame type` and its caller closes the socket, so answering
+  // unconditionally turns a diagnosable refusal into a dropped connection.
+  it('stays silent toward a v3 MCP that did not advertise hello-rejected', async () => {
+    const localWs = await freshLink();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    localWs.message(v3Hello('alltrails-mcp:2.11.3:6666666666666666')); // no `accepts`
+    await new Promise((r) => setTimeout(r, 20));
+
+    expect(localWs.frames('hello-rejected')).toHaveLength(0);
+    // Still said out loud on this side — the popup and the console are what
+    // the browser user has when the MCP cannot be told.
+    const said = warn.mock.calls.map((c) => c.join(' ')).join('\n');
+    warn.mockRestore();
+    expect(said).toContain('protocol version mismatch');
+    expect(said).toContain('speaks 3');
+  });
+
+  // The mismatch is the ONLY case that answers. Everything else keeps the
+  // silent-drop path, or a malformed-frame flood becomes a send amplifier.
+  it('drops a frame malformed for any other reason, silently, as before', async () => {
+    const localWs = await freshLink();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    // Right protocol version, wrong everything else.
+    const mcp = await scriptedMcp('alltrails-mcp:2.1.3:7777777777777777');
+    const hello = await helloFrom(mcp, extNonceOf(localWs));
+    delete (hello as Record<string, unknown>).sessionPub;
+    localWs.message({ ...hello, accepts: ['hello-rejected'] });
+    // And a frame that is not a hello at all.
+    localWs.message({ type: 'frame', mcpId: 'not a valid id', seq: 0 });
+    await new Promise((r) => setTimeout(r, 20));
+
+    expect(localWs.frames('hello-rejected')).toHaveLength(0);
+    const said = warn.mock.calls.map((c) => c.join(' ')).join('\n');
+    warn.mockRestore();
+    expect(said).toContain('dropped malformed frame');
+    expect(said).not.toContain('protocol version mismatch');
+  });
+
+  /**
+   * Task 4.3 — the other end of the refusal: the BROWSER user.
+   *
+   * The wire answer above reaches the MCP's operator. It reaches nobody at all
+   * when the MCP predates 2.6.0 and cannot hear `hello-rejected`, and it
+   * reaches nothing the person in front of the browser can see in either case
+   * — a refused MCP is never trusted, never gets a session and never lights a
+   * dot, so every surface the popup had renders this as "nothing is
+   * connected". The record these tests pin is what the popup reads.
+   */
+  describe('and what the browser user is told (Task 4.3)', () => {
+    const stored = (): Record<string, VersionMismatch> =>
+      normaliseVersionMismatches(storage.get(VERSION_MISMATCH_KEY));
+
+    /** How many `connections-changed` broadcasts the background has made. */
+    const broadcasts = (): number =>
+      runtimeMessages.filter(
+        (m) => (m as { type?: unknown } | null)?.type === 'connections-changed',
+      ).length;
+
+    beforeEach(async () => {
+      // The store writes are deliberately fire-and-forget — a popup line may
+      // never fail a refusal — so a previous test's write can still be in
+      // flight when the file-level `storage.clear()` runs. Let the chain
+      // drain, then clear what it wrote.
+      await new Promise((r) => setTimeout(r, 20));
+      storage.delete(VERSION_MISMATCH_KEY);
+      runtimeMessages.length = 0;
+    });
+
+    it('records the refusal for the popup, naming the link, the server and both versions', async () => {
+      const localWs = await freshLink();
+      localWs.message(
+        v3Hello('alltrails-mcp:2.11.3:1234123412341234', { accepts: ['hello-rejected'] }),
+      );
+      await vi.waitUntil(() => Object.keys(stored()).length > 0);
+
+      const rows = Object.values(stored());
+      expect(rows).toHaveLength(1);
+      expect(rows[0]!.linkId).toBe('local');
+      expect(rows[0]!.serverName).toBe('alltrails-mcp');
+      expect(rows[0]!.mcpProtocol).toBe(3);
+      expect(rows[0]!.extensionProtocol).toBe(PROTOCOL_VERSION);
+    });
+
+    // Promptness is half of a refusal surface. The popup is a separate context
+    // that has already rendered by the time the hello arrives, and it re-reads
+    // the store on `connections-changed` — so without the broadcast an OPEN
+    // popup keeps saying "no MCP servers connected" while the MCP retries
+    // every 24s, and the line the record buys only appears at the next open.
+    it('tells an open popup to re-read, rather than leaving the record for the next open', async () => {
+      const localWs = await freshLink();
+      runtimeMessages.length = 0;
+      localWs.message(
+        v3Hello('alltrails-mcp:2.11.3:1234123412341234', { accepts: ['hello-rejected'] }),
+      );
+      await vi.waitUntil(() => Object.keys(stored()).length > 0);
+      // Nothing else on a refused hello's path broadcasts, so this count is
+      // the store's own: it goes to 0 the moment the call is dropped.
+      await vi.waitUntil(() => broadcasts() >= 1);
+    });
+
+    // The case the popup exists FOR: an MCP older than 2.6.0 cannot hear
+    // `hello-rejected`, so the browser is the only place the refusal can land.
+    it('records it even when the MCP cannot be told', async () => {
+      const localWs = await freshLink();
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      localWs.message(v3Hello('alltrails-mcp:2.11.3:6666666666666666')); // no `accepts`
+      await vi.waitUntil(() => Object.keys(stored()).length > 0);
+      warn.mockRestore();
+
+      expect(localWs.frames('hello-rejected')).toHaveLength(0);
+      expect(Object.values(stored())[0]!.serverName).toBe('alltrails-mcp');
+    });
+
+    // The line has to go away by itself. `validateFrame` accepts a hello only
+    // at PROTOCOL_VERSION, so a hello that reaches the handler at all refutes
+    // the version claim — whatever the trust decision after it turns out to be.
+    it('clears the record when a v4 hello succeeds on that link', async () => {
+      const localWs = await freshLink();
+      localWs.message(
+        v3Hello('alltrails-mcp:2.11.3:1234123412341234', { accepts: ['hello-rejected'] }),
+      );
+      await vi.waitUntil(() => Object.keys(stored()).length > 0);
+
+      const mcp = await scriptedMcp('alltrails-mcp:3.0.0:8888888888888888');
+      await trustMcp(mcp);
+      localWs.message(await helloFrom(mcp, extNonceOf(localWs)));
+      await vi.waitUntil(() => localWs.frames('ready').length > 0);
+      await vi.waitUntil(() => Object.keys(stored()).length === 0);
+
+      expect(stored()).toEqual({});
+    });
+
+    // And the clearing half is broadcast too. Without it an open popup keeps
+    // telling the user to upgrade a server that just connected — a refusal
+    // surface that outlives the refusal is worse than none, because it sends
+    // somebody to fix what is no longer broken.
+    it('tells an open popup to re-read when the record goes away, too', async () => {
+      const localWs = await freshLink();
+      localWs.message(
+        v3Hello('alltrails-mcp:2.11.3:1234123412341234', { accepts: ['hello-rejected'] }),
+      );
+      await vi.waitUntil(() => Object.keys(stored()).length > 0);
+      await vi.waitUntil(() => broadcasts() >= 1);
+      runtimeMessages.length = 0;
+
+      const mcp = await scriptedMcp('alltrails-mcp:3.0.0:8888888888888888');
+      await trustMcp(mcp);
+      localWs.message(await helloFrom(mcp, extNonceOf(localWs)));
+      await vi.waitUntil(() => Object.keys(stored()).length === 0);
+      // Two, because an accepted hello broadcasts once on its own account (a
+      // session appeared). Only the second is this store's, and only the
+      // second is what takes the stale line off an open popup — so dropping
+      // the call leaves this at one.
+      await vi.waitUntil(() => broadcasts() >= 2);
+    });
+
+    // One upgrade is not every upgrade: the loopback concentrator carries
+    // every MCP on the machine, so a per-LINK clear would let one upgraded
+    // server hide a neighbour that is still refused.
+    it('leaves a sibling MCP on the same link still named', async () => {
+      const localWs = await freshLink();
+      localWs.message(
+        v3Hello('alltrails-mcp:2.11.3:1234123412341234', { accepts: ['hello-rejected'] }),
+      );
+      localWs.message(
+        v3Hello('tock-mcp:2.11.3:4321432143214321', { accepts: ['hello-rejected'] }),
+      );
+      await vi.waitUntil(() => Object.keys(stored()).length === 2);
+
+      const mcp = await scriptedMcp('alltrails-mcp:3.0.0:8888888888888888');
+      await trustMcp(mcp);
+      localWs.message(await helloFrom(mcp, extNonceOf(localWs)));
+      await vi.waitUntil(() => Object.keys(stored()).length === 1);
+
+      expect(Object.values(stored())[0]!.serverName).toBe('tock-mcp');
+    });
   });
 });
 
@@ -565,7 +952,7 @@ describe('a refused hello', () => {
 
     const mcp = await scriptedMcp('alltrails-mcp:2.1.3:9999999999999999');
     // Not trusted, and with a broken signature: `handleServerHello` rejects.
-    const hello = await helloFrom(mcp);
+    const hello = await helloFrom(mcp, extNonceOf(localWs));
     localWs.message({ ...hello, sessionSig: toB64(new Uint8Array(64)) });
     await new Promise((r) => setTimeout(r, 20));
 
@@ -592,7 +979,7 @@ describe('a refused hello', () => {
 
     const mcp = await scriptedMcp('alltrails-mcp:2.1.3:1234567890abcdef');
     await trustMcp(mcp); // approved for ['alltrails.com'] only
-    const hello = await helloFrom(mcp);
+    const hello = await helloFrom(mcp, extNonceOf(localWs));
     localWs.message({ ...hello, domains: ['alltrails.com', 'alltrails.co.uk'] });
     await new Promise((r) => setTimeout(r, 20));
 
@@ -605,6 +992,286 @@ describe('a refused hello', () => {
     const pending = localWs.frames<{ mcpId: string; pairCode: string }>('pair-pending');
     expect(pending).toHaveLength(1);
     expect(pending[0]!.mcpId).toBe(mcp.mcpId);
-    expect(pending[0]!.pairCode).toMatch(/^[A-Z0-9]{3}-[A-Z0-9]{3}$/);
+    expect(pending[0]!.pairCode).toMatch(/^[A-Z0-9]{4}-[A-Z0-9]{4}$/);
+  });
+});
+
+/**
+ * §1a Rule C, extension side (protocol v4, Task 3.1).
+ *
+ * The host has a gate of its own, and a gate that fails open must not be the
+ * only thing standing — so the rule is enforced at both ends. Here the refusal
+ * has to happen BEFORE the mcpId binding: a hello minted for a previous
+ * extension session must cost nothing and block nothing, or an ordinary MV3
+ * reconnect leaves the id held by a rejection and the next, correct hello
+ * queued behind it.
+ *
+ * Placed in this file rather than `background.test.ts` because this is
+ * `onServerHello`, which only this file drives — `background.test.ts`
+ * exercises the pure `handleServerHello` and simulates the rest.
+ */
+describe('a hello that answers a different extension session', () => {
+  async function freshLink(): Promise<FakeSocket> {
+    FakeSocket.opened = [];
+    unbindAll();
+    links.clear();
+    reconcileRemoteLinks([REMOTE]);
+    const localWs = FakeSocket.opened.find((s) => s.url.startsWith('ws://127.0.0.1'))!;
+    localWs.open();
+    return localWs;
+  }
+
+  it('is refused before the mcpId is bound, with the reason on the wire', async () => {
+    const localWs = await freshLink();
+    const mcp = await scriptedMcp('alltrails-mcp:2.1.3:cccccccccccccccc');
+    await trustMcp(mcp); // trusted, so only the echo can refuse it
+
+    // A nonce this link never sent — what a hello minted for the PREVIOUS
+    // extension session looks like when it arrives late.
+    const someoneElsesNonce = new Uint8Array(32).fill(0x5a);
+    const stale = await helloFrom(mcp, someoneElsesNonce);
+    // The refusal has to land in FRONT of the decision, and the observable
+    // proof of that is a trust store that is never read: `handleServerHello`
+    // is the only reader on this path and `bindMcpToLink` runs immediately
+    // before it, so one unread record pins both halves. The "id is free
+    // afterwards" assertion below does NOT pin it — the reject path unbinds,
+    // so a gate moved below the binding leaves that one passing.
+    const trustRead = vi.spyOn(state.trust!, 'get');
+    localWs.message({ ...stale, accepts: ['hello-rejected'] });
+    await new Promise((r) => setTimeout(r, 20));
+
+    // No session, no binding, no pair prompt — and no trust record read.
+    expect(localWs.frames('ready')).toHaveLength(0);
+    expect(localWs.frames('pair-pending')).toHaveLength(0);
+    expect(linkForMcp(mcp.mcpId)).toBeNull();
+    expect(state.sessions!.get(mcp.mcpId)).toBeNull();
+    expect(trustRead).not.toHaveBeenCalled();
+    trustRead.mockRestore();
+    const rejected = localWs.frames<{ mcpId: string; reason: string }>('hello-rejected');
+    expect(rejected).toHaveLength(1);
+    expect(rejected[0]!.reason).toMatch(/extension session/i);
+
+    // And the id is free for a correct hello, which is the whole reason the
+    // refusal happens before the binding.
+    localWs.message(await helloFrom(mcp, extNonceOf(localWs)));
+    await vi.waitUntil(() => localWs.frames('ready').length > 0);
+    expect(linkForMcp(mcp.mcpId)?.kind).toBe('local');
+  });
+
+  it('refuses a hello that answers 32 zero bytes by the same comparison', async () => {
+    // On the wire that is a peer's REGISTRATION hello, naming a bootstrap
+    // ephemeral no session may be opened from. It fails the equality like any
+    // other wrong answer — `link.sessionNonce` comes from a CSPRNG and is
+    // never the zero value — which is why this needs no second check.
+    const localWs = await freshLink();
+    const mcp = await scriptedMcp('alltrails-mcp:2.1.3:dddddddddddddddd');
+    await trustMcp(mcp);
+
+    localWs.message(await helloFrom(mcp, ANSWERS_NO_EXT_SESSION));
+    await new Promise((r) => setTimeout(r, 20));
+
+    expect(localWs.frames('ready')).toHaveLength(0);
+    expect(linkForMcp(mcp.mcpId)).toBeNull();
+    expect(state.sessions!.get(mcp.mcpId)).toBeNull();
+  });
+});
+
+/**
+ * The APPROVAL path under protocol v4 (Task 3.1's second half).
+ *
+ * This path answers a hello it read back out of `chrome.storage.local`,
+ * minutes after it arrived. Under v3 a stored record sufficed because the
+ * MCP's half of the ECDH was its long-term `identityX25519Pub`; under v4 it is
+ * a per-session ephemeral, so the record has to carry it — and the failure of
+ * getting that wrong is silent, because an approval derives a key nobody else
+ * holds and the session looks established while every frame fails.
+ *
+ * Driven through `onApproval` directly, which is what `boot.ts`'s storage
+ * listener does. There is no `approval.test.ts` and this task does not invent
+ * one; this is the file that holds the link/state machinery it needs.
+ */
+describe('approving a pending pair (v4)', () => {
+  async function freshLink(): Promise<FakeSocket> {
+    FakeSocket.opened = [];
+    unbindAll();
+    links.clear();
+    reconcileRemoteLinks([REMOTE]);
+    const localWs = FakeSocket.opened.find((s) => s.url.startsWith('ws://127.0.0.1'))!;
+    localWs.open();
+    return localWs;
+  }
+
+  /** The record the popup would have written for `mcp`'s pending hello. */
+  function pendingRecordFor(
+    mcp: ScriptedMcp,
+    identityHash: string,
+    sessionPubs: Record<string, string> | undefined,
+  ): AnyPendingRecord {
+    return {
+      key: `${identityHash}:scope`,
+      kind: 'pair',
+      identityHash,
+      serverName: 'alltrails-mcp',
+      version: '2.1.3',
+      mcpIds: [mcp.mcpId],
+      sessionNonces: { [mcp.mcpId]: toB64(mcp.sessionNonce) },
+      ...(sessionPubs ? { sessionPubs } : {}),
+      domains: ['alltrails.com'],
+      capabilities: ['fetch'],
+      cookieKeys: [],
+      localStorageKeys: [],
+      sessionStorageKeys: [],
+      captureHeaders: [],
+      indexedDbScopes: [],
+      domSelectors: [],
+      graphqlOps: [],
+      localStoragePointers: [],
+      sessionStoragePointers: [],
+      pairCode: '1234-5678',
+      identityX25519Pub: toB64(mcp.x.publicKey),
+      identityEd25519Pub: toB64(mcp.ed.publicKey),
+    } as unknown as AnyPendingRecord;
+  }
+
+  it('derives against the stored ephemeral, and the key opens a frame the MCP sealed', async () => {
+    const localWs = await freshLink();
+    const mcp = await scriptedMcp('alltrails-mcp:2.1.3:eeeeeeeeeeeeeeee');
+    // Untrusted, so the hello queues for approval rather than auto-trusting.
+    localWs.message(await helloFrom(mcp, extNonceOf(localWs)));
+    await vi.waitUntil(() => localWs.frames('pair-pending').length > 0);
+
+    const identityHash = toHex(await sha256(mcp.x.publicKey));
+    await onApproval(
+      pendingRecordFor(mcp, identityHash, { [mcp.mcpId]: toB64(mcp.session.publicKey) }),
+    );
+    await vi.waitUntil(() => localWs.frames('ready').length > 0);
+
+    const ready = localWs.frames<{
+      extensionSessionPub: string;
+      mcpSessionPub: string;
+      sessionSig: string;
+    }>('ready')[0]!;
+    // The ready names the STORED pub — Rule C's other end depends on it, so
+    // an MCP that has re-minted since the prompt can discard this instead of
+    // reading it as a forgery.
+    expect(ready.mcpSessionPub).toBe(toB64(mcp.session.publicKey));
+
+    // And the SIGNATURE covers all four values, which the wire field above
+    // does not imply. This is hazard (a) on the ready direction, at the one
+    // producer that answers a hello read back out of storage: the auto-trust
+    // producer is pinned this way further up the file, and until now this one
+    // — the FIRST-TIME pairing path a user reaches by clicking Approve — was
+    // not, so zeroing `mcpSessionPub` in the payload, or swapping the
+    // extension nonce for the ephemeral, left the whole suite green. A
+    // regression there breaks every first pair while every reconnect keeps
+    // working, which is the quietest failure this code has.
+    expect(
+      await ed25519Verify(
+        state.extIdentity!.ed25519Pub,
+        readySignaturePayload(
+          mcp.sessionNonce,
+          extNonceOf(localWs),
+          fromB64(ready.extensionSessionPub),
+          mcp.session.publicKey,
+        ),
+        fromB64(ready.sessionSig),
+      ),
+    ).toBe(true);
+    // The v3 payload — the same fields without the MCP's ephemeral — must NOT
+    // verify, or the widening is pinned in one direction only.
+    expect(
+      await ed25519Verify(
+        state.extIdentity!.ed25519Pub,
+        readySignaturePayload(
+          mcp.sessionNonce,
+          extNonceOf(localWs),
+          fromB64(ready.extensionSessionPub),
+          new Uint8Array(0),
+        ),
+        fromB64(ready.sessionSig),
+      ),
+    ).toBe(false);
+
+    // And the key it derived is the key the MCP derives: a real frame,
+    // sealed by the MCP, opens on the extension side.
+    const key = await sessionKeyFor(mcp, ready, extNonceOf(localWs));
+    localWs.message(await sealInnerFrame(key, mcp.mcpId, 1, { type: 'ping' }, 's2e'));
+    await vi.waitUntil(() => localWs.frames('frame').length > 0);
+    const pong = localWs.frames<Parameters<typeof openEncryptedFrame>[1]>('frame')[0]!;
+    expect((await openEncryptedFrame(key, pong, 'e2s')).type).toBe('pong');
+  });
+
+  it('uses the SECOND hello ephemeral when a record was refreshed by a re-hello', async () => {
+    // The refresh is what keeps a record from naming a superseded ephemeral
+    // after a reconnect. Storing the first pub beside the second nonce would
+    // derive a key nothing holds — which is the same failure as not storing
+    // it at all, and quieter.
+    const localWs = await freshLink();
+    const first = await scriptedMcp('alltrails-mcp:2.1.3:ffffffffffffffff');
+    const second: ScriptedMcp = {
+      ...first,
+      session: await generateX25519(),
+      sessionNonce: new Uint8Array(32).fill(0x2b),
+    };
+    localWs.message(await helloFrom(first, extNonceOf(localWs)));
+    await vi.waitUntil(() => localWs.frames('pair-pending').length > 0);
+
+    const identityHash = toHex(await sha256(first.x.publicKey));
+    await onApproval(
+      pendingRecordFor(second, identityHash, { [second.mcpId]: toB64(second.session.publicKey) }),
+    );
+    await vi.waitUntil(() => localWs.frames('ready').length > 0);
+
+    const ready = localWs.frames<{ extensionSessionPub: string; mcpSessionPub: string }>(
+      'ready',
+    )[0]!;
+    expect(ready.mcpSessionPub).toBe(toB64(second.session.publicKey));
+    expect(ready.mcpSessionPub).not.toBe(toB64(first.session.publicKey));
+    const key = await sessionKeyFor(second, ready, extNonceOf(localWs));
+    localWs.message(await sealInnerFrame(key, second.mcpId, 1, { type: 'ping' }, 's2e'));
+    await vi.waitUntil(() => localWs.frames('frame').length > 0);
+  });
+
+  it('skips a record with no stored ephemeral rather than deriving from the identity key', async () => {
+    // Every pending record already in storage when the extension is reloaded
+    // has no value here. Falling back to `identityX25519Pub` would be the v3
+    // derivation reinstated under a v4 signature: the MCP cannot compute that
+    // key, so the session would look established and nothing would work.
+    const warns = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const localWs = await freshLink();
+    const mcp = await scriptedMcp('alltrails-mcp:2.1.3:1010101010101010');
+    localWs.message(await helloFrom(mcp, extNonceOf(localWs)));
+    await vi.waitUntil(() => localWs.frames('pair-pending').length > 0);
+
+    const identityHash = toHex(await sha256(mcp.x.publicKey));
+    await onApproval(pendingRecordFor(mcp, identityHash, undefined));
+    await new Promise((r) => setTimeout(r, 20));
+
+    expect(localWs.frames('ready')).toHaveLength(0);
+    expect(state.sessions!.get(mcp.mcpId)).toBeNull();
+    expect(warns.mock.calls.flat().join(' ')).toMatch(/sessionPub/);
+    warns.mockRestore();
+  });
+
+  it('answers nothing for an mcpId whose link has dropped', async () => {
+    // The approval carries no link — it is replayed against the link each
+    // waiting id is bound to, and the ready signature commits to that link's
+    // per-connection nonce, so one sent on the wrong socket is a signature the
+    // MCP is right to refuse. (This guard does NOT prove the MCP's ephemeral
+    // is still live: for a PEER's mcpId the link is the shared concentrator
+    // socket, which outlives the peer. §1a states that residual, and Rule C
+    // is what repairs the neighbouring case.)
+    const warns = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const localWs = await freshLink();
+    const mcp = await scriptedMcp('alltrails-mcp:2.1.3:2020202020202020');
+    const identityHash = toHex(await sha256(mcp.x.publicKey));
+    // Never hello'd, so nothing is bound to this link.
+    await onApproval(
+      pendingRecordFor(mcp, identityHash, { [mcp.mcpId]: toB64(mcp.session.publicKey) }),
+    );
+    await new Promise((r) => setTimeout(r, 20));
+    expect(localWs.frames('ready')).toHaveLength(0);
+    expect(warns.mock.calls.flat().join(' ')).toMatch(/no live bridge/);
+    warns.mockRestore();
   });
 });

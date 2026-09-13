@@ -1,25 +1,15 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
-import { WebSocketServer, WebSocket } from 'ws';
 import type { AddressInfo } from 'node:net';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import {
-  ecdhX25519,
-  generateX25519,
-  hkdfSha256,
-  sealInnerFrame,
-  validateFrame,
-  HKDF_SESSION_INFO,
-  type InnerFrame,
-  type ReadyFrame,
-} from '@fetchproxy/protocol';
+import { sealInnerFrame, type InnerFrame } from '@fetchproxy/protocol';
 import { startHost, type HostHandle } from '../src/host.js';
 import { startPeer, type InternalPeerHandle } from '../src/peer.js';
 import { electRole } from '../src/election.js';
 import { loadOrCreateIdentity } from '../src/identity.js';
 import { connectMockExtension } from './helpers/mock-extension.js';
-import { listenEphemeral, loopbackWss } from './helpers/ephemeral-port.js';
+import { linkedPeer, type FakeConcentrator } from './helpers/concentrator.js';
 import type { ExtensionPin, ExtensionTrustPort } from '../src/extension-trust.js';
 
 /**
@@ -65,7 +55,7 @@ function blankTrust(): ExtensionTrustPort {
 describe('replay counter advances only after a frame authenticates', () => {
   let host: HostHandle | null = null;
   let peer: InternalPeerHandle | null = null;
-  let wss: WebSocketServer | null = null;
+  let rig: FakeConcentrator | null = null;
 
   afterEach(async () => {
     vi.restoreAllMocks();
@@ -73,9 +63,9 @@ describe('replay counter advances only after a frame authenticates', () => {
     host = null;
     if (peer) peer.close();
     peer = null;
-    if (wss) {
-      await new Promise<void>((r) => wss!.close(() => r()));
-      wss = null;
+    if (rig) {
+      await rig.close();
+      rig = null;
     }
   });
 
@@ -112,7 +102,7 @@ describe('replay counter advances only after a frame authenticates', () => {
     const received: InnerFrame[] = [];
     host.onOwnInner((inner) => received.push(inner));
 
-    const genuine = await sealInnerFrame(sessionKey, mcpId, 1, { type: 'pong' });
+    const genuine = await sealInnerFrame(sessionKey, mcpId, 1, { type: 'pong' }, 'e2s');
     // One write, so both frames reach the host's receiver in the same pass
     // and the second is dispatched while the first is still awaiting its
     // (failing) decrypt. Without the cork the two could land in separate
@@ -137,62 +127,37 @@ describe('replay counter advances only after a frame authenticates', () => {
     const identity = await loadOrCreateIdentity('opentable-mcp', idDir);
     const mcpId = 'opentable-mcp:0.9.1:a3f7c91d2e8b4f56';
 
-    wss = loopbackWss();
-    const port = await listenEphemeral(wss);
-
-    let hostWs: WebSocket | null = null;
-    let sessionKey: Uint8Array | null = null;
-    const enc = new TextEncoder();
-
-    wss.on('connection', (ws: WebSocket) => {
-      hostWs = ws;
-      ws.on('message', async (data) => {
-        const frame = validateFrame(JSON.parse(data.toString()));
-        if (frame.type !== 'hello' || frame.role !== 'server') return;
-        const identityX25519Pub = new Uint8Array(Buffer.from(frame.identityX25519Pub, 'base64'));
-        const peerNonce = new Uint8Array(Buffer.from(frame.sessionNonce, 'base64'));
-        const ephemeral = await generateX25519();
-        const shared = await ecdhX25519(ephemeral.privateKey, identityX25519Pub);
-        sessionKey = await hkdfSha256(shared, peerNonce, enc.encode(HKDF_SESSION_INFO), 32);
-        const ready: ReadyFrame = {
-          type: 'ready',
-          mcpId: frame.mcpId,
-          extensionSessionPub: Buffer.from(ephemeral.publicKey).toString('base64'),
-          sessionSig: Buffer.from('placeholder-sig').toString('base64'),
-        };
-        ws.send(JSON.stringify(ready));
-      });
-    });
-
-    peer = await startPeer({
-      host: '127.0.0.1',
-      port,
-      identity,
+    // 3.0.0: the full v4 handshake. The key cannot be reached any other way.
+    const linked = await linkedPeer({
       mcpId,
-      serverName: 'opentable-mcp',
-      version: '0.9.1',
-      domains: ['opentable.com'],
+      identity,
+      startPeer: startPeer as unknown as Parameters<typeof linkedPeer>[0]['startPeer'],
     });
+    rig = linked.rig;
+    peer = linked.peer as unknown as InternalPeerHandle;
+    const sessionKey = linked.sessionKey;
+    const hostWs = await linked.rig.socket();
 
     const received: InnerFrame[] = [];
     peer.onInner((inner) => received.push(inner));
-    // sendInner awaits session-ready, so the key exists once this resolves.
-    await peer.sendInner({ type: 'ping' });
-    expect(sessionKey).not.toBeNull();
 
-    hostWs!.send(JSON.stringify(forgedFrame(mcpId, FORGED_SEQ)));
+    hostWs.send(JSON.stringify(forgedFrame(mcpId, FORGED_SEQ)));
     // The peer drops a frame it cannot open silently and keeps the socket, so
     // there is nothing to wait FOR — give the drop a turn of the loop, then
     // send the genuine frame whose seq the forged one would have swallowed.
     await new Promise((r) => setTimeout(r, 20));
-    hostWs!.send(JSON.stringify(await sealInnerFrame(sessionKey!, mcpId, 1, { type: 'pong' })));
+    hostWs.send(
+      JSON.stringify(await sealInnerFrame(sessionKey, mcpId, 1, { type: 'pong' }, 'e2s')),
+    );
 
     await vi.waitFor(() => expect(received).toHaveLength(1));
     expect(received[0]).toMatchObject({ type: 'pong' });
 
     // The counter DID move for the frame that authenticated: replaying it is
     // still refused.
-    hostWs!.send(JSON.stringify(await sealInnerFrame(sessionKey!, mcpId, 1, { type: 'pong' })));
+    hostWs.send(
+      JSON.stringify(await sealInnerFrame(sessionKey, mcpId, 1, { type: 'pong' }, 'e2s')),
+    );
     await new Promise((r) => setTimeout(r, 20));
     expect(received).toHaveLength(1);
   });
