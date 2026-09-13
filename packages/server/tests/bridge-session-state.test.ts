@@ -78,10 +78,10 @@ describe('bridgeHealth().session', () => {
 
   it('is pair_pending, with the code, while the user has yet to approve', () => {
     const s = new FetchproxyServer(baseOpts);
-    installHandle(s, { extensionConnected: true, sessionLinked: false, pairCode: '457-035' });
+    installHandle(s, { extensionConnected: true, sessionLinked: false, pairCode: '4570-3512' });
     expect(s.bridgeHealth().session).toEqual({
       state: 'pair_pending',
-      pairCode: '457-035',
+      pairCode: '4570-3512',
       extensionConnected: true,
     });
   });
@@ -98,7 +98,7 @@ describe('bridgeHealth().session', () => {
     // branches, which is still load-bearing for #283's "the extension is
     // gone" case.
     const s = new FetchproxyServer(baseOpts);
-    installHandle(s, { extensionConnected: false, sessionLinked: false, pairCode: '457-035' });
+    installHandle(s, { extensionConnected: false, sessionLinked: false, pairCode: '4570-3512' });
     expect(s.bridgeHealth().session.state).toBe('pair_pending');
   });
 
@@ -116,15 +116,15 @@ describe('bridgeHealth().session', () => {
 describe('runProbe() session projection', () => {
   it('carries the session state, pair code, extension liveness and last message time', async () => {
     const s = new FetchproxyServer(baseOpts);
-    installHandle(s, { extensionConnected: true, sessionLinked: false, pairCode: '457-035' });
+    installHandle(s, { extensionConnected: true, sessionLinked: false, pairCode: '4570-3512' });
     const result = await s.runProbe(async () => {
-      throw new FetchproxySessionNotReadyError({ mcpId: 'test-mcp:0.0.1:abc', pairCode: '457-035' });
+      throw new FetchproxySessionNotReadyError({ mcpId: 'test-mcp:0.0.1:abc', pairCode: '4570-3512' });
     }, '/robots.txt');
     expect(result.ok).toBe(false);
     expect(result.error?.kind).toBe('session_not_ready');
     expect(result.bridge).toMatchObject({
       session_state: 'pair_pending',
-      pending_pair_code: '457-035',
+      pending_pair_code: '4570-3512',
       extension_connected: true,
       last_extension_message_at: null,
     });
@@ -137,7 +137,7 @@ describe('classifyBridgeError() and session readiness', () => {
       classifyBridgeError(new FetchproxySessionNotReadyError({ mcpId: 'x', pairCode: null })),
     ).toBe('session_not_ready');
     expect(
-      classifyBridgeError(new FetchproxySessionNotReadyError({ mcpId: 'x', pairCode: '123-456' })),
+      classifyBridgeError(new FetchproxySessionNotReadyError({ mcpId: 'x', pairCode: '1234-5678' })),
     ).toBe('session_not_ready');
   });
 });

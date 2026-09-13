@@ -66,11 +66,11 @@ describe('runFetch', () => {
   it('session-not-ready → exit 2 with pairing hint', async () => {
     const io = memIo();
     const server = stubServer({ request: vi.fn(async () => {
-      throw new FetchproxySessionNotReadyError({ mcpId: 'fpx-trip', pairCode: '123-456' });
+      throw new FetchproxySessionNotReadyError({ mcpId: 'fpx-trip', pairCode: '1234-5678' });
     }) });
     const code = await runFetch(CMD, PROFILE, io, () => server);
     expect(code).toBe(EXIT.BRIDGE);
-    expect(io.errs.join('\n')).toMatch(/123-456|pair/i);
+    expect(io.errs.join('\n')).toMatch(/1234-5678|pair/i);
   });
 
   it('off-domain URL → UsageError before any connect', async () => {

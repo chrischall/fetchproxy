@@ -1883,7 +1883,7 @@ describe('applyNeedsPairRecord and the stored session ephemeral (v4)', () => {
       graphqlOps: [],
       localStoragePointers: [],
       sessionStoragePointers: [],
-      pairCode: '111-222',
+      pairCode: '1111-2222',
       identityX25519Pub: 'aaaa',
       identityEd25519Pub: 'bbbb',
     };

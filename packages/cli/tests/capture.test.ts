@@ -131,7 +131,7 @@ describe('fpx capture', () => {
       captureRequestHeader: vi.fn(async () => {
         throw new FetchproxySessionNotReadyError({
           mcpId: 'fpx-x:1.0.0:aaaaaaaaaaaaaaaa',
-          pairCode: '123-456',
+          pairCode: '1234-5678',
         });
       }),
     });
@@ -139,7 +139,7 @@ describe('fpx capture', () => {
     const code = await runCapture({ kind: 'capture', profile: 'p', names: [] } as never,
       withCaptures(), io, () => server);
     expect(code).toBe(EXIT.BRIDGE);
-    expect(io.errs.join('\n')).toMatch(/pair code 123-456/);
+    expect(io.errs.join('\n')).toMatch(/pair code 1234-5678/);
     expect(io.outs.join('\n'), 'must not print a wall of nulls instead').toBe('');
   });
 

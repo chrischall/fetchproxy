@@ -22,13 +22,13 @@ describe('awaitSessionReady', () => {
   it('rejects with a pair-required error (incl. pair code) when a pairing is pending at timeout', async () => {
     const err = await awaitSessionReady(never(), {
       mcpId: 'setlist-mcp',
-      pendingPairCode: () => '123-456',
+      pendingPairCode: () => '1234-5678',
       timeoutMs: 10,
     }).catch((e) => e);
     expect(err).toBeInstanceOf(FetchproxySessionNotReadyError);
     expect(err.reason).toBe('pair-required');
-    expect(err.pairCode).toBe('123-456');
-    expect(err.hint).toMatch(/123-456/);
+    expect(err.pairCode).toBe('1234-5678');
+    expect(err.hint).toMatch(/1234-5678/);
     expect(err.message).toMatch(/pairing not yet approved/i);
   });
 

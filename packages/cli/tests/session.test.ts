@@ -32,13 +32,13 @@ describe('runSession', () => {
   it('onPairCode and onWaiting go to stderr', async () => {
     const io = memIo();
     const boot = vi.fn(async (opts: { onPairCode?: (c: string) => void; onWaiting?: (h: string) => void }) => {
-      opts.onPairCode?.('111-222');
+      opts.onPairCode?.('1111-2222');
       opts.onWaiting?.('trigger a request to api.x.com');
       return SESSION;
     });
     await runSession({ kind: 'session', profile: 'x', storageDomain: undefined, storageSubdomain: undefined },
       emptyProfile(['x.com']), io, boot as never);
-    expect(io.errs.join('\n')).toMatch(/111-222/);
+    expect(io.errs.join('\n')).toMatch(/1111-2222/);
     expect(io.errs.join('\n')).toMatch(/waiting: trigger a request/);
   });
 
