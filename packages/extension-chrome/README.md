@@ -45,8 +45,37 @@ dist/
 1. Open `chrome://extensions` in Chrome.
 2. Toggle "Developer mode" (top right).
 3. "Load unpacked" → pick `packages/extension-chrome/dist/`.
+4. After **every** later pull: rebuild (above), then press **Reload** on the
+   extension's card — see the requirement below.
 
 Each release also publishes a packaged `fetchproxy-extension-${VERSION}.zip` on the [GitHub Releases](https://github.com/chrischall/fetchproxy/releases) page — the same `dist/` zipped up, suitable for sideloading without building from source.
+
+**This build pairs with the npm packages of the same major.** The extension and
+`@fetchproxy/server` ship from one repo at one version, and the pairing is one
+to one: extension **3.x** (3.0.0+) speaks fetchproxy **protocol 4** and pairs
+with `@fetchproxy/server` **3.x**; extension 2.x speaks protocol 3 and pairs
+with 2.x. Nothing negotiates down — a v4 extension that still accepted v3 would
+*be* the downgrade path, since a relay that can rewrite frames can rewrite the
+version it advertises. A mismatched pair is refused at the hello, naming both
+numbers: this extension answers a v3 MCP on the wire with `protocol version
+mismatch: this browser extension speaks fetchproxy protocol 4, this MCP speaks
+3 — upgrade @fetchproxy/server to >= 3.0.0`, and says the same thing in its own
+words in the popup — naming the server, both versions, and the fact that
+nothing in the browser fixes it — because an MCP older than 2.6.0 cannot hear
+the wire answer at all. A v4 MCP meeting a v3 extension closes the socket
+`1002` with the same fact the other way round. [`docs/PROTOCOL.md`](https://github.com/chrischall/fetchproxy/blob/main/docs/PROTOCOL.md)
+§Versioning has the table of what each protocol number changed and both refusal
+texts verbatim.
+
+**Reloading after a rebuild is a requirement, not hygiene.** Chrome keeps
+running the bundle it loaded at "Load unpacked"; rebuilding `dist/` underneath
+it changes nothing in the browser until you press Reload. Across a protocol
+major that is the difference between a working bridge and a dead one — a stale
+extension goes on speaking the old protocol to MCPs the same pull upgraded, the
+handshake is refused rather than degraded, and every call fails at once with
+`protocol version mismatch`. Within a major it is milder and still real: a fixed
+background or content script that is simply not running is the first thing to
+rule out when a change "did nothing".
 
 ## Manifest highlights
 

@@ -49,7 +49,7 @@ behind it before.
 
 | | |
 |---|---|
-| `npm test` | `vitest run` across the whole monorepo (1891 tests in 142 files), all mocked, no network. Must stay green. `vitest.config.ts` excludes `**/.claude/**` and `**/dist/**` so stale agent worktrees don't poison discovery. |
+| `npm test` | `vitest run` across the whole monorepo (1899 tests in 143 files), all mocked, no network. Must stay green. `vitest.config.ts` excludes `**/.claude/**` and `**/dist/**` so stale agent worktrees don't poison discovery. |
 | `npm run build` | `npm run build --workspaces --if-present` — all **seven**: a `tsc -b` for protocol, server, bootstrap, cli, extension-core and test-helpers, plus extension-chrome's esbuild bundle (`tsx build.ts`). npm runs them in workspace order, which is alphabetical (`bootstrap` first, `protocol` fifth), so the build order is NOT the dependency order; what makes that safe is each package's `tsc -b` following its own `references`, so `protocol/dist` is built before anything that imports it via its `exports`→`dist/`. Don't demote a package to a bare `tsc` — that is the thing the references are carrying. |
 | `npm run typecheck` | `tsc -b` over protocol, server, bootstrap, **cli**, extension-core, test-helpers — the script's own project list, cli included. extension-chrome is typechecked by its esbuild build instead. |
 | `npm run build --workspace=@fetchproxy/extension-chrome` | Rebuild just the unpacked extension after a source edit. Drop into `chrome://extensions/` → fetchproxy → reload. **No sourcemaps** — this is the command the release workflow zips, so release is the default. |
@@ -257,6 +257,18 @@ MCP tool call is the integration test.
   alarm wakes the SW and re-runs `connect()` (idempotent). Without
   this, the bridge silently dies between bursts of MCP traffic. PR #2
   added the alarm; reload the extension after pulling.
+- **Reloading the extension after a pull is a REQUIREMENT across a
+  protocol major, not the hygiene the line above makes it sound.**
+  Chrome keeps running the bundle "Load unpacked" loaded, so a pull that
+  crosses 2.x → 3.x leaves a protocol-3 extension talking to the
+  protocol-4 packages the same pull installed — and that pair is refused
+  at the hello rather than degraded: every call fails at once with
+  `protocol version mismatch`, in both directions, naming both versions.
+  Rebuild `dist/`, then Reload. Both READMEs carry this as the
+  requirement it is (`README.md` §Install and
+  `packages/extension-chrome/README.md` §Install (developer / sideload)),
+  and `tests/install-walkthroughs-name-the-cohort.test.ts` holds the
+  numbers they print to the ones the refusal actually uses.
 - **Re-publishing a tag after a failed publish.** release-please's
   publish job is gated on `tag_name` from the merge. If the tag was
   cut but the npm/zip publish failed (e.g. wrong Node version), fire
