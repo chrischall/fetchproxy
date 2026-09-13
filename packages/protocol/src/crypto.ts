@@ -113,9 +113,14 @@ export async function ed25519Verify(
 }
 
 /**
- * HKDF-SHA256 extract+expand. Used to derive the AES-GCM session key
- * from the ECDH shared secret, salted with the server's hello nonce
- * and personalised with the `HKDF_SESSION_INFO` constant.
+ * HKDF-SHA256 extract+expand. Used to derive the AES-GCM session key from the
+ * ECDH shared secret, salted with the handshake TRANSCRIPT (`transcriptHash`
+ * over both nonces and both session ephemerals) and personalised with the
+ * `HKDF_SESSION_INFO` constant.
+ *
+ * The salt was the server's hello nonce until protocol v4. Both ends now
+ * contribute to it, so neither can fix the salt alone, and the derivation is
+ * bound to the exact handshake it belongs to rather than to one side's choice.
  */
 export async function hkdfSha256(
   ikm: Uint8Array,
