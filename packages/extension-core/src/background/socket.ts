@@ -46,11 +46,19 @@ import {
   normaliseRemoteTargets,
   type RemoteTarget,
 } from '../remote-targets.js';
+// `MIN_SERVER_VERSION` — the `@fetchproxy/server` version at which protocol 4
+// lands — is named in the refusal below, because a version number with no
+// remedy beside it is a diagnosis the reader cannot act on. It lives in
+// `lib/version-mismatch.ts` rather than here because Task 4.3's popup line
+// states the same fact to the browser user, and two copies of a remedy are two
+// things to forget to bump.
+import { MIN_SERVER_VERSION } from '../lib/version-mismatch.js';
 
 import { state } from './state.js';
 import { setConnectionStatus, flashActivity } from './badge.js';
 import { sendInner } from './send-inner.js';
 import { onServerHello, sendHelloRejected } from './server-hello.js';
+import { forgetVersionMismatch, noteVersionMismatch } from './version-mismatch-store.js';
 import { handleRequest } from './handlers/dispatch.js';
 import { broadcastConnectionsChanged, clearSessionScopeFor } from './session-scope.js';
 import {
@@ -240,15 +248,6 @@ function scheduleReconnect(link: Link): void {
 }
 
 /**
- * The npm version of `@fetchproxy/server` at which protocol 4 lands, named in
- * the refusal below because a version number with no remedy beside it is a
- * diagnosis the reader cannot act on. A literal rather than a derived value:
- * this extension cannot read the MCP's package version, and the number it must
- * print is a fact about the cohort release, not about this build.
- */
-const MIN_SERVER_VERSION = '3.0.0';
-
-/**
  * A v3 MCP meeting this v4 extension (Task 4.1).
  *
  * `validateFrame` refuses a hello whose `protocolVersion` is not
@@ -294,6 +293,11 @@ function refuseVersionMismatch(link: Link, raw: unknown): boolean {
   // the console and the popup.
   console.warn(`[fetchproxy] refused hello for ${peek.mcpId} on ${link.label}: ${reason}`);
   sendHelloRejected(link, peek.mcpId, peek.accepts, reason);
+  // Task 4.3: and to the person in front of the browser, who has neither the
+  // wire nor that console. Written whether or not the frame above went out —
+  // an MCP too old to hear `hello-rejected` is exactly when the popup is the
+  // only surface left. Fire-and-forget: a popup line never fails a refusal.
+  noteVersionMismatch(link, peek.mcpId, peek.protocolVersion);
   return true;
 }
 
@@ -317,6 +321,14 @@ async function onMessage(link: Link, data: string): Promise<void> {
     return;
   }
   if (frame.type === 'hello' && frame.role === 'server') {
+    // Task 4.3: this hello passed `validateFrame`, which accepts a hello only
+    // at PROTOCOL_VERSION — so it refutes any version complaint standing
+    // against this server on this link, whatever the trust decision below
+    // turns out to be. Hung off the hello rather than off the session for that
+    // reason: a v4 hello that then fails on trust is a different complaint
+    // with its own surfaces, and leaving a VERSION line up for it would be the
+    // popup saying something untrue.
+    forgetVersionMismatch(link, frame.mcpId);
     await onServerHello(link, frame);
   } else if (frame.type === 'frame') {
     await onEncryptedFrame(link, frame);

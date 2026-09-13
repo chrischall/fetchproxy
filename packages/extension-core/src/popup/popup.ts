@@ -15,6 +15,13 @@
 import { TrustStore } from '../trust-store.js';
 import { normalisePendingPair } from '../lib/pending-pair.js';
 import {
+  VERSION_MISMATCH_KEY,
+  freshVersionMismatches,
+  normaliseVersionMismatches,
+  versionMismatchLine,
+  type VersionMismatch,
+} from '../lib/version-mismatch.js';
+import {
   REMOTE_TARGETS_KEY,
   normaliseRemoteTargets,
   validateRemoteTargetToken,
@@ -194,10 +201,22 @@ export interface BridgesView {
 }
 
 export type PopupState =
-  | { mode: 'empty'; bridges?: BridgesView }
+  | {
+      mode: 'empty';
+      bridges?: BridgesView;
+      /**
+       * 3.0.0+: MCPs refused at the hello for speaking an older protocol.
+       * Rendered in the EMPTY mode as much as the status one, and that is the
+       * point rather than completeness: a refused MCP is never trusted, so
+       * "no trusted MCPs" is exactly the state it leaves behind.
+       */
+      mismatches?: VersionMismatch[];
+    }
   | {
       mode: 'status';
       trusted: TrustedSummary[];
+      /** 3.0.0+: see the `empty` mode's note. */
+      mismatches?: VersionMismatch[];
       /**
        * 2.1.0+: the bridges this browser dials. Optional — a popup rendered
        * without it looks exactly as it did before remote targets existed,
@@ -697,10 +716,42 @@ function appendBridges(root: HTMLElement, bridges: BridgesView): void {
   );
 }
 
+/**
+ * Task 4.3: the MCPs this extension refused at the hello for speaking an
+ * older protocol, one line each, ABOVE everything else in the view.
+ *
+ * Above, because the rest of the view is about to contradict it: a refused MCP
+ * is never trusted and never lights a dot, so the surfaces below say "nothing
+ * is connected" while something is connecting and being turned away. This is
+ * the correction, so it reads first.
+ *
+ * One line, and no button: the remedy is the MCP's `@fetchproxy/server`
+ * version, which is not a thing this browser or this popup can change.
+ * `versionMismatchLine` holds the wording; `textContent` (via `elem`) holds
+ * the safety, since `serverName` is text an unvalidated frame chose.
+ */
+function appendVersionMismatches(root: HTMLElement, list: readonly VersionMismatch[]): void {
+  if (list.length === 0) return;
+  root.appendChild(elem('h3', { class: 'mismatch-heading' }, 'Refused — out of date'));
+  const ul = elem('ul', { class: 'mismatch-list' });
+  // Newest first, so a popup at the cap still shows what just happened.
+  for (const m of [...list].sort((a, b) => b.at - a.at)) {
+    ul.appendChild(
+      elem(
+        'li',
+        { class: 'version-mismatch', title: `on ${m.linkLabel}` },
+        versionMismatchLine(m),
+      ),
+    );
+  }
+  root.appendChild(ul);
+}
+
 export function renderPopup(root: HTMLElement, state: PopupState): void {
   root.innerHTML = '';
 
   if (state.mode === 'empty') {
+    appendVersionMismatches(root, state.mismatches ?? []);
     root.appendChild(
       elem('p', {}, 'No MCP servers connected. Start an MCP server, then refresh.'),
     );
@@ -709,6 +760,7 @@ export function renderPopup(root: HTMLElement, state: PopupState): void {
   }
 
   if (state.mode === 'status') {
+    appendVersionMismatches(root, state.mismatches ?? []);
     root.appendChild(elem('h3', {}, 'Trusted MCPs'));
     if (state.trusted.length === 0) {
       root.appendChild(elem('p', { class: 'hint' }, 'No trusted MCPs yet.'));
@@ -1209,13 +1261,26 @@ async function bootstrap(): Promise<void> {
       connected: connectedHashes.has(identityHash),
     }));
     const bridges = await bridgesView(links);
+    // Task 4.3: MCPs refused at the hello for speaking protocol 3. Read from
+    // storage rather than from the background, because the refusal happens
+    // while no popup is open and the service worker is usually gone by the
+    // time one is. Stale rows are dropped HERE rather than rewritten — the
+    // popup does not own this key, and the next refusal prunes it.
+    const mismatches = Object.values(
+      freshVersionMismatches(
+        normaliseVersionMismatches(
+          (await chrome.storage!.local.get(VERSION_MISMATCH_KEY))[VERSION_MISMATCH_KEY],
+        ),
+        Date.now(),
+      ),
+    );
     if (trustedList.length === 0) {
-      renderPopup(root, { mode: 'empty', bridges });
+      renderPopup(root, { mode: 'empty', bridges, mismatches });
     } else {
       const onRevoke = (identityHash: string): void => {
         void trust2.remove(identityHash).then(() => renderTrustedStatus());
       };
-      renderPopup(root, { mode: 'status', trusted: trustedList, onRevoke, bridges });
+      renderPopup(root, { mode: 'status', trusted: trustedList, onRevoke, bridges, mismatches });
     }
   };
 

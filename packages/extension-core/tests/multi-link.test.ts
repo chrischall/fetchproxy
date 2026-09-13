@@ -100,9 +100,24 @@ class FakeSocket {
 
 const storage = new Map<string, unknown>();
 
+/**
+ * Every `chrome.runtime.sendMessage` the background made, in order.
+ *
+ * Recorded rather than swallowed because one of them is load-bearing: the
+ * version-mismatch store broadcasts `connections-changed` after each write,
+ * and that broadcast is the whole difference between an open popup
+ * contradicting itself within the same second and only at the next open. A
+ * no-op stub pins nothing — both call sites survived deletion with the whole
+ * extension-core suite green.
+ */
+const runtimeMessages: unknown[] = [];
+
 vi.stubGlobal('WebSocket', FakeSocket);
 vi.stubGlobal('chrome', {
-  runtime: { getManifest: () => ({ version: '2.1.0' }), sendMessage: () => {} },
+  runtime: {
+    getManifest: () => ({ version: '2.1.0' }),
+    sendMessage: (m: unknown) => void runtimeMessages.push(m),
+  },
   storage: {
     local: {
       get: async (k: string | string[]) => {
@@ -129,6 +144,10 @@ const { TrustStore } = await import('../src/trust-store.js');
 const { SessionKeys } = await import('../src/session-keys.js');
 const { mcpDomains, mcpCapabilities } = await import('../src/background/session-scope.js');
 const { onApproval } = await import('../src/background/approval.js');
+const { VERSION_MISMATCH_KEY, normaliseVersionMismatches } = await import(
+  '../src/lib/version-mismatch.js'
+);
+type VersionMismatch = import('../src/lib/version-mismatch.js').VersionMismatch;
 type AnyPendingRecord =
   import('../src/background/pending-records.js').AnyPendingRecord;
 
@@ -780,6 +799,146 @@ describe('a v3 MCP meeting a v4 extension (Task 4.1)', () => {
     expect(said).toContain('dropped malformed frame');
     expect(said).not.toContain('protocol version mismatch');
   });
+
+  /**
+   * Task 4.3 — the other end of the refusal: the BROWSER user.
+   *
+   * The wire answer above reaches the MCP's operator. It reaches nobody at all
+   * when the MCP predates 2.6.0 and cannot hear `hello-rejected`, and it
+   * reaches nothing the person in front of the browser can see in either case
+   * — a refused MCP is never trusted, never gets a session and never lights a
+   * dot, so every surface the popup had renders this as "nothing is
+   * connected". The record these tests pin is what the popup reads.
+   */
+  describe('and what the browser user is told (Task 4.3)', () => {
+    const stored = (): Record<string, VersionMismatch> =>
+      normaliseVersionMismatches(storage.get(VERSION_MISMATCH_KEY));
+
+    /** How many `connections-changed` broadcasts the background has made. */
+    const broadcasts = (): number =>
+      runtimeMessages.filter(
+        (m) => (m as { type?: unknown } | null)?.type === 'connections-changed',
+      ).length;
+
+    beforeEach(async () => {
+      // The store writes are deliberately fire-and-forget — a popup line may
+      // never fail a refusal — so a previous test's write can still be in
+      // flight when the file-level `storage.clear()` runs. Let the chain
+      // drain, then clear what it wrote.
+      await new Promise((r) => setTimeout(r, 20));
+      storage.delete(VERSION_MISMATCH_KEY);
+      runtimeMessages.length = 0;
+    });
+
+    it('records the refusal for the popup, naming the link, the server and both versions', async () => {
+      const localWs = await freshLink();
+      localWs.message(
+        v3Hello('alltrails-mcp:2.11.3:1234123412341234', { accepts: ['hello-rejected'] }),
+      );
+      await vi.waitUntil(() => Object.keys(stored()).length > 0);
+
+      const rows = Object.values(stored());
+      expect(rows).toHaveLength(1);
+      expect(rows[0]!.linkId).toBe('local');
+      expect(rows[0]!.serverName).toBe('alltrails-mcp');
+      expect(rows[0]!.mcpProtocol).toBe(3);
+      expect(rows[0]!.extensionProtocol).toBe(PROTOCOL_VERSION);
+    });
+
+    // Promptness is half of a refusal surface. The popup is a separate context
+    // that has already rendered by the time the hello arrives, and it re-reads
+    // the store on `connections-changed` — so without the broadcast an OPEN
+    // popup keeps saying "no MCP servers connected" while the MCP retries
+    // every 24s, and the line the record buys only appears at the next open.
+    it('tells an open popup to re-read, rather than leaving the record for the next open', async () => {
+      const localWs = await freshLink();
+      runtimeMessages.length = 0;
+      localWs.message(
+        v3Hello('alltrails-mcp:2.11.3:1234123412341234', { accepts: ['hello-rejected'] }),
+      );
+      await vi.waitUntil(() => Object.keys(stored()).length > 0);
+      // Nothing else on a refused hello's path broadcasts, so this count is
+      // the store's own: it goes to 0 the moment the call is dropped.
+      await vi.waitUntil(() => broadcasts() >= 1);
+    });
+
+    // The case the popup exists FOR: an MCP older than 2.6.0 cannot hear
+    // `hello-rejected`, so the browser is the only place the refusal can land.
+    it('records it even when the MCP cannot be told', async () => {
+      const localWs = await freshLink();
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      localWs.message(v3Hello('alltrails-mcp:2.11.3:6666666666666666')); // no `accepts`
+      await vi.waitUntil(() => Object.keys(stored()).length > 0);
+      warn.mockRestore();
+
+      expect(localWs.frames('hello-rejected')).toHaveLength(0);
+      expect(Object.values(stored())[0]!.serverName).toBe('alltrails-mcp');
+    });
+
+    // The line has to go away by itself. `validateFrame` accepts a hello only
+    // at PROTOCOL_VERSION, so a hello that reaches the handler at all refutes
+    // the version claim — whatever the trust decision after it turns out to be.
+    it('clears the record when a v4 hello succeeds on that link', async () => {
+      const localWs = await freshLink();
+      localWs.message(
+        v3Hello('alltrails-mcp:2.11.3:1234123412341234', { accepts: ['hello-rejected'] }),
+      );
+      await vi.waitUntil(() => Object.keys(stored()).length > 0);
+
+      const mcp = await scriptedMcp('alltrails-mcp:3.0.0:8888888888888888');
+      await trustMcp(mcp);
+      localWs.message(await helloFrom(mcp, extNonceOf(localWs)));
+      await vi.waitUntil(() => localWs.frames('ready').length > 0);
+      await vi.waitUntil(() => Object.keys(stored()).length === 0);
+
+      expect(stored()).toEqual({});
+    });
+
+    // And the clearing half is broadcast too. Without it an open popup keeps
+    // telling the user to upgrade a server that just connected — a refusal
+    // surface that outlives the refusal is worse than none, because it sends
+    // somebody to fix what is no longer broken.
+    it('tells an open popup to re-read when the record goes away, too', async () => {
+      const localWs = await freshLink();
+      localWs.message(
+        v3Hello('alltrails-mcp:2.11.3:1234123412341234', { accepts: ['hello-rejected'] }),
+      );
+      await vi.waitUntil(() => Object.keys(stored()).length > 0);
+      await vi.waitUntil(() => broadcasts() >= 1);
+      runtimeMessages.length = 0;
+
+      const mcp = await scriptedMcp('alltrails-mcp:3.0.0:8888888888888888');
+      await trustMcp(mcp);
+      localWs.message(await helloFrom(mcp, extNonceOf(localWs)));
+      await vi.waitUntil(() => Object.keys(stored()).length === 0);
+      // Two, because an accepted hello broadcasts once on its own account (a
+      // session appeared). Only the second is this store's, and only the
+      // second is what takes the stale line off an open popup — so dropping
+      // the call leaves this at one.
+      await vi.waitUntil(() => broadcasts() >= 2);
+    });
+
+    // One upgrade is not every upgrade: the loopback concentrator carries
+    // every MCP on the machine, so a per-LINK clear would let one upgraded
+    // server hide a neighbour that is still refused.
+    it('leaves a sibling MCP on the same link still named', async () => {
+      const localWs = await freshLink();
+      localWs.message(
+        v3Hello('alltrails-mcp:2.11.3:1234123412341234', { accepts: ['hello-rejected'] }),
+      );
+      localWs.message(
+        v3Hello('tock-mcp:2.11.3:4321432143214321', { accepts: ['hello-rejected'] }),
+      );
+      await vi.waitUntil(() => Object.keys(stored()).length === 2);
+
+      const mcp = await scriptedMcp('alltrails-mcp:3.0.0:8888888888888888');
+      await trustMcp(mcp);
+      localWs.message(await helloFrom(mcp, extNonceOf(localWs)));
+      await vi.waitUntil(() => Object.keys(stored()).length === 1);
+
+      expect(Object.values(stored())[0]!.serverName).toBe('tock-mcp');
+    });
+  });
 });
 
 describe('a refused hello', () => {
@@ -968,7 +1127,7 @@ describe('approving a pending pair (v4)', () => {
       graphqlOps: [],
       localStoragePointers: [],
       sessionStoragePointers: [],
-      pairCode: '123-456',
+      pairCode: '1234-5678',
       identityX25519Pub: toB64(mcp.x.publicKey),
       identityEd25519Pub: toB64(mcp.ed.publicKey),
     } as unknown as AnyPendingRecord;

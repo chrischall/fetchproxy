@@ -3,6 +3,12 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
 import { renderPopup, type BridgesView, type PopupState } from '../src/popup/popup.js';
+import {
+  clearVersionMismatches,
+  freshVersionMismatches,
+  recordVersionMismatch,
+  type VersionMismatch,
+} from '../src/lib/version-mismatch.js';
 
 describe('renderPopup', () => {
   let container: HTMLElement;
@@ -1223,5 +1229,137 @@ describe('renderPopup — bridge status dots', () => {
   it('renders no dot at all when the background did not answer', () => {
     withBridges({ targets: [{ id: 'b1', url: 'wss://h/b', enabled: true }] });
     expect(container.querySelector('.status-dot')).toBeNull();
+  });
+});
+
+/**
+ * Task 4.3 — the popup says a version mismatch out loud.
+ *
+ * Task 4.1 gave a v3 MCP an answer on the wire, and the browser user nothing:
+ * the refusal was a `console.warn` in a service worker nobody has open. The
+ * popup is the one surface the BROWSER user has, and this is the state they
+ * are actually in — a refused MCP is never trusted, never gets a session and
+ * never lights a dot, so every existing surface renders it as absence. The
+ * whole failure looks like "my connector does nothing" on both ends.
+ *
+ * The line names the MCP and BOTH versions, because a refusal naming one
+ * version is not a diagnosis, and it says the remedy is on the MCP side
+ * rather than inventing one this reader can perform.
+ */
+describe('renderPopup — version mismatch (Task 4.3)', () => {
+  let container: HTMLElement;
+
+  beforeEach(() => {
+    document.body.innerHTML = '<div id="root"></div>';
+    container = document.getElementById('root')!;
+  });
+
+  const refusal: VersionMismatch = {
+    linkId: 'local',
+    linkLabel: 'localhost',
+    serverName: 'alltrails-mcp',
+    mcpProtocol: 3,
+    extensionProtocol: 4,
+    at: 1_700_000_000_000,
+  };
+
+  const LINE =
+    'alltrails-mcp was refused: it speaks fetchproxy protocol 3, this extension speaks 4. ' +
+    'Update that MCP to @fetchproxy/server 3.0.0 or later — nothing in this browser fixes it.';
+
+  it('names the MCP and BOTH versions on a link whose last event was a refusal', () => {
+    renderPopup(container, {
+      mode: 'status',
+      trusted: [{ serverName: 'resy-mcp', domains: ['resy.com'] }],
+      mismatches: [refusal],
+    });
+    const line = container.querySelector('.version-mismatch');
+    expect(line).not.toBeNull();
+    expect(line!.textContent).toBe(LINE);
+    // Which bridge it arrived on is diagnosis rather than headline: it rides
+    // the title so the one line stays one line.
+    expect(line!.getAttribute('title')).toContain('localhost');
+  });
+
+  it('renders in the EMPTY state too — a refused MCP is never trusted, so that is the state it leaves', () => {
+    renderPopup(container, { mode: 'empty', mismatches: [refusal] });
+    expect(container.querySelector('.version-mismatch')?.textContent).toBe(LINE);
+    // And the misleading half is still there to be contradicted: "no MCP
+    // servers connected" is exactly what this reader must not conclude.
+    expect(container.textContent).toContain('No MCP servers connected');
+  });
+
+  it('reads FIRST — the correction has to precede the sentence it corrects', () => {
+    // Load-bearing rather than cosmetic, and the reason the heading is the
+    // view's first child: the paragraph below it says nothing is connected,
+    // which is exactly what this reader must not walk away believing. A
+    // correction printed after the claim is a footnote to it.
+    renderPopup(container, { mode: 'empty', mismatches: [refusal] });
+    expect(container.firstElementChild?.classList.contains('mismatch-heading')).toBe(true);
+    const line = container.querySelector('.version-mismatch')!;
+    const claim = [...container.querySelectorAll('p')].find((p) =>
+      p.textContent?.includes('No MCP servers connected'),
+    );
+    expect(claim).toBeDefined();
+    // DOCUMENT_POSITION_FOLLOWING: the claim comes AFTER the refusal.
+    expect(
+      line.compareDocumentPosition(claim!) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeGreaterThan(0);
+  });
+
+  it('clears when a v4 hello succeeds on that link', () => {
+    const recorded = recordVersionMismatch({}, refusal);
+    renderPopup(container, { mode: 'empty', mismatches: Object.values(recorded) });
+    expect(container.querySelector('.version-mismatch')).not.toBeNull();
+
+    const cleared = clearVersionMismatches(recorded, 'local', 'alltrails-mcp');
+    renderPopup(container, { mode: 'empty', mismatches: Object.values(cleared) });
+    expect(container.querySelector('.version-mismatch')).toBeNull();
+  });
+
+  it('keeps a sibling MCP refused on the same link — one upgrade is not every upgrade', () => {
+    // The local concentrator multiplexes every MCP on this machine, so
+    // clearing per LINK would let one upgraded server hide a stale neighbour.
+    let dict = recordVersionMismatch({}, refusal);
+    dict = recordVersionMismatch(dict, { ...refusal, serverName: 'tock-mcp' });
+    const cleared = clearVersionMismatches(dict, 'local', 'alltrails-mcp');
+    renderPopup(container, { mode: 'empty', mismatches: Object.values(cleared) });
+    const lines = [...container.querySelectorAll('.version-mismatch')].map((e) => e.textContent);
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain('tock-mcp');
+  });
+
+  it('forgets a refusal nothing has repeated for a day, rather than accusing forever', () => {
+    const dict = recordVersionMismatch({}, refusal);
+    expect(Object.values(freshVersionMismatches(dict, refusal.at + 60_000))).toHaveLength(1);
+    expect(
+      Object.values(freshVersionMismatches(dict, refusal.at + 25 * 60 * 60 * 1000)),
+    ).toHaveLength(0);
+  });
+
+  it('renders a hostile serverName as text, never as markup', () => {
+    // `serverName` is `[^:]+` off an mcpId the MCP minted — attacker-chosen
+    // text on a frame no validator accepted.
+    renderPopup(container, {
+      mode: 'empty',
+      mismatches: [{ ...refusal, serverName: '<img src=x onerror=alert(1)>' }],
+    });
+    expect(container.querySelector('img')).toBeNull();
+    expect(container.querySelector('.version-mismatch')!.textContent).toContain('<img src=x');
+  });
+
+  it('says nothing when there is nothing to say', () => {
+    // The HEADING, not only the line: an empty "Refused — out of date" list on
+    // every load is a standing accusation against nothing, on the one surface
+    // this reader has. Asserting the `<li>` alone cannot see that, because the
+    // `<li>` is absent either way.
+    renderPopup(container, { mode: 'empty', mismatches: [] });
+    expect(container.querySelector('.version-mismatch')).toBeNull();
+    expect(container.querySelector('.mismatch-heading')).toBeNull();
+    expect(container.querySelector('.mismatch-list')).toBeNull();
+    renderPopup(container, { mode: 'status', trusted: [{ serverName: 'r', domains: ['r.com'] }] });
+    expect(container.querySelector('.version-mismatch')).toBeNull();
+    expect(container.querySelector('.mismatch-heading')).toBeNull();
+    expect(container.querySelector('.mismatch-list')).toBeNull();
   });
 });
