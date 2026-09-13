@@ -35,20 +35,23 @@ says why. All packages stay in lockstep on one version (see root
 | `@fetchproxy/protocol` | Wire format: frame validators, crypto wrappers (X25519, Ed25519, HKDF, AES-GCM, SHA-256), mcp-id parsing, pair-code derivation, JSON-pointer evaluator. Pure functions, no I/O. Smallest dep surface — every other workspace depends on it. |
 | `@fetchproxy/server` | `request()` accepts `viaTab` to name the tab that relays a call — needed for API-only hosts (`api.example.com` serves no page, so its implied tab can never exist; route through the signed-in `www` tab instead). Guarded against the declared domains: it widens which tab performs the fetch, never which origins are reachable. Throws `FetchproxyScopeError` (with `.hint`) for gate-#2 scope rejections, so consumers that re-wrap bridge errors can still surface the re-pair remedy — build extension errors with `protocolErrorFrom()`, never `new FetchproxyProtocolError()` directly. MCP-side WebSocket bridge. `FetchproxyServer` class with `listen()`, `request()`, `fetch()`, `readCookies()`, `readLocalStorage()`, `readSessionStorage()`, `captureRequestHeader()`, `readIndexedDb()`, `graphqlQuery()`, `writeCookies()` (1.12+, the only write verb — see `docs/SECURITY.md` §T-cookie-write). Handles concentrator role-election (host vs peer), identity loading, session-key derivation. Persists per-MCP identity to `~/.fetchproxy/identity/<server-name>.json`. |
 | `@fetchproxy/bootstrap` | `createSessionLifter(opts)` returns a **repeatable** lift (declare scope → spin up `FetchproxyServer` → read everything → close, per call) — use it whenever the session can expire, wiring it straight into a session manager's `login`. `bootstrap(opts)` is one invocation of that lifter, kept for genuinely one-shot callers (a user-invoked `capture_session` tool that persists the token). Used by Pattern A MCPs (HoneyBook, OFW, Resy auth-refresh path) that just need a session blob then operate from Node. `storageDomain` selector for multi-domain MCPs. Returns `missing.{cookies,localStorage,sessionStorage}` — declared keys the browser did not return, so a **partial** lift can't masquerade as a clean one (reading the apex when the cookies live on `www` is the classic way to get a half-populated session that fails later somewhere unrelated). |
+| `@fetchproxy/cli` | `fpx` — a one-shot CLI over the same bridge: authenticated fetches and session reads through the user's signed-in browser tab, scoped by per-service **profiles** (each profile connects as `fpx-<name>` with its own identity, so ten services look like ten MCPs to the extension). Published, and it ships v4 changes like any other consumer — `src/bridge-errors.ts` is what names which half of the bridge is behind on a version mismatch. It is also how an operator debugs a straggler during a protocol rollout, without standing an MCP up. |
 | `@fetchproxy/extension-core` | Pure-ish business logic of the browser extension: `handleServerHello` (security-critical pair/auto-trust decision), trust-store, session-keys, popup rendering, badge logic. Designed to be testable under vitest with mocked `chrome.*` globals. `private` (not published). |
 | `@fetchproxy/extension-chrome` | Thin Chrome-MV3 wrapper around extension-core. Just bundling, manifest, icons. Produces `packages/extension-chrome/dist/` for unpacked sideload + GitHub-release `.zip`. `private` (not published). |
 | `@fetchproxy/test-helpers` | Published vitest mock helpers for consumers of `@fetchproxy/server` — a drop-in `FetchproxyServer` mock that captures constructor opts and exposes spy-able `request`/`fetch`/`captureRequestHeader`/`bridgeHealth`. Lets cohort MCPs unit-test their fetchproxy usage without a live bridge. |
 
 `extension-core` and `extension-chrome` are `private: true` (bundled into
-the extension, never published to npm); the other four publish to npm.
+the extension, never published to npm); the other five publish to npm.
+Seven workspaces, and `ls packages` is the authority — this table has run
+behind it before.
 
 ## Commands
 
 | | |
 |---|---|
-| `npm test` | `vitest run` across the whole monorepo (865 tests), all mocked, no network. Must stay green. `vitest.config.ts` excludes `**/.claude/**` and `**/dist/**` so stale agent worktrees don't poison discovery. |
-| `npm run build` | `npm run build --workspaces --if-present` — TS build (`tsc -b`) for protocol → server → bootstrap → extension-core → test-helpers, then extension-chrome's esbuild bundle (`tsx build.ts`). **Order matters** — downstream workspaces import `@fetchproxy/protocol` via its `exports`→`dist/`, so protocol/dist must exist first. |
-| `npm run typecheck` | `tsc -b` over protocol, server, bootstrap, extension-core, test-helpers. extension-chrome is typechecked by its esbuild build instead. |
+| `npm test` | `vitest run` across the whole monorepo (1891 tests in 142 files), all mocked, no network. Must stay green. `vitest.config.ts` excludes `**/.claude/**` and `**/dist/**` so stale agent worktrees don't poison discovery. |
+| `npm run build` | `npm run build --workspaces --if-present` — all **seven**: a `tsc -b` for protocol, server, bootstrap, cli, extension-core and test-helpers, plus extension-chrome's esbuild bundle (`tsx build.ts`). npm runs them in workspace order, which is alphabetical (`bootstrap` first, `protocol` fifth), so the build order is NOT the dependency order; what makes that safe is each package's `tsc -b` following its own `references`, so `protocol/dist` is built before anything that imports it via its `exports`→`dist/`. Don't demote a package to a bare `tsc` — that is the thing the references are carrying. |
+| `npm run typecheck` | `tsc -b` over protocol, server, bootstrap, **cli**, extension-core, test-helpers — the script's own project list, cli included. extension-chrome is typechecked by its esbuild build instead. |
 | `npm run build --workspace=@fetchproxy/extension-chrome` | Rebuild just the unpacked extension after a source edit. Drop into `chrome://extensions/` → fetchproxy → reload. **No sourcemaps** — this is the command the release workflow zips, so release is the default. |
 | `npm run build:dev --workspace=@fetchproxy/extension-chrome` | Same, with inline sourcemaps, for debugging the extension in DevTools. Never what ships. |
 | `npm test --workspace=@fetchproxy/<pkg>` | Run just one package's tests when iterating. |
@@ -81,7 +84,11 @@ the bind fails with `EADDRINUSE`, the MCP dials the existing host as a
 1. Per-MCP **identity** = long-term X25519 + Ed25519 keys at
    `~/.fetchproxy/identity/<server-name>.json` (mode 0600).
 2. Per-session **AES-256-GCM** key derived via X25519 ECDH +
-   HKDF-SHA256, scoped to one WS connection. Since 3.0.0 (protocol 4)
+   HKDF-SHA256, scoped to one **extension session** — not, on a peer, to
+   one WS connection: a peer's own socket to the host closing is a
+   teardown obligation and does not end the extension's session
+   (`packages/server/src/peer.ts:285-289`; `docs/PROTOCOL.md` §The
+   ephemeral's lifetime carries the invariant). Since 3.0.0 (protocol 4)
    the ECDH is EPHEMERAL × EPHEMERAL — the MCP contributes `sessionPub`
    on its hello, the extension its own on the `ready` — HKDF is salted
    with `transcriptHash(mcpNonce || extNonce || mcpSessionPub ||
