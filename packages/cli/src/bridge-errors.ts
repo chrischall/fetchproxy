@@ -1,6 +1,7 @@
 import {
   classifyBridgeError,
   FetchproxyHintedError,
+  FetchproxyProtocolVersionError,
   FetchproxySessionNotReadyError,
 } from '@fetchproxy/server';
 import { EXIT, UsageError, type Io } from './output.js';
@@ -17,6 +18,35 @@ export function mapBridgeError(err: unknown, io: Io): number {
       code
         ? `bridge not ready — pairing pending. Approve pair code ${code} in the Transporter extension popup and retry.`
         : 'bridge not ready — is Chrome running with the Transporter extension installed and connected?',
+    );
+    return EXIT.BRIDGE;
+  }
+  // 3.0.0 (protocol 4), Task 4.4. A version mismatch is refused at the hello
+  // now rather than hung on for thirty seconds (server Task 4.2), and it
+  // arrives here as its own class — which is NOT a FetchproxyProtocolError
+  // subclass, so `classifyBridgeError` buckets it `other`, whose hint is the
+  // empty string. Left to that, the one failure the whole refusal exists to
+  // make legible printed as `bridge error (other): …`: an anonymous bucket
+  // name in front of the only sentence on the line that says anything.
+  //
+  // So it is answered before the classifier, like the session-not-ready branch
+  // above, and the remedy is chosen off the error's own `.peer` rather than
+  // off its prose. Which half of the bridge is behind decides what the errand
+  // IS: a browser extension to install and reload, or somebody else's MCP
+  // process to upgrade and restart. Naming the wrong one is the #204 mis-hint
+  // with a version problem that does exist.
+  if (err instanceof FetchproxyProtocolVersionError) {
+    io.err(`bridge refused: ${err.message}.`);
+    io.err(
+      err.peer === 'extension'
+        ? 'Both halves of the bridge ship as one release: install the Transporter build ' +
+            'from that release, reload it at chrome://extensions, and retry. Nothing is ' +
+            'wrong with this profile or your sign-in, and no flag here can bridge the ' +
+            'two versions.'
+        : 'That MCP holds the fetchproxy bridge port on this machine, so every MCP here — ' +
+            'fpx included — dials into it as a peer: upgrade @fetchproxy/server there and ' +
+            'restart that process. fpx cannot route around it, and neither the profile nor ' +
+            '`fpx trust` is involved.',
     );
     return EXIT.BRIDGE;
   }

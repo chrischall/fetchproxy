@@ -1,5 +1,9 @@
 import { describe, it, expect } from 'vitest';
-import { FetchproxyProtocolError, protocolErrorFrom } from '@fetchproxy/server';
+import {
+  FetchproxyProtocolError,
+  FetchproxyProtocolVersionError,
+  protocolErrorFrom,
+} from '@fetchproxy/server';
 import { mapBridgeError } from '../src/bridge-errors.js';
 import { EXIT, type Io } from '../src/output.js';
 
@@ -151,5 +155,79 @@ describe('a closed extension window is a timeout, not a version problem', () => 
     const io = memIo();
     mapBridgeError(protocolErrorFrom('handshake timeout budget exceeded'), io);
     expect(io.errs.join(' ')).toMatch(/version mismatch|update both/i);
+  });
+});
+
+/**
+ * Protocol v4, Task 4.4 — `fpx` is how the operator debugs a straggler.
+ *
+ * A version mismatch reaches the CLI as a `FetchproxyProtocolVersionError`
+ * (server 3.0.0+, Task 4.2), which is NOT a `FetchproxyProtocolError` subclass
+ * and so classified `other` — the bucket whose hint is the empty string. So
+ * the one failure the whole of Group 4 exists to make legible arrived here
+ * rendered as `bridge error (other): …` with no remedy of the CLI's own, one
+ * line below a `timeout` bucket that would have told the reader to go check a
+ * sign-in. The remedy is named, and it is named off the error's OWN `.peer`
+ * rather than off its prose — which half of the bridge is behind decides
+ * whether the thing to move is a browser extension or somebody else's MCP
+ * process, and those are not the same errand.
+ */
+describe('a protocol version mismatch names the remedy, not a bucket', () => {
+  const mismatch = (peer: 'extension' | 'mcp') =>
+    new FetchproxyProtocolVersionError({ ourVersion: 4, theirVersion: 3, peer });
+
+  it('names BOTH versions — a refusal naming one tells the reader nothing', () => {
+    const io = memIo();
+    const code = mapBridgeError(mismatch('extension'), io);
+    expect(code).toBe(EXIT.BRIDGE);
+    const out = io.errs.join('\n');
+    expect(out).toMatch(/protocol 4/);
+    expect(out).toMatch(/speaks 3/);
+  });
+
+  it('sends the user to the extension when the EXTENSION is behind', () => {
+    const io = memIo();
+    const out = (mapBridgeError(mismatch('extension'), io), io.errs.join('\n'));
+    expect(out).toMatch(/Transporter/);
+    expect(out).toMatch(/chrome:\/\/extensions/);
+    // The remedy is not this profile and not a sign-in: saying so is the point
+    // of the task, because a thirty-second hang is what used to send people
+    // there.
+    expect(out).toMatch(/sign-in/);
+    expect(out).not.toMatch(/@fetchproxy\/server/);
+  });
+
+  it('sends the user to the other MCP when a v3 CONCENTRATOR is behind', () => {
+    const io = memIo();
+    const out = (mapBridgeError(mismatch('mcp'), io), io.errs.join('\n'));
+    expect(out).toMatch(/@fetchproxy\/server/);
+    expect(out).toMatch(/restart/i);
+    // fpx is the peer here and is not the thing to fix — nothing to reload in
+    // a browser, and no flag that routes around the host.
+    expect(out).not.toMatch(/chrome:\/\/extensions/);
+  });
+
+  it('never renders it as the anonymous `other` bucket', () => {
+    const io = memIo();
+    mapBridgeError(mismatch('extension'), io);
+    expect(io.errs.join('\n')).not.toMatch(/bridge error \(other\)/);
+  });
+
+  it('does not inherit the blanket "update both" hint, which names neither end', () => {
+    const io = memIo();
+    mapBridgeError(mismatch('extension'), io);
+    expect(io.errs.join('\n')).not.toMatch(/update both/);
+  });
+
+  // The branch is on the TYPE, exactly as the hinted-error branch above is —
+  // a regex over "protocol version mismatch" would steal any protocol error
+  // that happened to describe itself that way, which is the #204 mis-hint
+  // pointed the other way.
+  it('does not steal a plain protocol error that merely says the words', () => {
+    const io = memIo();
+    mapBridgeError(new FetchproxyProtocolError('protocol version mismatch in frame "wat"'), io);
+    const out = io.errs.join('\n');
+    expect(out).toMatch(/update both/);
+    expect(out).not.toMatch(/chrome:\/\/extensions/);
   });
 });
