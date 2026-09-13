@@ -6,9 +6,12 @@ import {
   fromB64,
   openEncryptedFrameDetailed,
   peekHelloVersion,
+  sealInnerFrame,
+  sealedFrameWireBytes,
   validateFrame,
   validateInnerFrame,
   type EncryptedFrame,
+  type InnerFrame,
 } from '@fetchproxy/protocol';
 import {
   V3_CAPTURE,
@@ -111,6 +114,32 @@ describe('the frozen v3 corpus', () => {
       'e2s',
     );
     expect(result.stage).toBe('decrypt-failed');
+  });
+
+  it('is the same size on the wire as v4: the AAD is authenticated, never sent', async () => {
+    // The header of `packages/protocol/src/frames.ts` states this as part of
+    // the v4 break — the additional data moved without moving a byte, so
+    // `MAX_FRAME_BYTES` is not the AAD's to move. Stated in a comment it is
+    // an assertion about GCM; measured against a frame sealed by 2.11.3, with
+    // the same plaintext, mcpId and seq, it is evidence. A future refactor
+    // that put the direction (or the AAD itself) on the envelope to "make it
+    // checkable" would add bytes to every frame and shift the derived cap
+    // under it; this is the test that fails when it does.
+    const inner = JSON.parse(V3_FRAME_INNER_JSON) as InnerFrame;
+    const v4Frame = await sealInnerFrame(
+      fromB64(V3_SESSION_KEY_B64),
+      v3Frame.mcpId,
+      v3Frame.seq,
+      inner,
+      // The fixture is extension → MCP, and under v4 the direction is an AAD
+      // input rather than a field, which is the whole point being measured.
+      'e2s',
+    );
+    const wire = (frame: unknown) => new TextEncoder().encode(JSON.stringify(frame)).length;
+    expect(wire(v4Frame)).toBe(wire(v3Frame));
+    // And the estimate the producing-end caps are stated in agrees with both,
+    // so the number `MAX_FRAME_BYTES` is compared against did not move either.
+    expect(sealedFrameWireBytes(v3Frame.mcpId, v3Frame.seq, inner)).toBe(wire(v3Frame));
   });
 
   it('records where it came from, and it is not this repository', () => {

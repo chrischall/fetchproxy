@@ -52,7 +52,32 @@
  * proof is now explicit on both sides: a verifier MUST check the hello
  * signature against the Ed25519 key its trust record holds, not merely
  * against the one carried in the same frame. A hard break, all packages
- * released together, and v3 refused at the hello for #222's reason.
+ * released together, and v3 refused AT THE HELLO in both directions, with a
+ * close reason and a `hello-rejected` reason that name both versions rather
+ * than the bare `protocol error` a mangled field gets — under v3 that
+ * refusal was a warning in a service worker nobody has open, and the MCP
+ * then waited out its 30-second session-ready timeout, so an upgrade looked
+ * exactly like the bridge being down.
+ *
+ * A refusal, never a negotiation, and the reason is #222's (`c13aeed`, the
+ * 2 → 3 break) unchanged: a version field a relay can rewrite is a version a
+ * relay can CHOOSE, and both ends would then agree on the weaker payload. v4
+ * sharpens that rather than merely repeating it, because the party a
+ * negotiation would hand the choice to is precisely the party the ephemerals
+ * and the AAD exist to defeat. The same argument forbids the transitional
+ * shape that looks like the obvious way to shrink an upgrade window: a v4
+ * extension that still accepts v3 IS the downgrade path.
+ *
+ * What v4 does NOT move is how big a frame is. GCM's additional data is
+ * authenticated and never transmitted, so a v4 frame is byte for byte the
+ * size its v3 counterpart was: `sealedFrameWireBytes` in `seal.ts` returns
+ * the same number, and `MAX_FRAME_BYTES` beside it — derived from the largest
+ * legitimate response body rather than picked — is not the AAD's to move.
+ * {@link frameAad} carries the encoding;
+ * `packages/server/tests/cross-version/v3-fixtures.test.ts` carries the
+ * measurement, against a frame `@fetchproxy/protocol@2.11.3` actually sealed.
+ * The two versions disagree about what a frame MEANS, never about how large
+ * one may be.
  *
  * A note on numbering, because the two numbers do not match and that is
  * deliberate. The PACKAGE major and the PROTOCOL version are off by one:
