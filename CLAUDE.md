@@ -13,13 +13,19 @@ capability). Concentrator architecture: the first MCP to boot binds
 `127.0.0.1:37149`, subsequent MCPs dial in as peers, the host
 multiplexes all of them through one WebSocket to one browser
 extension. Each MCP ↔ extension session has its own AES-256-GCM key
-derived via X25519 ECDH at handshake. Trust is identity-keyed
-(Ed25519) with an 8-digit pair code the user confirms on first contact.
+derived at handshake by X25519 ECDH between two per-session
+ephemerals. Trust is identity-keyed (Ed25519) with an 8-digit pair code
+the user confirms on first contact.
 
-Current line: **1.x** (mutual auth + JSON-pointer storage extraction
-+ MV3 SW keepalive + storageDomain selector + host-or-subdomain tab
-matching + `graphql` capability for MAIN-world Apollo-client
-invocation). All packages stay in lockstep on one version (see root
+Current line: **3.x** — protocol 4: a per-session ephemeral on each
+side, a session key salted with the handshake transcript, and
+`mcpId || seq || direction` in the AEAD's additional data, on top of
+2.x's mutual auth + JSON-pointer storage extraction + MV3 SW keepalive
++ storageDomain selector + host-or-subdomain tab matching + `graphql`
+capability for MAIN-world Apollo-client invocation. The package major
+and the protocol number are off by one — package 2.x spoke protocol 3,
+package 3.x speaks protocol 4 — and `packages/protocol/src/frames.ts`
+says why. All packages stay in lockstep on one version (see root
 `package.json` → `version`).
 
 ## Workspaces
@@ -75,7 +81,24 @@ the bind fails with `EADDRINUSE`, the MCP dials the existing host as a
 1. Per-MCP **identity** = long-term X25519 + Ed25519 keys at
    `~/.fetchproxy/identity/<server-name>.json` (mode 0600).
 2. Per-session **AES-256-GCM** key derived via X25519 ECDH +
-   HKDF-SHA256, scoped to one WS connection.
+   HKDF-SHA256, scoped to one WS connection. Since 3.0.0 (protocol 4)
+   the ECDH is EPHEMERAL × EPHEMERAL — the MCP contributes `sessionPub`
+   on its hello, the extension its own on the `ready` — HKDF is salted
+   with `transcriptHash(mcpNonce || extNonce || mcpSessionPub ||
+   extSessionPub)` and personalised `fetchproxy/4.0.0/session`, and each
+   frame is sealed under additional data `'fetchproxy/4/frame' || NUL ||
+   mcpId || NUL || seq || NUL || direction` (`frameAad()`), which is
+   authenticated and never transmitted, so a frame cannot be moved to
+   another MCP, another counter or the other direction and the wire size
+   is unchanged. Up to protocol 3 the MCP's half of the ECDH was its
+   LONG-TERM identity key, so whoever held an identity plus a recording
+   decrypted that traffic afterwards, passively and retroactively; under
+   v4 the identity authenticates and nothing more, and the ephemeral's
+   private half is zeroed when it is dropped or displaced
+   (`dropOwnSessionAndEphemeral` / `installOwnEphemeral` in `host.ts`,
+   `dropSessionEphemeral` / `installSessionEphemeral` in `peer.ts`). What
+   forward secrecy does NOT buy is in `docs/SECURITY.md` §What protocol 4
+   does not fix — read it before repeating the claim anywhere.
 3. **Pair code** = `pairTranscript(...)` — the first 8 bytes of
    `SHA256('fetchproxy/4/pair' || NUL || mcpPub || extPub ||
    mcpHelloNonce || extHelloNonce || mcpSessionPub)` as a big-endian
@@ -109,6 +132,20 @@ the bind fails with `EADDRINUSE`, the MCP dials the existing host as a
    the ephemeral pub. Wire break, PROTOCOL_VERSION 2 → 3, v2 refused at
    the hello (no negotiated downgrade — a rewriting relay would pick
    it), so every package AND the extension ship together.
+   3.0.0 (protocol 4) widens both signatures again and symmetrically:
+   the hello's covers the MCP's ephemeral and the `answersExtNonce` echo
+   the host's forwarding gate reads (`helloSignaturePayload()`), the
+   ready's covers the MCP's ephemeral beside the extension's
+   (`readySignaturePayload()`), so neither side's contribution to the
+   ECDH can be substituted by a relay. Because that ECDH no longer
+   proves possession of a pinned key, the extension's half of the mirror
+   had to be tightened to match: a trust record is found by the SHA-256
+   of `identityX25519Pub`, and `handleServerHello` now falls through to
+   needs-pair unless the record's `identityEd25519Pub` matches too —
+   under v3 that comparison was belt-and-braces, since deriving a
+   working key was itself the proof of possession. Wire break,
+   PROTOCOL_VERSION 3 → 4, v3 refused AT THE HELLO in both directions
+   with a reason naming both versions rather than left to time out.
 4. **Capabilities** declared in hello frame, approved at pair time,
    stored in the trust record. Tightening (or widening) the
    capability set forces a re-pair with diff UI. `graphql` is one
