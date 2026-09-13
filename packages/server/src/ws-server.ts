@@ -1,5 +1,6 @@
 import {
   generateMcpId,
+  isPublicSuffix,
   KNOWN_CAPABILITIES,
   undeclaredKeys,
   validateCaptureHeaderDecls,
@@ -1437,6 +1438,24 @@ export class FetchproxyServer {
       throw new Error(
         'FetchproxyServer: opts.domains must be a non-empty array of hostnames',
       );
+    }
+    // #365: the same refusal `validateHello` makes, made where the declaration
+    // is WRITTEN. At the far end it is a `ProtocolError` raised inside the
+    // extension's `validateFrame`, which `background/socket.ts` answers by
+    // dropping the frame with a `console.warn` into the service worker's own
+    // console — so a profile declaring `co.uk` constructed, listened, and then
+    // read as a bridge that never answers, with the diagnosis somewhere the
+    // person running the MCP cannot see, at the moment they were trying to use
+    // it. `isPublicSuffix` is IMPORTED, never reimplemented: two notions of
+    // "is this a public suffix" is how the two ends come to disagree about
+    // which profiles are legal, and the far end's verdict is the one that
+    // silently wins.
+    for (const d of opts.domains) {
+      if (typeof d === 'string' && isPublicSuffix(d)) {
+        throw new Error(
+          `FetchproxyServer: opts.domains entry ${JSON.stringify(d)} is a public suffix — declare a registrable domain (e.g. "example.${d}"), not the suffix every site under it shares`,
+        );
+      }
     }
     // Default to ['fetch'] so existing callers that pre-date capabilities
     // keep working without code changes. When provided, the array must be
