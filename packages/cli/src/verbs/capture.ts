@@ -83,9 +83,10 @@ export async function runCapture(
 
   const server = makeServer({
     ...serverOptsFor(cmd.profile, profile, VERSION),
-    // Without this the transport's 30s default beats `--capture-timeout`
-    // whenever the user asks for longer, and the capture window they typed is
-    // silently truncated (chrischall/fetchproxy#342).
+    // No `fetchTimeoutMs` here on purpose. This used to lift the transport
+    // clear of `--capture-timeout`, because the 30s default beat a longer
+    // window and truncated it silently (#342) — and paid for it by lengthening
+    // every other verb on the run. The server derives that per verb now (#237).
     onPairCode: pairCodePrinter(io),
   });
   try {

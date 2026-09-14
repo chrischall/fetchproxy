@@ -23,6 +23,12 @@ export {
   FetchproxyWaitedError,
   protocolErrorFrom,
   FetchproxyTimeoutError,
+  // #237. `verbDeadlineGraceMs`'s own JSDoc points a reader at the default, so
+  // the default has to be importable — and `verbDeadlineMs` with it, since a
+  // consumer deciding whether to raise the grace wants to compute the deadline
+  // its calls will actually get rather than re-derive the rule.
+  VERB_DEADLINE_GRACE_MS,
+  verbDeadlineMs,
 } from './ws-server.js';
 export type { WaitedOp } from './ws-server.js';
 export {
