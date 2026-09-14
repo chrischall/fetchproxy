@@ -943,20 +943,6 @@ export function protocolErrorFrom(
 }
 
 /**
- * 0.8.0+: thrown by convenience methods when `fetchTimeoutMs` fires.
- * The lower-level `fetch()` returns `{ ok: false, kind: 'timeout' }`
- * instead (back-compat with its result-envelope shape). Subclass of
- * `FetchproxyProtocolError` so existing callers still match.
- *
- * `retryAttempted: true` (0.11.0+, #90/#91) means the server's one-shot
- * lazy-revive retry (`bridgeReviveDelayMs`) treated this timeout as the
- * SW-eviction cold-start symptom, warmed the worker, and the retry also
- * timed out. `false` means the retry was disabled
- * (`bridgeReviveDelayMs` unset / 0), so the timeout surfaced on the
- * first attempt. Mirrors `FetchproxyBridgeDownError.retryAttempted` so
- * callers can branch identically across both throwable kinds.
- */
-/**
  * How much longer than a verb's OWN `timeoutMs` this server waits for the
  * reply to that verb (#237).
  *
@@ -994,11 +980,17 @@ export const VERB_DEADLINE_GRACE_MS = 15_000;
  * The deadline for ONE verb call: its own `timeoutMs` plus the grace above,
  * never shorter than the transport's `fetchTimeoutMs`.
  *
- * The floor is what keeps this from being a tightening. A call asking for
- * LESS than the transport bound keeps the transport bound as its server-side
- * deadline — the extension's own timer fires first either way, which is the
- * outcome we want, and shortening the server's wait to match would start
- * cutting off replies that arrive in time today.
+ * The floor is what keeps this from being a tightening: the answer is never
+ * SHORTER than `fetchTimeoutMs`, so nothing that arrives in time today starts
+ * being cut off.
+ *
+ * Note which calls it actually binds. A window far below the transport bound
+ * keeps that bound — `verbDeadlineMs(30_000, 1_000)` is 30_000, because the
+ * extension's own timer fires first anyway. But a window merely NEAR it does
+ * not: `verbDeadlineMs(30_000, 20_000)` is 35_000, since 20s plus the grace
+ * exceeds 30s. That is the rule working rather than an exception to it — a 20s
+ * window on a 30s transport is exactly the near-tie the grace exists for, and
+ * the band `transport - grace < requested < transport` is where it bites.
  *
  * No ceiling. A ceiling here is what #237 is about: the per-call timeout IS
  * the caller's statement of how long this verb may wait, and a verb that
@@ -1014,6 +1006,20 @@ export function verbDeadlineMs(
   return Math.max(requestedMs + graceMs, transportMs);
 }
 
+/**
+ * 0.8.0+: thrown by convenience methods when `fetchTimeoutMs` fires.
+ * The lower-level `fetch()` returns `{ ok: false, kind: 'timeout' }`
+ * instead (back-compat with its result-envelope shape). Subclass of
+ * `FetchproxyProtocolError` so existing callers still match.
+ *
+ * `retryAttempted: true` (0.11.0+, #90/#91) means the server's one-shot
+ * lazy-revive retry (`bridgeReviveDelayMs`) treated this timeout as the
+ * SW-eviction cold-start symptom, warmed the worker, and the retry also
+ * timed out. `false` means the retry was disabled
+ * (`bridgeReviveDelayMs` unset / 0), so the timeout surfaced on the
+ * first attempt. Mirrors `FetchproxyBridgeDownError.retryAttempted` so
+ * callers can branch identically across both throwable kinds.
+ */
 export class FetchproxyTimeoutError extends FetchproxyProtocolError {
   readonly url: string;
   readonly timeoutMs: number;
@@ -3040,8 +3046,9 @@ export class FetchproxyServer {
       this.pendingCapture,
       id,
       `https://${opts.host}${opts.path ?? '/*'}`,
-      // #277: not to extend the deadline — so a timeout can say the deadline,
-      // and not the value asked for here, is what fired.
+      // #237: this GOVERNS the deadline (window + reply grace, floored at the
+      // transport bound). Under #277 it did not, and was passed only so the
+      // timeout could name the number that actually fired.
       opts.timeoutMs,
     );
   }
@@ -3155,8 +3162,9 @@ export class FetchproxyServer {
       this.pendingRedirect,
       id,
       `https://${opts.host}${opts.path ?? '/*'}`,
-      // #277: not to extend the deadline — so a timeout can say the deadline,
-      // and not the value asked for here, is what fired.
+      // #237: this GOVERNS the deadline (window + reply grace, floored at the
+      // transport bound). Under #277 it did not, and was passed only so the
+      // timeout could name the number that actually fired.
       opts.timeoutMs,
     );
   }
@@ -3266,10 +3274,11 @@ export class FetchproxyServer {
       this.pendingDownload,
       id,
       opts.url,
-      // #277, same as the two capture verbs: `download` takes a per-call
-      // timeoutMs too, so it hits the identical cap and needs the identical
-      // explanation. Missing it was the point of #279 — "both verbs" was
-      // counted off the two call sites in view rather than off the type.
+      // `download` takes a per-call timeoutMs like the two capture verbs, so
+      // it is governed by it like them (#237). It used to hit the identical
+      // CAP and need the identical explanation; missing it then was the point
+      // of #279 — "both verbs" was counted off the two call sites in view
+      // rather than off the type. Three is still the number.
       opts.timeoutMs,
     );
   }

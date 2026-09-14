@@ -1,6 +1,9 @@
 import { describe, it, expect } from 'vitest';
 import { FetchproxyServer, FetchproxyTimeoutError } from '../src/index.js';
-import { VERB_DEADLINE_GRACE_MS, verbDeadlineMs } from '../src/ws-server.js';
+// Imported from the PACKAGE ENTRY POINT, not from ws-server.js: `#372` found
+// both missing from it, and a constant a JSDoc tells consumers to import is
+// only importable if the entry point says so. This import is the assertion.
+import { VERB_DEADLINE_GRACE_MS, verbDeadlineMs } from '../src/index.js';
 import { installFakeHost } from './helpers/fake-host.js';
 
 /**
@@ -99,6 +102,16 @@ describe('verbDeadlineMs', () => {
     // or a transport timeout. The server now outlasts the extension by the
     // grace, so the extension's answer is the one that arrives.
     expect(verbDeadlineMs(30_000, 30_000)).toBeGreaterThan(30_000);
+  });
+
+  it('binds a window NEAR the transport bound, not only one above it', () => {
+    // The band `transport - grace < requested < transport`, which the floor
+    // does NOT keep at the transport bound: 20s asked for on a 30s transport
+    // is 35s, because 20s plus the grace exceeds 30s. This is the near-tie the
+    // grace exists for — the extension answers at 20s and the server has to
+    // still be listening — and it is the case a doc claiming "asking for less
+    // keeps the transport bound" reads as an exception when it is the rule.
+    expect(verbDeadlineMs(30_000, 20_000)).toBe(20_000 + VERB_DEADLINE_GRACE_MS);
   });
 
   it('never shortens below the transport bound', () => {

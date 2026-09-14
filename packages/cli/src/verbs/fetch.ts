@@ -131,21 +131,17 @@ export function assertUrlOnProfile(url: string, profile: Profile): string {
   return assertHostOnProfile(host, profile);
 }
 
-/**
- * `bridgeDeadlineFor` lived here until #237.
- *
- * It computed `max(timeoutMs + 15_000, 30_000)` and handed it to the server as
- * `fetchTimeoutMs`, because a per-call `timeoutMs` could not raise the
- * transport deadline it was raced against — so `--capture-timeout` was inert
- * above 30s and the server's own timeout said to raise the transport instead.
- *
- * The server computes that now, per verb, from the window the call asked for
- * (`verbDeadlineMs`). Keeping a copy here would mean two answers to one
- * question, and this one lengthened EVERY verb on the transport to buy a
- * longer wait on one — the coupling #237 exists to remove. The same shape was
- * hand-rolled in resy-mcp, @chrischall/mcp-utils and onehome-mcp; it belongs
- * in the library, and this is the deletion that says so.
- */
+// `bridgeDeadlineFor` lived here until #237.
+// It computed `max(timeoutMs + 15_000, 30_000)` and handed it to the server as
+// `fetchTimeoutMs`, because a per-call `timeoutMs` could not raise the
+// transport deadline it was raced against — so `--capture-timeout` was inert
+// above 30s and the server's own timeout said to raise the transport instead.
+// The server computes that now, per verb, from the window the call asked for
+// (`verbDeadlineMs`). Keeping a copy here would mean two answers to one
+// question, and this one lengthened EVERY verb on the transport to buy a
+// longer wait on one — the coupling #237 exists to remove. The same shape was
+// hand-rolled in resy-mcp, @chrischall/mcp-utils and onehome-mcp; it belongs
+// in the library, and this is the deletion that says so.
 
 export async function runFetch(
   cmd: Extract<Command, { kind: 'fetch' }>,

@@ -42,8 +42,9 @@ export async function runCaptureRedirect(
 
   const server = makeServer({
     ...serverOptsFor(cmd.profile, profile, VERSION),
-    // As in `capture`: the transport's 30s default silently caps a longer
-    // `--capture-timeout` (chrischall/fetchproxy#342).
+    // As in `capture`: no `fetchTimeoutMs`. The transport's 30s default used
+    // to cap a longer `--capture-timeout` (#342); the server honours the
+    // window itself since #237.
     onPairCode: pairCodePrinter(io),
   });
   try {
