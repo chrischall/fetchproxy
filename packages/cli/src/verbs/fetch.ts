@@ -46,11 +46,14 @@ export type VerbServerFactory = (
   opts: DerivedServerOpts & {
     onPairCode: (code: string) => void;
     /**
-     * The transport deadline every verb's reply wait is raced against. Only
-     * the capture verbs set it — see `bridgeDeadlineFor`, which is the whole
-     * reason this field is on the factory's opts rather than on
-     * `DerivedServerOpts`: it is a per-CALL deadline, not something derived
-     * from the profile.
+     * The transport deadline every verb's reply wait is raced against.
+     *
+     * Nothing in the CLI sets it since #237: the capture verbs used to, to buy
+     * a longer wait on one verb by lengthening all of them, and the server now
+     * derives that per verb from the window the call asked for. Kept on the
+     * factory's opts rather than on `DerivedServerOpts` because it is a
+     * transport-level deadline and not something derived from the profile —
+     * and kept at all so a caller with a genuinely slow bridge still has it.
      */
     fetchTimeoutMs?: number;
   },
@@ -129,23 +132,20 @@ export function assertUrlOnProfile(url: string, profile: Profile): string {
 }
 
 /**
- * The transport deadline a capture window needs.
+ * `bridgeDeadlineFor` lived here until #237.
  *
- * `FetchproxyServer.fetchTimeoutMs` (default 30_000) bounds EVERY verb's reply
- * wait, and a per-call `timeoutMs` cannot raise it — the server says so in the
- * timeout it throws: "A per-call timeoutMs cannot exceed it; raise
- * fetchTimeoutMs on the transport to wait longer." The CLI set it nowhere, so
- * `--capture-timeout` was inert above 30s: `_withVerbTimeout` fired at the
- * default whatever the call asked for.
+ * It computed `max(timeoutMs + 15_000, 30_000)` and handed it to the server as
+ * `fetchTimeoutMs`, because a per-call `timeoutMs` could not raise the
+ * transport deadline it was raced against — so `--capture-timeout` was inert
+ * above 30s and the server's own timeout said to raise the transport instead.
  *
- * The margin exists so the PER-CALL timer is the one that fires. That way the
- * user is told the header never arrived in the window they asked for, rather
- * than reading a transport timeout about a number they never typed. Same
- * reasoning as resy-mcp's `BRIDGE_DEADLINE_MS`, and the same shape.
+ * The server computes that now, per verb, from the window the call asked for
+ * (`verbDeadlineMs`). Keeping a copy here would mean two answers to one
+ * question, and this one lengthened EVERY verb on the transport to buy a
+ * longer wait on one — the coupling #237 exists to remove. The same shape was
+ * hand-rolled in resy-mcp, @chrischall/mcp-utils and onehome-mcp; it belongs
+ * in the library, and this is the deletion that says so.
  */
-export function bridgeDeadlineFor(timeoutMs: number | undefined): number {
-  return Math.max((timeoutMs ?? 0) + 15_000, 30_000);
-}
 
 export async function runFetch(
   cmd: Extract<Command, { kind: 'fetch' }>,

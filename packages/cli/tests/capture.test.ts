@@ -265,9 +265,12 @@ describe('fpx capture with paths', () => {
  * chrischall/fetchproxy#342 — the `capture` half of the same defect.
  *
  * `--capture-timeout` was forwarded to every declaration and then capped by the
- * server's `fetchTimeoutMs` (default 30_000), which the CLI set nowhere. Both
- * halves are asserted: the per-call window has to reach EVERY concurrent
- * capture, and the transport deadline has to sit clear of it.
+ * server's `fetchTimeoutMs` (default 30_000), which the CLI set nowhere. The
+ * CLI's answer was to lift the transport clear of the window; since #237 the
+ * SERVER derives that per verb, so what the CLI owes is only that the window
+ * reaches every concurrent capture — and that it stops lengthening the
+ * transport to get there, which is the half that used to cost every other
+ * verb on the same run.
  */
 describe('fpx capture timeouts', () => {
   const calls = (s: unknown) =>
@@ -283,7 +286,11 @@ describe('fpx capture timeouts', () => {
     expect(calls(server).map((c) => c[0]!.timeoutMs)).toEqual([120_000, 120_000]);
   });
 
-  it('lifts the transport deadline clear of that window', async () => {
+  it('no longer lengthens the transport to buy that window', async () => {
+    // The inversion of #342's fix, and the point of #237. The window is
+    // honoured by the server's own per-verb deadline, so the CLI leaves
+    // `fetchTimeoutMs` alone — where it used to raise it past 120s for the
+    // whole run, which bounded every ordinary fetch on that transport too.
     const server = stubServer();
     const opts: Record<string, unknown>[] = [];
     await runCapture(
@@ -291,7 +298,9 @@ describe('fpx capture timeouts', () => {
       withCaptures(), memIo(),
       (o) => { opts.push(o as unknown as Record<string, unknown>); return server; },
     );
-    expect(opts[0]!.fetchTimeoutMs as number).toBeGreaterThan(120_000);
+    expect(opts[0]!.fetchTimeoutMs).toBeUndefined();
+    // …and the window still reaches the call, which is what #342 was about.
+    expect(calls(server).map((c) => c[0]!.timeoutMs)).toEqual([120_000, 120_000]);
   });
 
   it('leaves an unflagged run on the transport default', async () => {
@@ -302,7 +311,7 @@ describe('fpx capture timeouts', () => {
       withCaptures(), memIo(),
       (o) => { opts.push(o as unknown as Record<string, unknown>); return server; },
     );
-    expect(opts[0]!.fetchTimeoutMs).toBe(30_000);
+    expect(opts[0]!.fetchTimeoutMs).toBeUndefined();
     expect(calls(server)[0]![0]!.timeoutMs).toBeUndefined();
   });
 });
