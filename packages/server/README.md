@@ -75,6 +75,7 @@ parity with this table. For longer "when to override" guidance, see
 | `trustDir` | `string` | `identityDir` (or `FETCHPROXY_TRUST_DIR`) | Where to keep this MCP's pin on the EXTENSION's identity (`<trustDir>/<serverName>.extension-trust.json`, mode 0600; the directory is created 0700). Falls back to `FETCHPROXY_TRUST_DIR` (an absolute path only; anything else is ignored, with a warning) and then to `identityDir`, so setting neither leaves the pin exactly where it has always been. It exists because a host that PROVISIONS the identity mounts that directory read-only, and the pin is the one file this package writes: with nowhere writable the write is logged (`could not persist the extension pin`) and the session continues, so every boot is trust-on-first-use and the pin refuses nothing. On such a deployment this is a precondition, not a tuning option — see `docs/SECURITY.md` §T-fake-extension. |
 | `onPairCode` | `(code: string) => void` | (off by default) | Invoked once with the joint pair code on extension hello, so an MCP can surface it via stderr / MCP logging. |
 | `fetchTimeoutMs` | `number` | `30_000` | Per-request timeout for `fetch()`. `0` opts back into legacy hang-forever. ([#58](https://github.com/chrischall/fetchproxy/issues/58)) |
+| `verbDeadlineGraceMs` | `number` | `15_000` | How much longer than a verb's OWN `timeoutMs` the server waits for that verb's reply. You should not need it; a hosted bridge with a long round trip is the case it exists for. ([#237](https://github.com/chrischall/mcp-utils/issues/237)) |
 | `bridgeReviveDelayMs` | `number` | `2_000` | Delay before the one-shot retry on the SW-eviction cold-start symptom — `content_script_unreachable`, plus a `fetch()` `timeout` ([#90](https://github.com/chrischall/fetchproxy/issues/90)). Gives Chrome a moment to wake the evicted MV3 SW. `0` disables. ([#58](https://github.com/chrischall/fetchproxy/issues/58)) |
 | `keepAliveIntervalMs` | `number` | `20_000` | Server-initiated ping cadence that keeps the MV3 SW resident across activity bursts. Below Chrome's ~30s eviction threshold with real margin. Pass `0` to disable. Default flipped from `undefined` in 0.10.0 ([#71](https://github.com/chrischall/fetchproxy/issues/71)), tightened from `25_000` → `20_000` in [#90](https://github.com/chrischall/fetchproxy/issues/90) (25s still lost the cold-start race). ([#67](https://github.com/chrischall/fetchproxy/issues/67)) |
 | `keepAliveMaxIdleMs` | `number` | `300_000` (5 min) | How long after the most-recent activity the keep-alive pings keep firing. No-op when `keepAliveIntervalMs` is `0`. ([#67](https://github.com/chrischall/fetchproxy/issues/67)) |
@@ -97,6 +98,18 @@ row). One variable has no option beside it:
 | `FETCHPROXY_ALLOW_LOCAL_ORIGINS` | unset | Admit WebSocket upgrades carrying the opaque `null` origin or an `http(s)://` loopback page origin (`localhost`, `127.0.0.1`, `[::1]`), which are otherwise refused with 403. Only `1` turns it on; any other value is ignored with a warning, and a public origin — or a page on a scheme that is not one of the three extension schemes — stays refused either way: this admits local origins, it does not turn the origin gate off or widen what counts as the extension. **A development escape**: while it is set, any page the browser has open on localhost can reach the concentrator and raise a pair prompt of its own. The extension is unaffected (it dials with an extension scheme — `chrome-extension://`, `moz-extension://`, `safari-web-extension://`) and so is a peer MCP (no `Origin` header), so an ordinary install never needs it. See `docs/SECURITY.md` §T2 and §Which origins may open the socket. |
 
 ### Choosing the right options
+
+- **A per-call `timeoutMs` governs its own verb.** `captureRequestHeader`,
+  `captureRedirect` and `download` take their own window, and the server waits
+  that window plus `verbDeadlineGraceMs` for the reply — it does not cap them at
+  `fetchTimeoutMs`. That cap was removed in 3.0.0: the only way past it was to
+  raise `fetchTimeoutMs`, which bounds EVERY verb, so buying a longer capture
+  window also lengthened ordinary fetches and storage reads. A consumer that
+  exposes its request timeout as a setting could not pay that, which made the
+  documented workaround unusable for exactly the callers who needed it. The
+  grace exists because the extension runs its own timer on the window and then
+  ANSWERS; the server has to outlast it for that answer to arrive, or a window
+  equal to the transport bound loses the reason to a race.
 
 - **`fetchTimeoutMs`.** The default `30_000` matches what every realty
   / dining MCP was already wrapping. Tighten for latency-sensitive

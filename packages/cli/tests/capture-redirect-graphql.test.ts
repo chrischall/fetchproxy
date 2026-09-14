@@ -164,15 +164,17 @@ describe('fpx graphql', () => {
 /**
  * chrischall/fetchproxy#342 — `--capture-timeout` above 30s was inert.
  *
- * Two independent halves, and only asserting both makes the flag real: the
- * per-call `timeoutMs` has to REACH the verb, and the transport deadline the
- * server races it against has to be lifted clear of it. `fetchTimeoutMs`
+ * Two independent halves, and only asserting both made the flag real: the
+ * per-call `timeoutMs` had to REACH the verb, and the transport deadline the
+ * server raced it against had to be lifted clear of it. `fetchTimeoutMs`
  * defaults to 30_000 and the CLI set it nowhere, so `_withVerbTimeout` fired at
  * 30s and the server's own error said so: "A per-call timeoutMs cannot exceed
  * it; raise fetchTimeoutMs on the transport to wait longer."
  *
- * resy-mcp carries this exact trap in a comment at `src/auth-fetchproxy.ts`,
- * which is where the margin's shape comes from.
+ * Since #237 only the FIRST half is the CLI's. The server derives the second
+ * itself, per verb, from the window the call asked for — so the margin resy-mcp
+ * and this CLI both hand-rolled moved into the library, and what is asserted
+ * here is that the CLI stopped paying for it by lengthening every other verb.
  */
 describe('capture timeouts reach the bridge', () => {
   const captureCall = (s: unknown) =>
@@ -191,9 +193,10 @@ describe('capture timeouts reach the bridge', () => {
     expect(captureCall(server).timeoutMs).toBe(90_000);
   });
 
-  // The half a forwarding test alone cannot see: the call asked for 90s and
-  // the transport would still have cut it off at 30.
-  it('lifts the transport deadline clear of the window asked for', async () => {
+  // The half a forwarding test alone cannot see. It used to be that the call
+  // asked for 90s and the transport cut it off at 30; now the server honours
+  // the 90s itself, and the CLI must NOT buy that by moving the transport.
+  it('leaves the transport deadline alone, since the server honours the window', async () => {
     const server = stubServer();
     const opts: Record<string, unknown>[] = [];
     await runCaptureRedirect(
@@ -202,11 +205,12 @@ describe('capture timeouts reach the bridge', () => {
       memIo(),
       (o) => { opts.push(o as unknown as Record<string, unknown>); return server; },
     );
-    expect(opts[0]!.fetchTimeoutMs as number).toBeGreaterThan(90_000);
+    expect(opts[0]!.fetchTimeoutMs).toBeUndefined();
   });
 
-  // No `--capture-timeout` must not SHORTEN anything: the floor is the
-  // server's own default, so an unflagged run behaves exactly as before.
+  // No `--capture-timeout` must not SHORTEN anything. The CLI passes no
+  // transport override either way now, so an unflagged run reaches the
+  // server's own 30s default exactly as it always did.
   it('never drops the deadline below the transport default', async () => {
     const server = stubServer();
     const opts: Record<string, unknown>[] = [];
@@ -216,7 +220,7 @@ describe('capture timeouts reach the bridge', () => {
       memIo(),
       (o) => { opts.push(o as unknown as Record<string, unknown>); return server; },
     );
-    expect(opts[0]!.fetchTimeoutMs).toBe(30_000);
+    expect(opts[0]!.fetchTimeoutMs).toBeUndefined();
     expect(captureCall(server).timeoutMs).toBeUndefined();
   });
 });

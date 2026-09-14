@@ -6,7 +6,7 @@ import { serverOptsFor } from '../server-opts.js';
 import { EXIT, UsageError, printJson, type Io } from '../output.js';
 import { mapBridgeError } from '../bridge-errors.js';
 import {
-  bridgeDeadlineFor, defaultServerFactory, pairCodePrinter, type VerbServerFactory,
+  defaultServerFactory, pairCodePrinter, type VerbServerFactory,
 } from './fetch.js';
 import { VERSION } from '../version.js';
 
@@ -86,7 +86,6 @@ export async function runCapture(
     // Without this the transport's 30s default beats `--capture-timeout`
     // whenever the user asks for longer, and the capture window they typed is
     // silently truncated (chrischall/fetchproxy#342).
-    fetchTimeoutMs: bridgeDeadlineFor(cmd.timeoutMs),
     onPairCode: pairCodePrinter(io),
   });
   try {

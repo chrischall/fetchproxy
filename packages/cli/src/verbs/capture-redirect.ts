@@ -4,7 +4,7 @@ import { serverOptsFor } from '../server-opts.js';
 import { EXIT, UsageError, printJson, type Io } from '../output.js';
 import { mapBridgeError } from '../bridge-errors.js';
 import {
-  assertHostOnProfile, bridgeDeadlineFor, defaultServerFactory, pairCodePrinter,
+  assertHostOnProfile, defaultServerFactory, pairCodePrinter,
   type VerbServerFactory,
 } from './fetch.js';
 import { VERSION } from '../version.js';
@@ -44,7 +44,6 @@ export async function runCaptureRedirect(
     ...serverOptsFor(cmd.profile, profile, VERSION),
     // As in `capture`: the transport's 30s default silently caps a longer
     // `--capture-timeout` (chrischall/fetchproxy#342).
-    fetchTimeoutMs: bridgeDeadlineFor(cmd.timeoutMs),
     onPairCode: pairCodePrinter(io),
   });
   try {

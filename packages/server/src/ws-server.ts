@@ -325,6 +325,25 @@ export interface FetchproxyServerOpts {
    */
   fetchTimeoutMs?: number;
   /**
+   * 3.0.0+ (#237): how much longer than a verb's OWN `timeoutMs` this server
+   * waits for the reply to that verb. See `VERB_DEADLINE_GRACE_MS`.
+   *
+   * **You should not need this.** It exists because the round trip is not the
+   * library's to know: the default assumes the extension is a browser on the
+   * same machine, and a HOSTED bridge relays through a Worker and a socket on
+   * somebody's laptop, which is a different number. A deployment that sees
+   * transport timeouts on verbs whose extension-side window had not expired is
+   * the case this is for.
+   *
+   * It does NOT reintroduce the coupling #237 removed. Raising this lengthens
+   * only the reply grace on verbs the caller gave a `timeoutMs`, never the
+   * deadline on ordinary fetches and storage reads — which is precisely what
+   * raising `fetchTimeoutMs` did, and why that remedy was unusable.
+   *
+   * @default 15_000
+   */
+  verbDeadlineGraceMs?: number;
+  /**
    * 0.8.0+: delay (ms) before the one-shot retry on the SW-eviction
    * cold-start symptom. `captureRequestHeader()` revives on
    * `content_script_unreachable`; `fetch()` revives on that AND on a
@@ -937,6 +956,64 @@ export function protocolErrorFrom(
  * first attempt. Mirrors `FetchproxyBridgeDownError.retryAttempted` so
  * callers can branch identically across both throwable kinds.
  */
+/**
+ * How much longer than a verb's OWN `timeoutMs` this server waits for the
+ * reply to that verb (#237).
+ *
+ * The waiting verbs — `captureRequestHeader`, `captureRedirect`, `download` —
+ * forward `timeoutMs` to the extension, which runs its own timer on it and
+ * then ANSWERS: the header never arrived, the redirect never fired, the
+ * download stalled. That answer is the useful one. For the caller to receive
+ * it, this server has to still be waiting when it arrives, so its deadline
+ * must outlast the extension's by enough to cover a round trip.
+ *
+ * Until #237 it did not. The server's only deadline was `fetchTimeoutMs`, so
+ * a call asking for MORE was cut off at the transport bound and the caller got
+ * "the bridge did not respond" — a timeout about the transport — instead of
+ * the extension's reason. Where the two numbers were EQUAL, the race decided
+ * which, and a 30s capture window on a 30s transport lost the extension's
+ * rejection about half the time.
+ *
+ * The remedy the old error message prescribed was to raise `fetchTimeoutMs`,
+ * and that is what made it unusable: `fetchTimeoutMs` bounds EVERY verb, so
+ * buying a longer capture window also lengthened the deadline on ordinary
+ * fetches and storage reads. A consumer that exposes its request timeout as a
+ * setting could not pay that price — `alltrails-mcp` declaring a 30s window
+ * would have turned a configured 12345ms request timeout into 45000ms, a 3.6x
+ * lengthening of every request in the MCP to fix the message on one verb.
+ *
+ * Four callers reached the same hand-rolled shape independently before this
+ * moved here: `resy-mcp`'s `BRIDGE_DEADLINE_MS`, the `fpx` CLI's
+ * `bridgeDeadlineFor`, `@chrischall/mcp-utils`'s `captureWindowMs`, and
+ * `onehome-mcp`, which asked for 120s and silently got 30s. It is the
+ * library's to compute, not theirs to remember.
+ */
+export const VERB_DEADLINE_GRACE_MS = 15_000;
+
+/**
+ * The deadline for ONE verb call: its own `timeoutMs` plus the grace above,
+ * never shorter than the transport's `fetchTimeoutMs`.
+ *
+ * The floor is what keeps this from being a tightening. A call asking for
+ * LESS than the transport bound keeps the transport bound as its server-side
+ * deadline — the extension's own timer fires first either way, which is the
+ * outcome we want, and shortening the server's wait to match would start
+ * cutting off replies that arrive in time today.
+ *
+ * No ceiling. A ceiling here is what #237 is about: the per-call timeout IS
+ * the caller's statement of how long this verb may wait, and a verb that
+ * cannot be told to wait is a verb whose caller must lengthen every other
+ * verb to compensate.
+ */
+export function verbDeadlineMs(
+  transportMs: number,
+  requestedMs: number | undefined,
+  graceMs: number = VERB_DEADLINE_GRACE_MS,
+): number {
+  if (requestedMs === undefined) return transportMs;
+  return Math.max(requestedMs + graceMs, transportMs);
+}
+
 export class FetchproxyTimeoutError extends FetchproxyProtocolError {
   readonly url: string;
   readonly timeoutMs: number;
@@ -956,11 +1033,14 @@ export class FetchproxyTimeoutError extends FetchproxyProtocolError {
   readonly retryAttempted: boolean;
 
   /**
-   * 2.4.2+ (#277): what the CALL asked for, when that is more than the
-   * deadline that actually fired. A per-call `timeoutMs` is forwarded to the
-   * extension but does not raise this server's `fetchTimeoutMs`, so the
-   * shorter deadline wins — and used to report only its own number, a value
-   * the caller never supplied, from an option the message never named.
+   * 2.4.2+ (#277): what the CALL asked for, whenever it asked for anything.
+   *
+   * Until #237 this was recorded only when the call asked for MORE than the
+   * deadline, because asking for more is what the cap silently ignored. The
+   * cap is gone — the call's own `timeoutMs` now GOVERNS its deadline
+   * (`verbDeadlineMs`) — so the interesting case inverted: a timeout here
+   * means the bridge did not answer within the window the CALLER chose, and
+   * the message says which number that was and where it came from.
    */
   readonly requestedTimeoutMs: number | null;
 
@@ -972,18 +1052,35 @@ export class FetchproxyTimeoutError extends FetchproxyProtocolError {
     elapsedMs?: number;
     retryAttempted?: boolean;
     requestedTimeoutMs?: number;
+    /**
+     * The reply grace actually applied to this call (`verbDeadlineGraceMs`,
+     * defaulting to `VERB_DEADLINE_GRACE_MS`). Passed rather than read off the
+     * module constant so the message cannot quote a number this server was not
+     * configured with.
+     */
+    graceMs?: number;
   }) {
-    // Only when the call actually asked for MORE. Naming the deadline when it
-    // was not the binding constraint is noise, and noise in an error is how a
-    // reader learns to skim it.
-    const capped =
+    // Say where the deadline CAME FROM, and only when the caller is the one who
+    // set it — naming a number the caller did not choose is noise, and noise in
+    // an error is how a reader learns to skim it. The old branch fired when the
+    // call asked for MORE than the deadline, to explain a cap; #237 removed the
+    // cap, so that condition can no longer hold and the explanation it carried
+    // ("raise fetchTimeoutMs on the transport to wait longer") would now send a
+    // reader to lengthen every other verb for nothing.
+    // EQUALS, not "greater than". `verbDeadlineMs` floors the deadline at the
+    // transport bound, so a call asking for LESS keeps the transport's number —
+    // and a `>` test would then describe that deadline as the caller's value
+    // plus the grace, which is a sentence naming a total the deadline is not.
+    const graceMs = args.graceMs ?? VERB_DEADLINE_GRACE_MS;
+    const callerChose =
       args.requestedTimeoutMs !== undefined &&
-      args.requestedTimeoutMs > args.timeoutMs;
+      args.timeoutMs === args.requestedTimeoutMs + graceMs;
     super(
       `fetchproxy: ${args.url} did not respond within ${args.timeoutMs}ms` +
-        (capped
-          ? ` — that is this server's fetchTimeoutMs, not the ${args.requestedTimeoutMs}ms this call asked for.` +
-            ' A per-call timeoutMs cannot exceed it; raise fetchTimeoutMs on the transport to wait longer.'
+        (callerChose
+          ? ` — the ${args.requestedTimeoutMs}ms this call asked for, plus ${graceMs}ms` +
+            " for the reply to reach this server. The extension runs its own timer on the value you passed," +
+            ' so a window that is genuinely too short reports what did not happen rather than this.'
           : ''),
     );
     this.name = 'FetchproxyTimeoutError';
@@ -1276,6 +1373,8 @@ interface ResolvedOpts {
   domSelectors: DomSelectorDecl[];
   graphqlOps: GraphqlOpDeclaration[];
   fetchTimeoutMs?: number;
+  /** #237: reply grace on a verb the caller gave its own `timeoutMs`. */
+  verbDeadlineGraceMs: number;
   bridgeReviveDelayMs?: number;
   keepAliveIntervalMs: number;
   keepAliveMaxIdleMs: number;
@@ -1535,6 +1634,7 @@ export class FetchproxyServer {
       // back-door is `0` (explicit opt-out) if a caller genuinely wants
       // the legacy hang-forever / fail-once-on-SW-eviction behavior.
       fetchTimeoutMs: opts.fetchTimeoutMs ?? 30_000,
+      verbDeadlineGraceMs: opts.verbDeadlineGraceMs ?? VERB_DEADLINE_GRACE_MS,
       bridgeReviveDelayMs: opts.bridgeReviveDelayMs ?? 2_000,
       // 0.10.0+ (#72): keep-alive defaults to 25s — round-3 #71 cohort
       // wave showed every Pattern A consumer was opting into this same
@@ -2125,14 +2225,15 @@ export class FetchproxyServer {
     id: number,
     url: string,
     /**
-     * What the CALLER asked for, on the verbs that take a per-call timeout
-     * (#277). Not used to extend the deadline — only so the error can name
-     * `fetchTimeoutMs` as the reason it fired early.
+     * What the CALLER asked for, on the verbs that take a per-call timeout.
+     * It GOVERNS this call's own deadline (#237) — see `verbDeadlineMs`.
      */
     requestedTimeoutMs?: number,
   ): Promise<T> {
-    const timeoutMs = this.opts.fetchTimeoutMs;
-    if (timeoutMs === undefined || timeoutMs <= 0) return pending;
+    const transportMs = this.opts.fetchTimeoutMs;
+    if (transportMs === undefined || transportMs <= 0) return pending;
+    const graceMs = this.opts.verbDeadlineGraceMs;
+    const timeoutMs = verbDeadlineMs(transportMs, requestedTimeoutMs, graceMs);
     let timer: ReturnType<typeof setTimeout> | undefined;
     const start = Date.now();
     try {
@@ -2151,6 +2252,7 @@ export class FetchproxyServer {
                 port: this.opts.port,
                 elapsedMs: Date.now() - start,
                 retryAttempted: false,
+                graceMs,
                 ...(requestedTimeoutMs !== undefined ? { requestedTimeoutMs } : {}),
               }),
             );

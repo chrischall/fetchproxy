@@ -98,7 +98,7 @@ Every verb takes `-p`/`--profile <name>` (except the `profile` subcommands thems
 
 `--dom-selector <handle>=<css>` (on `profile declare`) declares a named DOM read: `<handle>` is the logical name `fpx dom` references, `<css>` is the `document.querySelector` CSS selector the extension reads (first match only, no page-JS execution). `--allow-download` grants the profile the `download` capability, letting `fpx download` save a declared-domain URL through the browser's own network stack.
 
-`--capture-timeout <s>` (on `capture` and `capture-redirect`) is how long to hold the window open, in SECONDS. It also raises the transport deadline these two verbs run under, because that deadline bounds every reply wait and a per-call timeout cannot exceed it — without the lift, asking for more than 30 seconds got you 30.
+`--capture-timeout <s>` (on `capture` and `capture-redirect`) is how long to hold the window open, in SECONDS. The server waits out that window and then a little longer for the reply to reach it, so asking for more than 30 seconds now gets you what you asked for. It used to raise the transport deadline for the whole run to achieve that, which lengthened every other verb on the same invocation; the library derives it per verb instead.
 
 ### Keeping a cookie value off the command line
 
