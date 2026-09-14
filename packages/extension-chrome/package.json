@@ -1,6 +1,6 @@
 {
   "name": "@fetchproxy/extension-chrome",
-  "version": "2.11.3",
+  "version": "3.0.0",
   "private": true,
   "type": "module",
   "scripts": {
