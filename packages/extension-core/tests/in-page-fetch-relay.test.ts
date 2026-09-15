@@ -345,24 +345,46 @@ describe('installFetchBridge (MAIN world)', () => {
    * budget — on every failed in-page fetch, in every tab the extension is
    * injected into — and the probe normally settles in milliseconds.
    */
-  it('clears the probe timer once the probe settles, rather than letting it run out', async () => {
-    const cleared: unknown[] = [];
-    const realClear = globalThis.clearTimeout;
-    const spy = vi.spyOn(globalThis, 'clearTimeout').mockImplementation(((id: never) => {
-      cleared.push(id);
-      return realClear(id);
-    }) as never);
+  // Asserted as "no timer left pending" under fake timers rather than "some
+  // clearTimeout happened": a spy on clearTimeout is satisfied by ANY clear on
+  // this path, so a later one would mask the probe timer leaking again.
+  it('leaves no timer pending once the probe settles first', async () => {
+    vi.useFakeTimers();
     try {
-      const { win, dispatch } = makeMainWin(async (url: string) => {
+      const { win, posted, dispatch } = makeMainWin(async (url: string) => {
         if (url === 'https://api.example.com') return { status: 0, url, text: async () => '' };
         throw new Error('Failed to fetch');
       });
       installFetchBridge(win as never);
       dispatch({ __fetchproxy: 'fetch-req', reqId: 25, url: 'https://api.example.com/x', method: 'GET' });
-      await flush();
-      expect(cleared.length).toBeGreaterThan(0);
+      // Microtasks only: advancing by 0 settles the probe without ever
+      // reaching the 3 s timeout, so only an explicit clear removes it.
+      await vi.advanceTimersByTimeAsync(0);
+      expect(String(posted[0]!.error)).toContain('answered a no-cors probe');
+      expect(vi.getTimerCount()).toBe(0);
     } finally {
-      spy.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  it('gives up on a probe that never settles, adding nothing and leaving no timer', async () => {
+    vi.useFakeTimers();
+    try {
+      const { win, posted, dispatch } = makeMainWin((url: string) => {
+        if (url === 'https://api.example.com') return new Promise(() => {});
+        return Promise.reject(new Error('Failed to fetch'));
+      });
+      installFetchBridge(win as never);
+      dispatch({ __fetchproxy: 'fetch-req', reqId: 26, url: 'https://api.example.com/x', method: 'GET' });
+      await vi.advanceTimersByTimeAsync(0);
+      // The race is waiting on the timeout arm: nothing posted, one timer armed.
+      expect(posted).toHaveLength(0);
+      expect(vi.getTimerCount()).toBe(1);
+      await vi.advanceTimersByTimeAsync(3000); // PROBE_TIMEOUT_MS
+      expect(String(posted[0]!.error)).toBe('in-page fetch threw: Failed to fetch');
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
     }
   });
 
