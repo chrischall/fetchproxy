@@ -1,5 +1,13 @@
 # Changelog
 
+## [3.0.1](https://github.com/chrischall/fetchproxy/compare/v3.0.0...v3.0.1) (2026-09-15)
+
+
+### Bug Fixes
+
+* **server:** cap the peer's inbound frame, log a saturated claim, and write the identity atomically ([#374](https://github.com/chrischall/fetchproxy/issues/374)) ([b6d705d](https://github.com/chrischall/fetchproxy/commit/b6d705d9c6cb5434afcb3bd3ebc0ce82533fcf47))
+* **server:** identity writes survive an un-chmoddable dir and a crashed write, and a saturated claim logs once ([#378](https://github.com/chrischall/fetchproxy/issues/378)) ([5b3922c](https://github.com/chrischall/fetchproxy/commit/5b3922c60feb402a53a5256e7f10acf13d1bcfcf))
+
 ## [3.0.0](https://github.com/chrischall/fetchproxy/compare/v2.11.3...v3.0.0) (2026-09-14)
 
 
