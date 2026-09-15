@@ -7,6 +7,8 @@ import {
   readFileSync,
   rmSync,
   statSync,
+  symlinkSync,
+  writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -92,6 +94,74 @@ describe('writeIdentityFile is atomic', () => {
     expect(statSync(path).mode & 0o777).toBe(0o600);
     const again = await loadOrCreateIdentity('opentable-mcp', root);
     expect(Buffer.from(again.x25519Pub).equals(Buffer.from(second.x25519Pub))).toBe(true);
+  });
+});
+
+/**
+ * The staging name is random so two writers never share one, which means a
+ * SIGKILL between "staged" and "renamed" leaves a 0600 file holding a whole
+ * private identity under a name no later write would ever reuse. The next
+ * write is the one place that can find it, so it must.
+ */
+describe('a staging file left by a crashed write', () => {
+  const LEFTOVER = 'opentable-mcp.json.0123456789ab.tmp';
+
+  it('does not block the next write and does not survive it', async () => {
+    writeFileSync(join(root, LEFTOVER), 'half a private key', { mode: 0o600 });
+
+    const id = await generateIdentity();
+    const path = await writeIdentityFile(root, 'opentable-mcp', id);
+
+    expect(readdirSync(root)).toEqual(['opentable-mcp.json']);
+    const loaded = await loadOrCreateIdentity('opentable-mcp', root);
+    expect(Buffer.from(loaded.x25519Pub).equals(Buffer.from(id.x25519Pub))).toBe(true);
+    expect(statSync(path).mode & 0o777).toBe(0o600);
+  });
+
+  it('is swept even when the write that finds it fails, and the old identity stands', async () => {
+    const path = await writeIdentityFile(root, 'opentable-mcp', await generateIdentity());
+    const before = readFileSync(path, 'utf8');
+    writeFileSync(join(root, LEFTOVER), 'half a private key', { mode: 0o600 });
+
+    fsState.failRename = true;
+    await expect(
+      writeIdentityFile(root, 'opentable-mcp', await generateIdentity()),
+    ).rejects.toThrow(/EXDEV/);
+
+    expect(readFileSync(path, 'utf8')).toBe(before);
+    expect(readdirSync(root)).toEqual(['opentable-mcp.json']);
+  });
+
+  it('is removed, not followed, when it is a symlink', async () => {
+    const outside = join(root, 'outside');
+    mkdirSync(outside);
+    const victim = join(outside, 'victim');
+    writeFileSync(victim, 'not yours');
+    const dir = join(root, 'identity');
+    mkdirSync(dir);
+    symlinkSync(victim, join(dir, LEFTOVER));
+
+    await writeIdentityFile(dir, 'opentable-mcp', await generateIdentity());
+
+    expect(readdirSync(dir)).toEqual(['opentable-mcp.json']);
+    expect(readFileSync(victim, 'utf8')).toBe('not yours');
+  });
+
+  it('leaves files that are not this identity\'s staging files alone', async () => {
+    const others = [
+      // Another server's in-flight write — it may be running right now.
+      'resy-mcp.json.0123456789ab.tmp',
+      // The extension pin's own fixed staging name.
+      'opentable-mcp.extension-trust.json.tmp',
+      // Not the shape `writeIdentityFile` stages to.
+      'opentable-mcp.json.notrandom.tmp',
+      'opentable-mcp.json.tmp',
+    ];
+    for (const name of others) writeFileSync(join(root, name), 'x');
+
+    await writeIdentityFile(root, 'opentable-mcp', await generateIdentity());
+
+    expect(readdirSync(root).sort()).toEqual([...others, 'opentable-mcp.json'].sort());
   });
 });
 
