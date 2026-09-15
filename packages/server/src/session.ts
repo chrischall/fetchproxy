@@ -42,6 +42,15 @@
  */
 const MAX_INFLIGHT_INBOUND_SEQS = 1024;
 
+/**
+ * What {@link SessionState.claimInboundSeq} decided. Both refusals drop the
+ * frame unread, but they are not the same event: `'replay'` is the gate doing
+ * its job, `'saturated'` means {@link MAX_INFLIGHT_INBOUND_SEQS} claims are
+ * outstanding — a flood, or a caller leaking claims — and a genuine frame may
+ * have been among the dropped. Callers log the second so it can be told apart.
+ */
+export type InboundClaim = 'ok' | 'replay' | 'saturated';
+
 export class SessionState {
   public readonly sessionKey: Uint8Array;
   private outboundSeq = 0;
@@ -63,16 +72,18 @@ export class SessionState {
    * the first `await` of the receive path, or a duplicate frame read in the
    * same pass will be judged against a counter neither frame has moved yet.
    *
-   * Answering false means "not this frame's to process" — replayed, or a
-   * duplicate of one still in flight. Every true MUST be answered by exactly
-   * one {@link commitInboundSeq} or {@link releaseInboundSeq}.
+   * Anything but `'ok'` means "not this frame's to process": `'replay'` for
+   * a spent seq or a duplicate of one still in flight, `'saturated'` when the
+   * in-flight bound is full. Replay is checked first, since refusing a stale
+   * seq needs no capacity. Every `'ok'` MUST be answered by exactly one
+   * {@link commitInboundSeq} or {@link releaseInboundSeq}.
    */
-  claimInboundSeq(seq: number): boolean {
-    if (seq <= this.lastInboundSeq) return false;
-    if (this.inflightInbound.has(seq)) return false;
-    if (this.inflightInbound.size >= MAX_INFLIGHT_INBOUND_SEQS) return false;
+  claimInboundSeq(seq: number): InboundClaim {
+    if (seq <= this.lastInboundSeq) return 'replay';
+    if (this.inflightInbound.has(seq)) return 'replay';
+    if (this.inflightInbound.size >= MAX_INFLIGHT_INBOUND_SEQS) return 'saturated';
     this.inflightInbound.add(seq);
-    return true;
+    return 'ok';
   }
 
   /**

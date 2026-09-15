@@ -29,6 +29,13 @@
  */
 const MAX_INFLIGHT_INBOUND_SEQS = 1024;
 
+/**
+ * What {@link SessionEntry.claimInboundSeq} decided — the same three verdicts
+ * as `InboundClaim` in packages/server/src/session.ts. `'saturated'` is logged
+ * by the caller, since otherwise a flood is indistinguishable from a replay.
+ */
+export type InboundClaim = 'ok' | 'replay' | 'saturated';
+
 export class SessionEntry {
   public readonly sessionKey: Uint8Array;
   private outbound = 0;
@@ -47,15 +54,16 @@ export class SessionEntry {
   /**
    * Take this seq out of circulation for the frame about to be opened, and
    * say whether it was available. Call before the first `await` of the
-   * receive path. Every true MUST be answered by exactly one
-   * {@link commitInboundSeq} or {@link releaseInboundSeq}.
+   * receive path. Replay is checked before the bound, as on the MCP side.
+   * Every `'ok'` MUST be answered by exactly one {@link commitInboundSeq} or
+   * {@link releaseInboundSeq}.
    */
-  claimInboundSeq(seq: number): boolean {
-    if (seq <= this.lastInbound) return false;
-    if (this.inflightInbound.has(seq)) return false;
-    if (this.inflightInbound.size >= MAX_INFLIGHT_INBOUND_SEQS) return false;
+  claimInboundSeq(seq: number): InboundClaim {
+    if (seq <= this.lastInbound) return 'replay';
+    if (this.inflightInbound.has(seq)) return 'replay';
+    if (this.inflightInbound.size >= MAX_INFLIGHT_INBOUND_SEQS) return 'saturated';
     this.inflightInbound.add(seq);
-    return true;
+    return 'ok';
   }
 
   /**

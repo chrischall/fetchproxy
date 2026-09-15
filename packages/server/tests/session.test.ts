@@ -7,7 +7,7 @@ import { SessionState } from '../src/session.js';
  * is the whole point — see `session.ts`.
  */
 function accept(s: SessionState, seq: number): boolean {
-  if (!s.claimInboundSeq(seq)) return false;
+  if (s.claimInboundSeq(seq) !== 'ok') return false;
   // In the real callers the AES-GCM open happens here.
   s.commitInboundSeq(seq);
   return true;
@@ -15,7 +15,7 @@ function accept(s: SessionState, seq: number): boolean {
 
 /** A frame that claimed its seq and then failed to authenticate. */
 function refuse(s: SessionState, seq: number): boolean {
-  if (!s.claimInboundSeq(seq)) return false;
+  if (s.claimInboundSeq(seq) !== 'ok') return false;
   s.releaseInboundSeq(seq);
   return true;
 }
@@ -69,11 +69,11 @@ describe('SessionState', () => {
     // both reach the gate before either can commit. The second must be
     // refused there, because after it there is nothing left to refuse it.
     const s = new SessionState(new Uint8Array(32));
-    expect(s.claimInboundSeq(4)).toBe(true);
-    expect(s.claimInboundSeq(4)).toBe(false);
+    expect(s.claimInboundSeq(4)).toBe('ok');
+    expect(s.claimInboundSeq(4)).toBe('replay');
     // Resolved either way, the seq is settled: spent by a commit…
     s.commitInboundSeq(4);
-    expect(s.claimInboundSeq(4)).toBe(false);
+    expect(s.claimInboundSeq(4)).toBe('replay');
     // …and open again after a release, since that frame never happened.
     expect(refuse(s, 5)).toBe(true);
     expect(accept(s, 5)).toBe(true);
@@ -86,18 +86,31 @@ describe('SessionState', () => {
     // and nothing is committed by that, so the same seq is taken once the
     // flood drains.
     const s = new SessionState(new Uint8Array(32));
-    for (let seq = 1; seq <= 1024; seq += 1) expect(s.claimInboundSeq(seq)).toBe(true);
-    expect(s.claimInboundSeq(2000)).toBe(false);
+    for (let seq = 1; seq <= 1024; seq += 1) expect(s.claimInboundSeq(seq)).toBe('ok');
+    expect(s.claimInboundSeq(2000)).toBe('saturated');
     for (let seq = 1; seq <= 1024; seq += 1) s.releaseInboundSeq(seq);
     expect(accept(s, 2000)).toBe(true);
+  });
+
+  it('a saturated refusal is told apart from a replay', () => {
+    // Both drop the frame, but they mean different things to whoever reads
+    // the log: a replay is the gate working, saturation is a flood (or a bug
+    // leaking claims). A seq that is BOTH stale and over the bound is a
+    // replay — the bound is about capacity, and a stale seq needs none.
+    const s = new SessionState(new Uint8Array(32));
+    expect(accept(s, 1)).toBe(true);
+    for (let seq = 2; seq <= 1025; seq += 1) expect(s.claimInboundSeq(seq)).toBe('ok');
+    expect(s.claimInboundSeq(1)).toBe('replay');
+    expect(s.claimInboundSeq(500)).toBe('replay');
+    expect(s.claimInboundSeq(5000)).toBe('saturated');
   });
 
   it('committing never moves the counter backwards', () => {
     const s = new SessionState(new Uint8Array(32));
     s.commitInboundSeq(5);
     s.commitInboundSeq(2);
-    expect(s.claimInboundSeq(5)).toBe(false);
-    expect(s.claimInboundSeq(6)).toBe(true);
+    expect(s.claimInboundSeq(5)).toBe('replay');
+    expect(s.claimInboundSeq(6)).toBe('ok');
   });
 
   it('outbound and inbound counters are independent', () => {

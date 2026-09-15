@@ -351,7 +351,18 @@ async function onEncryptedFrame(link: Link, frame: EncryptedFrame): Promise<void
   // `write_cookies` or non-GET `fetch` reaches `handleRequest` twice, and
   // `handlers/dispatch.ts` has no per-id guard of its own. The claim takes the
   // seq out of circulation now, so the second copy is refused as a replay.
-  if (!entry.claimInboundSeq(frame.seq)) return;
+  const claim = entry.claimInboundSeq(frame.seq);
+  if (claim !== 'ok') {
+    // A replay is dropped silently. Saturation is not a replay — it drops
+    // frames that may be genuine requests — so it is said out loud.
+    if (claim === 'saturated') {
+      console.warn(
+        `[fetchproxy] dropped an inbound frame from ${frame.mcpId} (seq ${frame.seq}) unread — ` +
+          `too many of its frames are still being opened (inbound claims saturated). Not a replay.`,
+      );
+    }
+    return;
+  }
   flashActivity();
   let opened;
   try {

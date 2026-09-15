@@ -112,7 +112,7 @@ const { connect } = await import('../src/background/socket.js');
 const { state } = await import('../src/background/state.js');
 const { links, unbindAll } = await import('../src/background/links.js');
 const { TrustStore } = await import('../src/trust-store.js');
-const { SessionKeys } = await import('../src/session-keys.js');
+const { SessionKeys, SessionEntry } = await import('../src/session-keys.js');
 const { mcpDomains, mcpCapabilities } = await import('../src/background/session-scope.js');
 
 interface ScriptedMcp {
@@ -381,5 +381,38 @@ describe('extension replay counter', () => {
 
     warns.mockRestore();
     errors.mockRestore();
+  });
+
+  it('a saturated claim is logged, and a replay is not logged as one', async () => {
+    // Both refusals drop the frame unread; only the log can say which one it
+    // was. Forced through the prototype because genuinely holding 1024 claims
+    // open means 1024 frames parked mid-decrypt at once.
+    const warns = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const saturated = () => warns.mock.calls.filter((c) => /saturat/i.test(String(c[0])));
+    const mcp = await scriptedMcp('alltrails-mcp:2.1.3:6060606060606060');
+    await trustMcp(mcp);
+    localWs.message(await helloFrom(mcp, extNonceOf(localWs)));
+    await vi.waitUntil(() => localWs.frames('ready').length > 0);
+    const key = await sessionKeyFor(
+      mcp,
+      localWs.frames<{ extensionSessionPub: string }>('ready')[0]!,
+      extNonceOf(localWs),
+    );
+
+    const claim = vi.spyOn(SessionEntry.prototype, 'claimInboundSeq');
+    claim.mockReturnValueOnce('replay');
+    localWs.message(await sealInnerFrame(key, mcp.mcpId, 1, { type: 'ping' }, 's2e'));
+    await vi.waitUntil(() => claim.mock.calls.length === 1);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(saturated()).toHaveLength(0);
+
+    claim.mockReturnValueOnce('saturated');
+    localWs.message(await sealInnerFrame(key, mcp.mcpId, 2, { type: 'ping' }, 's2e'));
+    await vi.waitUntil(() => saturated().length === 1);
+    expect(String(saturated()[0]![0])).toContain(mcp.mcpId);
+    expect(localWs.frames('frame')).toHaveLength(0);
+
+    claim.mockRestore();
+    warns.mockRestore();
   });
 });

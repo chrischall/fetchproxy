@@ -1060,7 +1060,19 @@ export async function startHost(opts: HostOpts): Promise<HostHandle> {
               // the seq was free, since nothing moves the counter until the
               // open returns. The claim takes it out of circulation now, so
               // the duplicate is refused here as a replay.
-              if (!session.claimInboundSeq(frame.seq)) return;
+              const claim = session.claimInboundSeq(frame.seq);
+              if (claim !== 'ok') {
+                // A replay is dropped silently, as ever. Saturation is not a
+                // replay — it drops frames that may be genuine — so say so.
+                if (claim === 'saturated') {
+                  console.warn(
+                    `[fetchproxy] ${opts.ownServerName}: dropped an inbound frame (seq ${frame.seq}) ` +
+                      `unread — too many frames from the extension are still being opened ` +
+                      `(inbound claims saturated). Not a replay.`,
+                  );
+                }
+                return;
+              }
               let inner;
               try {
                 // 'e2s': this socket is the extension's, so a frame the host

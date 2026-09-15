@@ -1,4 +1,5 @@
-import { readFile, writeFile, mkdir, chmod } from 'node:fs/promises';
+import { readFile, writeFile, mkdir, chmod, rename, rm } from 'node:fs/promises';
+import { randomBytes } from 'node:crypto';
 import { isAbsolute, join } from 'node:path';
 import { homedir } from 'node:os';
 import {
@@ -150,11 +151,45 @@ export function parseIdentity(text: string): Identity {
 }
 
 /**
+ * Create `dir` if needed and make it 0700 whether or not it was just created.
+ *
+ * `mkdir`'s `mode` applies only to a directory it creates, so on its own it
+ * leaves a directory that already existed — made by hand, by an older build,
+ * or by a provisioning host under its own umask — at whatever mode it had.
+ * The explicit `chmod` is what makes "the identity directory is 0700" true on
+ * every open rather than only on the first.
+ *
+ * `forReadOnly` is the load path. A host that PROVISIONS the identity mounts
+ * the directory read-only (see `identityDir`/`trustDir` in ws-server.ts), so
+ * there the mode is the provisioner's and cannot be changed; refusing to read
+ * the identity it handed over would turn a hardening step into a boot failure.
+ * A write needs the directory writable anyway, so it stays strict.
+ */
+async function openIdentityDir(dir: string, forReadOnly = false): Promise<void> {
+  await mkdir(dir, { recursive: true, mode: 0o700 });
+  try {
+    await chmod(dir, 0o700);
+  } catch (e: unknown) {
+    const code = (e as NodeJS.ErrnoException).code;
+    if (!forReadOnly || (code !== 'EROFS' && code !== 'EPERM')) throw e;
+  }
+}
+
+/**
  * Write `id` where this package will find it, and return the path.
  *
- * 0600 twice over: `writeFile`'s mode is subject to the umask on some systems,
- * so the explicit `chmod` is what actually guarantees it. The directory is
- * 0700 for the same reason it always was.
+ * Write-then-rename, as `writeExtensionPin` does it: opening the target
+ * truncates it before a byte lands, so a crash, a full disk or a failed write
+ * would leave an empty or torn identity — which `loadOrCreateIdentity` refuses
+ * to parse, and which a re-provisioning host would replace with a NEW key,
+ * orphaning every trust record the extension holds for this server. `rename`
+ * is atomic, so a reader sees the old identity or the new one, never half.
+ *
+ * The staging name is random and created exclusively (`wx`): two writers must
+ * not share one staging file, or the first `rename` publishes the second's
+ * half-written bytes, and an exclusive create cannot be steered through a file
+ * or symlink already sitting at that name. 0600 twice over: `writeFile`'s mode
+ * is subject to the umask, so the explicit `chmod` is what guarantees it.
  */
 export async function writeIdentityFile(
   dir: string,
@@ -162,9 +197,18 @@ export async function writeIdentityFile(
   id: Identity,
 ): Promise<string> {
   const path = identityFilePath(dir, serverName);
-  await mkdir(dir, { recursive: true, mode: 0o700 });
-  await writeFile(path, serializeIdentity(id), { mode: 0o600 });
-  await chmod(path, 0o600);
+  await openIdentityDir(dir);
+  const tmp = `${path}.${randomBytes(6).toString('hex')}.tmp`;
+  try {
+    await writeFile(tmp, serializeIdentity(id), { mode: 0o600, flag: 'wx' });
+    await chmod(tmp, 0o600);
+    await rename(tmp, path);
+  } catch (e) {
+    // Best effort: a leftover staging file holds private key material, so it
+    // must not outlive the failed write that made it.
+    await rm(tmp, { force: true });
+    throw e;
+  }
   return path;
 }
 
@@ -185,7 +229,7 @@ export async function loadOrCreateIdentity(
   dir: string = defaultIdentityDir(),
 ): Promise<Identity> {
   const path = identityFilePath(dir, serverName);
-  await mkdir(dir, { recursive: true, mode: 0o700 });
+  await openIdentityDir(dir, true);
   try {
     return parseIdentity(await readFile(path, 'utf8'));
   } catch (e: unknown) {

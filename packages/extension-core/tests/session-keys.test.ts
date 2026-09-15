@@ -7,7 +7,7 @@ import { SessionKeys, type SessionEntry } from '../src/session-keys.js';
  * is the whole point — see `session-keys.ts`.
  */
 function accept(s: SessionEntry, seq: number): boolean {
-  if (!s.claimInboundSeq(seq)) return false;
+  if (s.claimInboundSeq(seq) !== 'ok') return false;
   // In the real caller the AES-GCM open happens here.
   s.commitInboundSeq(seq);
   return true;
@@ -15,7 +15,7 @@ function accept(s: SessionEntry, seq: number): boolean {
 
 /** A frame that claimed its seq and then failed to authenticate. */
 function refuse(s: SessionEntry, seq: number): boolean {
-  if (!s.claimInboundSeq(seq)) return false;
+  if (s.claimInboundSeq(seq) !== 'ok') return false;
   s.releaseInboundSeq(seq);
   return true;
 }
@@ -71,10 +71,10 @@ describe('SessionKeys', () => {
     const sk = new SessionKeys();
     sk.set('mcp:1.0.0:0000000000000000', new Uint8Array(32));
     const s = sk.get('mcp:1.0.0:0000000000000000')!;
-    expect(s.claimInboundSeq(4)).toBe(true);
-    expect(s.claimInboundSeq(4)).toBe(false);
+    expect(s.claimInboundSeq(4)).toBe('ok');
+    expect(s.claimInboundSeq(4)).toBe('replay');
     s.commitInboundSeq(4);
-    expect(s.claimInboundSeq(4)).toBe(false);
+    expect(s.claimInboundSeq(4)).toBe('replay');
     expect(refuse(s, 5)).toBe(true);
     expect(accept(s, 5)).toBe(true);
   });
@@ -83,10 +83,23 @@ describe('SessionKeys', () => {
     const sk = new SessionKeys();
     sk.set('mcp:1.0.0:0000000000000000', new Uint8Array(32));
     const s = sk.get('mcp:1.0.0:0000000000000000')!;
-    for (let seq = 1; seq <= 1024; seq += 1) expect(s.claimInboundSeq(seq)).toBe(true);
-    expect(s.claimInboundSeq(2000)).toBe(false);
+    for (let seq = 1; seq <= 1024; seq += 1) expect(s.claimInboundSeq(seq)).toBe('ok');
+    expect(s.claimInboundSeq(2000)).toBe('saturated');
     for (let seq = 1; seq <= 1024; seq += 1) s.releaseInboundSeq(seq);
     expect(accept(s, 2000)).toBe(true);
+  });
+
+  it('a saturated refusal is told apart from a replay', () => {
+    // Same distinction as session.ts on the MCP side: a stale seq is a replay
+    // even when the bound is also full, since refusing it needs no capacity.
+    const sk = new SessionKeys();
+    sk.set('mcp:1.0.0:0000000000000000', new Uint8Array(32));
+    const s = sk.get('mcp:1.0.0:0000000000000000')!;
+    expect(accept(s, 1)).toBe(true);
+    for (let seq = 2; seq <= 1025; seq += 1) expect(s.claimInboundSeq(seq)).toBe('ok');
+    expect(s.claimInboundSeq(1)).toBe('replay');
+    expect(s.claimInboundSeq(500)).toBe('replay');
+    expect(s.claimInboundSeq(5000)).toBe('saturated');
   });
 
   it('committing never moves the counter backwards', () => {
@@ -95,8 +108,8 @@ describe('SessionKeys', () => {
     const s = sk.get('mcp:1.0.0:0000000000000000')!;
     s.commitInboundSeq(5);
     s.commitInboundSeq(2);
-    expect(s.claimInboundSeq(5)).toBe(false);
-    expect(s.claimInboundSeq(6)).toBe(true);
+    expect(s.claimInboundSeq(5)).toBe('replay');
+    expect(s.claimInboundSeq(6)).toBe('ok');
   });
 
   it('issues monotonic outbound seq', () => {

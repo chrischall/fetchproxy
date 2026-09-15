@@ -27,6 +27,7 @@ import {
 } from '@fetchproxy/protocol';
 import { buildServerHello } from './build-server-hello.js';
 import { encodeOutboundInnerFrame } from './frame-size.js';
+import { MAX_PAYLOAD_BYTES } from './host.js';
 import { SessionState } from './session.js';
 import {
   awaitSessionReady,
@@ -84,6 +85,11 @@ export interface PeerOpts {
    * @deprecated v4 always refuses; the option changes nothing.
    */
   requireExtensionIdentity?: boolean;
+  /**
+   * Override `MAX_PAYLOAD_BYTES` on this peer's socket. Tests only, for the
+   * reason `HostOpts.maxPayloadBytes` gives.
+   */
+  maxPayloadBytes?: number;
   /**
    * Mint an X25519 keypair — the bootstrap one at dial and every session
    * ephemeral after it. Tests only, and for the reasons `HostOpts` gives:
@@ -173,7 +179,12 @@ export interface InternalPeerHandle extends PeerHandle {
 const enc = new TextEncoder();
 
 export async function startPeer(opts: PeerOpts): Promise<InternalPeerHandle> {
-  const ws = new WebSocket(`ws://${opts.host}:${opts.port}`);
+  // The same cap the host puts on what a peer sends it. Without it host→peer
+  // sat at `ws`'s 100 MiB default: that much of this MCP's memory, allocated
+  // before a byte is validated, on the say-so of whoever bound the port first.
+  const ws = new WebSocket(`ws://${opts.host}:${opts.port}`, {
+    maxPayload: opts.maxPayloadBytes ?? MAX_PAYLOAD_BYTES,
+  });
   await new Promise<void>((resolve, reject) => {
     // Both listeners come off once either fires: leaving the handshake's
     // 'error' listener attached would make it the socket's only one for the
@@ -778,7 +789,19 @@ export async function startPeer(opts: PeerOpts): Promise<InternalPeerHandle> {
         // single read both passed it — deterministically, since the counter
         // cannot move until the open returns. The claim takes the seq out of
         // circulation now and the duplicate behind it is refused as a replay.
-        if (!inboundSession.claimInboundSeq(frame.seq)) return;
+        const claim = inboundSession.claimInboundSeq(frame.seq);
+        if (claim !== 'ok') {
+          // A replay is dropped silently, as ever. Saturation is not a replay —
+          // it drops frames that may be genuine — so say so.
+          if (claim === 'saturated') {
+            console.warn(
+              `[fetchproxy] ${opts.serverName}: dropped an inbound frame (seq ${frame.seq}) ` +
+                `unread — too many frames from the extension are still being opened ` +
+                `(inbound claims saturated). Not a replay.`,
+            );
+          }
+          return;
+        }
         let result;
         try {
           // 'e2s': a frame reaching this peer was sealed by the EXTENSION and
