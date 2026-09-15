@@ -105,6 +105,24 @@ describe('SessionState', () => {
     expect(s.claimInboundSeq(5000)).toBe('saturated');
   });
 
+  it('a saturation warning is due once per run, re-armed by the next ok claim', () => {
+    // #376: callers warned on every saturated refusal, so a flood became a log
+    // flood. The latch lets through the transition INTO saturation only; an
+    // 'ok' claim (the set has drained below the bound) re-arms it, and a replay
+    // — which needs no capacity — leaves it alone.
+    const s = new SessionState(new Uint8Array(32));
+    expect(s.saturationWarningDue('replay')).toBe(false);
+    expect(s.saturationWarningDue('saturated')).toBe(true);
+    expect(s.saturationWarningDue('saturated')).toBe(false);
+    expect(s.saturationWarningDue('replay')).toBe(false);
+    expect(s.saturationWarningDue('saturated')).toBe(false);
+    expect(s.saturationWarningDue('ok')).toBe(false);
+    expect(s.saturationWarningDue('saturated')).toBe(true);
+    expect(s.saturationWarningDue('saturated')).toBe(false);
+    // Per session: a fresh one starts armed.
+    expect(new SessionState(new Uint8Array(32)).saturationWarningDue('saturated')).toBe(true);
+  });
+
   it('committing never moves the counter backwards', () => {
     const s = new SessionState(new Uint8Array(32));
     s.commitInboundSeq(5);

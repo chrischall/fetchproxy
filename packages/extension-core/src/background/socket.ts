@@ -352,17 +352,18 @@ async function onEncryptedFrame(link: Link, frame: EncryptedFrame): Promise<void
   // `handlers/dispatch.ts` has no per-id guard of its own. The claim takes the
   // seq out of circulation now, so the second copy is refused as a replay.
   const claim = entry.claimInboundSeq(frame.seq);
-  if (claim !== 'ok') {
-    // A replay is dropped silently. Saturation is not a replay — it drops
-    // frames that may be genuine requests — so it is said out loud.
-    if (claim === 'saturated') {
-      console.warn(
-        `[fetchproxy] dropped an inbound frame from ${frame.mcpId} (seq ${frame.seq}) unread — ` +
-          `too many of its frames are still being opened (inbound claims saturated). Not a replay.`,
-      );
-    }
-    return;
+  // A replay is dropped silently. Saturation is not a replay — it drops frames
+  // that may be genuine requests — so it is said out loud, but once per run of
+  // it: the entry latches the warning until an 'ok' claim shows the set has
+  // drained (#376).
+  if (entry.saturationWarningDue(claim)) {
+    console.warn(
+      `[fetchproxy] dropped an inbound frame from ${frame.mcpId} (seq ${frame.seq}) unread — ` +
+        `too many of its frames are still being opened (inbound claims saturated). Not a replay. ` +
+        `Further drops are not logged until the in-flight set drains.`,
+    );
   }
+  if (claim !== 'ok') return;
   flashActivity();
   let opened;
   try {

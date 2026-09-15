@@ -102,6 +102,20 @@ describe('SessionKeys', () => {
     expect(s.claimInboundSeq(5000)).toBe('saturated');
   });
 
+  it('a saturation warning is due once per run, re-armed by the next ok claim', () => {
+    // Same latch as session.ts on the MCP side (#376).
+    const sk = new SessionKeys();
+    const s = sk.set('mcp:1.0.0:0000000000000000', new Uint8Array(32));
+    expect(s.saturationWarningDue('replay')).toBe(false);
+    expect(s.saturationWarningDue('saturated')).toBe(true);
+    expect(s.saturationWarningDue('saturated')).toBe(false);
+    expect(s.saturationWarningDue('replay')).toBe(false);
+    expect(s.saturationWarningDue('ok')).toBe(false);
+    expect(s.saturationWarningDue('saturated')).toBe(true);
+    // Per session: a re-keyed entry starts armed.
+    expect(sk.set('mcp:1.0.0:0000000000000000', new Uint8Array(32)).saturationWarningDue('saturated')).toBe(true);
+  });
+
   it('committing never moves the counter backwards', () => {
     const sk = new SessionKeys();
     sk.set('mcp:1.0.0:0000000000000000', new Uint8Array(32));

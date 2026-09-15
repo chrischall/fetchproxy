@@ -790,18 +790,19 @@ export async function startPeer(opts: PeerOpts): Promise<InternalPeerHandle> {
         // cannot move until the open returns. The claim takes the seq out of
         // circulation now and the duplicate behind it is refused as a replay.
         const claim = inboundSession.claimInboundSeq(frame.seq);
-        if (claim !== 'ok') {
-          // A replay is dropped silently, as ever. Saturation is not a replay —
-          // it drops frames that may be genuine — so say so.
-          if (claim === 'saturated') {
-            console.warn(
-              `[fetchproxy] ${opts.serverName}: dropped an inbound frame (seq ${frame.seq}) ` +
-                `unread — too many frames from the extension are still being opened ` +
-                `(inbound claims saturated). Not a replay.`,
-            );
-          }
-          return;
+        // A replay is dropped silently, as ever. Saturation is not a replay —
+        // it drops frames that may be genuine — so say so, but once per run of
+        // it: the session latches the warning until an 'ok' claim shows the
+        // set has drained (#376).
+        if (inboundSession.saturationWarningDue(claim)) {
+          console.warn(
+            `[fetchproxy] ${opts.serverName}: dropped an inbound frame (seq ${frame.seq}) ` +
+              `unread — too many frames from the extension are still being opened ` +
+              `(inbound claims saturated). Not a replay. Further drops are not logged ` +
+              `until the in-flight set drains.`,
+          );
         }
+        if (claim !== 'ok') return;
         let result;
         try {
           // 'e2s': a frame reaching this peer was sealed by the EXTENSION and

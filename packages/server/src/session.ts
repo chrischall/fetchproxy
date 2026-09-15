@@ -56,9 +56,28 @@ export class SessionState {
   private outboundSeq = 0;
   private lastInboundSeq = 0;
   private inflightInbound = new Set<number>();
+  private saturationWarned = false;
 
   constructor(sessionKey: Uint8Array) {
     this.sessionKey = sessionKey;
+  }
+
+  /**
+   * Whether the caller holding this claim verdict should log saturation now.
+   * True only on the TRANSITION into it: a line per dropped frame turned a
+   * flood — or a set that never drains — into a log flood amplifying the very
+   * condition it reported (#376). An `'ok'` claim re-arms the latch, since it
+   * is the one signal every caller sees that the set has drained below the
+   * bound; a replay needs no capacity and leaves it alone. Latched per
+   * session, so a renegotiated one starts armed. A set hovering at the bound
+   * can still alternate ok/saturated, but that logs at the rate frames finish
+   * opening, not the rate they arrive.
+   */
+  saturationWarningDue(claim: InboundClaim): boolean {
+    if (claim === 'ok') this.saturationWarned = false;
+    if (claim !== 'saturated' || this.saturationWarned) return false;
+    this.saturationWarned = true;
+    return true;
   }
 
   nextOutboundSeq(): number {

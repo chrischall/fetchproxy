@@ -41,9 +41,23 @@ export class SessionEntry {
   private outbound = 0;
   private lastInbound = 0;
   private inflightInbound = new Set<number>();
+  private saturationWarned = false;
 
   constructor(sessionKey: Uint8Array) {
     this.sessionKey = sessionKey;
+  }
+
+  /**
+   * Whether the caller holding this claim verdict should log saturation now —
+   * true only on the transition into it, re-armed by the next `'ok'` claim.
+   * The same latch as `saturationWarningDue` in packages/server/src/session.ts
+   * (#376), which says why.
+   */
+  saturationWarningDue(claim: InboundClaim): boolean {
+    if (claim === 'ok') this.saturationWarned = false;
+    if (claim !== 'saturated' || this.saturationWarned) return false;
+    this.saturationWarned = true;
+    return true;
   }
 
   nextOutboundSeq(): number {
