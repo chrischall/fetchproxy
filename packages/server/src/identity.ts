@@ -159,19 +159,27 @@ export function parseIdentity(text: string): Identity {
  * The explicit `chmod` is what makes "the identity directory is 0700" true on
  * every open rather than only on the first.
  *
- * `forReadOnly` is the load path. A host that PROVISIONS the identity mounts
- * the directory read-only (see `identityDir`/`trustDir` in ws-server.ts), so
- * there the mode is the provisioner's and cannot be changed; refusing to read
- * the identity it handed over would turn a hardening step into a boot failure.
- * A write needs the directory writable anyway, so it stays strict.
+ * That tightening is best-effort, on the load path and the write path alike,
+ * for the two errors that mean "this directory's mode is not ours to change":
+ * - EROFS/EPERM on load: a host that PROVISIONS the identity mounts the
+ *   directory read-only (see `identityDir`/`trustDir` in ws-server.ts), so the
+ *   mode is the provisioner's; refusing to read the identity it handed over
+ *   would turn a hardening step into a boot failure.
+ * - EPERM on write: a directory can be writable without being owned by this
+ *   process — a root-created 0777 volume in a non-root container — and only
+ *   the owner may chmod it. The file itself is still created 0600, so the
+ *   private key stays single-user; failing here would stop first boot from
+ *   ever writing an identity. (An EROFS directory cannot take the write
+ *   either, but that is the write's error to report, not the chmod's.)
+ * Any other error is a real fault and still fails the open.
  */
-async function openIdentityDir(dir: string, forReadOnly = false): Promise<void> {
+async function openIdentityDir(dir: string): Promise<void> {
   await mkdir(dir, { recursive: true, mode: 0o700 });
   try {
     await chmod(dir, 0o700);
   } catch (e: unknown) {
     const code = (e as NodeJS.ErrnoException).code;
-    if (!forReadOnly || (code !== 'EROFS' && code !== 'EPERM')) throw e;
+    if (code !== 'EROFS' && code !== 'EPERM') throw e;
   }
 }
 
@@ -229,7 +237,7 @@ export async function loadOrCreateIdentity(
   dir: string = defaultIdentityDir(),
 ): Promise<Identity> {
   const path = identityFilePath(dir, serverName);
-  await openIdentityDir(dir, true);
+  await openIdentityDir(dir);
   try {
     return parseIdentity(await readFile(path, 'utf8'));
   } catch (e: unknown) {

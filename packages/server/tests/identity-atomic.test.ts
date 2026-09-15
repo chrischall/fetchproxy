@@ -22,6 +22,8 @@ const fsState = vi.hoisted(() => ({
   failRename: false,
   /** A directory whose mode this process cannot change (read-only mount). */
   lockedDir: undefined as string | undefined,
+  /** The errno a `chmod` of `lockedDir` fails with. */
+  lockedCode: 'EROFS',
 }));
 
 vi.mock('node:fs/promises', async (importOriginal) => {
@@ -30,7 +32,8 @@ vi.mock('node:fs/promises', async (importOriginal) => {
     ...actual,
     chmod: (async (path: never, mode: never) => {
       if (fsState.lockedDir !== undefined && String(path) === fsState.lockedDir) {
-        throw Object.assign(new Error('EROFS: read-only file system'), { code: 'EROFS' });
+        const code = fsState.lockedCode;
+        throw Object.assign(new Error(`${code}: chmod refused`), { code });
       }
       return actual.chmod(path, mode);
     }) as typeof actual.chmod,
@@ -50,6 +53,8 @@ const { generateIdentity, loadOrCreateIdentity, writeIdentityFile } = await impo
 let root: string;
 beforeEach(() => {
   fsState.failRename = false;
+  fsState.lockedDir = undefined;
+  fsState.lockedCode = 'EROFS';
   root = mkdtempSync(join(tmpdir(), 'fp-id-atomic-'));
 });
 afterEach(() => {
@@ -128,5 +133,64 @@ describe('the identity directory is 0700 on every open', () => {
     } finally {
       fsState.lockedDir = undefined;
     }
+  });
+
+  /**
+   * A directory can be writable without being ours: a root-created 0777 volume
+   * mounted into a non-root container. `chmod` there fails EPERM, but the
+   * identity can still be written — and on first boot it MUST be, or the
+   * server never starts.
+   */
+  it.each(['EPERM', 'EROFS'])(
+    'still writes an identity into a directory whose chmod fails %s',
+    async (code) => {
+      const dir = join(root, 'volume');
+      mkdirSync(dir, { mode: 0o777 });
+      fsState.lockedDir = dir;
+      fsState.lockedCode = code;
+
+      const id = await generateIdentity();
+      const path = await writeIdentityFile(dir, 'opentable-mcp', id);
+
+      fsState.lockedDir = undefined;
+      expect(statSync(path).mode & 0o777).toBe(0o600);
+      const loaded = await loadOrCreateIdentity('opentable-mcp', dir);
+      expect(Buffer.from(loaded.x25519Pub).equals(Buffer.from(id.x25519Pub))).toBe(true);
+    },
+  );
+
+  it('first boot creates an identity in a writable directory it does not own', async () => {
+    const dir = join(root, 'volume');
+    mkdirSync(dir, { mode: 0o777 });
+    fsState.lockedDir = dir;
+    fsState.lockedCode = 'EPERM';
+
+    const id = await loadOrCreateIdentity('opentable-mcp', dir);
+
+    expect(readdirSync(dir)).toEqual(['opentable-mcp.json']);
+    fsState.lockedDir = undefined;
+    const again = await loadOrCreateIdentity('opentable-mcp', dir);
+    expect(Buffer.from(again.x25519Pub).equals(Buffer.from(id.x25519Pub))).toBe(true);
+  });
+
+  it('still fails a write when the directory chmod fails for any other reason', async () => {
+    const dir = join(root, 'broken');
+    mkdirSync(dir, { mode: 0o755 });
+    fsState.lockedDir = dir;
+    fsState.lockedCode = 'EIO';
+
+    await expect(
+      writeIdentityFile(dir, 'opentable-mcp', await generateIdentity()),
+    ).rejects.toThrow(/EIO/);
+    expect(readdirSync(dir)).toEqual([]);
+  });
+
+  it('still fails a load when the directory chmod fails for any other reason', async () => {
+    const dir = join(root, 'broken');
+    mkdirSync(dir, { mode: 0o755 });
+    fsState.lockedDir = dir;
+    fsState.lockedCode = 'EIO';
+
+    await expect(loadOrCreateIdentity('opentable-mcp', dir)).rejects.toThrow(/EIO/);
   });
 });
