@@ -8,6 +8,7 @@ import { startHost, type HostHandle } from '../src/host.js';
 import { startPeer, type InternalPeerHandle } from '../src/peer.js';
 import { electRole } from '../src/election.js';
 import { loadOrCreateIdentity } from '../src/identity.js';
+import { SessionState } from '../src/session.js';
 import { connectMockExtension } from './helpers/mock-extension.js';
 import { linkedPeer, type FakeConcentrator } from './helpers/concentrator.js';
 import type { ExtensionPin, ExtensionTrustPort } from '../src/extension-trust.js';
@@ -160,5 +161,83 @@ describe('replay counter advances only after a frame authenticates', () => {
     );
     await new Promise((r) => setTimeout(r, 20));
     expect(received).toHaveLength(1);
+  });
+
+  // A claim refused because too many are outstanding is not a replay, and the
+  // log is the only place anyone can tell the two apart: both drop the frame
+  // unread, but one is the gate doing its job and the other is a flood (or
+  // claims leaking). Forcing the verdict through the prototype is the honest
+  // way to reach it — genuinely holding 1024 claims open means 1024 frames
+  // parked mid-decrypt at once.
+  const saturated = (calls: unknown[][]) =>
+    calls.filter((c) => /saturat/i.test(String(c[0])));
+
+  it('host: a saturated claim is logged, and a replay is not logged as one', async () => {
+    const warns = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const el = await electRole({ host: '127.0.0.1', port: 0 });
+    if (el.role !== 'host') throw new Error('expected host');
+    const port = (el.server.address() as AddressInfo).port;
+    const idDir = mkdtempSync(join(tmpdir(), 'fp-saturated-host-'));
+    const identity = await loadOrCreateIdentity('opentable-mcp', idDir);
+    const mcpId = 'opentable-mcp:0.9.1:abc1234567890def';
+    host = await startHost({
+      httpServer: el.server,
+      ownIdentity: identity,
+      ownMcpId: mcpId,
+      ownServerName: 'opentable-mcp',
+      ownVersion: '0.9.1',
+      ownDomains: ['opentable.com'],
+      extensionTrust: blankTrust(),
+    });
+    const ext = await connectMockExtension(port);
+    const sessionKey = await ext.completeHandshake(mcpId);
+    await vi.waitFor(() => expect(host!.sessionLinked()).toBe(true));
+    const received: InnerFrame[] = [];
+    host.onOwnInner((inner) => received.push(inner));
+
+    const claim = vi.spyOn(SessionState.prototype, 'claimInboundSeq');
+    claim.mockReturnValueOnce('replay');
+    ext.ws.send(JSON.stringify(await sealInnerFrame(sessionKey, mcpId, 1, { type: 'pong' }, 'e2s')));
+    await vi.waitFor(() => expect(claim).toHaveBeenCalledTimes(1));
+    await new Promise((r) => setTimeout(r, 20));
+    expect(saturated(warns.mock.calls)).toHaveLength(0);
+
+    claim.mockReturnValueOnce('saturated');
+    ext.ws.send(JSON.stringify(await sealInnerFrame(sessionKey, mcpId, 2, { type: 'pong' }, 'e2s')));
+    await vi.waitFor(() => expect(saturated(warns.mock.calls)).toHaveLength(1));
+    expect(String(saturated(warns.mock.calls)[0]![0])).toContain('opentable-mcp');
+    expect(received).toHaveLength(0);
+    ext.close();
+  });
+
+  it('peer: a saturated claim is logged, and a replay is not logged as one', async () => {
+    const warns = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const idDir = mkdtempSync(join(tmpdir(), 'fp-saturated-peer-'));
+    const identity = await loadOrCreateIdentity('opentable-mcp', idDir);
+    const mcpId = 'opentable-mcp:0.9.1:a3f7c91d2e8b4f56';
+    const linked = await linkedPeer({
+      mcpId,
+      identity,
+      startPeer: startPeer as unknown as Parameters<typeof linkedPeer>[0]['startPeer'],
+    });
+    rig = linked.rig;
+    peer = linked.peer as unknown as InternalPeerHandle;
+    const sessionKey = linked.sessionKey;
+    const hostWs = await linked.rig.socket();
+    const received: InnerFrame[] = [];
+    peer.onInner((inner) => received.push(inner));
+
+    const claim = vi.spyOn(SessionState.prototype, 'claimInboundSeq');
+    claim.mockReturnValueOnce('replay');
+    hostWs.send(JSON.stringify(await sealInnerFrame(sessionKey, mcpId, 1, { type: 'pong' }, 'e2s')));
+    await vi.waitFor(() => expect(claim).toHaveBeenCalledTimes(1));
+    await new Promise((r) => setTimeout(r, 20));
+    expect(saturated(warns.mock.calls)).toHaveLength(0);
+
+    claim.mockReturnValueOnce('saturated');
+    hostWs.send(JSON.stringify(await sealInnerFrame(sessionKey, mcpId, 2, { type: 'pong' }, 'e2s')));
+    await vi.waitFor(() => expect(saturated(warns.mock.calls)).toHaveLength(1));
+    expect(String(saturated(warns.mock.calls)[0]![0])).toContain('opentable-mcp');
+    expect(received).toHaveLength(0);
   });
 });
