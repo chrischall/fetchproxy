@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach, vi } from 'vitest';
+import { describe, it, expect, afterEach, vi, type MockInstance } from 'vitest';
 import type { AddressInfo } from 'node:net';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -172,6 +172,52 @@ describe('replay counter advances only after a frame authenticates', () => {
   const saturated = (calls: unknown[][]) =>
     calls.filter((c) => /saturat/i.test(String(c[0])));
 
+  /**
+   * Latched per session (#376): a run of saturated refusals logs ONCE, on the
+   * transition into saturation — a line per dropped frame turned a flood into
+   * a log flood. The next `'ok'` claim re-arms it, and the one saturation after
+   * that logs again. A replay neither logs nor touches the latch.
+   */
+  async function expectSaturationLatched(opts: {
+    claim: MockInstance<SessionState['claimInboundSeq']>;
+    warns: MockInstance<Console['warn']>;
+    send: (seq: number) => Promise<void>;
+    received: InnerFrame[];
+  }): Promise<void> {
+    const { claim, warns, send, received } = opts;
+    const settle = async (calls: number) => {
+      await vi.waitFor(() => expect(claim).toHaveBeenCalledTimes(calls));
+      await new Promise((r) => setTimeout(r, 20));
+    };
+    let seq = 0;
+    let calls = 0;
+    const next = async (verdict?: 'replay' | 'saturated') => {
+      if (verdict) claim.mockReturnValueOnce(verdict);
+      seq += 1;
+      calls += 1;
+      await send(seq);
+      await settle(calls);
+    };
+
+    await next('replay');
+    expect(saturated(warns.mock.calls)).toHaveLength(0);
+
+    for (let i = 0; i < 5; i += 1) await next('saturated');
+    expect(saturated(warns.mock.calls)).toHaveLength(1);
+    expect(String(saturated(warns.mock.calls)[0]![0])).toContain('opentable-mcp');
+    expect(received).toHaveLength(0);
+
+    // The set drained: the next frame claims for real and is delivered.
+    await next();
+    expect(received).toHaveLength(1);
+
+    for (let i = 0; i < 3; i += 1) await next('saturated');
+    expect(saturated(warns.mock.calls)).toHaveLength(2);
+
+    await next('replay');
+    expect(saturated(warns.mock.calls)).toHaveLength(2);
+  }
+
   it('host: a saturated claim is logged, and a replay is not logged as one', async () => {
     const warns = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const el = await electRole({ host: '127.0.0.1', port: 0 });
@@ -195,18 +241,15 @@ describe('replay counter advances only after a frame authenticates', () => {
     const received: InnerFrame[] = [];
     host.onOwnInner((inner) => received.push(inner));
 
-    const claim = vi.spyOn(SessionState.prototype, 'claimInboundSeq');
-    claim.mockReturnValueOnce('replay');
-    ext.ws.send(JSON.stringify(await sealInnerFrame(sessionKey, mcpId, 1, { type: 'pong' }, 'e2s')));
-    await vi.waitFor(() => expect(claim).toHaveBeenCalledTimes(1));
-    await new Promise((r) => setTimeout(r, 20));
-    expect(saturated(warns.mock.calls)).toHaveLength(0);
-
-    claim.mockReturnValueOnce('saturated');
-    ext.ws.send(JSON.stringify(await sealInnerFrame(sessionKey, mcpId, 2, { type: 'pong' }, 'e2s')));
-    await vi.waitFor(() => expect(saturated(warns.mock.calls)).toHaveLength(1));
-    expect(String(saturated(warns.mock.calls)[0]![0])).toContain('opentable-mcp');
-    expect(received).toHaveLength(0);
+    await expectSaturationLatched({
+      claim: vi.spyOn(SessionState.prototype, 'claimInboundSeq'),
+      warns,
+      received,
+      send: async (seq) =>
+        ext.ws.send(
+          JSON.stringify(await sealInnerFrame(sessionKey, mcpId, seq, { type: 'pong' }, 'e2s')),
+        ),
+    });
     ext.close();
   });
 
@@ -227,17 +270,14 @@ describe('replay counter advances only after a frame authenticates', () => {
     const received: InnerFrame[] = [];
     peer.onInner((inner) => received.push(inner));
 
-    const claim = vi.spyOn(SessionState.prototype, 'claimInboundSeq');
-    claim.mockReturnValueOnce('replay');
-    hostWs.send(JSON.stringify(await sealInnerFrame(sessionKey, mcpId, 1, { type: 'pong' }, 'e2s')));
-    await vi.waitFor(() => expect(claim).toHaveBeenCalledTimes(1));
-    await new Promise((r) => setTimeout(r, 20));
-    expect(saturated(warns.mock.calls)).toHaveLength(0);
-
-    claim.mockReturnValueOnce('saturated');
-    hostWs.send(JSON.stringify(await sealInnerFrame(sessionKey, mcpId, 2, { type: 'pong' }, 'e2s')));
-    await vi.waitFor(() => expect(saturated(warns.mock.calls)).toHaveLength(1));
-    expect(String(saturated(warns.mock.calls)[0]![0])).toContain('opentable-mcp');
-    expect(received).toHaveLength(0);
+    await expectSaturationLatched({
+      claim: vi.spyOn(SessionState.prototype, 'claimInboundSeq'),
+      warns,
+      received,
+      send: async (seq) =>
+        hostWs.send(
+          JSON.stringify(await sealInnerFrame(sessionKey, mcpId, seq, { type: 'pong' }, 'e2s')),
+        ),
+    });
   });
 });

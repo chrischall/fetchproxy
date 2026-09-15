@@ -1,4 +1,13 @@
-import { readFile, writeFile, mkdir, chmod, rename, rm } from 'node:fs/promises';
+import {
+  readFile,
+  readdir,
+  writeFile,
+  mkdir,
+  chmod,
+  rename,
+  rm,
+  unlink,
+} from 'node:fs/promises';
 import { randomBytes } from 'node:crypto';
 import { isAbsolute, join } from 'node:path';
 import { homedir } from 'node:os';
@@ -159,20 +168,62 @@ export function parseIdentity(text: string): Identity {
  * The explicit `chmod` is what makes "the identity directory is 0700" true on
  * every open rather than only on the first.
  *
- * `forReadOnly` is the load path. A host that PROVISIONS the identity mounts
- * the directory read-only (see `identityDir`/`trustDir` in ws-server.ts), so
- * there the mode is the provisioner's and cannot be changed; refusing to read
- * the identity it handed over would turn a hardening step into a boot failure.
- * A write needs the directory writable anyway, so it stays strict.
+ * That tightening is best-effort, on the load path and the write path alike,
+ * for the two errors that mean "this directory's mode is not ours to change":
+ * - EROFS/EPERM on load: a host that PROVISIONS the identity mounts the
+ *   directory read-only (see `identityDir`/`trustDir` in ws-server.ts), so the
+ *   mode is the provisioner's; refusing to read the identity it handed over
+ *   would turn a hardening step into a boot failure.
+ * - EPERM on write: a directory can be writable without being owned by this
+ *   process — a root-created 0777 volume in a non-root container — and only
+ *   the owner may chmod it. The file itself is still created 0600, so the
+ *   private key stays single-user; failing here would stop first boot from
+ *   ever writing an identity. (An EROFS directory cannot take the write
+ *   either, but that is the write's error to report, not the chmod's.)
+ * Any other error is a real fault and still fails the open.
  */
-async function openIdentityDir(dir: string, forReadOnly = false): Promise<void> {
+async function openIdentityDir(dir: string): Promise<void> {
   await mkdir(dir, { recursive: true, mode: 0o700 });
   try {
     await chmod(dir, 0o700);
   } catch (e: unknown) {
     const code = (e as NodeJS.ErrnoException).code;
-    if (!forReadOnly || (code !== 'EROFS' && code !== 'EPERM')) throw e;
+    if (code !== 'EROFS' && code !== 'EPERM') throw e;
   }
+}
+
+/** Random bytes in a staging name; the name carries twice as many hex digits. */
+const STAGING_BYTES = 6;
+
+/**
+ * Remove every staging file `writeIdentityFile` could have left for
+ * `serverName` in `dir` — `<base>.json.<12 hex>.tmp` exactly, so another
+ * server's in-flight write, the extension pin's `.tmp` and anything a person
+ * put there are never touched. `unlink` removes a symlink rather than its
+ * target, so a planted link cannot aim the sweep elsewhere.
+ *
+ * A concurrent writer of the SAME identity can lose its staging file to this.
+ * Its `rename` then fails ENOENT and the write throws: a loud failure for one
+ * of two racing writers, never a torn or foreign file published as the
+ * identity — which the random name exists to rule out.
+ *
+ * Best-effort: failing to list or remove a leftover is no reason to refuse the
+ * write that would otherwise give this server an identity at all.
+ */
+async function sweepStagingFiles(dir: string, serverName: string): Promise<void> {
+  const base = safeIdentityFileBase(serverName).replace(/[.]/g, '\\.');
+  const staging = new RegExp(`^${base}\\.json\\.[0-9a-f]{${STAGING_BYTES * 2}}\\.tmp$`);
+  let names: string[];
+  try {
+    names = await readdir(dir);
+  } catch {
+    return;
+  }
+  await Promise.all(
+    names
+      .filter((name) => staging.test(name))
+      .map((name) => unlink(join(dir, name)).catch(() => undefined)),
+  );
 }
 
 /**
@@ -190,6 +241,12 @@ async function openIdentityDir(dir: string, forReadOnly = false): Promise<void> 
  * half-written bytes, and an exclusive create cannot be steered through a file
  * or symlink already sitting at that name. 0600 twice over: `writeFile`'s mode
  * is subject to the umask, so the explicit `chmod` is what guarantees it.
+ *
+ * The cost of a random name is that a SIGKILL between create and rename leaves
+ * a whole private identity under a name nothing would ever reuse, so the write
+ * sweeps this identity's leftovers before staging (see `sweepStagingFiles`).
+ * The pin's fixed `${path}.tmp` would clean up after itself for free, but two
+ * writers sharing it is exactly the torn publish the random name prevents.
  */
 export async function writeIdentityFile(
   dir: string,
@@ -198,7 +255,8 @@ export async function writeIdentityFile(
 ): Promise<string> {
   const path = identityFilePath(dir, serverName);
   await openIdentityDir(dir);
-  const tmp = `${path}.${randomBytes(6).toString('hex')}.tmp`;
+  await sweepStagingFiles(dir, serverName);
+  const tmp = `${path}.${randomBytes(STAGING_BYTES).toString('hex')}.tmp`;
   try {
     await writeFile(tmp, serializeIdentity(id), { mode: 0o600, flag: 'wx' });
     await chmod(tmp, 0o600);
@@ -229,7 +287,7 @@ export async function loadOrCreateIdentity(
   dir: string = defaultIdentityDir(),
 ): Promise<Identity> {
   const path = identityFilePath(dir, serverName);
-  await openIdentityDir(dir, true);
+  await openIdentityDir(dir);
   try {
     return parseIdentity(await readFile(path, 'utf8'));
   } catch (e: unknown) {

@@ -399,18 +399,38 @@ describe('extension replay counter', () => {
       extNonceOf(localWs),
     );
 
+    // Latched per session (#376): a run of saturated refusals logs ONCE, on
+    // the transition into saturation — a line per dropped frame turned a flood
+    // into a log flood. The next `'ok'` claim re-arms it. A replay neither logs
+    // nor touches the latch.
     const claim = vi.spyOn(SessionEntry.prototype, 'claimInboundSeq');
-    claim.mockReturnValueOnce('replay');
-    localWs.message(await sealInnerFrame(key, mcp.mcpId, 1, { type: 'ping' }, 's2e'));
-    await vi.waitUntil(() => claim.mock.calls.length === 1);
-    await new Promise((r) => setTimeout(r, 20));
+    let seq = 0;
+    const next = async (verdict?: 'replay' | 'saturated') => {
+      if (verdict) claim.mockReturnValueOnce(verdict);
+      seq += 1;
+      const calls = claim.mock.calls.length + 1;
+      localWs.message(await sealInnerFrame(key, mcp.mcpId, seq, { type: 'ping' }, 's2e'));
+      await vi.waitUntil(() => claim.mock.calls.length === calls);
+      await new Promise((r) => setTimeout(r, 20));
+    };
+
+    await next('replay');
     expect(saturated()).toHaveLength(0);
 
-    claim.mockReturnValueOnce('saturated');
-    localWs.message(await sealInnerFrame(key, mcp.mcpId, 2, { type: 'ping' }, 's2e'));
-    await vi.waitUntil(() => saturated().length === 1);
+    for (let i = 0; i < 5; i += 1) await next('saturated');
+    expect(saturated()).toHaveLength(1);
     expect(String(saturated()[0]![0])).toContain(mcp.mcpId);
     expect(localWs.frames('frame')).toHaveLength(0);
+
+    // The set drained: the next frame claims for real and is answered.
+    await next();
+    await vi.waitUntil(() => localWs.frames('frame').length === 1);
+
+    for (let i = 0; i < 3; i += 1) await next('saturated');
+    expect(saturated()).toHaveLength(2);
+
+    await next('replay');
+    expect(saturated()).toHaveLength(2);
 
     claim.mockRestore();
     warns.mockRestore();
