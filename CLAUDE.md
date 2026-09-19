@@ -181,12 +181,24 @@ The end-to-end release cycle (canonical release-please monorepo shape):
 release-please-action runs on every push to `main`, accumulating
 Conventional-Commit subjects into **one combined release PR**
 (`separate-pull-requests: false`). When that PR merges, the action cuts a
-single `v<NEXT>` tag (`include-component-in-tag: false`). The same workflow's
-second job (gated on `tag_name`) then checks out the tag, fixes up the
-inter-package `@fetchproxy/*` caret-range deps (release-please bumps each
-`version` but not the cross-dep ranges), publishes the non-private packages
-to npm via Trusted-Publisher OIDC, builds the Chrome-extension `.zip`, and
-attaches it to the GitHub Release.
+single `v<NEXT>` tag (`include-component-in-tag: false`).
+
+That release half now runs in
+[`chrischall/workflows`](https://github.com/chrischall/workflows)'
+`reusable-release-please.yml`, called from this repo's thin
+`release-please.yml` stub (chrischall/workflows#283 — the copies drifted into
+18 variants and the `republish_tag` escape hatch invented here never reached
+any of them). What stays in this repo is what depends on its identity or its
+monorepo shape: the **publish** job (npm Trusted-Publisher OIDC binds
+provenance to this repository's workflow identity) and the
+**`sync-cross-deps`** job, which fixes up the inter-package
+`@fetchproxy/*` caret-range deps on the release PR — release-please bumps
+each `version` through `extra-files` but never the cross-dep ranges. Publish
+is gated on the reusable workflow's `publish` output, NOT on
+`release_created`, because the latter is false on a republish, which is the
+one run that exists to publish; it checks out the resolved tag, publishes the
+non-private packages to npm, builds the Chrome-extension `.zip`, and attaches
+it to the GitHub Release.
 
 **Do not bump versions or create tags manually unless explicitly asked.**
 release-please owns the lockstep arithmetic; manual edits to a `version`
@@ -269,12 +281,19 @@ MCP tool call is the integration test.
   `packages/extension-chrome/README.md` §Install (developer / sideload)),
   and `tests/install-walkthroughs-name-the-cohort.test.ts` holds the
   numbers they print to the ones the refusal actually uses.
-- **Re-publishing a tag after a failed publish.** release-please's
-  publish job is gated on `tag_name` from the merge. If the tag was
-  cut but the npm/zip publish failed (e.g. wrong Node version), fire
-  `release-please.yml` via `workflow_dispatch` with the `republish_tag`
-  input (e.g. `v1.3.3`) to re-run *only* the publish job against the
-  existing tag — no new release PR, no version bump.
+- **Re-publishing a tag after a failed publish.** The publish job only
+  fires when the reusable release workflow says there is something to
+  publish, and on the ordinary path that means release-please just cut a
+  release. If the tag was cut but the npm/zip publish failed (e.g. wrong
+  Node version) — or release-please lost its own `release_created` output
+  after tagging, which is the failure chrischall/workflows#283 was opened
+  for and which no amount of re-running fixes — fire `release-please.yml`
+  via `workflow_dispatch` with the `republish_tag` input (e.g. `v1.3.3`)
+  to re-run *only* the publish job against the existing tag: the
+  release-please step is skipped, the version is derived from the tag, and
+  the tag is confirmed to exist before anything publishes. No new release
+  PR, no version bump. Idempotency makes a re-run SAFE; it does not make
+  it RUN — dispatch instead.
 - **`chrome.action.openPopup()` is restricted.** Chrome 127+ allows
   it from background in some contexts; older Chromes throw sync or
   async. `background.ts` wraps it in try/catch; the **badge** is the
