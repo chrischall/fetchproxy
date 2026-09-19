@@ -1,31 +1,45 @@
 name: release-please
 
-# Single-workflow monorepo release pipeline (canonical release-please
-# shape, matching ofw-mcp).
+# Thin stub: release-please itself now runs in chrischall/workflows'
+# reusable-release-please.yml. What stays in THIS file is everything that
+# depends on this repo's identity or on this monorepo's shape:
 #
-# Job 1 (release-please): runs googleapis/release-please-action with
-# linked-versions across all 5 sub-packages. Opens ONE combined release
-# PR (separate-pull-requests: false). When that PR merges, the action
-# creates a single `v<NEXT>` tag (include-component-in-tag: false).
+#   * the PUBLISH job — npm trusted publishing binds provenance to this
+#     repository's workflow identity via OIDC, so moving it would break
+#     provenance for all five @fetchproxy/* packages;
+#   * the CROSS-PACKAGE CARET SYNC — release-please bumps each sub-package's
+#     `version` through `extra-files` but never the inter-package
+#     `@fetchproxy/*: ^X.Y.Z` ranges, and that fix-up is peculiar to this
+#     lockstep monorepo, so it is not something the shared workflow knows how
+#     to do. It runs as its own job here, after the reusable workflow has
+#     opened (and credited) the release PR.
 #
-# Job 2 (publish): gates on `tag_name` being set (meaning the release
-# PR just merged). Checks out the tag, builds each non-private
-# sub-package, publishes them to npm via Trusted Publisher OIDC,
-# builds the Chrome extension zip, and attaches the zip plus a
-# `.zip.sha256` digest of it to the GitHub Release release-please
-# already authored. Neither asset is ever overwritten: an asset the
-# release already carries is left alone (the zip is not byte-
-# reproducible, so on that path the digest is computed from the
-# PUBLISHED zip rather than from the local rebuild).
+# WHY THIS WAS CONVERTED AT ALL. `release-please.yml` was copied into 81
+# repos and drifted into 18 variants, so a fix to release behaviour was an
+# 81-repo sweep. On 2026-09-14 a transient GitHub API error lost
+# release-please's `release_created` output in creditkarma-mcp, homes-mcp and
+# onehome-mcp AFTER each had already cut its tag and GitHub Release. Publish
+# is gated on that flag, so it skipped — and re-running does not help,
+# because release-please then correctly reports the release already exists
+# and sets the flag false again. Tag cut, Release published, npm empty, no
+# path to finish it (chrischall/workflows#283).
+#
+# fetchproxy is where the `republish_tag` escape hatch below was invented;
+# the 81 copies never got it, because a fix in one repo does not reach the
+# others. Calling the shared workflow is how it stops being this repo's
+# private fix.
+#
+# A green tag still does not mean a green publish: the two jobs are
+# independent. Confirm with `npm view @fetchproxy/server version`.
 
 on:
   push:
     branches: [main]
-  # workflow_dispatch with an optional `republish_tag` input lets us
-  # manually re-fire the publish job for an existing tag — useful when
-  # an earlier publish failed (e.g. wrong Node version) and the tag is
-  # already cut. Leave `republish_tag` blank for the regular path of
-  # just running release-please-action to check for a new release PR.
+  # `republish_tag` re-fires the publish job for a tag that ALREADY EXISTS —
+  # for a release whose tag and GitHub Release were cut but whose publish
+  # never ran. Blank on the ordinary path. It lives here rather than in the
+  # reusable workflow because a called workflow cannot declare its caller's
+  # triggers.
   workflow_dispatch:
     inputs:
       republish_tag:
@@ -44,61 +58,67 @@ concurrency:
 
 jobs:
   release-please:
-    runs-on: ubuntu-latest
-    outputs:
-      release_created: ${{ steps.release.outputs.release_created }}
-      tag_name: ${{ steps.release.outputs.tag_name }}
-      pr: ${{ steps.release.outputs.pr }}
-    steps:
-      - uses: googleapis/release-please-action@v5.0.0
-        id: release
-        with:
-          token: ${{ secrets.RELEASE_PAT }}
-          config-file: release-please-config.json
-          manifest-file: .release-please-manifest.json
+    uses: chrischall/workflows/.github/workflows/reusable-release-please.yml@main
+    with:
+      republish_tag: ${{ inputs.republish_tag }}
+    secrets:
+      release_pat: ${{ secrets.RELEASE_PAT }}
 
-      # Lockstep cross-package deps: when release-please bumps the
-      # umbrella version (and the `extra-files` entries propagate it to
-      # every sub-package's `version` field), it does NOT touch
-      # inter-package caret-range deps (e.g. bootstrap's
-      # `"@fetchproxy/server": "^X.Y.Z"`). This step walks every
-      # sub-package and rewrites those caret ranges to the new umbrella
-      # version, then amends the release PR with the change. Without
-      # this, the published tarballs would carry a stale `^X.Y.Z` and
-      # downstream consumers would resolve to old versions of
-      # cross-package deps.
-      #
-      # Uses RELEASE_PAT (not GITHUB_TOKEN) so the amend-commit fires
-      # downstream CI / re-arming — keeping the release PR's CI status
-      # current.
+  # Lockstep cross-package deps: when release-please bumps the umbrella
+  # version (and the `extra-files` entries propagate it to every
+  # sub-package's `version` field), it does NOT touch inter-package
+  # caret-range deps (e.g. bootstrap's `"@fetchproxy/server": "^X.Y.Z"`).
+  # This job walks every workspace and rewrites those caret ranges to the new
+  # umbrella version, then amends the release PR with the change. Without it,
+  # the published tarballs would carry a stale `^X.Y.Z` and downstream
+  # consumers would resolve to old versions of cross-package deps.
+  #
+  # It used to be extra steps inside the release-please job, which is now the
+  # reusable workflow's; as its own job it runs strictly AFTER that workflow
+  # finishes, so it lands on top of the branch release-please force-pushed
+  # and the contributor-credit amend the reusable workflow applies to it —
+  # rather than racing either.
+  #
+  # `publish` deliberately does NOT depend on this job: a skipped `needs`
+  # skips its dependents, and this one is skipped on exactly the run that
+  # publishes (a release run touches no PR). Nothing here touches the tag
+  # being published anyway.
+  #
+  # Uses RELEASE_PAT (not GITHUB_TOKEN) so the amend-commit fires downstream
+  # CI / re-arming — keeping the release PR's CI status current.
+  sync-cross-deps:
+    needs: release-please
+    if: needs.release-please.outputs.pr != ''
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
       - name: Checkout for cross-dep sync
-        if: steps.release.outputs.pr
         uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 0
           token: ${{ secrets.RELEASE_PAT }}
 
       - name: Setup Node for cross-dep sync
-        if: steps.release.outputs.pr
         uses: actions/setup-node@v7.0.0
         with:
           node-version: 24
           cache: npm
 
       - name: Sync cross-package caret deps in the release PR
-        if: steps.release.outputs.pr
         env:
           GH_TOKEN: ${{ secrets.RELEASE_PAT }}
           # Pass the raw JSON through and parse with `jq` inside `run:`.
           # Resolving `fromJSON(...).number` in the `env:` template above
           # would error at template-evaluation time on runs where the
-          # action produced no PR output (most notably the post-release
-          # PR merge run, where outputs.pr is empty). The `if:` filter
-          # short-circuits the `run:` block but does NOT prevent `env:`
-          # from being evaluated, so an empty-string fromJSON fails the
-          # whole job. Observed:
+          # reusable workflow produced no PR output (most notably the
+          # post-release PR merge run, where outputs.pr is empty). The job's
+          # `if:` filter short-circuits the `run:` block but does NOT prevent
+          # `env:` from being evaluated, so an empty-string fromJSON fails
+          # the whole job. Observed:
           #   https://github.com/chrischall/fetchproxy/actions/runs/26384384708/job/77659773051
-          PR_OUTPUT: ${{ steps.release.outputs.pr }}
+          PR_OUTPUT: ${{ needs.release-please.outputs.pr }}
         run: |
           set -euo pipefail
           PR_NUMBER=$(printf '%s' "$PR_OUTPUT" | jq -r .number)
@@ -143,14 +163,11 @@ jobs:
 
   publish:
     needs: release-please
-    # Fire on either:
-    #   - a fresh release (release-please-action just cut a tag), OR
-    #   - a manual workflow_dispatch with `republish_tag` set to an
-    #     existing tag (escape hatch for re-running publish on a tag
-    #     whose original publish failed).
-    if: |
-      needs.release-please.outputs.release_created == 'true' ||
-      (github.event_name == 'workflow_dispatch' && inputs.republish_tag != '')
+    # `publish`, NOT `release_created`: the latter is release-please's own
+    # flag and is false on a republish, which is the one run that exists to
+    # publish. The reusable workflow folds both paths — a fresh release and a
+    # `republish_tag` dispatch of an existing tag — into this one output.
+    if: needs.release-please.outputs.publish == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -158,10 +175,10 @@ jobs:
     steps:
       - uses: actions/checkout@v7.0.1
         with:
-          # Prefer the release-please-emitted tag on the auto path; fall
-          # back to the manually-supplied republish_tag on the dispatch
-          # path.
-          ref: ${{ needs.release-please.outputs.tag_name || inputs.republish_tag }}
+          # `tag`, not `tag_name`: resolved ONCE for both paths by the
+          # reusable workflow, and `tag_name` is empty on a republish where
+          # only the dispatch input names the tag.
+          ref: ${{ needs.release-please.outputs.tag }}
 
       - uses: actions/setup-node@v7.0.0
         with:
@@ -188,43 +205,6 @@ jobs:
       # postinstall — verified with a clean
       # `npm ci --ignore-scripts && npm run build`.
       - run: npm ci --ignore-scripts
-
-      # The umbrella VERSION = the release tag (release-please picks it
-      # off the root package). Used for the extension-zip filename and
-      # the GitHub Release asset upload. Sub-package npm publishes read
-      # their OWN package.json instead — release-please bumps packages
-      # independently (only the ones whose conventional commits warrant
-      # it), so the umbrella tag does NOT track every sub-package's
-      # version 1:1.
-      #
-      # The tag rides in `env:` rather than being interpolated into the
-      # `run:` body: `republish_tag` is a dispatch input, and a workflow
-      # expression is substituted into the script BEFORE the shell sees
-      # it, so a crafted input would run as this job — which holds
-      # `contents: write` and `id-token: write`. `env:` hands it over as
-      # data. (release-please-next.yml already passes its inputs this
-      # way.)
-      #
-      # `env:` alone is only half of it, which is why the SHAPE is
-      # checked here too: the value is written to `$GITHUB_ENV`, a
-      # line-oriented file with no heredoc delimiter on this line, and
-      # a `workflow_dispatch` string input accepts a newline through the
-      # API. An unvalidated tag could therefore define a SECOND variable
-      # — NODE_OPTIONS or PATH, say — for every later step of this job,
-      # i.e. for the npm publishes. Anything that is not
-      # `v?MAJOR.MINOR.PATCH[-suffix]` is refused, exactly as
-      # release-please-next.yml's "Compute RC version" refuses its own
-      # inputs.
-      - name: Set umbrella VERSION env
-        env:
-          RELEASE_TAG: ${{ needs.release-please.outputs.tag_name || inputs.republish_tag }}
-        run: |
-          set -euo pipefail
-          if ! [[ "$RELEASE_TAG" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$ ]]; then
-            echo "release tag '${RELEASE_TAG}' must be v?MAJOR.MINOR.PATCH[-suffix] (e.g. v1.3.3)" >&2
-            exit 1
-          fi
-          echo "VERSION=${RELEASE_TAG#v}" >> "$GITHUB_ENV"
 
       # Build TS packages in dependency order: protocol → server →
       # bootstrap → extension-core. extension-chrome's bundle is built
@@ -296,8 +276,27 @@ jobs:
 
       # Build & zip the Chrome extension for sideload distribution
       # before the Chrome Web Store review of each release.
+      #
+      # The umbrella VERSION = the release tag with its `v` stripped, and it
+      # arrives already derived and already validated: the reusable workflow
+      # resolves ONE version for both paths (release-please emits `version`
+      # bare and `tag_name` prefixed, while a dispatch supplies only a tag,
+      # so chaining them publishes `v1.2.3` as a version string) and refuses
+      # anything that is not `v?MAJOR.MINOR.PATCH[-suffix]` before writing a
+      # byte. That is what retires the local "Set umbrella VERSION env" step
+      # this job used to open with. It still rides in `env:` rather than
+      # being interpolated into the `run:` body, because a value reaching a
+      # script through `${{ }}` is substituted before the shell parses
+      # anything.
+      #
+      # Sub-package npm publishes above read their OWN package.json instead —
+      # release-please bumps packages independently (only the ones whose
+      # conventional commits warrant it), so the umbrella tag does NOT track
+      # every sub-package's version 1:1.
       - name: Build & package Chrome extension
         working-directory: packages/extension-chrome
+        env:
+          VERSION: ${{ needs.release-please.outputs.version }}
         run: |
           npx tsx build.ts
           cd dist
@@ -334,7 +333,8 @@ jobs:
       - name: Attach artifacts to release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RELEASE_TAG: ${{ needs.release-please.outputs.tag_name || inputs.republish_tag }}
+          VERSION: ${{ needs.release-please.outputs.version }}
+          RELEASE_TAG: ${{ needs.release-please.outputs.tag }}
         run: |
           set -euo pipefail
           ZIP="fetchproxy-extension-${VERSION}.zip"
