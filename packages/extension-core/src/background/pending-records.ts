@@ -13,6 +13,7 @@ import type {
   GraphqlOpDeclaration,
   IndexedDbScopeDecl,
   DomSelectorDecl,
+  DomListSelectorDecl,
   StoragePointerDecl,
 } from '@fetchproxy/protocol';
 
@@ -72,6 +73,8 @@ export interface PendingPairRecord extends PendingRecordBase {
   indexedDbScopes: IndexedDbScopeDecl[];
   /** 1.4.0+: declared DOM selectors the user is being asked to approve. */
   domSelectors: DomSelectorDecl[];
+  /** 3.1.0+: declared REPEATED DOM selectors the user is being asked to approve. */
+  domListSelectors: DomListSelectorDecl[];
   /** 1.x+: declared GraphQL operations the user is being asked to approve. */
   graphqlOps: GraphqlOpDeclaration[];
   /** 0.4.0+: declared storage-pointer extractions. */
@@ -89,6 +92,7 @@ export interface PendingPairRecord extends PendingRecordBase {
     captureHeaders: { host: string; path?: string; headerName: string }[];
     indexedDbScopes: IndexedDbScopeDecl[];
     domSelectors: DomSelectorDecl[];
+    domListSelectors: DomListSelectorDecl[];
     graphqlOps: GraphqlOpDeclaration[];
     localStoragePointers: StoragePointerDecl[];
     sessionStoragePointers: StoragePointerDecl[];
@@ -123,6 +127,7 @@ export interface PendingScopeUpdateRecord extends PendingRecordBase {
   captureHeaders: { host: string; path?: string; headerName: string }[];
   indexedDbScopes: IndexedDbScopeDecl[];
   domSelectors: DomSelectorDecl[];
+  domListSelectors: DomListSelectorDecl[];
   graphqlOps: GraphqlOpDeclaration[];
   localStoragePointers: StoragePointerDecl[];
   sessionStoragePointers: StoragePointerDecl[];
@@ -135,6 +140,7 @@ export interface PendingScopeUpdateRecord extends PendingRecordBase {
     captureHeaders: { host: string; path?: string; headerName: string }[];
     indexedDbScopes: IndexedDbScopeDecl[];
     domSelectors: DomSelectorDecl[];
+    domListSelectors: DomListSelectorDecl[];
     graphqlOps: GraphqlOpDeclaration[];
     localStoragePointers: StoragePointerDecl[];
     sessionStoragePointers: StoragePointerDecl[];

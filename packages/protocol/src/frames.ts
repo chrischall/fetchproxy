@@ -395,6 +395,25 @@ export type Platform = 'chrome' | 'safari' | 'firefox';
  *                    MCP surrenders that isolation only for the calls it
  *                    marks — never wholesale.
  *
+ * `'read_dom_list'`         — read a REPEATED structure from the matched
+ *                             tab's DOM: a declared container selector
+ *                             (`domListSelectors`) is resolved with
+ *                             `querySelectorAll`, and each declared field is
+ *                             then resolved relative to every matched item
+ *                             (`item.querySelector(fieldSelector)`). Same
+ *                             ISOLATED-world, no-page-JS guarantee as
+ *                             `read_dom` — this is `read_dom`'s answer for a
+ *                             repeated list (a chat's messages, a table's
+ *                             rows) where `read_dom`'s single `querySelector`
+ *                             per name cannot express "one row per element".
+ *                             Only the elements CURRENTLY in the DOM are
+ *                             read — a virtualized/lazily-rendered list
+ *                             returns only its rendered rows, not its full
+ *                             history; a caller that needs more scrolls the
+ *                             list (out of band) and reads again. Elevated —
+ *                             surfaces the declared selectors in the pair
+ *                             popup. Scoped to the MCP's declared `domains`.
+ *
  * Future additions are wire-additive: unknown capabilities are rejected
  * by the validator, so adding a new verb requires extending this union.
  */
@@ -408,6 +427,7 @@ export type Capability =
   | 'capture_redirect'
   | 'read_indexed_db'
   | 'read_dom'
+  | 'read_dom_list'
   | 'download'
   | 'graphql'
   | 'write_cookies';
@@ -428,6 +448,7 @@ export const KNOWN_CAPABILITIES: ReadonlySet<Capability> = new Set<Capability>([
   'capture_redirect',
   'read_indexed_db',
   'read_dom',
+  'read_dom_list',
   'download',
   'graphql',
   'write_cookies',
@@ -522,6 +543,67 @@ export interface DomSelectorDecl {
    * `.textContent` for non-form elements.
    */
   attribute?: string;
+}
+
+/**
+ * One field extraction within a `DomListSelectorDecl`, resolved relative to
+ * each matched ITEM element (`item.querySelector(selector)`), not the
+ * document. Same value-resolution rule as `DomSelectorDecl`: `attribute` set
+ * ⇒ `getAttribute(attribute)`; unset ⇒ the element's `.value`, falling back
+ * to `.textContent`.
+ */
+export interface DomListFieldDecl {
+  /**
+   * Output key in each returned row. `[A-Za-z0-9_.\-]`, 1-128 chars. Unique
+   * within the parent `DomListSelectorDecl.fields`.
+   */
+  name: string;
+  /**
+   * CSS selector resolved against the matched item element
+   * (`item.querySelector(selector)`), 1-512 chars, no control characters.
+   * Omitted ⇒ the item element itself (e.g. a list whose `itemSelector`
+   * already targets the text-bearing node).
+   */
+  selector?: string;
+  /** Optional attribute name, same shape as `DomSelectorDecl.attribute`. */
+  attribute?: string;
+}
+
+/**
+ * Declaration entry for the `read_dom_list` capability — a single named
+ * REPEATED DOM read. Pinned in the server hello, surfaced verbatim in the
+ * pair popup, and re-checked on every `read_dom_list` call (the per-call
+ * `name` must match a declared entry).
+ *
+ * The extension resolves `itemSelector` via `document.querySelectorAll` in
+ * the ISOLATED-world content script, then resolves each declared `fields`
+ * entry against every matched item element in turn. It never enters the
+ * page MAIN world and never invokes a page function — this is a pure DOM
+ * read, `read_dom`'s per-name `querySelector` widened to `querySelectorAll`
+ * plus a per-item field map.
+ */
+export interface DomListSelectorDecl {
+  /**
+   * Logical handle the MCP references in a per-call `read_dom_list` request
+   * (via `ReadDomListInit.name`). `[A-Za-z0-9_.\-]`, 1-128 chars. Unique
+   * within `domListSelectors`.
+   */
+  name: string;
+  /**
+   * CSS selector passed to `document.querySelectorAll` to find each
+   * repeated item (e.g. one message row). 1-512 chars, no control
+   * characters.
+   */
+  itemSelector: string;
+  /** Non-empty; field names unique within this entry. */
+  fields: DomListFieldDecl[];
+  /**
+   * Cap on the number of items returned, most-recently-matched-first is NOT
+   * implied — items are returned in DOM (document) order, then truncated to
+   * this count. Omitted ⇒ no cap beyond the wire's own frame-size backstop
+   * (`MAX_FRAME_BYTES`). `1-1000`.
+   */
+  maxItems?: number;
 }
 
 /**
@@ -621,6 +703,14 @@ export interface HelloFrameFromServer {
    * `capabilities`.
    */
   domSelectors?: DomSelectorDecl[];
+  /**
+   * 3.1.0+: declared REPEATED DOM reads for `read_dom_list`. Each entry
+   * names an item selector + per-item field map the MCP may read from the
+   * matched tab's DOM. Per-call `read_dom_list` requests reference one by
+   * `name`. Empty/absent ⇒ no list reads permitted even if `'read_dom_list'`
+   * is in `capabilities`.
+   */
+  domListSelectors?: DomListSelectorDecl[];
   /**
    * 1.x+: declared GraphQL operations for the `graphql` capability. Each
    * entry maps a logical `name` the MCP references per-call to the
@@ -1103,6 +1193,17 @@ export interface ReadDomInit {
   names: string[];
 }
 
+/** `init` payload for `read_dom_list`. */
+export interface ReadDomListInit {
+  /** Bare HTTPS origin of the tab whose DOM is being read. */
+  origin: string;
+  /**
+   * Handle of the MCP's declared `domListSelectors` entry to read. Must
+   * match a declared `DomListSelectorDecl.name`.
+   */
+  name: string;
+}
+
 /** `init` payload for `graphql_query`. */
 export interface GraphqlQueryInit {
   /**
@@ -1188,6 +1289,13 @@ export interface InnerRequestReadDom {
   init: ReadDomInit;
 }
 
+export interface InnerRequestReadDomList {
+  type: 'request';
+  id: number;
+  op: 'read_dom_list';
+  init: ReadDomListInit;
+}
+
 export interface InnerRequestDownload {
   type: 'request';
   id: number;
@@ -1216,6 +1324,7 @@ export type InnerRequest =
   | InnerRequestCaptureRedirect
   | InnerRequestReadIndexedDb
   | InnerRequestReadDom
+  | InnerRequestReadDomList
   | InnerRequestDownload
   | InnerRequestGraphqlQuery;
 
@@ -1322,6 +1431,23 @@ export interface InnerResponseReadDomOk {
   values: Record<string, string>;
 }
 
+export interface InnerResponseReadDomListOk {
+  type: 'response';
+  id: number;
+  ok: true;
+  op: 'read_dom_list';
+  /**
+   * One row per matched item, in DOM (document) order, truncated to the
+   * declared `maxItems` when set. Each row is a field-name → value map for
+   * fields whose selector (and requested attribute) was present on that
+   * item — same per-field omission rule as `read_dom`'s `values`, applied
+   * per row rather than once. An item that matched none of its declared
+   * fields still contributes an (empty) row, so row COUNT always reflects
+   * `itemSelector`'s match count.
+   */
+  rows: Record<string, string>[];
+}
+
 /** Saved-file metadata returned by a successful `download`. */
 export interface DownloadResult {
   /** Absolute local path the browser saved the file to (`DownloadItem.filename`). */
@@ -1378,6 +1504,7 @@ export type InnerResponseOk =
   | InnerResponseCaptureRedirectOk
   | InnerResponseReadIndexedDbOk
   | InnerResponseReadDomOk
+  | InnerResponseReadDomListOk
   | InnerResponseDownloadOk
   | InnerResponseGraphqlQueryOk;
 

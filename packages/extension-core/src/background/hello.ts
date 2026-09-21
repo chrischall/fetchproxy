@@ -24,6 +24,7 @@ import {
   type GraphqlOpDeclaration,
   type IndexedDbScopeDecl,
   type DomSelectorDecl,
+  type DomListSelectorDecl,
   type StoragePointerDecl,
   type HelloFrameFromServer,
 } from '@fetchproxy/protocol';
@@ -72,6 +73,7 @@ export type HandleHelloResult =
       captureHeaders: { host: string; path?: string; headerName: string }[];
       indexedDbScopes: IndexedDbScopeDecl[];
       domSelectors: DomSelectorDecl[];
+      domListSelectors: DomListSelectorDecl[];
       graphqlOps: GraphqlOpDeclaration[];
       localStoragePointers: StoragePointerDecl[];
       sessionStoragePointers: StoragePointerDecl[];
@@ -100,6 +102,7 @@ export type HandleHelloResult =
         captureHeaders: { host: string; path?: string; headerName: string }[];
         indexedDbScopes: IndexedDbScopeDecl[];
         domSelectors: DomSelectorDecl[];
+        domListSelectors: DomListSelectorDecl[];
         graphqlOps: GraphqlOpDeclaration[];
         localStoragePointers: StoragePointerDecl[];
         sessionStoragePointers: StoragePointerDecl[];
@@ -122,6 +125,7 @@ export type HandleHelloResult =
       captureHeaders: { host: string; path?: string; headerName: string }[];
       indexedDbScopes: IndexedDbScopeDecl[];
       domSelectors: DomSelectorDecl[];
+      domListSelectors: DomListSelectorDecl[];
       graphqlOps: GraphqlOpDeclaration[];
       localStoragePointers: StoragePointerDecl[];
       sessionStoragePointers: StoragePointerDecl[];
@@ -155,6 +159,7 @@ export type HandleHelloResult =
         declaredCaptureHeaders: { host: string; path?: string; headerName: string }[];
         declaredIndexedDbScopes: IndexedDbScopeDecl[];
         declaredDomSelectors: DomSelectorDecl[];
+        declaredDomListSelectors: DomListSelectorDecl[];
         declaredGraphqlOps: GraphqlOpDeclaration[];
         declaredLocalStoragePointers: StoragePointerDecl[];
         declaredSessionStoragePointers: StoragePointerDecl[];
@@ -165,6 +170,7 @@ export type HandleHelloResult =
         approvedCaptureHeaders: { host: string; path?: string; headerName: string }[];
         approvedIndexedDbScopes: IndexedDbScopeDecl[];
         approvedDomSelectors: DomSelectorDecl[];
+        approvedDomListSelectors: DomListSelectorDecl[];
         approvedGraphqlOps: GraphqlOpDeclaration[];
         approvedLocalStoragePointers: StoragePointerDecl[];
         approvedSessionStoragePointers: StoragePointerDecl[];
@@ -200,6 +206,7 @@ interface DeclaredScope {
   captureHeaders: { host: string; path?: string; headerName: string }[];
   indexedDbScopes: IndexedDbScopeDecl[];
   domSelectors: DomSelectorDecl[];
+  domListSelectors: DomListSelectorDecl[];
   graphqlOps: GraphqlOpDeclaration[];
   localStoragePointers: StoragePointerDecl[];
   sessionStoragePointers: StoragePointerDecl[];
@@ -222,6 +229,12 @@ function declaredScope(hello: HelloFrameFromServer): DeclaredScope {
       keys: [...d.keys],
     })),
     domSelectors: (hello.domSelectors ?? []).map((d) => ({ ...d })),
+    domListSelectors: (hello.domListSelectors ?? []).map((d) => ({
+      name: d.name,
+      itemSelector: d.itemSelector,
+      fields: d.fields.map((f) => ({ ...f })),
+      ...(d.maxItems !== undefined ? { maxItems: d.maxItems } : {}),
+    })),
     graphqlOps: (hello.graphqlOps ?? []).map((d) => ({
       name: d.name,
       operationName: d.operationName,
@@ -355,6 +368,10 @@ export async function handleServerHello(
           keys: [...d.keys],
         })),
         domSelectors: (record.domSelectors ?? []).map((d) => ({ ...d })),
+        domListSelectors: (record.domListSelectors ?? []).map((d) => ({
+          ...d,
+          fields: d.fields.map((f) => ({ ...f })),
+        })),
         graphqlOps: (record.graphqlOps ?? []).map((d) => ({ ...d })),
         localStoragePointers: (record.localStoragePointers ?? []).map((d) => ({ ...d })),
         sessionStoragePointers: (record.sessionStoragePointers ?? []).map((d) => ({ ...d })),
@@ -395,6 +412,7 @@ export async function handleServerHello(
         captureHeaders: [...granted.captureHeaders],
         indexedDbScopes: [...granted.indexedDbScopes],
         domSelectors: [...granted.domSelectors],
+        domListSelectors: [...granted.domListSelectors],
         graphqlOps: [...granted.graphqlOps],
         localStoragePointers: [...granted.localStoragePointers],
         sessionStoragePointers: [...granted.sessionStoragePointers],
@@ -418,6 +436,10 @@ export async function handleServerHello(
               keys: [...d.keys],
             })),
             declaredDomSelectors: scope.domSelectors.map((d) => ({ ...d })),
+            declaredDomListSelectors: scope.domListSelectors.map((d) => ({
+              ...d,
+              fields: d.fields.map((f) => ({ ...f })),
+            })),
             declaredGraphqlOps: scope.graphqlOps.map((d) => ({ ...d })),
             declaredLocalStoragePointers: scope.localStoragePointers.map((d) => ({ ...d })),
             declaredSessionStoragePointers: scope.sessionStoragePointers.map((d) => ({ ...d })),
@@ -433,6 +455,10 @@ export async function handleServerHello(
               keys: [...d.keys],
             })),
             approvedDomSelectors: approvedScope.domSelectors.map((d) => ({ ...d })),
+            approvedDomListSelectors: approvedScope.domListSelectors.map((d) => ({
+              ...d,
+              fields: d.fields.map((f) => ({ ...f })),
+            })),
             approvedGraphqlOps: approvedScope.graphqlOps.map((d) => ({ ...d })),
             approvedLocalStoragePointers: approvedScope.localStoragePointers.map((d) => ({ ...d })),
             approvedSessionStoragePointers: approvedScope.sessionStoragePointers.map((d) => ({ ...d })),

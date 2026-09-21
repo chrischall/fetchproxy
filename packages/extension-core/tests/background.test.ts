@@ -1025,6 +1025,7 @@ describe('dismiss-suppression (scope-update)', () => {
       captureHeaders: [] as { host: string; path?: string; headerName: string }[],
       indexedDbScopes: [] as import('../src/lib/scope.js').Scope['indexedDbScopes'],
       domSelectors: [] as import('../src/lib/scope.js').Scope['domSelectors'],
+      domListSelectors: [] as import('../src/lib/scope.js').Scope['domListSelectors'],
       graphqlOps: [] as import('../src/lib/scope.js').Scope['graphqlOps'],
       localStoragePointers: [] as import('../src/lib/scope.js').Scope['localStoragePointers'],
       sessionStoragePointers: [] as import('../src/lib/scope.js').Scope['sessionStoragePointers'],
@@ -1056,6 +1057,7 @@ describe('dismiss-suppression (scope-update)', () => {
       captureHeaders: [] as { host: string; path?: string; headerName: string }[],
       indexedDbScopes: [] as import('../src/lib/scope.js').Scope['indexedDbScopes'],
       domSelectors: [] as import('../src/lib/scope.js').Scope['domSelectors'],
+      domListSelectors: [] as import('../src/lib/scope.js').Scope['domListSelectors'],
       graphqlOps: [] as import('../src/lib/scope.js').Scope['graphqlOps'],
       localStoragePointers: [] as import('../src/lib/scope.js').Scope['localStoragePointers'],
       sessionStoragePointers: [] as import('../src/lib/scope.js').Scope['sessionStoragePointers'],
@@ -1118,6 +1120,7 @@ describe('multi-instance pending-pair dedup (0.6.0+)', () => {
       captureHeaders: result1.captureHeaders,
       indexedDbScopes: result1.indexedDbScopes,
       domSelectors: result1.domSelectors,
+      domListSelectors: result1.domListSelectors,
       graphqlOps: result1.graphqlOps,
       localStoragePointers: result1.localStoragePointers,
       sessionStoragePointers: result1.sessionStoragePointers,
@@ -1155,6 +1158,7 @@ describe('multi-instance pending-pair dedup (0.6.0+)', () => {
       captureHeaders: result1.captureHeaders,
       indexedDbScopes: result1.indexedDbScopes,
       domSelectors: result1.domSelectors,
+      domListSelectors: result1.domListSelectors,
       graphqlOps: result1.graphqlOps,
       localStoragePointers: result1.localStoragePointers,
       sessionStoragePointers: result1.sessionStoragePointers,
@@ -1212,6 +1216,7 @@ describe('multi-instance pending-pair dedup (0.6.0+)', () => {
       captureHeaders: r1.captureHeaders,
       indexedDbScopes: r1.indexedDbScopes,
       domSelectors: r1.domSelectors,
+      domListSelectors: r1.domListSelectors,
       graphqlOps: r1.graphqlOps,
       localStoragePointers: r1.localStoragePointers,
       sessionStoragePointers: r1.sessionStoragePointers,
@@ -1326,6 +1331,7 @@ describe('needs-pair supersedes queued scope-update at same key (finding 2)', ()
       captureHeaders: [] as { host: string; path?: string; headerName: string }[],
       indexedDbScopes: [] as import('../src/lib/scope.js').Scope['indexedDbScopes'],
       domSelectors: [] as import('../src/lib/scope.js').Scope['domSelectors'],
+      domListSelectors: [] as import('../src/lib/scope.js').Scope['domListSelectors'],
       graphqlOps: [] as import('../src/lib/scope.js').Scope['graphqlOps'],
       localStoragePointers: [] as import('../src/lib/scope.js').Scope['localStoragePointers'],
       sessionStoragePointers: [] as import('../src/lib/scope.js').Scope['sessionStoragePointers'],
@@ -1496,6 +1502,80 @@ describe('readDomTabMatcher (read_dom tab match, host-or-subdomain)', () => {
     // readDomTabMatcher must diverge from that here.
     const matches = readDomTabMatcher('https://example.com');
     expect(matches('https://app.example.com/x')).toBe(true);
+  });
+});
+
+import { resolveReadDomListRequest, readDomListTabMatcher } from '../src/background.js';
+import type { InnerRequestReadDomList, DomListSelectorDecl } from '@fetchproxy/protocol';
+
+describe('resolveReadDomListRequest (read_dom_list gate)', () => {
+  const declared: DomListSelectorDecl[] = [
+    {
+      name: 'chatMessages',
+      itemSelector: '[data-tid="message"]',
+      fields: [
+        { name: 'sender', selector: '.author' },
+        { name: 'text', selector: '.body' },
+      ],
+    },
+  ];
+  const req = (origin: string, name: string): InnerRequestReadDomList => ({
+    type: 'request',
+    id: 7,
+    op: 'read_dom_list',
+    init: { origin, name },
+  });
+
+  it('happy path: resolves the declared selector by name', () => {
+    const r = resolveReadDomListRequest(
+      req('https://app.example.com', 'chatMessages'),
+      declared,
+      ['app.example.com'],
+    );
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.selector).toEqual(declared[0]);
+  });
+
+  it('rejects a name not in the declared set (op-echoing error)', () => {
+    const r = resolveReadDomListRequest(
+      req('https://app.example.com', 'other'),
+      declared,
+      ['app.example.com'],
+    );
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error).toContain('not in declared set');
+    expect(r.error).toContain('other');
+  });
+
+  it('rejects an origin not covered by the approved domains', () => {
+    const r = resolveReadDomListRequest(
+      req('https://evil.example.org', 'chatMessages'),
+      declared,
+      ['app.example.com'],
+    );
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error).toContain('not in domains');
+    expect(r.error).toContain('evil.example.org');
+  });
+});
+
+describe('readDomListTabMatcher (read_dom_list tab match, host-or-subdomain)', () => {
+  it('matches a vendor subdomain tab against a declared apex origin', () => {
+    const matches = readDomListTabMatcher('https://example.com');
+    expect(matches('https://app.example.com/dashboard')).toBe(true);
+  });
+
+  it('still matches the apex origin itself', () => {
+    const matches = readDomListTabMatcher('https://example.com');
+    expect(matches('https://example.com/')).toBe(true);
+  });
+
+  it('does not match an unrelated domain that merely contains the apex as a suffix', () => {
+    const matches = readDomListTabMatcher('https://example.com');
+    expect(matches('https://evilexample.com/')).toBe(false);
   });
 });
 
@@ -1880,6 +1960,7 @@ describe('applyNeedsPairRecord and the stored session ephemeral (v4)', () => {
       captureHeaders: [],
       indexedDbScopes: [],
       domSelectors: [],
+      domListSelectors: [],
       graphqlOps: [],
       localStoragePointers: [],
       sessionStoragePointers: [],
@@ -1940,6 +2021,7 @@ describe('applyNeedsPairRecord and the stored session ephemeral (v4)', () => {
       captureHeaders: [],
       indexedDbScopes: [],
       domSelectors: [],
+      domListSelectors: [],
       graphqlOps: [],
       localStoragePointers: [],
       sessionStoragePointers: [],

@@ -4,7 +4,7 @@ import { scopeHash, intersectScope, isScopeSubset, type Scope } from './scope.js
 const base = (): Scope => ({
   capabilities: ['fetch', 'read_cookies'], cookieKeys: ['sid', 'cf'],
   localStorageKeys: [], sessionStorageKeys: [], captureHeaders: [],
-  indexedDbScopes: [], domSelectors: [], graphqlOps: [],
+  indexedDbScopes: [], domSelectors: [], domListSelectors: [], graphqlOps: [],
   localStoragePointers: [], sessionStoragePointers: [],
 });
 

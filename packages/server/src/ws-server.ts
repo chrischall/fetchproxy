@@ -11,6 +11,7 @@ import type {
   CaptureHeaderDecl,
   IndexedDbScopeDecl,
   DomSelectorDecl,
+  DomListSelectorDecl,
   GraphqlOpDeclaration,
   StoragePointerDecl,
   InnerFrame,
@@ -220,6 +221,16 @@ export interface FetchproxyServerOpts {
    * a page writes into a hidden input that a POST body must carry.
    */
   domSelectors?: DomSelectorDecl[];
+  /**
+   * 3.1.0+: declared REPEATED DOM selectors for `readDomList()`. Each entry
+   * is `{ name, itemSelector, fields, maxItems? }`. Per-call requests
+   * reference one entry by `name`. Reads a list from the matched tab's DOM
+   * (isolated-world `querySelectorAll(itemSelector)`, then each declared
+   * field resolved per matched item) — `read_dom`'s single `querySelector`
+   * widened to a repeated structure, e.g. a chat's currently-rendered
+   * messages.
+   */
+  domListSelectors?: DomListSelectorDecl[];
   /**
    * 1.x+: declared GraphQL operations for `graphqlQuery()`. Each entry
    * is `{ name, operationName }`. Requires `'graphql'` in `capabilities`.
@@ -1377,6 +1388,7 @@ interface ResolvedOpts {
   localStoragePointers: StoragePointerDecl[];
   sessionStoragePointers: StoragePointerDecl[];
   domSelectors: DomSelectorDecl[];
+  domListSelectors: DomListSelectorDecl[];
   graphqlOps: GraphqlOpDeclaration[];
   fetchTimeoutMs?: number;
   /** #237: reply grace on a verb the caller gave its own `timeoutMs`. */
@@ -1497,6 +1509,12 @@ export class FetchproxyServer {
   private pendingIdb = new Map<
     number,
     { resolve: (v: Record<string, unknown>) => void; reject: (e: Error) => void }
+  >();
+  // 3.1.0+: read_dom_list awaiters resolve an array of field-value rows —
+  // a different shape from `pendingStorage`'s single map, so its own map.
+  private pendingDomList = new Map<
+    number,
+    { resolve: (v: Record<string, string>[]) => void; reject: (e: Error) => void }
   >();
   // download awaiters resolve the saved-file metadata (path + size + mime).
   private pendingDownload = new Map<
@@ -1630,6 +1648,16 @@ export class FetchproxyServer {
         name: d.name,
         selector: d.selector,
         ...(d.attribute !== undefined ? { attribute: d.attribute } : {}),
+      })),
+      domListSelectors: (opts.domListSelectors ?? []).map((d) => ({
+        name: d.name,
+        itemSelector: d.itemSelector,
+        fields: d.fields.map((f) => ({
+          name: f.name,
+          ...(f.selector !== undefined ? { selector: f.selector } : {}),
+          ...(f.attribute !== undefined ? { attribute: f.attribute } : {}),
+        })),
+        ...(d.maxItems !== undefined ? { maxItems: d.maxItems } : {}),
       })),
       graphqlOps: (opts.graphqlOps ?? []).map((d) => ({
         name: d.name,
@@ -1774,6 +1802,7 @@ export class FetchproxyServer {
         ownLocalStoragePointers: this.opts.localStoragePointers,
         ownSessionStoragePointers: this.opts.sessionStoragePointers,
         ownDomSelectors: this.opts.domSelectors,
+        ownDomListSelectors: this.opts.domListSelectors,
         ownGraphqlOps: this.opts.graphqlOps,
         onPairCode: this.opts.onPairCode,
         extensionTrust: this.extensionTrust(),
@@ -1815,6 +1844,7 @@ export class FetchproxyServer {
         localStoragePointers: this.opts.localStoragePointers,
         sessionStoragePointers: this.opts.sessionStoragePointers,
         domSelectors: this.opts.domSelectors,
+        domListSelectors: this.opts.domListSelectors,
         graphqlOps: this.opts.graphqlOps,
         extensionTrust: this.extensionTrust(),
         requireExtensionIdentity: this.opts.requireExtensionIdentity,
@@ -2125,6 +2155,7 @@ export class FetchproxyServer {
         this.pendingRedirect.delete(id);
         this.pendingDownload.delete(id);
         this.pendingIdb.delete(id);
+        this.pendingDomList.delete(id);
         this.pendingGraphql.delete(id);
       }
       throw err;
@@ -3401,6 +3432,64 @@ export class FetchproxyServer {
   }
 
   /**
+   * 3.1.0+: read a declared REPEATED DOM structure from the user's
+   * signed-in tab. Requires `'read_dom_list'` in capabilities AND `name` to
+   * match a declared `domListSelectors` entry. The extension resolves the
+   * entry's `itemSelector` via `document.querySelectorAll` in the matched
+   * tab's DOM (isolated world), then resolves each declared field against
+   * every matched item in turn — no page-JS execution, same as `readDom`.
+   *
+   * Returns one row per matched item, in document order, truncated to the
+   * entry's declared `maxItems` when set. A field absent on a given item is
+   * omitted from that item's row (the row itself is still returned). Throws
+   * `FetchproxyProtocolError` on bridge failures and a plain `Error` on
+   * developer mistakes (undeclared capability, undeclared name).
+   *
+   * Reads only what is CURRENTLY rendered — a virtualized or lazily-loaded
+   * list returns only its visible rows. A caller that needs more scrolls
+   * the list (out of band) and calls again.
+   */
+  async readDomList(opts: {
+    domain?: string;
+    subdomain?: string;
+    name: string;
+  }): Promise<Record<string, string>[]> {
+    if (!this.opts.capabilities.includes('read_dom_list')) {
+      throw new Error(
+        'FetchproxyServer.readDomList(): MCP did not declare "read_dom_list" in capabilities',
+      );
+    }
+    await this.ensureConnected();
+    this.throwIfPendingPair();
+    if (typeof opts.name !== 'string' || opts.name.length === 0) {
+      throw new Error('FetchproxyServer.readDomList: opts.name must be a non-empty string');
+    }
+    this.assertScopeSubset(
+      [opts.name],
+      this.opts.domListSelectors.map((d) => d.name),
+      'domListSelectors',
+    );
+    if (opts.subdomain !== undefined) assertSubdomainLabel(opts.subdomain);
+    const baseDomain = this.resolveBaseDomain(opts.domain);
+    const host = opts.subdomain ? `${opts.subdomain}.${baseDomain}` : baseDomain;
+    const origin = `https://${host}`;
+    const id = this.nextRequestId++;
+    const inner: InnerFrame = {
+      type: 'request',
+      id,
+      op: 'read_dom_list',
+      init: { origin, name: opts.name },
+    };
+    const pending = this.guardPending(
+      new Promise<Record<string, string>[]>((resolve, reject) => {
+        this.pendingDomList.set(id, { resolve, reject });
+      }),
+    );
+    await this.sendInnerFrame(inner);
+    return this._withVerbTimeout(pending, this.pendingDomList, id, origin);
+  }
+
+  /**
    * 1.x+: run a declared GraphQL operation through the page's own Apollo
    * client (`window.__APOLLO_CLIENT__`) in the signed-in tab's MAIN world.
    * Requires `'graphql'` in capabilities AND `name` to match a declared
@@ -3634,6 +3723,24 @@ export class FetchproxyServer {
       }
       return;
     }
+    const domListCb = this.pendingDomList.get(inner.id);
+    if (domListCb) {
+      this.pendingDomList.delete(inner.id);
+      if (inner.ok) {
+        if (inner.op === 'read_dom_list' && inner.rows) {
+          domListCb.resolve(inner.rows.map((row) => ({ ...row })));
+        } else {
+          domListCb.reject(
+            new FetchproxyProtocolError(
+              `unexpected ${String(inner.op)} response on read_dom_list awaiter`,
+            ),
+          );
+        }
+      } else {
+        domListCb.reject(protocolErrorFrom(inner.error));
+      }
+      return;
+    }
     const downloadCb = this.pendingDownload.get(inner.id);
     if (downloadCb) {
       this.pendingDownload.delete(inner.id);
@@ -3735,6 +3842,8 @@ export class FetchproxyServer {
     this.pendingRedirect.clear();
     for (const { reject } of this.pendingIdb.values()) reject(err);
     this.pendingIdb.clear();
+    for (const { reject } of this.pendingDomList.values()) reject(err);
+    this.pendingDomList.clear();
     for (const { reject } of this.pendingDownload.values()) reject(err);
     this.pendingDownload.clear();
     for (const { reject } of this.pendingGraphql.values()) reject(err);

@@ -494,6 +494,101 @@ function assertDomSelectorsArray(value: unknown, label: string): void {
 }
 
 /**
+ * Structural validation of a `domListSelectors` array. Each entry is a
+ * `{ name, itemSelector, fields, maxItems? }` tuple; `name` and `itemSelector`
+ * follow the same rules as `domSelectors`' `name`/`selector`, `fields` is a
+ * non-empty array of `{ name, selector?, attribute? }` (field `name` unique
+ * WITHIN the entry, `selector` optional this time since an item's own text
+ * is a legal field), and `maxItems` (optional) is an integer in `1..1000`.
+ */
+function assertDomListSelectorsArray(value: unknown, label: string): void {
+  if (!Array.isArray(value)) {
+    throw new ProtocolError(`${label}: expected array, got ${typeof value}`);
+  }
+  const seen = new Set<string>();
+  for (let i = 0; i < value.length; i++) {
+    const entry = value[i] as unknown;
+    assertObject(entry, `${label}[${i}]`);
+    if (entry.name === undefined) {
+      throw new ProtocolError(`${label}[${i}].name: missing`);
+    }
+    if (entry.itemSelector === undefined) {
+      throw new ProtocolError(`${label}[${i}].itemSelector: missing`);
+    }
+    if (entry.fields === undefined) {
+      throw new ProtocolError(`${label}[${i}].fields: missing`);
+    }
+    if (typeof entry.name !== 'string' || !SCOPE_KEY_RE.test(entry.name)) {
+      throw new ProtocolError(`${label}[${i}].name: invalid ${JSON.stringify(entry.name)}`);
+    }
+    if (typeof entry.itemSelector !== 'string' || !DOM_SELECTOR_RE.test(entry.itemSelector)) {
+      throw new ProtocolError(
+        `${label}[${i}].itemSelector: invalid ${JSON.stringify(entry.itemSelector)}`,
+      );
+    }
+    if (!Array.isArray(entry.fields) || entry.fields.length === 0) {
+      throw new ProtocolError(`${label}[${i}].fields: expected non-empty array`);
+    }
+    const fieldNames = new Set<string>();
+    for (let j = 0; j < entry.fields.length; j++) {
+      const field = entry.fields[j] as unknown;
+      const fieldLabel = `${label}[${i}].fields[${j}]`;
+      assertObject(field, fieldLabel);
+      if (field.name === undefined) {
+        throw new ProtocolError(`${fieldLabel}.name: missing`);
+      }
+      if (typeof field.name !== 'string' || !SCOPE_KEY_RE.test(field.name)) {
+        throw new ProtocolError(`${fieldLabel}.name: invalid ${JSON.stringify(field.name)}`);
+      }
+      if (field.selector !== undefined) {
+        if (typeof field.selector !== 'string' || !DOM_SELECTOR_RE.test(field.selector)) {
+          throw new ProtocolError(
+            `${fieldLabel}.selector: invalid ${JSON.stringify(field.selector)}`,
+          );
+        }
+      }
+      if (field.attribute !== undefined) {
+        if (typeof field.attribute !== 'string' || !DOM_ATTRIBUTE_RE.test(field.attribute)) {
+          throw new ProtocolError(
+            `${fieldLabel}.attribute: invalid ${JSON.stringify(field.attribute)}`,
+          );
+        }
+      }
+      if (fieldNames.has(field.name)) {
+        throw new ProtocolError(`${label}[${i}].fields: duplicate name ${JSON.stringify(field.name)}`);
+      }
+      fieldNames.add(field.name);
+      for (const k of Object.keys(field)) {
+        if (k !== 'name' && k !== 'selector' && k !== 'attribute') {
+          throw new ProtocolError(`${fieldLabel}: unexpected field ${JSON.stringify(k)}`);
+        }
+      }
+    }
+    if (entry.maxItems !== undefined) {
+      if (
+        typeof entry.maxItems !== 'number' ||
+        !Number.isInteger(entry.maxItems) ||
+        entry.maxItems < 1 ||
+        entry.maxItems > 1000
+      ) {
+        throw new ProtocolError(
+          `${label}[${i}].maxItems: invalid ${JSON.stringify(entry.maxItems)}`,
+        );
+      }
+    }
+    if (seen.has(entry.name)) {
+      throw new ProtocolError(`${label}: duplicate name ${JSON.stringify(entry.name)}`);
+    }
+    seen.add(entry.name);
+    for (const k of Object.keys(entry)) {
+      if (k !== 'name' && k !== 'itemSelector' && k !== 'fields' && k !== 'maxItems') {
+        throw new ProtocolError(`${label}[${i}]: unexpected field ${JSON.stringify(k)}`);
+      }
+    }
+  }
+}
+
+/**
  * Structural validation of a `graphqlOps` array. Each entry is a
  * `{ name, operationName }` tuple; `name` is unique and matches
  * `SCOPE_KEY_RE` (so per-call `name` can be cross-checked against the
@@ -651,6 +746,9 @@ function validateHello(raw: Record<string, unknown>): HelloFrame {
     }
     if (raw.domSelectors !== undefined) {
       assertDomSelectorsArray(raw.domSelectors, 'hello.domSelectors');
+    }
+    if (raw.domListSelectors !== undefined) {
+      assertDomListSelectorsArray(raw.domListSelectors, 'hello.domListSelectors');
     }
     // 2.5.0: optional list of extra frame types this server accepts from a
     // host. Entries are free strings on purpose — a value this validator
@@ -1122,6 +1220,24 @@ function validateInnerRequest(raw: Record<string, unknown>): InnerFrame {
     }
     return raw as unknown as InnerFrame;
   }
+  if (raw.op === 'read_dom_list') {
+    assertObject(raw.init, 'inner.init');
+    if (raw.init.origin === undefined) throw new ProtocolError('inner.init.origin: missing');
+    if (raw.init.name === undefined) throw new ProtocolError('inner.init.name: missing');
+    assertHttpsOriginOnly(raw.init.origin, 'inner.init.origin');
+    assertString(raw.init.name, 'inner.init.name');
+    if (raw.init.name.length === 0) {
+      throw new ProtocolError('inner.init.name: must be non-empty');
+    }
+    for (const k of Object.keys(raw.init)) {
+      if (k !== 'origin' && k !== 'name') {
+        throw new ProtocolError(
+          `inner.init: unexpected field ${JSON.stringify(k)} on read_dom_list`,
+        );
+      }
+    }
+    return raw as unknown as InnerFrame;
+  }
   if (raw.op === 'graphql_query') {
     assertObject(raw.init, 'inner.init');
     if (raw.init.name === undefined) throw new ProtocolError('inner.init.name: missing');
@@ -1183,7 +1299,7 @@ function validateInnerRequest(raw: Record<string, unknown>): InnerFrame {
     return raw as unknown as InnerFrame;
   }
   throw new ProtocolError(
-    `inner.op: must be one of "fetch", "read_cookies", "read_local_storage", "read_session_storage", "capture_request_header", "capture_redirect", "read_indexed_db", "read_dom", "download", "graphql_query", "write_cookies"; got ${JSON.stringify(raw.op)}`,
+    `inner.op: must be one of "fetch", "read_cookies", "read_local_storage", "read_session_storage", "capture_request_header", "capture_redirect", "read_indexed_db", "read_dom", "read_dom_list", "download", "graphql_query", "write_cookies"; got ${JSON.stringify(raw.op)}`,
   );
 }
 
@@ -1321,6 +1437,18 @@ function validateInnerResponse(raw: Record<string, unknown>): InnerFrame {
         throw new ProtocolError('inner.values: missing on read_dom response');
       }
       assertStringMap(raw.values, 'inner.values');
+      return raw as unknown as InnerFrame;
+    }
+    if (op === 'read_dom_list') {
+      if (raw.rows === undefined) {
+        throw new ProtocolError('inner.rows: missing on read_dom_list response');
+      }
+      if (!Array.isArray(raw.rows)) {
+        throw new ProtocolError('inner.rows: expected array, got ' + typeof raw.rows);
+      }
+      for (const [i, row] of raw.rows.entries()) {
+        assertStringMap(row, `inner.rows[${i}]`);
+      }
       return raw as unknown as InnerFrame;
     }
     if (op === 'graphql_query') {

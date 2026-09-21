@@ -36,6 +36,7 @@ export interface VerbServer {
     cookies: Record<string, string>; domain?: string; subdomain?: string; path?: string;
   }): Promise<string[]>;
   readDom(o: { names: string[]; domain?: string; subdomain?: string }): Promise<Record<string, string>>;
+  readDomList(o: { name: string; domain?: string; subdomain?: string }): Promise<Record<string, string>[]>;
   download(o: { url: string; filename?: string }): Promise<{
     path: string; bytes: number; mime?: string; finalUrl?: string;
   }>;

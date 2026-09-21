@@ -43,7 +43,7 @@ describe('scope teardown', () => {
   // an incidental edit. Bumping this number is the moment to ask whether the new
   // table also needs seeding, redaction or a popup surface — not just clearing.
   it('has exactly the scope tables it was last reviewed with', () => {
-    expect(ALL_SCOPE_MAPS).toHaveLength(12);
+    expect(ALL_SCOPE_MAPS).toHaveLength(13);
   });
 
   // Both teardown paths now read one list. Deriving the same set here is what

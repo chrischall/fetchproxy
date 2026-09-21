@@ -29,6 +29,7 @@ import {
 import { handleDownloadRequest } from './download.js';
 import { handleReadIndexedDbRequest } from './read-indexed-db.js';
 import { handleReadDomRequest } from './read-dom.js';
+import { handleReadDomListRequest } from './read-dom-list.js';
 import { handleGraphqlQueryRequest } from './graphql-query.js';
 
 export async function handleRequest(mcpId: string, req: InnerRequest): Promise<void> {
@@ -94,6 +95,10 @@ export async function handleRequest(mcpId: string, req: InnerRequest): Promise<v
   }
   if (req.op === 'read_dom') {
     await handleReadDomRequest(mcpId, req, domains);
+    return;
+  }
+  if (req.op === 'read_dom_list') {
+    await handleReadDomListRequest(mcpId, req, domains);
     return;
   }
   if (req.op === 'graphql_query') {

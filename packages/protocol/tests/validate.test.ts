@@ -2212,6 +2212,285 @@ describe('validateFrame (1.4.0 read_dom domSelectors)', () => {
   });
 });
 
+// 3.1.0: read_dom_list capability — declared REPEATED DOM reads + wire format.
+describe('validateFrame (3.1.0 read_dom_list domListSelectors)', () => {
+  const validHello = {
+    type: 'hello',
+    protocolVersion: 4,
+    role: 'server',
+    mcpId: 'microsoft-teams-mcp:0.0.1:a3f7c91d2e8b4f56',
+    serverName: 'microsoft-teams-mcp',
+    version: '0.0.1',
+    domains: ['teams.microsoft.com'],
+    identityX25519Pub: 'AAAA',
+    identityEd25519Pub: 'AAAA',
+    sessionNonce: 'AAAA',
+    sessionPub: SESSION_PUB,
+    answersExtNonce: ANSWERS_EXT_NONCE,
+    sessionSig: 'AAAA',
+  };
+
+  it('accepts read_dom_list capability + domListSelectors', () => {
+    expect(() =>
+      validateFrame({
+        ...validHello,
+        capabilities: ['fetch', 'read_dom_list'],
+        domListSelectors: [
+          {
+            name: 'chatMessages',
+            itemSelector: '[data-tid="chat-pane-message"]',
+            fields: [
+              { name: 'sender', selector: '[data-tid="message-author-name"]' },
+              { name: 'text', selector: '[data-tid="message-body"]' },
+              { name: 'time', selector: 'time', attribute: 'datetime' },
+            ],
+            maxItems: 200,
+          },
+        ],
+      }),
+    ).not.toThrow();
+  });
+
+  it('accepts empty domListSelectors', () => {
+    expect(() => validateFrame({ ...validHello, domListSelectors: [] })).not.toThrow();
+  });
+
+  it('rejects domListSelectors entry missing name', () => {
+    expect(() =>
+      validateFrame({
+        ...validHello,
+        domListSelectors: [{ itemSelector: 'li', fields: [{ name: 'x' }] }],
+      }),
+    ).toThrow(/domListSelectors.*name/);
+  });
+
+  it('rejects domListSelectors entry missing itemSelector', () => {
+    expect(() =>
+      validateFrame({
+        ...validHello,
+        domListSelectors: [{ name: 'x', fields: [{ name: 'x' }] }],
+      }),
+    ).toThrow(/domListSelectors.*itemSelector/);
+  });
+
+  it('rejects domListSelectors entry missing fields', () => {
+    expect(() =>
+      validateFrame({
+        ...validHello,
+        domListSelectors: [{ name: 'x', itemSelector: 'li' }],
+      }),
+    ).toThrow(/domListSelectors.*fields/);
+  });
+
+  it('rejects domListSelectors entry with an empty fields array', () => {
+    expect(() =>
+      validateFrame({
+        ...validHello,
+        domListSelectors: [{ name: 'x', itemSelector: 'li', fields: [] }],
+      }),
+    ).toThrow(/domListSelectors.*fields/);
+  });
+
+  it('rejects a field missing name', () => {
+    expect(() =>
+      validateFrame({
+        ...validHello,
+        domListSelectors: [{ name: 'x', itemSelector: 'li', fields: [{ selector: '.a' }] }],
+      }),
+    ).toThrow(/fields\[0\]\.name/);
+  });
+
+  it('accepts a field with no selector (item text itself)', () => {
+    expect(() =>
+      validateFrame({
+        ...validHello,
+        domListSelectors: [{ name: 'x', itemSelector: 'li', fields: [{ name: 'text' }] }],
+      }),
+    ).not.toThrow();
+  });
+
+  it('rejects duplicate field names within one entry', () => {
+    expect(() =>
+      validateFrame({
+        ...validHello,
+        domListSelectors: [
+          {
+            name: 'x',
+            itemSelector: 'li',
+            fields: [
+              { name: 'text', selector: '.a' },
+              { name: 'text', selector: '.b' },
+            ],
+          },
+        ],
+      }),
+    ).toThrow(/fields.*duplicate/);
+  });
+
+  it('rejects a bad field attribute name', () => {
+    expect(() =>
+      validateFrame({
+        ...validHello,
+        domListSelectors: [
+          {
+            name: 'x',
+            itemSelector: 'li',
+            fields: [{ name: 'a', selector: '.a', attribute: 'has space' }],
+          },
+        ],
+      }),
+    ).toThrow(/fields\[0\]\.attribute/);
+  });
+
+  it('rejects an unexpected field key', () => {
+    expect(() =>
+      validateFrame({
+        ...validHello,
+        domListSelectors: [
+          { name: 'x', itemSelector: 'li', fields: [{ name: 'a', bogus: 1 }] },
+        ],
+      }),
+    ).toThrow(/fields\[0\].*unexpected/);
+  });
+
+  it('rejects duplicate top-level names', () => {
+    expect(() =>
+      validateFrame({
+        ...validHello,
+        domListSelectors: [
+          { name: 'x', itemSelector: 'li', fields: [{ name: 'a' }] },
+          { name: 'x', itemSelector: 'ul', fields: [{ name: 'b' }] },
+        ],
+      }),
+    ).toThrow(/domListSelectors: duplicate/);
+  });
+
+  it('rejects an unexpected top-level field', () => {
+    expect(() =>
+      validateFrame({
+        ...validHello,
+        domListSelectors: [
+          { name: 'x', itemSelector: 'li', fields: [{ name: 'a' }], bogus: 1 },
+        ],
+      }),
+    ).toThrow(/domListSelectors\[0\]: unexpected/);
+  });
+
+  it('rejects maxItems out of bounds', () => {
+    expect(() =>
+      validateFrame({
+        ...validHello,
+        domListSelectors: [
+          { name: 'x', itemSelector: 'li', fields: [{ name: 'a' }], maxItems: 0 },
+        ],
+      }),
+    ).toThrow(/maxItems/);
+    expect(() =>
+      validateFrame({
+        ...validHello,
+        domListSelectors: [
+          { name: 'x', itemSelector: 'li', fields: [{ name: 'a' }], maxItems: 1001 },
+        ],
+      }),
+    ).toThrow(/maxItems/);
+  });
+
+  it('accepts a well-formed read_dom_list inner request', () => {
+    expect(() =>
+      validateInnerFrame({
+        type: 'request',
+        id: 1,
+        op: 'read_dom_list',
+        init: { origin: 'https://teams.microsoft.com', name: 'chatMessages' },
+      }),
+    ).not.toThrow();
+  });
+
+  it('rejects read_dom_list request with an empty name', () => {
+    expect(() =>
+      validateInnerFrame({
+        type: 'request',
+        id: 1,
+        op: 'read_dom_list',
+        init: { origin: 'https://teams.microsoft.com', name: '' },
+      }),
+    ).toThrow(/name/);
+  });
+
+  it('rejects read_dom_list request with a non-https origin', () => {
+    expect(() =>
+      validateInnerFrame({
+        type: 'request',
+        id: 1,
+        op: 'read_dom_list',
+        init: { origin: 'http://teams.microsoft.com', name: 'chatMessages' },
+      }),
+    ).toThrow(/origin/);
+  });
+
+  it('rejects read_dom_list request with an unexpected init field', () => {
+    expect(() =>
+      validateInnerFrame({
+        type: 'request',
+        id: 1,
+        op: 'read_dom_list',
+        init: { origin: 'https://teams.microsoft.com', name: 'chatMessages', extra: 1 },
+      }),
+    ).toThrow(/unexpected field.*read_dom_list/);
+  });
+
+  it('accepts a well-formed read_dom_list inner response', () => {
+    expect(() =>
+      validateInnerFrame({
+        type: 'response',
+        id: 1,
+        ok: true,
+        op: 'read_dom_list',
+        rows: [
+          { sender: 'A', text: 'hi' },
+          { sender: 'B', text: 'hello' },
+        ],
+      }),
+    ).not.toThrow();
+  });
+
+  it('accepts an empty rows array', () => {
+    expect(() =>
+      validateInnerFrame({ type: 'response', id: 1, ok: true, op: 'read_dom_list', rows: [] }),
+    ).not.toThrow();
+  });
+
+  it('rejects a read_dom_list response missing rows', () => {
+    expect(() =>
+      validateInnerFrame({ type: 'response', id: 1, ok: true, op: 'read_dom_list' }),
+    ).toThrow(/rows.*read_dom_list/);
+  });
+
+  it('rejects a read_dom_list response whose rows are not an array', () => {
+    expect(() =>
+      validateInnerFrame({
+        type: 'response',
+        id: 1,
+        ok: true,
+        op: 'read_dom_list',
+        rows: { sender: 'A' },
+      }),
+    ).toThrow(/rows/);
+  });
+
+  it('rejects a read_dom_list response with a non-string field value in a row', () => {
+    expect(() =>
+      validateInnerFrame({
+        type: 'response',
+        id: 1,
+        ok: true,
+        op: 'read_dom_list',
+        rows: [{ sender: 42 }],
+      }),
+    ).toThrow(/rows\[0\]/);
+  });
+});
+
 // 1.x: graphql capability — declared operation allowlist + wire format.
 describe('validateFrame (graphql graphqlOps)', () => {
   const validHello = {

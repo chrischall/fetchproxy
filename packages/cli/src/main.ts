@@ -9,6 +9,7 @@ import { runFetch, type VerbServerFactory } from './verbs/fetch.js';
 import { runRead } from './verbs/read.js';
 import { runSession } from './verbs/session.js';
 import { runDom } from './verbs/dom.js';
+import { runDomList } from './verbs/dom-list.js';
 import { runDownload } from './verbs/download.js';
 import { runCapture } from './verbs/capture.js';
 import { runCaptureRedirect } from './verbs/capture-redirect.js';
@@ -21,7 +22,7 @@ import { VERSION } from './version.js';
 const USAGE = `fpx ${VERSION} — fetchproxy CLI: authenticated fetches through your signed-in browser tab
 
   fpx profile add <name> --domain <apex> [--domain <apex>]…
-  fpx profile declare <name> [--cookie k]… [--local-storage k]… [--session-storage k]… [--capture-header name@host[/path]]… [--dom-selector handle=css]… [--allow-download] [--allow-cookie-write] [--allow-in-page] [--allow-capture-redirect] [--graphql-op handle=OperationName]…
+  fpx profile declare <name> [--cookie k]… [--local-storage k]… [--session-storage k]… [--capture-header name@host[/path]]… [--dom-selector handle=css]… [--dom-list-selector handle=item-css::field:sel[@attr],…[&max=N]]… [--allow-download] [--allow-cookie-write] [--allow-in-page] [--allow-capture-redirect] [--graphql-op handle=OperationName]…
   fpx profile list | show <name> | remove <name>
   fpx pair -p <name> [--domain <apex>] [--subdomain <label>]
   fpx health -p <name>
@@ -36,6 +37,7 @@ const USAGE = `fpx ${VERSION} — fetchproxy CLI: authenticated fetches through 
   fpx graphql <handle> -p <name> [--var k=v]… [--via-tab <url>]
   fpx session -p <name> [--storage-domain d] [--storage-subdomain s]
   fpx dom <name…> -p <name> [--storage-domain d] [--storage-subdomain s]
+  fpx dom-list <name> -p <name> [--storage-domain d] [--storage-subdomain s]
   fpx download <url> -p <name> [--filename f]
 
 --via-tab picks which open tab relays the request. Default: a tab on the
@@ -119,6 +121,11 @@ export async function runCli(argv: string[], io: Io, deps: CliDeps = {}): Promis
           if (existing) Object.assign(existing, decl);
           else p.domSelectors.push(decl);
         }
+        for (const decl of cmd.domListSelectors) {
+          const existing = p.domListSelectors.find((d) => d.name === decl.name);
+          if (existing) Object.assign(existing, decl);
+          else p.domListSelectors.push(decl);
+        }
         if (cmd.download) p.download = true;
         if (cmd.cookieWrite) p.cookieWrite = true;
         if (cmd.inPage) p.inPage = true;
@@ -152,6 +159,8 @@ export async function runCli(argv: string[], io: Io, deps: CliDeps = {}): Promis
         return await runSession(cmd, getProfile(cmd.profile, home), io, deps.bootstrapFn);
       case 'dom':
         return await runDom(cmd, getProfile(cmd.profile, home), io, deps.makeServer);
+      case 'dom-list':
+        return await runDomList(cmd, getProfile(cmd.profile, home), io, deps.makeServer);
       case 'capture':
         return await runCapture(cmd, getProfile(cmd.profile, home), io, deps.makeServer);
       case 'capture-redirect':

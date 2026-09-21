@@ -101,6 +101,11 @@ chrome.runtime.onMessage.addListener(
       store?: string;
       pointers?: Record<string, { storageKey: string; jsonPointer: string }>;
       selectors?: { name: string; selector: string; attribute?: string }[];
+      selector?: {
+        itemSelector: string;
+        fields: { name: string; selector?: string; attribute?: string }[];
+        maxItems?: number;
+      };
     },
     _sender,
     sendResponse,
@@ -153,6 +158,17 @@ chrome.runtime.onMessage.addListener(
         sendResponse({ ok: true, values });
       } catch (e) {
         sendResponse({ ok: false, error: `DOM read threw: ${(e as Error).message}` });
+      }
+      return false;
+    }
+    if (msg.kind === 'fetchproxy-read-dom-list' && msg.selector) {
+      // Same isolated-world guarantee as fetchproxy-read-dom, widened from
+      // querySelector to querySelectorAll + a per-item field map.
+      try {
+        const rows = readDomListValues(msg.selector);
+        sendResponse({ ok: true, rows });
+      } catch (e) {
+        sendResponse({ ok: false, error: `DOM list read threw: ${(e as Error).message}` });
       }
       return false;
     }
@@ -419,6 +435,53 @@ export function readDomValues(
     values[decl.name] = String(raw);
   }
   return values;
+}
+
+/**
+ * Read one field's value off an ITEM element (not the document) — same
+ * value-resolution rule as `readDomValues`: `attribute` set ⇒
+ * `getAttribute(attribute)`; unset ⇒ `.value` (form fields) falling back to
+ * `.textContent`. Absent `selector` ⇒ the item element itself, so a list
+ * whose item IS the text-bearing node needs no per-field selector.
+ */
+function readDomListField(
+  item: Element,
+  field: { name: string; selector?: string; attribute?: string },
+): string | undefined {
+  const el = field.selector ? item.querySelector(field.selector) : item;
+  if (el === null) return undefined;
+  const raw: unknown = field.attribute
+    ? el.getAttribute(field.attribute)
+    : ((el as HTMLInputElement).value ?? el.textContent);
+  if (raw === null || raw === undefined) return undefined;
+  return String(raw);
+}
+
+/**
+ * Read a declared REPEATED DOM structure from the live document (isolated
+ * world) — `readDomValues`'s `querySelector` widened to
+ * `querySelectorAll(itemSelector)` plus a per-item field map.
+ *
+ * One row per matched item, in document order, truncated to `maxItems` when
+ * set. A field absent on a given item is omitted from that row (the row
+ * itself is still returned — row COUNT always reflects `itemSelector`'s
+ * match count, mirroring the protocol's documented contract).
+ */
+export function readDomListValues(selector: {
+  itemSelector: string;
+  fields: { name: string; selector?: string; attribute?: string }[];
+  maxItems?: number;
+}): Record<string, string>[] {
+  const items = Array.from(document.querySelectorAll(selector.itemSelector));
+  const limited = selector.maxItems !== undefined ? items.slice(0, selector.maxItems) : items;
+  return limited.map((item) => {
+    const row: Record<string, string> = {};
+    for (const field of selector.fields) {
+      const value = readDomListField(item, field);
+      if (value !== undefined) row[field.name] = value;
+    }
+    return row;
+  });
 }
 
 async function runReadIndexedDb(

@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import type {
   CaptureHeaderDecl,
   DomSelectorDecl,
+  DomListSelectorDecl,
   GraphqlOpDeclaration,
   IndexedDbScopeDecl,
 } from '@fetchproxy/protocol';
@@ -30,6 +31,7 @@ export interface Profile {
   localStoragePointers: PointerDecl[];
   sessionStoragePointers: PointerDecl[];
   domSelectors: DomSelectorDecl[];
+  domListSelectors: DomListSelectorDecl[];
   download: boolean;
   /**
    * 1.12.0+: may this profile OVERWRITE the cookies it declares?
@@ -119,6 +121,7 @@ export function emptyProfile(domains: string[]): Profile {
     localStoragePointers: [],
     sessionStoragePointers: [],
     domSelectors: [],
+    domListSelectors: [],
     download: false,
     cookieWrite: false,
     inPage: false,
@@ -157,6 +160,18 @@ const ELEMENT_SHAPE: Record<string, (e: Record<string, unknown>) => boolean> = {
   localStoragePointers: (e) => hasStrings(e, ['outputKey', 'storageKey', 'jsonPointer']),
   sessionStoragePointers: (e) => hasStrings(e, ['outputKey', 'storageKey', 'jsonPointer']),
   domSelectors: (e) => hasStrings(e, ['name', 'selector']) && optionalString(e.attribute),
+  domListSelectors: (e) =>
+    hasStrings(e, ['name', 'itemSelector']) &&
+    Array.isArray(e.fields) &&
+    e.fields.length > 0 &&
+    (e.fields as unknown[]).every(
+      (f) =>
+        isRecord(f) &&
+        hasStrings(f, ['name']) &&
+        optionalString(f.selector) &&
+        optionalString(f.attribute),
+    ) &&
+    (e.maxItems === undefined || (typeof e.maxItems === 'number' && Number.isInteger(e.maxItems))),
 };
 
 function validateProfile(name: string, raw: unknown): Profile {
@@ -174,6 +189,7 @@ function validateProfile(name: string, raw: unknown): Profile {
   }
   for (const k of [
     'captureHeaders', 'indexedDb', 'localStoragePointers', 'sessionStoragePointers', 'domSelectors',
+    'domListSelectors',
   ] as const) {
     if (p[k] === undefined) continue;
     if (!Array.isArray(p[k])) fail(k);

@@ -20,6 +20,7 @@ import type {
   GraphqlOpDeclaration,
   IndexedDbScopeDecl,
   DomSelectorDecl,
+  DomListSelectorDecl,
   StoragePointerDecl,
 } from '@fetchproxy/protocol';
 import type { AnyPendingRecord } from './pending-records.js';
@@ -45,6 +46,9 @@ export const mcpIndexedDbScopes = new Map<string, IndexedDbScopeDecl[]>();
 // 1.4.0+: per-mcpId declared DOM selectors. The request handler gates
 // `read_dom` on the declared name set against this table.
 export const mcpDomSelectors = new Map<string, DomSelectorDecl[]>();
+// 3.1.0+: per-mcpId declared REPEATED DOM selectors. The request handler
+// gates `read_dom_list` on the declared name set against this table.
+export const mcpDomListSelectors = new Map<string, DomListSelectorDecl[]>();
 // 1.x+: per-mcpId declared GraphQL operations. The request handler gates
 // `graphql_query` on the declared name set (name -> operationName) against
 // this table.
@@ -78,6 +82,7 @@ export interface GrantedSessionScope {
   captureHeaders: { host: string; path?: string; headerName: string }[];
   indexedDbScopes: IndexedDbScopeDecl[];
   domSelectors: DomSelectorDecl[];
+  domListSelectors: DomListSelectorDecl[];
   graphqlOps: GraphqlOpDeclaration[];
   localStoragePointers: StoragePointerDecl[];
   sessionStoragePointers: StoragePointerDecl[];
@@ -107,6 +112,10 @@ export function grantedScopeFromApproval(
       keys: [...d.keys],
     })),
     domSelectors: (approved.domSelectors ?? []).map((d) => ({ ...d })),
+    domListSelectors: (approved.domListSelectors ?? []).map((d) => ({
+      ...d,
+      fields: d.fields.map((f) => ({ ...f })),
+    })),
     graphqlOps: (approved.graphqlOps ?? []).map((d) => ({ ...d })),
     localStoragePointers: (approved.localStoragePointers ?? []).map((d) => ({ ...d })),
     sessionStoragePointers: (approved.sessionStoragePointers ?? []).map((d) => ({ ...d })),
@@ -139,6 +148,10 @@ export function applyGrantedScopeToSession(
     })),
   );
   mcpDomSelectors.set(mcpId, scope.domSelectors.map((d) => ({ ...d })));
+  mcpDomListSelectors.set(
+    mcpId,
+    scope.domListSelectors.map((d) => ({ ...d, fields: d.fields.map((f) => ({ ...f })) })),
+  );
   mcpGraphqlOps.set(mcpId, scope.graphqlOps.map((d) => ({ ...d })));
   mcpLocalStoragePointers.set(mcpId, scope.localStoragePointers.map((d) => ({ ...d })));
   mcpSessionStoragePointers.set(mcpId, scope.sessionStoragePointers.map((d) => ({ ...d })));
@@ -164,6 +177,10 @@ export function sessionScopeSnapshot(mcpId: string): GrantedSessionScope | undef
       keys: [...d.keys],
     })),
     domSelectors: (mcpDomSelectors.get(mcpId) ?? []).map((d) => ({ ...d })),
+    domListSelectors: (mcpDomListSelectors.get(mcpId) ?? []).map((d) => ({
+      ...d,
+      fields: d.fields.map((f) => ({ ...f })),
+    })),
     graphqlOps: (mcpGraphqlOps.get(mcpId) ?? []).map((d) => ({ ...d })),
     localStoragePointers: (mcpLocalStoragePointers.get(mcpId) ?? []).map((d) => ({ ...d })),
     sessionStoragePointers: (mcpSessionStoragePointers.get(mcpId) ?? []).map((d) => ({ ...d })),
@@ -218,6 +235,7 @@ export const SCOPE_TABLES: Map<string, unknown>[] = [
   mcpCaptureHeaders,
   mcpIndexedDbScopes,
   mcpDomSelectors,
+  mcpDomListSelectors,
   mcpGraphqlOps,
   mcpLocalStoragePointers,
   mcpSessionStoragePointers,

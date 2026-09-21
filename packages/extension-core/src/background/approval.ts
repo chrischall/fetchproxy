@@ -88,6 +88,10 @@ export async function onApproval(approved: AnyPendingRecord): Promise<void> {
       keys: [...d.keys],
     })),
     domSelectors: (approved.domSelectors ?? []).map((d) => ({ ...d })),
+    domListSelectors: (approved.domListSelectors ?? []).map((d) => ({
+      ...d,
+      fields: d.fields.map((f) => ({ ...f })),
+    })),
     graphqlOps: (approved.graphqlOps ?? []).map((d) => ({
       name: d.name,
       operationName: d.operationName,

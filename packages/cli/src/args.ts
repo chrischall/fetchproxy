@@ -1,6 +1,11 @@
 import { readFileSync, readSync } from 'node:fs';
 import { parseArgs } from 'node:util';
-import type { CaptureHeaderDecl, DomSelectorDecl, GraphqlOpDeclaration } from '@fetchproxy/protocol';
+import type {
+  CaptureHeaderDecl,
+  DomSelectorDecl,
+  DomListSelectorDecl,
+  GraphqlOpDeclaration,
+} from '@fetchproxy/protocol';
 import { UsageError } from './output.js';
 
 export type Bucket = 'cookies' | 'localStorage' | 'sessionStorage' | 'indexedDb';
@@ -14,7 +19,8 @@ export type Command =
   | { kind: 'profile-add'; name: string; domains: string[] }
   | { kind: 'profile-declare'; name: string; cookies: string[]; localStorage: string[];
       sessionStorage: string[]; captureHeaders: CaptureHeaderDecl[];
-      domSelectors: DomSelectorDecl[]; download: boolean; cookieWrite: boolean;
+      domSelectors: DomSelectorDecl[]; domListSelectors: DomListSelectorDecl[];
+      download: boolean; cookieWrite: boolean;
       inPage: boolean; captureRedirect: boolean; graphqlOps: GraphqlOpDeclaration[] }
   | { kind: 'pair'; profile: string; domain?: string; subdomain?: string }
   | { kind: 'health'; profile: string }
@@ -27,6 +33,8 @@ export type Command =
       storageDomain?: string; storageSubdomain?: string }
   | { kind: 'session'; profile: string; storageDomain?: string; storageSubdomain?: string }
   | { kind: 'dom'; profile: string; names: string[];
+      storageDomain?: string; storageSubdomain?: string }
+  | { kind: 'dom-list'; profile: string; name: string;
       storageDomain?: string; storageSubdomain?: string }
   | { kind: 'download'; profile: string; url: string; filename?: string }
   | { kind: 'capture'; profile: string; names: string[]; timeoutMs?: number }
@@ -73,6 +81,57 @@ function parseDomSelectorFlag(raw: string): DomSelectorDecl {
     throw new UsageError(`--dom-selector expects 'handle=css-selector', got ${JSON.stringify(raw)}`);
   }
   return { name: raw.slice(0, eq), selector: raw.slice(eq + 1) };
+}
+
+const DOM_LIST_SELECTOR_USAGE =
+  "--dom-list-selector expects 'handle=item-css::field1:selector1[@attr1],field2:selector2[@attr2],...[&max=N]'";
+
+/**
+ * `--dom-list-selector 'chatMessages=[data-tid=message]::sender:.author,text:.body,time:time@datetime&max=200'`
+ *
+ * CLI-only convenience syntax for ad-hoc testing (`fpx dom-list`); the
+ * TypeScript API MCPs actually declare through (`createBootstrapOpts` /
+ * `domListSelectors` on `FetchproxyServer`) takes structured objects
+ * directly and has none of this format's limits — notably that `@` and `,`
+ * inside a field's CSS selector are unparseable here (an attribute-value
+ * selector containing either, e.g. `[data-x="a,b"]`, cannot be expressed on
+ * the command line; declare it in code instead).
+ */
+function parseDomListSelectorFlag(raw: string): DomListSelectorDecl {
+  const eq = raw.indexOf('=');
+  if (eq <= 0 || eq === raw.length - 1) {
+    throw new UsageError(DOM_LIST_SELECTOR_USAGE);
+  }
+  const name = raw.slice(0, eq);
+  const rest = raw.slice(eq + 1);
+  const sep = rest.indexOf('::');
+  if (sep <= 0) throw new UsageError(DOM_LIST_SELECTOR_USAGE);
+  const itemSelector = rest.slice(0, sep);
+  let fieldsPart = rest.slice(sep + 2);
+  let maxItems: number | undefined;
+  const maxSep = fieldsPart.lastIndexOf('&max=');
+  if (maxSep !== -1) {
+    const n = Number(fieldsPart.slice(maxSep + '&max='.length));
+    if (!Number.isInteger(n) || n < 1) throw new UsageError(DOM_LIST_SELECTOR_USAGE);
+    maxItems = n;
+    fieldsPart = fieldsPart.slice(0, maxSep);
+  }
+  if (fieldsPart.length === 0) throw new UsageError(DOM_LIST_SELECTOR_USAGE);
+  const fields = fieldsPart.split(',').map((f) => {
+    const colon = f.indexOf(':');
+    if (colon <= 0) throw new UsageError(DOM_LIST_SELECTOR_USAGE);
+    const fieldName = f.slice(0, colon);
+    const selectorAndAttr = f.slice(colon + 1);
+    const at = selectorAndAttr.lastIndexOf('@');
+    const selectorText = at === -1 ? selectorAndAttr : selectorAndAttr.slice(0, at);
+    const attribute = at === -1 ? undefined : selectorAndAttr.slice(at + 1);
+    return {
+      name: fieldName,
+      ...(selectorText.length > 0 ? { selector: selectorText } : {}),
+      ...(attribute !== undefined ? { attribute } : {}),
+    };
+  });
+  return { name, itemSelector, fields, ...(maxItems !== undefined ? { maxItems } : {}) };
 }
 
 function parseGraphqlOpFlag(raw: string): GraphqlOpDeclaration {
@@ -314,6 +373,7 @@ export function parseCliArgs(
         'session-storage': { type: 'string', multiple: true, default: [] },
         'capture-header': { type: 'string', multiple: true, default: [] },
         'dom-selector': { type: 'string', multiple: true, default: [] },
+        'dom-list-selector': { type: 'string', multiple: true, default: [] },
         'allow-download': { type: 'boolean', default: false },
         'allow-cookie-write': { type: 'boolean', default: false },
         'allow-in-page': { type: 'boolean', default: false },
@@ -372,6 +432,7 @@ export function parseCliArgs(
         sessionStorage: values['session-storage'] ?? [],
         captureHeaders: (values['capture-header'] ?? []).map(parseCaptureHeaderFlag),
         domSelectors: (values['dom-selector'] ?? []).map(parseDomSelectorFlag),
+        domListSelectors: (values['dom-list-selector'] ?? []).map(parseDomListSelectorFlag),
         download: values['allow-download'] ?? false,
         cookieWrite: values['allow-cookie-write'] ?? false,
         inPage: values['allow-in-page'] ?? false,
@@ -434,6 +495,14 @@ export function parseCliArgs(
   if (cmd === 'dom') {
     return {
       kind: 'dom', profile: requireProfile(values.profile), names: rest,
+      storageDomain: values['storage-domain'], storageSubdomain: values['storage-subdomain'],
+    };
+  }
+  if (cmd === 'dom-list') {
+    const name = rest[0];
+    if (!name) throw new UsageError('fpx dom-list requires <name>');
+    return {
+      kind: 'dom-list', profile: requireProfile(values.profile), name,
       storageDomain: values['storage-domain'], storageSubdomain: values['storage-subdomain'],
     };
   }

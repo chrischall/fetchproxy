@@ -7,6 +7,7 @@ import {
   type CaptureHeaderDecl,
   type IndexedDbScopeDecl,
   type DomSelectorDecl,
+  type DomListSelectorDecl,
   type GraphqlOpDeclaration,
   type StoragePointerDecl,
   type HelloFrameFromServer,
@@ -39,6 +40,8 @@ export interface BuildServerHelloOpts {
   sessionStoragePointers?: StoragePointerDecl[];
   /** 1.4.0+: declared DOM selectors for `read_dom`. */
   domSelectors?: DomSelectorDecl[];
+  /** 3.1.0+: declared REPEATED DOM selectors for `read_dom_list`. */
+  domListSelectors?: DomListSelectorDecl[];
   /** 1.x+: declared GraphQL operations for the `graphql` capability. */
   graphqlOps?: GraphqlOpDeclaration[];
   /** 2.5.0: extra host→peer frame types this server accepts (peers only). */
@@ -155,6 +158,18 @@ export async function buildServerHello(
       name: d.name,
       selector: d.selector,
       ...(d.attribute !== undefined ? { attribute: d.attribute } : {}),
+    }));
+  }
+  if (opts.domListSelectors && opts.domListSelectors.length > 0) {
+    hello.domListSelectors = opts.domListSelectors.map((d) => ({
+      name: d.name,
+      itemSelector: d.itemSelector,
+      fields: d.fields.map((f) => ({
+        name: f.name,
+        ...(f.selector !== undefined ? { selector: f.selector } : {}),
+        ...(f.attribute !== undefined ? { attribute: f.attribute } : {}),
+      })),
+      ...(d.maxItems !== undefined ? { maxItems: d.maxItems } : {}),
     }));
   }
   if (opts.graphqlOps && opts.graphqlOps.length > 0) {

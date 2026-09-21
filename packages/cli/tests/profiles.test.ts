@@ -60,6 +60,9 @@ describe('profiles', () => {
       ['localStoragePointers', [{ outputKey: 'o', storageKey: 's' }]],
       ['sessionStoragePointers', [{ outputKey: 'o', storageKey: 's', jsonPointer: 3 }]],
       ['domSelectors', [{ name: 'n', selector: '#a', attribute: '' }]],
+      ['domListSelectors', [{ name: 'n', itemSelector: '.row', fields: [] }]],
+      ['domListSelectors', [{ name: 'n', itemSelector: '.row', fields: [{ selector: '.a' }] }]],
+      ['domListSelectors', [{ name: 'n', fields: [{ name: 'a' }] }]],
     ];
     for (const [field, value] of cases) {
       saveProfiles({ bad: { ...emptyProfile(['x.com']), [field]: value } as never }, home);
@@ -75,9 +78,22 @@ describe('profiles', () => {
         indexedDb: [{ origin: 'https://x.com', database: 'db', store: 's', keys: ['k'] }],
         localStoragePointers: [{ outputKey: 'o', storageKey: 'auth', jsonPointer: '/token' }],
         domSelectors: [{ name: 'csrf', selector: 'meta[name=csrf]', attribute: 'content' }],
+        domListSelectors: [
+          {
+            name: 'chatMessages',
+            itemSelector: '[data-tid=message]',
+            fields: [
+              { name: 'sender', selector: '.author' },
+              { name: 'time', selector: 'time', attribute: 'datetime' },
+            ],
+            maxItems: 200,
+          },
+        ],
       } as never,
     }, home);
     expect(loadProfiles(home).ok.domSelectors[0].attribute).toBe('content');
+    expect(loadProfiles(home).ok.domListSelectors[0].fields[1]!.attribute).toBe('datetime');
+    expect(loadProfiles(home).ok.domListSelectors[0].maxItems).toBe(200);
   });
 
   it('getProfile throws a UsageError listing known profiles', () => {
