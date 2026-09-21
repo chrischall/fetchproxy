@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.1.0](https://github.com/chrischall/fetchproxy/compare/v3.0.1...v3.1.0) (2026-09-21)
+
+
+### Features
+
+* add read_dom_list capability for repeated DOM structures ([#381](https://github.com/chrischall/fetchproxy/issues/381)) ([ccf9425](https://github.com/chrischall/fetchproxy/commit/ccf9425372819890b892c6b6768997def79c366e)), closes [#382](https://github.com/chrischall/fetchproxy/issues/382)
+
 ## [3.0.1](https://github.com/chrischall/fetchproxy/compare/v3.0.0...v3.0.1) (2026-09-15)
 
 
