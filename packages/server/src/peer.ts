@@ -20,6 +20,7 @@ import {
   type CaptureHeaderDecl,
   type IndexedDbScopeDecl,
   type DomSelectorDecl,
+  type DomListSelectorDecl,
   type GraphqlOpDeclaration,
   type StoragePointerDecl,
   type HelloFrameFromExtension,
@@ -63,6 +64,7 @@ export interface PeerOpts {
   localStoragePointers?: StoragePointerDecl[];
   sessionStoragePointers?: StoragePointerDecl[];
   domSelectors?: DomSelectorDecl[];
+  domListSelectors?: DomListSelectorDecl[];
   graphqlOps?: GraphqlOpDeclaration[];
   /**
    * 1.12.0+ (#208): this MCP's pin on the extension's identity. Same store the
@@ -246,6 +248,7 @@ export async function startPeer(opts: PeerOpts): Promise<InternalPeerHandle> {
     captureHeaders: opts.captureHeaders,
     indexedDbScopes: opts.indexedDbScopes,
     domSelectors: opts.domSelectors,
+    domListSelectors: opts.domListSelectors,
     localStoragePointers: opts.localStoragePointers,
     sessionStoragePointers: opts.sessionStoragePointers,
     graphqlOps: opts.graphqlOps,

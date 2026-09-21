@@ -49,6 +49,7 @@ export const CAPABILITY_DISPLAY: Record<string, CapabilityDisplay> = {
   capture_request_header: { label: 'Capture request header', warn: true },
   read_indexed_db: { label: 'Read IndexedDB', warn: true },
   read_dom: { label: 'Read DOM elements', warn: true },
+  read_dom_list: { label: 'Read repeated DOM lists', warn: true },
   graphql: { label: 'Run declared GraphQL queries', warn: true },
   // Names the cost, not the mechanism: "run fetches in the page" sounds like
   // an implementation note, and the thing the user is actually approving is
@@ -80,6 +81,12 @@ export interface PreviousScope {
   captureHeaders: { host: string; path?: string; headerName: string }[];
   indexedDbScopes: { origin: string; database: string; store: string; keys: string[] }[];
   domSelectors: { name: string; selector: string; attribute?: string }[];
+  domListSelectors: {
+    name: string;
+    itemSelector: string;
+    fields: { name: string; selector?: string; attribute?: string }[];
+    maxItems?: number;
+  }[];
   graphqlOps: { name: string; operationName: string }[];
   localStoragePointers: { key: string; jsonPointer: string }[];
   sessionStoragePointers: { key: string; jsonPointer: string }[];
@@ -127,6 +134,18 @@ export interface PendingPair {
    */
   domSelectors?: { name: string; selector: string; attribute?: string }[];
   /**
+   * 3.1.0+: declared REPEATED DOM selectors (name + item CSS selector +
+   * per-item field map). Each is rendered on its own line so the user sees
+   * exactly which repeated DOM structure (e.g. a chat's messages) this MCP
+   * would read.
+   */
+  domListSelectors?: {
+    name: string;
+    itemSelector: string;
+    fields: { name: string; selector?: string; attribute?: string }[];
+    maxItems?: number;
+  }[];
+  /**
    * 1.x+: declared GraphQL operations (name + operationName). Each is
    * rendered on its own line so the user sees exactly which operations
    * this MCP would invoke through the tab's own Apollo client.
@@ -166,6 +185,12 @@ export interface ScopeSnapshot {
   captureHeaders: { host: string; path?: string; headerName: string }[];
   indexedDbScopes: { origin: string; database: string; store: string; keys: string[] }[];
   domSelectors: { name: string; selector: string; attribute?: string }[];
+  domListSelectors: {
+    name: string;
+    itemSelector: string;
+    fields: { name: string; selector?: string; attribute?: string }[];
+    maxItems?: number;
+  }[];
   graphqlOps: { name: string; operationName: string }[];
   localStoragePointers: { key: string; jsonPointer: string }[];
   sessionStoragePointers: { key: string; jsonPointer: string }[];
@@ -322,9 +347,41 @@ function domSelectorKey(s: { name: string; selector: string; attribute?: string 
   return `${s.name}\x00${s.selector}\x00${s.attribute ?? ''}`;
 }
 
+function domListSelectorKey(s: {
+  name: string;
+  itemSelector: string;
+  fields: { name: string; selector?: string; attribute?: string }[];
+  maxItems?: number;
+}): string {
+  // Sorted, and maxItems included — must match lib/scope.ts's
+  // normDomListSelector exactly. A maxItems-only change (or a reordered
+  // fields array with no other edit) widens the SCOPE HASH (via
+  // normDomListSelector) and has to show up in the "Now requesting" diff
+  // too (which needs this key to agree) — otherwise the popup asks for
+  // re-approval and then renders an empty added/removed section, which
+  // reads as "nothing changed" for a scope grant the user is being asked
+  // to approve.
+  const fields = [...s.fields]
+    .map((f) => `${f.name}\x01${f.selector ?? ''}\x01${f.attribute ?? ''}`)
+    .sort()
+    .join('\x02');
+  return `${s.name}\x00${s.itemSelector}\x00${fields}\x00${s.maxItems ?? ''}`;
+}
+
 /** Human-readable label for a DOM selector: `name → selector` (+ `[attr]`). */
 function domSelectorLabel(s: { name: string; selector: string; attribute?: string }): string {
   return `${s.name} → ${s.selector}${s.attribute ? ` [${s.attribute}]` : ''}`;
+}
+
+function domListSelectorLabel(s: {
+  name: string;
+  itemSelector: string;
+  fields: { name: string; selector?: string; attribute?: string }[];
+}): string {
+  const fields = s.fields
+    .map((f) => `${f.name}${f.selector ? `: ${f.selector}` : ''}${f.attribute ? ` [${f.attribute}]` : ''}`)
+    .join(', ');
+  return `${s.name} → ${s.itemSelector} (${fields})`;
 }
 
 function pointerKey(p: { key: string; jsonPointer: string }): string {
@@ -400,6 +457,11 @@ function appendDiffSummary(
     pending.domSelectors ?? [],
     domSelectorKey,
   );
+  const domListDiff = diffLists(
+    previous.domListSelectors,
+    pending.domListSelectors ?? [],
+    domListSelectorKey,
+  );
   const graphDiff = diffLists(
     previous.graphqlOps,
     pending.graphqlOps ?? [],
@@ -435,6 +497,7 @@ function appendDiffSummary(
     chDiff.kept.length +
     idbDiff.kept.length +
     domDiff.kept.length +
+    domListDiff.kept.length +
     graphDiff.kept.length;
   if (keptAny === 0) {
     appendBullet('(none)');
@@ -446,6 +509,7 @@ function appendDiffSummary(
     for (const h of chDiff.kept) appendBullet(`Capture: ${h.headerName} from ${captureHeaderTarget(h)}`);
     for (const s of idbDiff.kept) appendBullet(`IndexedDB: ${s.database}/${s.store}`);
     for (const s of domDiff.kept) appendBullet(`DOM: ${domSelectorLabel(s)}`);
+    for (const s of domListDiff.kept) appendBullet(`DOM list: ${domListSelectorLabel(s)}`);
     for (const g of graphDiff.kept) appendBullet(`GraphQL: ${graphqlOpLabel(g)}`);
   }
 
@@ -459,6 +523,7 @@ function appendDiffSummary(
     chDiff.added.length +
     idbDiff.added.length +
     domDiff.added.length +
+    domListDiff.added.length +
     graphDiff.added.length;
   if (addedAny === 0) {
     appendBullet('(none)');
@@ -470,6 +535,7 @@ function appendDiffSummary(
     for (const h of chDiff.added) appendBullet(`Capture: ${h.headerName} from ${captureHeaderTarget(h)}`);
     for (const s of idbDiff.added) appendBullet(`IndexedDB: ${s.database}/${s.store}`);
     for (const s of domDiff.added) appendBullet(`DOM: ${domSelectorLabel(s)}`);
+    for (const s of domListDiff.added) appendBullet(`DOM list: ${domListSelectorLabel(s)}`);
     for (const g of graphDiff.added) appendBullet(`GraphQL: ${graphqlOpLabel(g)}`);
   }
 
@@ -483,6 +549,7 @@ function appendDiffSummary(
     chDiff.removed.length +
     idbDiff.removed.length +
     domDiff.removed.length +
+    domListDiff.removed.length +
     graphDiff.removed.length +
     lpDiff.removed.length +
     spDiff.removed.length;
@@ -496,6 +563,7 @@ function appendDiffSummary(
     for (const h of chDiff.removed) appendBullet(`Capture: ${h.headerName} from ${captureHeaderTarget(h)}`);
     for (const s of idbDiff.removed) appendBullet(`IndexedDB: ${s.database}/${s.store}`);
     for (const s of domDiff.removed) appendBullet(`DOM: ${domSelectorLabel(s)}`);
+    for (const s of domListDiff.removed) appendBullet(`DOM list: ${domListSelectorLabel(s)}`);
     for (const g of graphDiff.removed) appendBullet(`GraphQL: ${graphqlOpLabel(g)}`);
   }
 
@@ -537,6 +605,27 @@ function appendDomSelectorsSubList(
   const ul = elem('ul', { class: 'dom-selectors' });
   for (const e of entries) {
     ul.appendChild(elem('li', {}, domSelectorLabel(e)));
+  }
+  dd.appendChild(ul);
+  dl.appendChild(dd);
+}
+
+function appendDomListSelectorsSubList(
+  dl: HTMLElement,
+  entries:
+    | readonly {
+        name: string;
+        itemSelector: string;
+        fields: { name: string; selector?: string; attribute?: string }[];
+      }[]
+    | undefined,
+): void {
+  if (!entries || entries.length === 0) return;
+  dl.appendChild(elem('dt', { class: 'cap-warn' }, 'Read repeated DOM lists'));
+  const dd = elem('dd', { class: 'cap-warn' });
+  const ul = elem('ul', { class: 'dom-list-selectors' });
+  for (const e of entries) {
+    ul.appendChild(elem('li', {}, domListSelectorLabel(e)));
   }
   dd.appendChild(ul);
   dl.appendChild(dd);
@@ -828,6 +917,7 @@ export function renderPopup(root: HTMLElement, state: PopupState): void {
       captureHeaders: pending.captureHeaders,
       indexedDbScopes: pending.indexedDbScopes,
       domSelectors: pending.domSelectors,
+      domListSelectors: pending.domListSelectors,
       graphqlOps: pending.graphqlOps,
       pairCode: '',
     }, previous);
@@ -918,6 +1008,7 @@ export function renderPopup(root: HTMLElement, state: PopupState): void {
   appendCaptureHeadersSubList(dl, pending.captureHeaders);
   appendIndexedDbScopesSubList(dl, pending.indexedDbScopes);
   appendDomSelectorsSubList(dl, pending.domSelectors);
+  appendDomListSelectorsSubList(dl, pending.domListSelectors);
   appendGraphqlOpsSubList(dl, pending.graphqlOps);
 
   root.appendChild(dl);
@@ -977,6 +1068,12 @@ interface PendingPairRecord {
   captureHeaders?: { host: string; path?: string; headerName: string }[];
   indexedDbScopes?: { origin: string; database: string; store: string; keys: string[] }[];
   domSelectors?: { name: string; selector: string; attribute?: string }[];
+  domListSelectors?: {
+    name: string;
+    itemSelector: string;
+    fields: { name: string; selector?: string; attribute?: string }[];
+    maxItems?: number;
+  }[];
   graphqlOps?: { name: string; operationName: string }[];
   localStoragePointers?: { key: string; jsonPointer: string }[];
   sessionStoragePointers?: { key: string; jsonPointer: string }[];
@@ -1002,6 +1099,12 @@ interface PendingScopeUpdateRecord {
   captureHeaders?: { host: string; path?: string; headerName: string }[];
   indexedDbScopes?: { origin: string; database: string; store: string; keys: string[] }[];
   domSelectors?: { name: string; selector: string; attribute?: string }[];
+  domListSelectors?: {
+    name: string;
+    itemSelector: string;
+    fields: { name: string; selector?: string; attribute?: string }[];
+    maxItems?: number;
+  }[];
   graphqlOps?: { name: string; operationName: string }[];
   localStoragePointers?: { key: string; jsonPointer: string }[];
   sessionStoragePointers?: { key: string; jsonPointer: string }[];
@@ -1105,6 +1208,10 @@ async function bootstrap(): Promise<void> {
             keys: [...d.keys],
           })),
           domSelectors: (pending.domSelectors ?? []).map((d) => ({ ...d })),
+          domListSelectors: (pending.domListSelectors ?? []).map((d) => ({
+            ...d,
+            fields: d.fields.map((f) => ({ ...f })),
+          })),
           graphqlOps: (pending.graphqlOps ?? []).map((d) => ({ ...d })),
           localStoragePointers: (pending.localStoragePointers ?? []).map((d) => ({ ...d })),
           sessionStoragePointers: (pending.sessionStoragePointers ?? []).map((d) => ({ ...d })),
@@ -1158,6 +1265,10 @@ async function bootstrap(): Promise<void> {
           keys: [...d.keys],
         })),
         domSelectors: (pending.domSelectors ?? []).map((d) => ({ ...d })),
+        domListSelectors: (pending.domListSelectors ?? []).map((d) => ({
+          ...d,
+          fields: d.fields.map((f) => ({ ...f })),
+        })),
         graphqlOps: (pending.graphqlOps ?? []).map((d) => ({ ...d })),
         pairCode: pending.pairCode,
       },

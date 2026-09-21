@@ -10,7 +10,7 @@ describe('serverOptsFor', () => {
       capabilities: ['fetch'], cookieKeys: [], localStorageKeys: [],
       sessionStorageKeys: [], captureHeaders: [], indexedDbScopes: [],
       localStoragePointers: [], sessionStoragePointers: [], domSelectors: [],
-      graphqlOps: [],
+      domListSelectors: [], graphqlOps: [],
     });
   });
 
@@ -67,6 +67,36 @@ describe('serverOptsFor', () => {
     const opts = serverOptsFor('resy', p, '1.4.0');
     decl.selector = 'h2';
     expect(opts.domSelectors).toEqual([{ name: 'title', selector: 'h1' }]);
+  });
+
+  it('domListSelectors → read_dom_list capability (appended after read_dom) and threads domListSelectors', () => {
+    const p = {
+      ...emptyProfile(['resy.com']),
+      cookies: ['authToken'],
+      domSelectors: [{ name: 'title', selector: 'h1' }],
+      domListSelectors: [
+        { name: 'rows', itemSelector: '.row', fields: [{ name: 'text', selector: '.body' }] },
+      ],
+    };
+    const opts = serverOptsFor('resy', p, '1.4.0');
+    expect(opts.capabilities).toEqual([
+      'fetch', 'read_cookies', 'read_dom', 'read_dom_list',
+    ]);
+    expect(opts.domListSelectors).toEqual([
+      { name: 'rows', itemSelector: '.row', fields: [{ name: 'text', selector: '.body' }] },
+    ]);
+  });
+
+  it('domListSelectors (including nested fields) are defensively copied', () => {
+    const field = { name: 'text', selector: '.body' };
+    const decl = { name: 'rows', itemSelector: '.row', fields: [field] };
+    const p = { ...emptyProfile(['resy.com']), domListSelectors: [decl] };
+    const opts = serverOptsFor('resy', p, '1.4.0');
+    field.selector = '.other';
+    decl.itemSelector = '.changed';
+    expect(opts.domListSelectors).toEqual([
+      { name: 'rows', itemSelector: '.row', fields: [{ name: 'text', selector: '.body' }] },
+    ]);
   });
 
   it('read_local_storage appears for raw keys with no pointers (and vice versa)', () => {

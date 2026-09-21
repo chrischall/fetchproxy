@@ -1,6 +1,6 @@
 import type { Capability } from '@fetchproxy/server';
 import type {
-  CaptureHeaderDecl, DomSelectorDecl, IndexedDbScopeDecl, StoragePointerDecl,
+  CaptureHeaderDecl, DomSelectorDecl, DomListSelectorDecl, IndexedDbScopeDecl, StoragePointerDecl,
   GraphqlOpDeclaration,
 } from '@fetchproxy/protocol';
 import type { Profile } from './profiles.js';
@@ -18,6 +18,7 @@ export interface DerivedServerOpts {
   localStoragePointers: StoragePointerDecl[];
   sessionStoragePointers: StoragePointerDecl[];
   domSelectors: DomSelectorDecl[];
+  domListSelectors: DomListSelectorDecl[];
   graphqlOps: GraphqlOpDeclaration[];
 }
 
@@ -35,10 +36,11 @@ export interface DerivedServerOpts {
  * the capability list and raw key sets — is byte-for-byte identical.
  *
  * NOTE: `bootstrap()` (and therefore the `session` verb, which calls it
- * directly) has no concept of `domSelectors`/`download` — those two
- * fields are `fpx`-only (`dom`/`download` verbs), so `runSession` never
- * declares `read_dom`/`download` in its hello. A profile that declares
- * either sends a wider hello on the direct verbs (`dom`, `download`,
+ * directly) has no concept of `domSelectors`/`domListSelectors`/`download` —
+ * those fields are `fpx`-only (`dom`/`dom-list`/`download` verbs), so
+ * `runSession` never declares `read_dom`/`read_dom_list`/`download` in its
+ * hello. A profile that declares any of them sends a wider hello on the
+ * direct verbs (`dom`, `dom-list`, `download`,
  * `get`, `cookies`, …, all of which route through `serverOptsFor`) than
  * `session` does. This is the same one-time, non-blocking scope-update
  * self-healing behavior already accepted for the pointer scopes above:
@@ -58,6 +60,7 @@ export function serverOptsFor(profileName: string, p: Profile, version: string):
   if (p.captureHeaders.length > 0) capabilities.push('capture_request_header');
   if (p.indexedDb.length > 0) capabilities.push('read_indexed_db');
   if (p.domSelectors.length > 0) capabilities.push('read_dom');
+  if (p.domListSelectors.length > 0) capabilities.push('read_dom_list');
   if (p.download === true) capabilities.push('download');
   if (p.cookieWrite === true) capabilities.push('write_cookies');
   if (p.inPage === true) capabilities.push('fetch_in_page');
@@ -92,6 +95,10 @@ export function serverOptsFor(profileName: string, p: Profile, version: string):
       jsonPointer: ptr.jsonPointer,
     })),
     domSelectors: p.domSelectors.map((d) => ({ ...d })),
+    domListSelectors: p.domListSelectors.map((d) => ({
+      ...d,
+      fields: d.fields.map((f) => ({ ...f })),
+    })),
     graphqlOps: p.graphqlOps.map((d) => ({ ...d })),
   };
 }

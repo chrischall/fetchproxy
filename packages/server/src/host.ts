@@ -23,6 +23,7 @@ import {
   type CaptureHeaderDecl,
   type IndexedDbScopeDecl,
   type DomSelectorDecl,
+  type DomListSelectorDecl,
   type GraphqlOpDeclaration,
   type StoragePointerDecl,
   type Frame,
@@ -219,6 +220,7 @@ export interface HostOpts {
   ownLocalStoragePointers?: StoragePointerDecl[];
   ownSessionStoragePointers?: StoragePointerDecl[];
   ownDomSelectors?: DomSelectorDecl[];
+  ownDomListSelectors?: DomListSelectorDecl[];
   ownGraphqlOps?: GraphqlOpDeclaration[];
   /**
    * 0.4.0+: invoked once on receipt of the extension hello with the
@@ -362,6 +364,7 @@ export async function startHost(opts: HostOpts): Promise<HostHandle> {
     localStoragePointers: opts.ownLocalStoragePointers,
     sessionStoragePointers: opts.ownSessionStoragePointers,
     domSelectors: opts.ownDomSelectors,
+    domListSelectors: opts.ownDomListSelectors,
     graphqlOps: opts.ownGraphqlOps,
   };
   const generateSessionKeypair = opts.generateSessionKeypair ?? generateX25519;

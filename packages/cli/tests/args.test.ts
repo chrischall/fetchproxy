@@ -53,7 +53,7 @@ describe('parseCliArgs', () => {
       kind: 'profile-declare', name: 'trip', cookies: ['datadome'],
       localStorage: [], sessionStorage: [],
       captureHeaders: [{ headerName: 'x-csrf-token', host: 'www.tripadvisor.com', path: '/data/*' }],
-      domSelectors: [], download: false, cookieWrite: false, inPage: false,
+      domSelectors: [], domListSelectors: [], download: false, cookieWrite: false, inPage: false,
       captureRedirect: false, graphqlOps: [],
     });
   });
@@ -63,7 +63,8 @@ describe('parseCliArgs', () => {
       '--dom-selector', 'title=h1.title', '--allow-download']);
     expect(cmd).toEqual({
       kind: 'profile-declare', name: 'r', cookies: [], localStorage: [], sessionStorage: [],
-      captureHeaders: [], domSelectors: [{ name: 'title', selector: 'h1.title' }], download: true,
+      captureHeaders: [], domSelectors: [{ name: 'title', selector: 'h1.title' }],
+      domListSelectors: [], download: true,
       cookieWrite: false, inPage: false, captureRedirect: false, graphqlOps: [],
     });
   });
@@ -87,6 +88,74 @@ describe('parseCliArgs', () => {
   it('parses dom with names and storage-domain/subdomain', () => {
     expect(parseCliArgs(['dom', 'a', 'b', '-p', 'x', '--storage-domain', 'd.com', '--storage-subdomain', 's']))
       .toEqual({ kind: 'dom', profile: 'x', names: ['a', 'b'], storageDomain: 'd.com', storageSubdomain: 's' });
+  });
+
+  it('parses dom-list with a single name and storage-domain/subdomain', () => {
+    expect(parseCliArgs(['dom-list', 'chatMessages', '-p', 'x', '--storage-domain', 'd.com', '--storage-subdomain', 's']))
+      .toEqual({ kind: 'dom-list', profile: 'x', name: 'chatMessages', storageDomain: 'd.com', storageSubdomain: 's' });
+  });
+
+  it('dom-list without a name throws a UsageError', () => {
+    expect(() => parseCliArgs(['dom-list', '-p', 'x'])).toThrow(UsageError);
+  });
+
+  it('parses --dom-list-selector: handle=item-css::field:selector,field2:sel2@attr', () => {
+    const cmd = parseCliArgs(['profile', 'declare', 'r', '--dom-list-selector',
+      'chatMessages=[data-tid=message]::sender:.author,text:.body,time:time@datetime']);
+    expect(cmd.kind).toBe('profile-declare');
+    expect((cmd as { domListSelectors: unknown }).domListSelectors).toEqual([
+      {
+        name: 'chatMessages',
+        itemSelector: '[data-tid=message]',
+        fields: [
+          { name: 'sender', selector: '.author' },
+          { name: 'text', selector: '.body' },
+          { name: 'time', selector: 'time', attribute: 'datetime' },
+        ],
+      },
+    ]);
+  });
+
+  it('--dom-list-selector supports a trailing &max=N', () => {
+    const cmd = parseCliArgs(['profile', 'declare', 'r', '--dom-list-selector',
+      'rows=.row::text:.body&max=50']);
+    expect((cmd as { domListSelectors: unknown }).domListSelectors).toEqual([
+      { name: 'rows', itemSelector: '.row', fields: [{ name: 'text', selector: '.body' }], maxItems: 50 },
+    ]);
+  });
+
+  it('--dom-list-selector rejects &max=0 and &max=1001 (matches the protocol bound)', () => {
+    expect(() => parseCliArgs(['profile', 'declare', 'r', '--dom-list-selector', 'rows=.row::text:.body&max=0']))
+      .toThrow(UsageError);
+    expect(() => parseCliArgs(['profile', 'declare', 'r', '--dom-list-selector', 'rows=.row::text:.body&max=1001']))
+      .toThrow(UsageError);
+  });
+
+  it('--dom-list-selector accepts &max=1000, the protocol bound', () => {
+    const cmd = parseCliArgs(['profile', 'declare', 'r', '--dom-list-selector', 'rows=.row::text:.body&max=1000']);
+    expect((cmd as { domListSelectors: { maxItems?: number }[] }).domListSelectors[0]!.maxItems).toBe(1000);
+  });
+
+  it('--dom-list-selector supports a field with no selector (item element itself)', () => {
+    const cmd = parseCliArgs(['profile', 'declare', 'r', '--dom-list-selector', 'rows=.row::text:']);
+    expect((cmd as { domListSelectors: unknown }).domListSelectors).toEqual([
+      { name: 'rows', itemSelector: '.row', fields: [{ name: 'text' }] },
+    ]);
+  });
+
+  it('--dom-list-selector without = throws a UsageError', () => {
+    expect(() => parseCliArgs(['profile', 'declare', 'r', '--dom-list-selector', 'nope']))
+      .toThrow(UsageError);
+  });
+
+  it('--dom-list-selector without :: throws a UsageError', () => {
+    expect(() => parseCliArgs(['profile', 'declare', 'r', '--dom-list-selector', 'rows=.row']))
+      .toThrow(UsageError);
+  });
+
+  it('--dom-list-selector with a field missing a colon throws a UsageError', () => {
+    expect(() => parseCliArgs(['profile', 'declare', 'r', '--dom-list-selector', 'rows=.row::text']))
+      .toThrow(UsageError);
   });
 
   it('parses download with url and --filename', () => {

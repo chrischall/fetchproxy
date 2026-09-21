@@ -46,6 +46,10 @@ export { CAPTURE_EXTRA_INFO_SPEC } from './background/handlers/capture.js';
 export { downloadValueFromItem } from './background/handlers/download.js';
 export { resolveReadDomRequest, readDomTabMatcher } from './background/handlers/read-dom.js';
 export {
+  resolveReadDomListRequest,
+  readDomListTabMatcher,
+} from './background/handlers/read-dom-list.js';
+export {
   resolveGraphqlQueryRequest,
   graphqlTabMatcher,
   isGraphqlSoftMiss,

@@ -61,6 +61,13 @@ export interface TrustRecord {
   }[];
   /** 1.4.0+: declared DOM selectors for read_dom. */
   domSelectors: { name: string; selector: string; attribute?: string }[];
+  /** 3.1.0+: declared REPEATED DOM selectors for read_dom_list. */
+  domListSelectors: {
+    name: string;
+    itemSelector: string;
+    fields: { name: string; selector?: string; attribute?: string }[];
+    maxItems?: number;
+  }[];
   /** 1.x+: declared GraphQL operations for the graphql capability. */
   graphqlOps: { name: string; operationName: string }[];
   /** 0.4.0+: declared JSON-pointer extractions over local/sessionStorage. */
@@ -106,6 +113,13 @@ export interface TrustInput {
   }[];
   /** 1.4.0+: declared DOM selectors. */
   domSelectors?: { name: string; selector: string; attribute?: string }[];
+  /** 3.1.0+: declared REPEATED DOM selectors. */
+  domListSelectors?: {
+    name: string;
+    itemSelector: string;
+    fields: { name: string; selector?: string; attribute?: string }[];
+    maxItems?: number;
+  }[];
   /** 1.x+: declared GraphQL operations. */
   graphqlOps?: { name: string; operationName: string }[];
   /** 0.4.0+: declared storage-pointer extractions. */
@@ -162,6 +176,7 @@ export class TrustStore {
       captureHeaders: Array.isArray(rec.captureHeaders) ? rec.captureHeaders : [],
       indexedDbScopes: Array.isArray(rec.indexedDbScopes) ? rec.indexedDbScopes : [],
       domSelectors: Array.isArray(rec.domSelectors) ? rec.domSelectors : [],
+      domListSelectors: Array.isArray(rec.domListSelectors) ? rec.domListSelectors : [],
       graphqlOps: Array.isArray(rec.graphqlOps) ? rec.graphqlOps : [],
       localStoragePointers: Array.isArray(rec.localStoragePointers)
         ? rec.localStoragePointers
@@ -194,6 +209,7 @@ export class TrustStore {
     const captureHeaders = input.captureHeaders ?? [];
     const indexedDbScopes = input.indexedDbScopes ?? [];
     const domSelectors = input.domSelectors ?? [];
+    const domListSelectors = input.domListSelectors ?? [];
     const graphqlOps = input.graphqlOps ?? [];
     const localStoragePointers = input.localStoragePointers ?? [];
     const sessionStoragePointers = input.sessionStoragePointers ?? [];
@@ -207,6 +223,7 @@ export class TrustStore {
       captureHeaders,
       indexedDbScopes,
       domSelectors,
+      domListSelectors,
       graphqlOps,
       localStoragePointers,
       sessionStoragePointers,

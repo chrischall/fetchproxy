@@ -25,6 +25,7 @@ describe('protocolErrorFrom — gate-#2 scope rejections', () => {
     'sessionStorage keys not in declared set: sid',
     'IndexedDB keys not in declared set: order-42',
     'read_dom names not in declared set: priceLabel',
+    'read_dom_list name not in declared set: chatMessages',
     'localStorage pointer (auth, /token) not in declared set [outputKey=jwt]',
     '(host, path, headerName) not in declared captureHeaders',
     '(origin, database, store) not in declared indexedDbScopes',
