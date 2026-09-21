@@ -112,7 +112,11 @@ function parseDomListSelectorFlag(raw: string): DomListSelectorDecl {
   const maxSep = fieldsPart.lastIndexOf('&max=');
   if (maxSep !== -1) {
     const n = Number(fieldsPart.slice(maxSep + '&max='.length));
-    if (!Number.isInteger(n) || n < 1) throw new UsageError(DOM_LIST_SELECTOR_USAGE);
+    // 1-1000, matching the protocol's own DomListSelectorDecl.maxItems bound
+    // (protocol/src/validate.ts) — catching it here means a bad value fails
+    // fast at parse time instead of mid-pair, after the declaration already
+    // reached profiles.json.
+    if (!Number.isInteger(n) || n < 1 || n > 1000) throw new UsageError(DOM_LIST_SELECTOR_USAGE);
     maxItems = n;
     fieldsPart = fieldsPart.slice(0, maxSep);
   }

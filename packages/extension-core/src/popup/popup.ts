@@ -351,11 +351,21 @@ function domListSelectorKey(s: {
   name: string;
   itemSelector: string;
   fields: { name: string; selector?: string; attribute?: string }[];
+  maxItems?: number;
 }): string {
-  const fields = s.fields
+  // Sorted, and maxItems included — must match lib/scope.ts's
+  // normDomListSelector exactly. A maxItems-only change (or a reordered
+  // fields array with no other edit) widens the SCOPE HASH (via
+  // normDomListSelector) and has to show up in the "Now requesting" diff
+  // too (which needs this key to agree) — otherwise the popup asks for
+  // re-approval and then renders an empty added/removed section, which
+  // reads as "nothing changed" for a scope grant the user is being asked
+  // to approve.
+  const fields = [...s.fields]
     .map((f) => `${f.name}\x01${f.selector ?? ''}\x01${f.attribute ?? ''}`)
+    .sort()
     .join('\x02');
-  return `${s.name}\x00${s.itemSelector}\x00${fields}`;
+  return `${s.name}\x00${s.itemSelector}\x00${fields}\x00${s.maxItems ?? ''}`;
 }
 
 /** Human-readable label for a DOM selector: `name → selector` (+ `[attr]`). */

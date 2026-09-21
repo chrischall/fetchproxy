@@ -124,6 +124,18 @@ describe('parseCliArgs', () => {
     ]);
   });
 
+  it('--dom-list-selector rejects &max=0 and &max=1001 (matches the protocol bound)', () => {
+    expect(() => parseCliArgs(['profile', 'declare', 'r', '--dom-list-selector', 'rows=.row::text:.body&max=0']))
+      .toThrow(UsageError);
+    expect(() => parseCliArgs(['profile', 'declare', 'r', '--dom-list-selector', 'rows=.row::text:.body&max=1001']))
+      .toThrow(UsageError);
+  });
+
+  it('--dom-list-selector accepts &max=1000, the protocol bound', () => {
+    const cmd = parseCliArgs(['profile', 'declare', 'r', '--dom-list-selector', 'rows=.row::text:.body&max=1000']);
+    expect((cmd as { domListSelectors: { maxItems?: number }[] }).domListSelectors[0]!.maxItems).toBe(1000);
+  });
+
   it('--dom-list-selector supports a field with no selector (item element itself)', () => {
     const cmd = parseCliArgs(['profile', 'declare', 'r', '--dom-list-selector', 'rows=.row::text:']);
     expect((cmd as { domListSelectors: unknown }).domListSelectors).toEqual([

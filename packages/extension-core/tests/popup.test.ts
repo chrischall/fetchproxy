@@ -543,6 +543,33 @@ describe('renderPopup', () => {
       expect(container.textContent).toContain('csrf → meta[name=csrf] [content]');
     });
 
+    it('renders DOM list selectors when read_dom_list declared', () => {
+      renderPopup(container, {
+        mode: 'pending-pair',
+        pending: {
+          serverName: 'acme-mcp',
+          version: '1.4.0',
+          domains: ['acme.com'],
+          capabilities: ['fetch', 'read_dom_list'],
+          domListSelectors: [
+            {
+              name: 'chatMessages',
+              itemSelector: '.msg',
+              fields: [
+                { name: 'sender', selector: '.author' },
+                { name: 'time', selector: 'time', attribute: 'datetime' },
+              ],
+            },
+          ],
+          pairCode: '1111-2222',
+        },
+        onApprove: () => undefined,
+        onCancel: () => undefined,
+      });
+      expect(container.textContent).toContain('Read repeated DOM lists');
+      expect(container.textContent).toContain('chatMessages → .msg (sender: .author, time: time [datetime])');
+    });
+
     it('renders declared GraphQL operations verbatim when graphql declared', () => {
       renderPopup(container, {
         mode: 'pending-pair',
@@ -770,6 +797,58 @@ describe('renderPopup', () => {
         expect(container.textContent).toContain(
           'GraphQL: restaurantsAvailability → RestaurantsAvailability',
         );
+      });
+
+      it('shows a maxItems-only domListSelectors change in the diff, not an empty "(none)" section', () => {
+        // Regression: scopeHash/isScopeSubset gate on the FULL DomListSelectorDecl
+        // including maxItems (lib/scope.ts's normDomListSelector), so a
+        // maxItems-only widening raises this scope-update prompt in the first
+        // place. domListSelectorKey (this file) has to agree, or the prompt
+        // renders with an empty "Now requesting" — a re-approval ask the user
+        // cannot see the reason for.
+        const declWithMax = (maxItems: number) => ({
+          name: 'chatMessages',
+          itemSelector: '.msg',
+          fields: [{ name: 'text', selector: '.body' }],
+          maxItems,
+        });
+        renderPopup(container, {
+          mode: 'scope-update',
+          serverName: 'teams-mcp',
+          pending: {
+            capabilities: ['fetch', 'read_dom_list'],
+            cookieKeys: [],
+            localStorageKeys: [],
+            sessionStorageKeys: [],
+            captureHeaders: [],
+            indexedDbScopes: [],
+            domSelectors: [],
+            domListSelectors: [declWithMax(300)],
+            graphqlOps: [],
+            localStoragePointers: [],
+            sessionStoragePointers: [],
+          },
+          previous: {
+            capabilities: ['fetch', 'read_dom_list'],
+            cookieKeys: [],
+            localStorageKeys: [],
+            sessionStorageKeys: [],
+            captureHeaders: [],
+            indexedDbScopes: [],
+            domSelectors: [],
+            domListSelectors: [declWithMax(200)],
+            graphqlOps: [],
+            localStoragePointers: [],
+            sessionStoragePointers: [],
+          },
+          onGrant: () => undefined,
+          onKeepAsIs: () => undefined,
+        });
+        expect(container.textContent).toContain('DOM list: chatMessages → .msg (text: .body)');
+        // And the OLD declaration must show up as no-longer-requested — if the
+        // key didn't include maxItems, old and new would compare equal and
+        // BOTH sections would render "(none)".
+        expect(container.textContent).toContain('No longer requested');
       });
 
       it('renders [Grant] and [Keep as is] buttons, NOT Approve/Cancel', () => {

@@ -63,6 +63,8 @@ describe('profiles', () => {
       ['domListSelectors', [{ name: 'n', itemSelector: '.row', fields: [] }]],
       ['domListSelectors', [{ name: 'n', itemSelector: '.row', fields: [{ selector: '.a' }] }]],
       ['domListSelectors', [{ name: 'n', fields: [{ name: 'a' }] }]],
+      ['domListSelectors', [{ name: 'n', itemSelector: '.row', fields: [{ name: 'a' }], maxItems: 0 }]],
+      ['domListSelectors', [{ name: 'n', itemSelector: '.row', fields: [{ name: 'a' }], maxItems: 1001 }]],
     ];
     for (const [field, value] of cases) {
       saveProfiles({ bad: { ...emptyProfile(['x.com']), [field]: value } as never }, home);

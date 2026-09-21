@@ -171,7 +171,11 @@ const ELEMENT_SHAPE: Record<string, (e: Record<string, unknown>) => boolean> = {
         optionalString(f.selector) &&
         optionalString(f.attribute),
     ) &&
-    (e.maxItems === undefined || (typeof e.maxItems === 'number' && Number.isInteger(e.maxItems))),
+    (e.maxItems === undefined ||
+      (typeof e.maxItems === 'number' &&
+        Number.isInteger(e.maxItems) &&
+        e.maxItems >= 1 &&
+        e.maxItems <= 1000)),
 };
 
 function validateProfile(name: string, raw: unknown): Profile {
