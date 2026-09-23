@@ -167,7 +167,18 @@ jobs:
     # flag and is false on a republish, which is the one run that exists to
     # publish. The reusable workflow folds both paths — a fresh release and a
     # `republish_tag` dispatch of an existing tag — into this one output.
-    if: needs.release-please.outputs.publish == 'true'
+    #
+    # Bound to main: a `republish_tag` dispatch runs THIS file as it exists on
+    # the dispatching ref, so without a binding a branch could rewrite the
+    # job and publish under this workflow's Trusted-Publisher identity. The
+    # `npm-publish` environment (deployment branches: main only, configured
+    # on GitHub and named in each package's npm Trusted Publisher) is what
+    # enforces it; the `github.ref` guard makes a dispatch from any other
+    # ref skip visibly. A republish is therefore dispatched from main — the
+    # tag it publishes is still whatever `republish_tag` names. Guarded by
+    # tests/publish-jobs-are-bound-to-main.test.ts.
+    if: needs.release-please.outputs.publish == 'true' && github.ref == 'refs/heads/main'
+    environment: npm-publish
     runs-on: ubuntu-latest
     permissions:
       contents: write

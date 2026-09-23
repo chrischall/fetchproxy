@@ -56,6 +56,18 @@ concurrency:
 
 jobs:
   publish-rc:
+    # Bound to main twice over. npm Trusted Publishing trusts this workflow
+    # by FILENAME, so without a binding anyone who can push a branch and
+    # dispatch could publish that branch's code to the `next` dist-tag under
+    # valid provenance. The `npm-publish` environment is the enforcing half:
+    # its deployment-branch policy (main only) is set on GitHub and the
+    # environment is named in each package's Trusted Publisher on npm, and
+    # neither is editable from a branch. The `if:` is the visible half — a
+    # dispatch from any other ref is skipped rather than left to fail at
+    # the environment gate. Guarded by
+    # tests/publish-jobs-are-bound-to-main.test.ts.
+    if: github.ref == 'refs/heads/main'
+    environment: npm-publish
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7.0.1
