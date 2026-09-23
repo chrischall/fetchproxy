@@ -502,10 +502,11 @@ export function readDomListValues(selector: {
   });
 }
 
-async function runReadIndexedDb(
+export async function runReadIndexedDb(
   database: string,
   store: string,
   keys: string[],
+  idb: IDBFactory = window.indexedDB,
 ): Promise<IdbResponse | IdbError> {
   // Open the IDB via the standard API, run a readonly transaction
   // against `store`, gather values for each key, close the DB, and
@@ -528,12 +529,31 @@ async function runReadIndexedDb(
     };
     let openReq: IDBOpenDBRequest;
     try {
-      openReq = window.indexedDB.open(database);
+      openReq = idb.open(database);
     } catch (e) {
       finish({ ok: false, error: `indexedDB.open threw: ${(e as Error).message}` });
       return;
     }
+    // `open(name)` with no version CREATES a database that doesn't exist yet
+    // (at v1, with no stores), and that would break the site: its own later
+    // `open(name, 1)` sees no upgrade and runs against a store-less DB until
+    // the user clears site data. `upgradeneeded` on a versionless open only
+    // fires for a brand-new database, so abort that transaction — which, for
+    // a new database, discards it — and report it as not present.
+    let notPresent = false;
+    openReq.onupgradeneeded = (): void => {
+      notPresent = true;
+      try {
+        openReq.transaction?.abort();
+      } catch {
+        // already finishing — onerror still reports
+      }
+    };
     openReq.onerror = (): void => {
+      if (notPresent) {
+        finish({ ok: false, error: `database "${database}" not present` });
+        return;
+      }
       finish({
         ok: false,
         error: `indexedDB.open(${database}) failed: ${openReq.error?.message ?? 'unknown'}`,
@@ -541,6 +561,10 @@ async function runReadIndexedDb(
     };
     openReq.onsuccess = (): void => {
       db = openReq.result;
+      if (notPresent) {
+        finish({ ok: false, error: `database "${database}" not present` });
+        return;
+      }
       let tx: IDBTransaction;
       try {
         if (!db.objectStoreNames.contains(store)) {
