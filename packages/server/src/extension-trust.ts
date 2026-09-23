@@ -29,7 +29,8 @@
  * do. What the pin closes is the REMOTE case, where the attacker is not on
  * this machine and cannot touch this file.
  */
-import { readFile, writeFile, rename, unlink, mkdir, chmod } from 'node:fs/promises';
+import { readFile, writeFile, rename, unlink, mkdir, chmod, rm } from 'node:fs/promises';
+import { randomBytes } from 'node:crypto';
 import { isAbsolute, join } from 'node:path';
 import { defaultIdentityDir, safeIdentityFileBase } from './identity.js';
 
@@ -283,10 +284,18 @@ export async function writeExtensionPin(
   await mkdir(dir, { recursive: true, mode: 0o700 });
   // Write-then-rename: a torn file here reads as "unreadable" and refuses
   // every connection, so it must never be possible to observe half of one.
-  const tmp = `${path}.tmp`;
-  await writeFile(tmp, JSON.stringify(pin, null, 2), { mode: 0o600 });
-  await chmod(tmp, 0o600);
-  await rename(tmp, path);
+  // B-BUG-11: a random staging name, so two concurrent writers never share
+  // one — with a fixed `${path}.tmp` the first rename moved the file away and
+  // the second failed ENOENT (or published the other writer's bytes).
+  const tmp = `${path}.${randomBytes(6).toString('hex')}.tmp`;
+  try {
+    await writeFile(tmp, JSON.stringify(pin, null, 2), { mode: 0o600, flag: 'wx' });
+    await chmod(tmp, 0o600);
+    await rename(tmp, path);
+  } catch (e) {
+    await rm(tmp, { force: true });
+    throw e;
+  }
 }
 
 /** Drop the pin. Returns whether there was one. */

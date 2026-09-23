@@ -7,6 +7,7 @@ import {
   rename,
   rm,
   unlink,
+  link,
 } from 'node:fs/promises';
 import { randomBytes } from 'node:crypto';
 import { isAbsolute, join } from 'node:path';
@@ -295,7 +296,54 @@ export async function loadOrCreateIdentity(
   }
   // Doesn't exist — generate fresh keypair. Built FROM the exported pieces, so
   // there is one definition of the format rather than two that can drift.
-  const id = await generateIdentity();
-  await writeIdentityFile(dir, serverName, id);
-  return id;
+  //
+  // B-BUG-11: publish it EXCLUSIVELY. Two processes of the same serverName
+  // starting together on first run (Claude Desktop and Claude Code launching
+  // the same MCP, two parallel `fpx` calls) both reach here; with a plain
+  // rename the last writer won and the other ran — and could get paired —
+  // under an identity no longer on disk. `link()` refuses to replace an
+  // existing file, so exactly one candidate is published and every loser
+  // re-reads and adopts the winner's.
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const id = await generateIdentity();
+    if (await publishIdentityIfAbsent(dir, serverName, id)) return id;
+    try {
+      return parseIdentity(await readFile(path, 'utf8'));
+    } catch (e: unknown) {
+      // Still absent: our staging file was swept by a concurrent writer
+      // before it could be linked. Go round again.
+      if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e;
+    }
+  }
+  throw new Error(`fetchproxy: could not create an identity for ${JSON.stringify(serverName)} in ${dir}`);
+}
+
+/**
+ * Stage `id` like `writeIdentityFile` does, then publish it with `link()`,
+ * which — unlike `rename()` — fails EEXIST instead of replacing a file another
+ * process published first. Returns whether OUR identity is the one on disk.
+ * The staging file is always removed.
+ */
+async function publishIdentityIfAbsent(
+  dir: string,
+  serverName: string,
+  id: Identity,
+): Promise<boolean> {
+  const path = identityFilePath(dir, serverName);
+  await sweepStagingFiles(dir, serverName);
+  const tmp = `${path}.${randomBytes(STAGING_BYTES).toString('hex')}.tmp`;
+  try {
+    await writeFile(tmp, serializeIdentity(id), { mode: 0o600, flag: 'wx' });
+    await chmod(tmp, 0o600);
+    await link(tmp, path);
+    return true;
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException).code;
+    // EEXIST: someone else published first. ENOENT: a concurrent writer's
+    // sweep took our staging file. Either way the caller re-reads.
+    if (code === 'EEXIST' || code === 'ENOENT') return false;
+    throw e;
+  } finally {
+    await rm(tmp, { force: true });
+  }
 }
