@@ -335,7 +335,7 @@ const cookies = await fp.readCookies({ subdomain: 'www' });
 
 `opts` accepts `{ domain?, subdomain? }` (same semantics as the verb shortcuts).
 
-Returns the raw `document.cookie` string from a tab on the chosen host. Only non-HttpOnly cookies are visible to page JS — that's the intentional security model.
+Without `keys`, returns the raw `document.cookie` string from a tab on the chosen host (non-HttpOnly cookies only). With `keys` (each must be in the declared `cookieKeys`), the extension reads each named cookie with `chrome.cookies.get`, which **does return HttpOnly cookies, including login-session cookies**. The pair popup lists the names and warns the user; see `docs/SECURITY.md` §T-cookie-exfil.
 
 Throws synchronously if the MCP did not declare `'read_cookies'` in `capabilities` (this is a programming mistake, not a runtime condition). Throws `FetchproxyProtocolError` if the bridge could not deliver the request.
 

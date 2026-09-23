@@ -462,6 +462,42 @@ describe('renderPopup', () => {
       expect(container.textContent).toContain('hb_session');
     });
 
+    it('warns that the listed cookies can include the HttpOnly login session (S-SEC-2)', () => {
+      renderPopup(container, {
+        mode: 'pending-pair',
+        pending: {
+          serverName: 'zola-mcp',
+          version: '0.7.0',
+          domains: ['zola.com'],
+          capabilities: ['fetch', 'read_cookies'],
+          cookieKeys: ['usr'],
+          pairCode: '1111-2222',
+        },
+        onApprove: () => undefined,
+        onCancel: () => undefined,
+      });
+      const warning = container.querySelector('.cookie-session-warning');
+      expect(warning).not.toBeNull();
+      expect(warning!.textContent).toMatch(/HttpOnly/);
+      expect(warning!.textContent).toMatch(/sign(ed)? in as you/i);
+    });
+
+    it('shows no cookie-session warning when no cookieKeys are declared', () => {
+      renderPopup(container, {
+        mode: 'pending-pair',
+        pending: {
+          serverName: 'x-mcp',
+          version: '0.1.0',
+          domains: ['x.com'],
+          capabilities: ['fetch'],
+          pairCode: '1111-2222',
+        },
+        onApprove: () => undefined,
+        onCancel: () => undefined,
+      });
+      expect(container.querySelector('.cookie-session-warning')).toBeNull();
+    });
+
     it('renders localStorageKeys when read_local_storage declared', () => {
       renderPopup(container, {
         mode: 'pending-pair',
@@ -673,6 +709,8 @@ describe('renderPopup', () => {
       // 'read_cookies' was added; 'auth' was already approved; 'MTOKEN' is new.
       expect(container.textContent).toContain('Capability: read_cookies');
       expect(container.textContent).toContain('Cookie: MTOKEN');
+      // A newly requested cookie carries the HttpOnly-session warning (S-SEC-2).
+      expect(container.querySelector('.cookie-session-warning')).not.toBeNull();
       expect(container.textContent).toContain('localStorage: tokenExpiry');
       // The approve button should be labeled "Approve update".
       const approve = container.querySelector('[data-action="approve"]') as HTMLButtonElement;

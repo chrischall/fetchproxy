@@ -201,7 +201,7 @@ Each MCP declares an opt-in capability set in its hello frame. The extension sto
 | Capability | What it lets the MCP do |
 |---|---|
 | `fetch` (default) | Issue HTTP requests against the user's signed-in tab. Granted to every MCP that pairs. |
-| `read_cookies` | Snapshot non-HttpOnly `document.cookie` from a tab on a declared domain. The popup shows a visible warning at pair time. |
+| `read_cookies` | Read the cookies named in `cookieKeys` for a declared domain via `chrome.cookies.get`, **including HttpOnly ones such as the login session cookie** (the legacy no-`keys` form returns the tab's non-HttpOnly `document.cookie`). The popup lists the names and warns about session cookies at pair time. |
 
 `fetch` is implied if `capabilities` is omitted. Including anything else is opt-in:
 

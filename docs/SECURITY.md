@@ -129,14 +129,19 @@ If an MCP legitimately needs more than one domain (rare), it enumerates them: `d
 
 ### T-cookie-exfil — `read_cookies` misuse
 
-`read_cookies` is the most-elevated capability in the protocol. The extension reads `document.cookie` from a tab on a declared domain and returns the string. Only non-HttpOnly cookies are visible to page JS — the HTTP-only session token that actually authenticates the user is NOT included — but the value still contains things like CSRF tokens and "is logged in?" markers and is enough to break a site's auth bootstrap in some designs.
+`read_cookies` is the most-elevated read capability in the protocol, and it **can return HttpOnly cookies, including the session cookie that signs the user in**. It has two request shapes:
+
+- **`{ origin, keys }`** (0.3.0+, what `FetchproxyServer.readCookies({ keys })` and `@fetchproxy/bootstrap` send) — the background reads each named cookie with `chrome.cookies.get`, which sees HttpOnly cookies. That is the reason the shape exists: many sites keep the login session in an HttpOnly cookie, and the cookie-session MCPs (e.g. zola-mcp's `usr`, infinitecampus-mcp's `JSESSIONID`, canvas-parent-mcp's `pseudonym_credentials`) lift exactly that cookie and replay it from Node. An MCP holding it can act as the user from anywhere, outside the browser, the extension and the domain gate, until the site expires the session.
+- **`{ tabUrl }`** (legacy 0.2.0 shape, `readCookies()` with no `keys`) — the content script returns the tab's `document.cookie`, which omits HttpOnly cookies.
+
+Earlier versions of this document said only non-HttpOnly cookies were visible. That was true of the legacy shape only, and wrong for the one every current MCP uses.
 
 **Defenses:**
 
 1. **Opt-in at the wire level.** `read_cookies` only works if the MCP declared it in `capabilities`. Omitting it disables the verb entirely; even the `FetchproxyServer.readCookies()` helper throws synchronously at the call site so an MCP author who forgot to declare it gets a clear error.
 2. **Approved at pair time.** The popup labels `read_cookies` with a visible warning marker (a `cap-warn`-styled list entry that decorates the label with a warning glyph) so the user notices the elevated trust. The trust record stores the approved capability set; a post-pair upgrade to `read_cookies` forces a re-pair with the new ask spelled out.
 3. **Domain-bound.** Like `fetch`, `read_cookies` must target a tab on a declared domain — there's no way to read cookies from outside the MCP's allowlist.
-4. **HTTP-only cookies are not exposed.** The browser refuses to surface them to page JS. fetchproxy doesn't have a side channel to read them either — it relies on `document.cookie`, same as any in-page script.
+4. **Named cookies only.** The `{ origin, keys }` shape reads only the cookie names the MCP declared in `cookieKeys` and the user approved at pair time; the pair popup lists every name and warns that they can include HttpOnly login-session cookies. It is NOT a defense against session exfiltration: if a declared name is the session cookie, the MCP gets the session. Only approve `read_cookies` for an MCP you would trust with your login on those domains.
 
 **Residual risk:** A user who approves a pair with `read_cookies` is giving the MCP a powerful read primitive for the declared domains. The popup tries to make that visible; the trust record forces re-approval on change. There is no further defense — if you don't trust the MCP, don't approve the pair.
 

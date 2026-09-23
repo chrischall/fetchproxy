@@ -310,6 +310,22 @@ function appendScopeSubList(
   dl.appendChild(dd);
 }
 
+/**
+ * `read_cookies` reads each declared name with `chrome.cookies.get`, which
+ * returns HttpOnly cookies — including the session cookie that signs the
+ * user in (several MCPs exist precisely to lift one). A user who knows that
+ * page JS cannot see HttpOnly cookies would otherwise assume the login
+ * session never leaves the browser, so say it at the moment they decide.
+ */
+export const COOKIE_SESSION_WARNING =
+  'These cookies can include HttpOnly login-session cookies. The MCP receives their values ' +
+  'and can use them to stay signed in as you outside this browser.';
+
+function appendCookieSessionWarning(dl: HTMLElement, keys: readonly string[] | undefined): void {
+  if (!keys || keys.length === 0) return;
+  dl.appendChild(elem('dd', { class: 'cap-warn cookie-session-warning' }, `⚠️ ${COOKIE_SESSION_WARNING}`));
+}
+
 function appendCaptureHeadersSubList(
   dl: HTMLElement,
   entries: readonly { host: string; path?: string; headerName: string }[] | undefined,
@@ -1003,6 +1019,7 @@ export function renderPopup(root: HTMLElement, state: PopupState): void {
     caps.includes('write_cookies') ? 'Read and overwrite cookies' : 'Read cookies',
     pending.cookieKeys,
   );
+  appendCookieSessionWarning(dl, pending.cookieKeys);
   appendScopeSubList(dl, 'Read localStorage', pending.localStorageKeys);
   appendScopeSubList(dl, 'Read sessionStorage', pending.sessionStorageKeys);
   appendCaptureHeadersSubList(dl, pending.captureHeaders);
