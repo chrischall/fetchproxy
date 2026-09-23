@@ -836,19 +836,21 @@ export async function runFetch(
   // fetch only. Caller can override by setting `x-csrf-token` in
   // init.headers explicitly. Sites that don't expose a CSRF on
   // window.__CSRF_TOKEN__ just won't have anything to forward.
-  const csrf = await getCsrf();
-  // A write's first pass asks for a tab that can inject the token. This tab
-  // can't — say so (typed, so the background keeps walking) rather than send
-  // a request the site will 403. See lib/csrf-soft-miss.ts.
-  if (init.requireCsrf === true && !csrf) {
-    return csrfSoftMiss(init.tabUrl);
-  }
   const headers: Record<string, string> = { ...(init.headers ?? {}) };
   // Header names are case-insensitive: a caller's `X-Csrf-Token` must suppress
   // the injection too, or fetch() merges both into "caller, page" and the
-  // site rejects the corrupted token.
+  // site rejects the corrupted token. A caller that brought its own token
+  // needs nothing from the page, so it also skips the round-trip and the
+  // soft miss below — this tab can serve the write as-is.
   const callerSetCsrf = Object.keys(headers).some((k) => k.toLowerCase() === 'x-csrf-token');
-  if (csrf && !callerSetCsrf) {
+  const csrf = callerSetCsrf ? undefined : await getCsrf();
+  // A write's first pass asks for a tab that can inject the token. This tab
+  // can't — say so (typed, so the background keeps walking) rather than send
+  // a request the site will 403. See lib/csrf-soft-miss.ts.
+  if (init.requireCsrf === true && !callerSetCsrf && !csrf) {
+    return csrfSoftMiss(init.tabUrl);
+  }
+  if (csrf) {
     headers['x-csrf-token'] = csrf;
   }
   // `inPage` requests are handed to the MAIN-world bridge rather than issued

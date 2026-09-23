@@ -85,4 +85,28 @@ describe('download timeout cancels the browser download (B-BUG-12)', () => {
     await p;
     expect(cancel).toHaveBeenCalledWith(42);
   });
+
+  it('a synchronous throw from downloads.cancel stays inside the timeout callback', async () => {
+    const { cancel, erase } = installDownloads();
+    cancel.mockImplementation(() => {
+      throw new Error('Invalid download id');
+    });
+    const p = handleDownloadRequest(
+      MCP_ID,
+      {
+        type: 'request',
+        op: 'download',
+        id: 3,
+        init: { url: 'https://alltrails.com/big.gpx', timeoutMs: 1000 },
+      },
+      ['alltrails.com'],
+    );
+    await vi.advanceTimersByTimeAsync(0);
+    await p;
+    await expect(vi.advanceTimersByTimeAsync(1000)).resolves.not.toThrow();
+    expect(sent.at(-1)!.inner).toMatchObject({ ok: false, error: 'timeout' });
+    expect(cancel).toHaveBeenCalledWith(42);
+    // The record cleanup is still attempted after a failed cancel.
+    expect(erase).toHaveBeenCalledWith({ id: 42 });
+  });
 });
