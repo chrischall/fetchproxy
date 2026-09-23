@@ -246,6 +246,7 @@ describe('B-BUG-9: peer-gone', () => {
       x25519Priv: x.privateKey,
       ed25519Pub: ed.publicKey,
       ed25519Priv: ed.privateKey,
+      createdAt: 0,
     };
     reconcileRemoteLinks([REMOTE]);
     localWs = FakeSocket.opened.find((s) => s.url.startsWith('ws://127.0.0.1'))!;
