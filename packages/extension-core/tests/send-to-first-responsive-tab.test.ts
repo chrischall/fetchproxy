@@ -133,9 +133,12 @@ describe('sendToFirstResponsiveTab', () => {
     expect(messagesSent.map((m) => m.tabId)).toEqual([20, 21]);
     // buildMessage gets the matched tab's actual URL (so verbs that
     // need to canonicalise tabUrl can do it per attempt).
+    // …and stamped with that tab's origin, which the content script checks
+    // against its own `location.origin` before serving (tab-navigation TOCTOU).
     expect(messagesSent[1]?.message).toEqual({
       kind: 'verb',
       tabUrl: 'https://target.example.com/fresh',
+      expectedOrigin: 'https://target.example.com',
     });
   });
 

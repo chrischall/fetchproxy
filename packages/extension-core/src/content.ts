@@ -100,6 +100,8 @@ chrome.runtime.onMessage.addListener(
   (
     msg: {
       kind?: string;
+      /** Origin of the tab URL the background matched; see below. */
+      expectedOrigin?: string;
       init?: FetchInit | GraphqlQueryRelayInit;
       keys?: string[];
       database?: string;
@@ -115,6 +117,19 @@ chrome.runtime.onMessage.addListener(
     _sender,
     sendResponse,
   ) => {
+    // Tab-navigation TOCTOU: the background matched (and domain-checked) this
+    // tab by the URL `chrome.tabs.query` reported, then messaged it. If the
+    // tab navigated to another site in between, THIS script is running on a
+    // page the MCP was never approved for. Refuse, typed, so the background's
+    // tab walk moves on to the next matching tab.
+    if (typeof msg.expectedOrigin === 'string' && msg.expectedOrigin !== location.origin) {
+      sendResponse({
+        ok: false,
+        wrongOrigin: true,
+        error: `tab navigated away from ${msg.expectedOrigin} (now on ${location.origin}); not serving`,
+      });
+      return false;
+    }
     if (msg.kind === 'fetchproxy-fetch' && msg.init) {
       void runFetch(msg.init as FetchInit)
         .then(sendResponse)
