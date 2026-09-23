@@ -1084,8 +1084,11 @@ export class FetchproxyTimeoutError extends FetchproxyProtocolError {
    * B-BUG-1: whether re-sending this request is safe. A timeout only means
    * the reply did not arrive in time — the extension may already have run the
    * request in the tab — so this is `false` for a non-idempotent `fetch`
-   * (anything but GET/HEAD/OPTIONS) the caller did not mark `retryOnTimeout`.
-   * `retryOnceOnTimeout` honours it. Defaults to `true` (the read verbs).
+   * (anything but GET/HEAD/OPTIONS) the caller did not mark `retryOnTimeout`,
+   * for `download` and `writeCookies`, and for `graphqlQuery` unless the
+   * caller marked it `retryOnTimeout` (a declared operation may be a
+   * mutation). `retryOnceOnTimeout` honours it. Defaults to `true` (the read
+   * verbs).
    */
   readonly retrySafe: boolean;
 
@@ -1483,6 +1486,10 @@ function isResendableRequest(inner: InnerRequest): boolean {
       return isRetrySafeOnTimeout(inner.init.method);
     case 'write_cookies':
     case 'download':
+    // A declared GraphQL operation may be a mutation; the server holds only
+    // its name, so it cannot tell. `graphqlQuery({ retryOnTimeout: true })`
+    // passes `resendable` explicitly for a known query.
+    case 'graphql_query':
       return false;
     default:
       return true;
@@ -2402,6 +2409,14 @@ export class FetchproxyServer {
      * It GOVERNS this call's own deadline (#237) — see `verbDeadlineMs`.
      */
     requestedTimeoutMs?: number,
+    /**
+     * B-BUG-1: stamped on the timeout error so `retryOnceOnTimeout` does not
+     * re-send a verb that may already have acted. A timeout only means the
+     * reply is late. `false` for `download` (a second one saves "file (1)"),
+     * `writeCookies`, and `graphqlQuery` unless the caller opts in — the same
+     * judgement `isResendableRequest` makes for the host-loss resend.
+     */
+    retrySafe = true,
   ): Promise<T> {
     const transportMs = this.opts.fetchTimeoutMs;
     if (transportMs === undefined || transportMs <= 0) return pending;
@@ -2425,6 +2440,7 @@ export class FetchproxyServer {
                 port: this.opts.port,
                 elapsedMs: Date.now() - start,
                 retryAttempted: false,
+                retrySafe,
                 graceMs,
                 ...(requestedTimeoutMs !== undefined ? { requestedTimeoutMs } : {}),
               }),
@@ -2959,7 +2975,15 @@ export class FetchproxyServer {
       }),
     );
     await this.sendInnerFrame(inner);
-    return this._withVerbTimeout(pending, this.pendingWriteCookies, id, `https://${host}`);
+    return this._withVerbTimeout(
+      pending,
+      this.pendingWriteCookies,
+      id,
+      `https://${host}`,
+      undefined,
+      // A write: never re-sent after an ambiguous timeout.
+      false,
+    );
   }
 
   /**
@@ -3372,6 +3396,8 @@ export class FetchproxyServer {
       // of #279 — "both verbs" was counted off the two call sites in view
       // rather than off the type. Three is still the number.
       opts.timeoutMs,
+      // A second download saves a duplicate "file (1)".
+      false,
     );
   }
 
@@ -3570,6 +3596,13 @@ export class FetchproxyServer {
     name: string;
     variables: Record<string, unknown>;
     tabUrl?: string;
+    /**
+     * Mark this operation safe to send again after a timeout or a host loss.
+     * Default `false`: a declared operation may be a MUTATION, and the server
+     * only holds its name — the document lives in the page — so it cannot
+     * tell. Pass `true` for an operation you know is a read-only query.
+     */
+    retryOnTimeout?: boolean;
   }): Promise<unknown> {
     if (!this.opts.capabilities.includes('graphql')) {
       throw new Error(
@@ -3605,8 +3638,16 @@ export class FetchproxyServer {
         this.pendingGraphql.set(id, { resolve, reject });
       }),
     );
-    await this.sendInnerFrame(inner);
-    return this._withVerbTimeout(pending, this.pendingGraphql, id, opts.name);
+    const retrySafe = opts.retryOnTimeout === true;
+    await this.sendInnerFrame(inner, { resendable: retrySafe });
+    return this._withVerbTimeout(
+      pending,
+      this.pendingGraphql,
+      id,
+      opts.name,
+      undefined,
+      retrySafe,
+    );
   }
 
   private assertScopeSubset(

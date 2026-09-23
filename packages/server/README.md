@@ -135,7 +135,14 @@ row). One variable has no option beside it:
   `fetch(init, { retryOnTimeout })`) for a POST that only reads — a
   search, a GraphQL query sent as a POST — or a write you know is safe
   to repeat; without it such a POST loses the cold-start retry. Pass
-  `false` to keep a read from being retried. `content_script_unreachable` — the request
+  `false` to keep a read from being retried. The other verbs follow
+  the same rule through `FetchproxyTimeoutError.retrySafe`, which
+  `retryOnceOnTimeout` honours: a timed-out `download()` (a second one
+  saves a duplicate "file (1)") or `writeCookies()` is marked
+  `retrySafe: false`, and so is a `graphqlQuery()` — a declared
+  operation may be a mutation, and the server holds only its name, not
+  the document, so it cannot tell. Pass `graphqlQuery({ …,
+  retryOnTimeout: true })` for an operation you know is a query. `content_script_unreachable` — the request
   never reached a tab — is retried for every method. Lengthen on slow
   machines where 2s isn't enough for the SW to wake; shorten if the
   caller is willing to surface the bridge-down error sooner. Pass `0`
@@ -173,11 +180,12 @@ row). One variable has no option beside it:
   `@fetchproxy/bootstrap` lift (which opens and closes a server per
   lift) or an `fpx` command. When it exits, every peer re-elects: the
   in-flight requests that are safe to repeat (reads, header/redirect
-  captures, and `fetch`es of GET/HEAD/OPTIONS or with
-  `retryOnTimeout: true`) are sent again through the new bridge under
+  captures, `fetch`es of GET/HEAD/OPTIONS, and `fetch`es or
+  `graphqlQuery`s with `retryOnTimeout: true`) are sent again through the new bridge under
   their original deadline; the ones that may already have run in the
-  browser (other `fetch` methods, `writeCookies`, `download`) fail with
-  an error saying so, rather than being repeated. Before this, every
+  browser (other `fetch` methods, `writeCookies`, `download`, and a
+  `graphqlQuery` not marked `retryOnTimeout: true`) fail with an error
+  saying so, rather than being repeated. Before this, every
   in-flight call on every peer failed with `extension disconnected`.
 
 ## API
