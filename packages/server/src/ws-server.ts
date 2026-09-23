@@ -2712,7 +2712,8 @@ export class FetchproxyServer {
    *  - adds `Content-Type: application/json` only for a non-GET request
    *    that carries a `body` (and only if the caller didn't set one);
    *  - `JSON.stringify`s the body (GET / no-body sends nothing);
-   *  - treats a `204` or an empty body as `data: null` (no parse);
+   *  - treats a `204`, an empty body, or a whitespace-only body as
+   *    `data: null` (no parse), the same rule as getJson/postJson;
    *  - otherwise `JSON.parse`s the body.
    *
    * Scope is serialization + header defaults + 204-handling +
