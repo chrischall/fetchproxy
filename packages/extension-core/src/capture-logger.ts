@@ -138,7 +138,10 @@ export interface ApolloBridgeWindow {
   location?: { origin?: string };
 }
 
-function post(win: ApolloBridgeWindow, message: unknown): void {
+function post(
+  win: Pick<ApolloBridgeWindow, 'postMessage' | 'location'>,
+  message: unknown,
+): void {
   try {
     win.postMessage(message, win.location?.origin ?? '*');
   } catch {
