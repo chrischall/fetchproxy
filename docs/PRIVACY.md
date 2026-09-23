@@ -42,11 +42,11 @@ Depending on the capabilities an MCP server declares and you approve at pair tim
 
 ## 3. Data Stored
 
-All persistent data is stored in `chrome.storage.local` on your device. It is **never synced** to `chrome.storage.sync`, never uploaded to any server, and never leaves your machine through the extension.
+All persistent data is stored on your device, in the extension's `chrome.storage.local` and its own IndexedDB. It is **never synced** to `chrome.storage.sync`, never uploaded to any server, and never leaves your machine through the extension.
 
 ### 3.1 Extension Identity
 
-Transporter generates a long-term Ed25519 signing keypair and an X25519 key-exchange keypair the first time it starts. These keys are used to authenticate the extension to MCP servers. They are stored in `chrome.storage.local`.
+Transporter generates a long-term Ed25519 signing keypair and an X25519 key-exchange keypair the first time it starts. These keys are used to authenticate the extension to MCP servers. They are stored in the extension's own IndexedDB, which websites and the extension's content scripts cannot access, and the private keys are held as non-extractable keys: the browser can sign with them, but will not hand their bytes to anyone, including the extension itself. (Versions up to 3.2.0 kept them in `chrome.storage.local`; the first start after upgrading moves them and deletes the old copy.)
 
 ### 3.2 Trust Records
 

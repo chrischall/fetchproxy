@@ -20,6 +20,7 @@ import {
   PROTOCOL_VERSION,
   type RawKeyPair,
 } from '@fetchproxy/protocol';
+import { generateExtensionIdentity } from '../src/identity-keys.js';
 
 /**
  * The transport with more than one bridge attached.
@@ -291,15 +292,7 @@ describe('two bridges at once', () => {
     mcpCapabilities.clear();
     state.trust = new TrustStore('2.1.0');
     state.sessions = new SessionKeys();
-    const x = await generateX25519();
-    const ed = await generateEd25519();
-    state.extIdentity = {
-      x25519Pub: x.publicKey,
-      x25519Priv: x.privateKey,
-      ed25519Pub: ed.publicKey,
-      ed25519Priv: ed.privateKey,
-      createdAt: 0,
-    };
+    state.extIdentity = await generateExtensionIdentity();
 
     reconcileRemoteLinks([REMOTE]);
     localWs = FakeSocket.opened.find((s) => s.url.startsWith('ws://127.0.0.1'))!;

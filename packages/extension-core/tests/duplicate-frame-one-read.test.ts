@@ -18,6 +18,7 @@ import {
   type EncryptedFrame,
   type RawKeyPair,
 } from '@fetchproxy/protocol';
+import { generateExtensionIdentity } from '../src/identity-keys.js';
 
 /**
  * One seq, one frame — including when the two copies arrive in the SAME read.
@@ -238,14 +239,7 @@ describe('extension: a duplicate frame in one read is handled exactly once', () 
     mcpCapabilities.clear();
     state.trust = new TrustStore('2.1.0');
     state.sessions = new SessionKeys();
-    const x = await generateX25519();
-    const ed = await generateEd25519();
-    state.extIdentity = {
-      x25519Pub: x.publicKey,
-      x25519Priv: x.privateKey,
-      ed25519Pub: ed.publicKey,
-      ed25519Priv: ed.privateKey,
-    };
+    state.extIdentity = await generateExtensionIdentity();
     connect();
     localWs = FakeSocket.opened.find((s) => s.url.startsWith('ws://127.0.0.1'))!;
     localWs.open();

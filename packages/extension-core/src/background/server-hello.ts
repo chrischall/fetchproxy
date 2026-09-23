@@ -28,7 +28,6 @@
  */
 
 import {
-  ed25519Sign,
   sha256,
   toB64,
   fromB64,
@@ -40,6 +39,7 @@ import {
 
 import type { ChromeApi } from '../chrome-api.js';
 import { ensureDomainTab } from '../ensure-domain-tab.js';
+import { signWithExtensionIdentity } from '../extension-identity.js';
 import { scopeHash } from '../lib/scope.js';
 
 import { state } from './state.js';
@@ -191,8 +191,8 @@ export async function onServerHello(link: Link, hello: HelloFrameFromServer): Pr
     // bound SYMMETRICALLY — after v4 neither side's contribution to the ECDH
     // can be substituted without a signature from a long-term key a relay
     // does not hold.
-    const sessionSig = await ed25519Sign(
-      state.extIdentity.ed25519Priv,
+    const sessionSig = await signWithExtensionIdentity(
+      state.extIdentity,
       readySignaturePayload(
         result.mcpSessionNonce,
         link.sessionNonce,

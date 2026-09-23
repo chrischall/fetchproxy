@@ -880,8 +880,11 @@ mechanism that a reader should rely on: neither ECDH input is a long-term key an
 more, so an identity holder with a recording of the frames has nothing left to
 derive with.
 
-(0.4.0 gave the extension a long-term identity of its own, stored in
-`chrome.storage.local`; it authenticates the `ready` and is never an ECDH input.)
+(0.4.0 gave the extension a long-term identity of its own; it authenticates
+the `ready` and is never an ECDH input. After 3.2.0 its private halves are
+non-extractable WebCrypto keys in the extension origin's IndexedDB — up to 3.2.0
+they were raw bytes in `chrome.storage.local`, where content scripts could read
+them. See SECURITY.md §T-fake-extension.)
 
 ### Pair code (SAS)
 

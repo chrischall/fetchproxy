@@ -14,6 +14,7 @@ import {
   type RawKeyPair,
 } from '@fetchproxy/protocol';
 import { v3ServerHello } from '../../../server/tests/cross-version/v3-fixtures.js';
+import { generateExtensionIdentity } from '../../src/identity-keys.js';
 
 /**
  * Case 2 of the plan's Group 5: a v3 MCP meeting a v4 extension, held to the
@@ -145,14 +146,7 @@ describe('cross-version: the frozen v3 MCP meets a v4 extension', () => {
     mcpCapabilities.clear();
     state.trust = new TrustStore('3.0.0');
     state.sessions = new SessionKeys();
-    const x = await generateX25519();
-    const ed = await generateEd25519();
-    state.extIdentity = {
-      x25519Pub: x.publicKey,
-      x25519Priv: x.privateKey,
-      ed25519Pub: ed.publicKey,
-      ed25519Priv: ed.privateKey,
-    };
+    state.extIdentity = await generateExtensionIdentity();
     connect();
     ws = FakeSocket.opened.find((s) => s.url.startsWith('ws://127.0.0.1'))!;
     ws.open();

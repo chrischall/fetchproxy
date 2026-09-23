@@ -22,7 +22,6 @@
  */
 
 import {
-  ed25519Sign,
   ecdhX25519,
   hkdfSha256,
   generateX25519,
@@ -34,6 +33,7 @@ import {
   type ReadyFrame,
 } from '@fetchproxy/protocol';
 import { ensureDomainTab } from '../ensure-domain-tab.js';
+import { signWithExtensionIdentity } from '../extension-identity.js';
 import { enc } from '../lib/text.js';
 
 import type { ChromeApi } from '../chrome-api.js';
@@ -188,8 +188,8 @@ export async function onApproval(approved: AnyPendingRecord): Promise<void> {
       // ephemeral pub below, so a relay cannot swap it for one of its own.
       // The MCP verifies this against our claimed Ed25519 pub and gates
       // session-key derivation on it.
-      const sessionSig = await ed25519Sign(
-        state.extIdentity.ed25519Priv,
+      const sessionSig = await signWithExtensionIdentity(
+        state.extIdentity,
         readySignaturePayload(
           sessionNonce,
           link.sessionNonce,
