@@ -306,7 +306,11 @@ export async function loadOrCreateIdentity(
   try {
     return parseIdentity(await readFile(path, 'utf8'));
   } catch (e: unknown) {
-    if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e;
+    // A SyntaxError may be a racing first run's file caught between its
+    // exclusive create and its write (see `publishIdentityIfAbsent`). The
+    // loop below cannot replace an existing file, so it only re-reads — and
+    // a file that is genuinely corrupt still throws, after a short wait.
+    if ((e as NodeJS.ErrnoException).code !== 'ENOENT' && !(e instanceof SyntaxError)) throw e;
   }
   // Doesn't exist — generate fresh keypair. Built FROM the exported pieces, so
   // there is one definition of the format rather than two that can drift.
@@ -318,25 +322,49 @@ export async function loadOrCreateIdentity(
   // under an identity no longer on disk. `link()` refuses to replace an
   // existing file, so exactly one candidate is published and every loser
   // re-reads and adopts the winner's.
+  let unreadable: unknown = null;
   for (let attempt = 0; attempt < 5; attempt++) {
     const id = await generateIdentity();
     if (await publishIdentityIfAbsent(dir, serverName, id)) return id;
     try {
       return parseIdentity(await readFile(path, 'utf8'));
     } catch (e: unknown) {
-      // Still absent: our staging file was swept by a concurrent writer
-      // before it could be linked. Go round again.
-      if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e;
+      if ((e as NodeJS.ErrnoException).code === 'ENOENT') {
+        // Still absent: our staging file was swept by a concurrent writer
+        // before it could be linked. Go round again.
+        continue;
+      }
+      // Without hard links the winner publishes by exclusive create and then
+      // writes, so a loser can read it between the two — empty or short.
+      // Give the winner a moment rather than failing a first run over it; a
+      // file that is still unreadable after every attempt is reported as is.
+      if (!(e instanceof SyntaxError)) throw e;
+      unreadable = e;
+      await new Promise((r) => setTimeout(r, 20 * (attempt + 1)));
     }
   }
+  if (unreadable !== null) throw unreadable;
   throw new Error(`fetchproxy: could not create an identity for ${JSON.stringify(serverName)} in ${dir}`);
 }
+
+/**
+ * `link()` errors that mean "this filesystem has no hard links" (FAT/exFAT,
+ * some network and FUSE mounts) rather than "you may not do this here".
+ */
+const NO_HARD_LINKS: ReadonlySet<string> = new Set(['EPERM', 'ENOTSUP', 'EOPNOTSUPP', 'ENOSYS']);
 
 /**
  * Stage `id` like `writeIdentityFile` does, then publish it with `link()`,
  * which — unlike `rename()` — fails EEXIST instead of replacing a file another
  * process published first. Returns whether OUR identity is the one on disk.
  * The staging file is always removed.
+ *
+ * On a filesystem without hard links `link()` fails EPERM/ENOTSUP/ENOSYS, and
+ * first-run creation must still work there, so it falls back to creating the
+ * final file exclusively (`wx`). That keeps the property that matters — two
+ * racers can never both publish, and neither replaces the other — at the cost
+ * of atomic visibility: a loser can read the file before its bytes are in,
+ * which `loadOrCreateIdentity` waits out.
  */
 async function publishIdentityIfAbsent(
   dir: string,
@@ -351,7 +379,25 @@ async function publishIdentityIfAbsent(
   try {
     await writeFile(tmp, serializeIdentity(id), { mode: 0o600, flag: 'wx' });
     await chmod(tmp, 0o600);
-    await link(tmp, path);
+    try {
+      await link(tmp, path);
+    } catch (e) {
+      const code = (e as NodeJS.ErrnoException).code;
+      if (code === undefined || !NO_HARD_LINKS.has(code)) throw e;
+      try {
+        await writeFile(path, serializeIdentity(id), { mode: 0o600, flag: 'wx' });
+      } catch (writeErr) {
+        // EEXIST: another racer published first, and the file is theirs.
+        // Anything else failed AFTER our exclusive create, so the file is
+        // ours and half-written — leaving it would wedge every later start
+        // on an identity that cannot be parsed.
+        if ((writeErr as NodeJS.ErrnoException).code !== 'EEXIST') {
+          await rm(path, { force: true }).catch(() => undefined);
+        }
+        throw writeErr;
+      }
+      await chmod(path, 0o600);
+    }
     return true;
   } catch (e) {
     const code = (e as NodeJS.ErrnoException).code;
