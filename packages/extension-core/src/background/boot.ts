@@ -31,7 +31,12 @@ import { state } from './state.js';
 import { connect, loadRemoteLinks } from './socket.js';
 import { connectedIdentityHashes } from './session-scope.js';
 import { linkStatuses } from './links.js';
-import { PENDING_PAIR_KEY, APPROVED_PAIR_KEY, mergePending } from './pending-pair-store.js';
+import {
+  PENDING_PAIR_KEY,
+  APPROVED_PAIR_KEY,
+  DISMISS_SCOPE_UPDATE_KEY,
+  mergePending,
+} from './pending-pair-store.js';
 import { REMOTE_TARGETS_KEY } from '../remote-targets.js';
 import { onApproval, onScopeUpdateDismiss } from './approval.js';
 import { maybeReinjectOnInstalled } from '../reinject-content-scripts.js';
@@ -80,24 +85,57 @@ export function maybeBoot(): void {
       }
     });
   }
+  // S-SEC-3: the pairing queue and the popup's decisions travel ONLY through
+  // chrome.storage.session, which content scripts cannot read or write.
+  // storage.local is writable from every site's content script, so an
+  // `approvedPair` or `dismissedScopeUpdate` appearing there is never acted
+  // on. Without the session area (Chrome < 102) this fails closed: nothing is
+  // queued (server-hello.ts) and nothing is approved.
+  const session = chrome.storage.session;
+  if (session?.onChanged) {
+    session.onChanged.addListener((changes) => {
+      const approved = changes[APPROVED_PAIR_KEY]?.newValue as AnyPendingRecord | undefined;
+      if (approved) {
+        void onApproval(approved).catch((e) => console.error('[fetchproxy] approval:', e));
+      }
+      // Part 2: dismiss message from popup — remove scope-update entry + record dismissed hash.
+      const dismiss = changes[DISMISS_SCOPE_UPDATE_KEY]?.newValue as
+        | { key: string; identityHash: string; scopeHash: string }
+        | undefined;
+      if (dismiss) {
+        void onScopeUpdateDismiss(dismiss.key, dismiss.identityHash, dismiss.scopeHash)
+          .catch((e) => console.error('[fetchproxy] dismiss:', e));
+      }
+      // 0.4.2: keep the badge in sync with the pending-pair state.
+      // Cancel (popup) and the user-driven X removes the key without
+      // going through onApproval, so this is the catch-all clear point.
+      // 0.5.2+: the value is now a dict — has any non-empty content means
+      // at least one pending entry remains and the badge should stay lit.
+      if (PENDING_PAIR_KEY in changes) {
+        const next = changes[PENDING_PAIR_KEY]?.newValue;
+        const dict = mergePending(next);
+        if (Object.keys(dict).length > 0) setPairPendingBadge();
+        else clearPairPendingBadge();
+      }
+    });
+    // 0.4.2: on SW boot, repaint the badge from current storage so a
+    // pending pair survives a service-worker eviction without losing
+    // its visual indicator.
+    void session.get(PENDING_PAIR_KEY).then((got) => {
+      const dict = mergePending(got[PENDING_PAIR_KEY]);
+      if (Object.keys(dict).length > 0) setPairPendingBadge();
+      else clearPairPendingBadge();
+    });
+  } else {
+    console.error('[fetchproxy] chrome.storage.session unavailable: pairing is disabled');
+  }
+  // Up to 3.1.0 the queue lived in storage.local. Drop what an older version
+  // left there: nothing reads it any more, and a request from before this
+  // update cannot be answered (its MCP will hello again).
+  void chrome.storage.local.remove(PENDING_PAIR_KEY);
+  void chrome.storage.local.remove(APPROVED_PAIR_KEY);
+  void chrome.storage.local.remove(DISMISS_SCOPE_UPDATE_KEY);
   chrome.storage.local.onChanged.addListener((changes) => {
-    const approved = changes[APPROVED_PAIR_KEY]?.newValue as AnyPendingRecord | undefined;
-    if (approved) {
-      void onApproval(approved).catch((e) => console.error('[fetchproxy] approval:', e));
-    }
-    // Part 2: dismiss message from popup — remove scope-update entry + record dismissed hash.
-    const dismiss = changes['dismissedScopeUpdate']?.newValue as
-      | { key: string; identityHash: string; scopeHash: string }
-      | undefined;
-    if (dismiss) {
-      void onScopeUpdateDismiss(dismiss.key, dismiss.identityHash, dismiss.scopeHash)
-        .catch((e) => console.error('[fetchproxy] dismiss:', e));
-    }
-    // 0.4.2: keep the badge in sync with the pending-pair state.
-    // Cancel (popup) and the user-driven X removes the key without
-    // going through onApproval, so this is the catch-all clear point.
-    // 0.5.2+: the value is now a dict — has any non-empty content means
-    // at least one pending entry remains and the badge should stay lit.
     // 2.1.0: the configured remote bridge targets changed — a target added,
     // removed, disabled or repointed. Reconcile the live links onto the new
     // set rather than waiting for a restart, and note that a REMOVED target's
@@ -108,20 +146,6 @@ export function maybeBoot(): void {
         console.error('[fetchproxy] remote bridge reconcile:', e),
       );
     }
-    if (PENDING_PAIR_KEY in changes) {
-      const next = changes[PENDING_PAIR_KEY]?.newValue;
-      const dict = mergePending(next);
-      if (Object.keys(dict).length > 0) setPairPendingBadge();
-      else clearPairPendingBadge();
-    }
-  });
-  // 0.4.2: on SW boot, repaint the badge from current storage so a
-  // pending pair survives a service-worker eviction without losing
-  // its visual indicator.
-  void chrome.storage.local.get(PENDING_PAIR_KEY).then((got) => {
-    const dict = mergePending(got[PENDING_PAIR_KEY]);
-    if (Object.keys(dict).length > 0) setPairPendingBadge();
-    else clearPairPendingBadge();
   });
   // 0.4.1: register the MV3 keepalive alarm before anything else. Each
   // fire wakes the SW from idle and re-runs connect() — which is a

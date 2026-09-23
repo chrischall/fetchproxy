@@ -99,6 +99,8 @@ class FakeSocket {
 }
 
 const storage = new Map<string, unknown>();
+/** `chrome.storage.session`: where the pairing queue lives (S-SEC-3). */
+const sessionStorage = new Map<string, unknown>();
 
 /**
  * Every `chrome.runtime.sendMessage` the background made, in order.
@@ -130,6 +132,20 @@ vi.stubGlobal('chrome', {
         for (const [k, v] of Object.entries(kv)) storage.set(k, v);
       },
       remove: async (k: string) => void storage.delete(k),
+    },
+    session: {
+      get: async (k: string | string[]) => {
+        const keys = Array.isArray(k) ? k : [k];
+        const out: Record<string, unknown> = {};
+        for (const key of keys) {
+          if (sessionStorage.has(key)) out[key] = structuredClone(sessionStorage.get(key));
+        }
+        return out;
+      },
+      set: async (kv: Record<string, unknown>) => {
+        for (const [k, v] of Object.entries(kv)) sessionStorage.set(k, structuredClone(v));
+      },
+      remove: async (k: string) => void sessionStorage.delete(k),
     },
   },
   tabs: { query: async () => [], create: async () => ({ id: 1 }) },
@@ -1254,62 +1270,30 @@ describe('approving a pending pair (v4)', () => {
     warns.mockRestore();
   });
 
-  describe('with chrome.storage.session (S-SEC-3)', () => {
-    const sessionData = new Map<string, unknown>();
+  describe('the pairing queue (S-SEC-3)', () => {
     beforeEach(() => {
-      sessionData.clear();
+      sessionStorage.clear();
       storage.clear();
-      (chrome.storage as unknown as { session?: unknown }).session = {
-        get: async (k: string | string[]) => {
-          const keys = Array.isArray(k) ? k : [k];
-          const out: Record<string, unknown> = {};
-          for (const key of keys) {
-            if (sessionData.has(key)) out[key] = structuredClone(sessionData.get(key));
-          }
-          return out;
-        },
-        set: async (kv: Record<string, unknown>) => {
-          for (const [k, v] of Object.entries(kv)) sessionData.set(k, structuredClone(v));
-        },
-        remove: async (k: string) => void sessionData.delete(k),
-      };
-    });
-    afterEach(() => {
-      delete (chrome.storage as unknown as { session?: unknown }).session;
     });
 
-    async function queuedRecord(localWs: FakeSocket, mcp: ScriptedMcp): Promise<AnyPendingRecord> {
+    it('is written to chrome.storage.session and never to chrome.storage.local', async () => {
+      const localWs = await freshLink();
+      const mcp = await scriptedMcp('alltrails-mcp:2.1.3:3030303030303030');
       localWs.message(await helloFrom(mcp, extNonceOf(localWs)));
       await vi.waitUntil(() => localWs.frames('pair-pending').length > 0);
       const identityHash = toHex(await sha256(mcp.x.publicKey));
       const find = (): AnyPendingRecord | undefined =>
-        Object.values((storage.get('pendingPair') ?? {}) as Record<string, AnyPendingRecord>).find(
-          (r) => r.identityHash === identityHash,
-        );
+        Object.values(
+          (sessionStorage.get('pendingPair') ?? {}) as Record<string, AnyPendingRecord>,
+        ).find((r) => r.identityHash === identityHash);
       await vi.waitUntil(() => find() !== undefined);
-      return structuredClone(find()!);
-    }
+      expect(storage.has('pendingPair')).toBe(false);
 
-    it('completes the pairing for the record the hello queued, exactly as the popup approves it', async () => {
-      const localWs = await freshLink();
-      const mcp = await scriptedMcp('alltrails-mcp:2.1.3:3030303030303030');
-      const rec = await queuedRecord(localWs, mcp);
-      await onApproval(rec);
+      // And the record exactly as queued (what the popup writes back) pairs.
+      await onApproval(structuredClone(find()!));
       await vi.waitUntil(() => localWs.frames('ready').length > 0);
-      expect(await state.trust!.get(rec.identityHash)).not.toBeNull();
-    });
-
-    it('refuses a record widened in storage.local after the hello queued it', async () => {
-      const warns = vi.spyOn(console, 'warn').mockImplementation(() => {});
-      const localWs = await freshLink();
-      const mcp = await scriptedMcp('alltrails-mcp:2.1.3:4040404040404040');
-      const rec = await queuedRecord(localWs, mcp);
-      await onApproval({ ...rec, domains: [...rec.domains, 'bank.example'] } as AnyPendingRecord);
-      await new Promise((r) => setTimeout(r, 20));
-      expect(localWs.frames('ready')).toHaveLength(0);
-      expect(await state.trust!.get(rec.identityHash)).toBeNull();
-      expect(warns.mock.calls.flat().join(' ')).toMatch(/refused/);
-      warns.mockRestore();
+      expect(await state.trust!.get(identityHash)).not.toBeNull();
+      expect(sessionStorage.has('pendingPair')).toBe(false);
     });
   });
 

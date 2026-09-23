@@ -1,6 +1,7 @@
 /**
  * The user-approval flow: what happens after the popup writes its decision
- * to `chrome.storage.local`.
+ * to `chrome.storage.session` (trusted contexts only — see `pendingArea()` in
+ * ./pending-pair-store.ts for why never `storage.local`).
  *
  * `onApproval` persists trust, then — for a `pair` record — replays the
  * post-approval session setup for every waiting mcpId (fresh ephemeral
@@ -9,7 +10,7 @@
  * `onScopeUpdateDismiss` is the decline path: drop the pending entry and
  * remember the dismissed scopeHash so it is not re-queued.
  *
- * Both are called only from `./boot.js`'s single `storage.local.onChanged`
+ * Both are called only from `./boot.js`'s `storage.session.onChanged`
  * listener; nothing else in the background imports this module.
  *
  * The approval arrives from storage, so it carries no link — it is replayed
@@ -43,12 +44,13 @@ import { clearPairPendingBadge } from './badge.js';
 import type { AnyPendingRecord } from './pending-records.js';
 import { state } from './state.js';
 import { linkForMcp, sendOnLink } from './links.js';
-import { authoritativeApproval, recordPendingAuthoritative } from './pending-integrity.js';
 import {
   PENDING_PAIR_KEY,
   APPROVED_PAIR_KEY,
   DISMISSED_SCOPE_KEY,
+  DISMISS_SCOPE_UPDATE_KEY,
   mergePending,
+  pendingArea,
   withPendingPairLock,
 } from './pending-pair-store.js';
 import {
@@ -60,19 +62,12 @@ import {
   broadcastConnectionsChanged,
 } from './session-scope.js';
 
-export async function onApproval(claimed: AnyPendingRecord): Promise<void> {
+export async function onApproval(approved: AnyPendingRecord): Promise<void> {
   if (!state.trust || !state.sessions || !state.extIdentity) return;
-  // S-SEC-3: `approvedPair` arrives through chrome.storage.local, which
-  // content scripts can write. Act only on the background's own copy of a
-  // pending record it queued, and only if the approval matches it in
-  // everything the user was shown (./pending-integrity.ts).
-  const check = await authoritativeApproval(claimed);
-  if (!check.ok) {
-    console.warn(`[fetchproxy] onApproval: refused (${check.reason})`);
-    await chrome.storage.local.remove(APPROVED_PAIR_KEY);
-    return;
-  }
-  const approved = check.record;
+  // Fail closed without the trusted-only area. `./boot.js` only ever calls
+  // this from `storage.session.onChanged`, so this is belt and braces.
+  const area = pendingArea();
+  if (!area) return;
   // Persist trust. Default to ['fetch'] when older popup state somehow
   // omits the field — defensive, the popup always populates it in 0.2.0+.
   const approvedCapabilities =
@@ -245,44 +240,42 @@ export async function onApproval(claimed: AnyPendingRecord): Promise<void> {
   // shares `withPendingPairLock` with `onServerHello` so a hello arriving
   // mid-approval can't race the get/set pair.
   await withPendingPairLock(async () => {
-    await recordPendingAuthoritative((dict) => {
-      delete dict[approved.key];
-    });
-    const got = await chrome.storage.local.get(PENDING_PAIR_KEY);
+    const got = await area.get(PENDING_PAIR_KEY);
     const remaining = mergePending(got[PENDING_PAIR_KEY]);
     delete remaining[approved.key];
     if (Object.keys(remaining).length === 0) {
-      await chrome.storage.local.remove(PENDING_PAIR_KEY);
+      await area.remove(PENDING_PAIR_KEY);
       // Badge clears only when the queue is fully drained — other queued
       // identities still need a visible "!" so the user knows to come back.
       clearPairPendingBadge();
     } else {
-      await chrome.storage.local.set({ [PENDING_PAIR_KEY]: remaining });
+      await area.set({ [PENDING_PAIR_KEY]: remaining });
     }
   });
-  await chrome.storage.local.remove(APPROVED_PAIR_KEY);
+  await area.remove(APPROVED_PAIR_KEY);
 }
 
 /** Part 2: dismiss a scope-update entry without writing trust. */
 
 export async function onScopeUpdateDismiss(key: string, identityHash: string, dismissedScopeHash: string): Promise<void> {
+  const area = pendingArea();
+  if (!area) return;
   // Record the dismissed scopeHash so we don't re-queue it for this identity.
+  // (The dismissed-hash SET stays in storage.local: it must outlive a browser
+  // restart, and forging it can only suppress a scope-update offer.)
   await withPendingPairLock(async () => {
     const [pendingGot, dismissedGot] = await Promise.all([
-      chrome.storage.local.get(PENDING_PAIR_KEY),
+      area.get(PENDING_PAIR_KEY),
       chrome.storage.local.get(DISMISSED_SCOPE_KEY),
     ]);
     // Remove from pending.
-    await recordPendingAuthoritative((dict) => {
-      delete dict[key];
-    });
     const remaining = mergePending(pendingGot[PENDING_PAIR_KEY]);
     delete remaining[key];
     if (Object.keys(remaining).length === 0) {
-      await chrome.storage.local.remove(PENDING_PAIR_KEY);
+      await area.remove(PENDING_PAIR_KEY);
       clearPairPendingBadge();
     } else {
-      await chrome.storage.local.set({ [PENDING_PAIR_KEY]: remaining });
+      await area.set({ [PENDING_PAIR_KEY]: remaining });
     }
     // Persist dismissed hash: Record<identityHash, string[]>
     const dismissed = (dismissedGot[DISMISSED_SCOPE_KEY] ?? {}) as Record<string, string[]>;
@@ -292,5 +285,5 @@ export async function onScopeUpdateDismiss(key: string, identityHash: string, di
     }
     await chrome.storage.local.set({ [DISMISSED_SCOPE_KEY]: dismissed });
   });
-  await chrome.storage.local.remove('dismissedScopeUpdate');
+  await area.remove(DISMISS_SCOPE_UPDATE_KEY);
 }

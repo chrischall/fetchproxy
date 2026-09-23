@@ -25,6 +25,39 @@ import type { AnyPendingRecord } from './pending-records.js';
 export const PENDING_PAIR_KEY = 'pendingPair';
 export const APPROVED_PAIR_KEY = 'approvedPair';
 export const DISMISSED_SCOPE_KEY = 'dismissedScopeHashes';
+/** The popup's "keep as is" decision on a scope update. */
+export const DISMISS_SCOPE_UPDATE_KEY = 'dismissedScopeUpdate';
+
+/**
+ * Where the pairing queue and the popup's decisions live:
+ * `chrome.storage.session`, NEVER `chrome.storage.local` (S-SEC-3).
+ *
+ * `storage.local` is readable and writable by content scripts, which this
+ * extension injects into every site, so an approval read from it could have
+ * been written by a compromised renderer on any site — minting trust for an
+ * identity of its choosing, with any domains and capabilities, with no popup
+ * interaction. `storage.session` is restricted to trusted contexts (extension
+ * pages and the service worker) by default, so everything on this channel
+ * was written by this extension's own code.
+ *
+ * `undefined` where the area does not exist (Chrome < 102, which the
+ * manifest's `minimum_chrome_version` excludes). Callers FAIL CLOSED on it:
+ * nothing is queued and nothing is approved.
+ *
+ * The queue does not survive a browser restart, which is intended: the MCP
+ * that asked will hello again, and a request from before the restart could
+ * not have been answered anyway (its link is gone).
+ */
+export type PendingArea = {
+  get: (k: string | string[]) => Promise<Record<string, unknown>>;
+  set: (kv: Record<string, unknown>) => Promise<void>;
+  remove: (k: string) => Promise<void>;
+};
+
+export function pendingArea(): PendingArea | undefined {
+  return (globalThis as { chrome?: { storage?: { session?: PendingArea } } }).chrome?.storage
+    ?.session;
+}
 
 /**
  * Local alias bound to this file's `AnyPendingRecord`. The shared

@@ -67,15 +67,23 @@ export interface ChromeApi {
       };
     };
     /**
-     * Chrome 102+: restricted to trusted contexts (extension pages, service
-     * worker) by default, so content scripts cannot read or write it. Holds
-     * the background's authoritative copy of pending approvals
-     * (`background/pending-integrity.ts`). Optional: absent in most test fakes.
+     * Chrome 102+ (the manifest's `minimum_chrome_version`): restricted to
+     * trusted contexts (extension pages, service worker) by default, so
+     * content scripts cannot read or write it. Carries the pairing queue and
+     * the popup's decisions (`pendingPair`, `approvedPair`,
+     * `dismissedScopeUpdate`) — see `background/pending-pair-store.ts`.
+     * Optional in the type so a missing area fails CLOSED at runtime rather
+     * than throwing.
      */
     session?: {
       get: (k: string | string[]) => Promise<Record<string, unknown>>;
       set: (kv: Record<string, unknown>) => Promise<void>;
       remove: (k: string) => Promise<void>;
+      onChanged?: {
+        addListener: (
+          cb: (changes: Record<string, { newValue?: unknown; oldValue?: unknown }>) => void,
+        ) => void;
+      };
     };
   };
   tabs: {
