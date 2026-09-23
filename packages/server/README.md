@@ -131,9 +131,11 @@ row). One variable has no option beside it:
   POST/PUT/PATCH/DELETE is sent exactly once and its
   `FetchproxyTimeoutError` carries `retrySafe: false` (which
   `retryOnceOnTimeout` honours). Pass `retryOnTimeout: true` on the
-  call (`request()`/`post()`/… options, or `fetch(init, { retryOnTimeout })`)
-  for a write you know is safe to repeat, or `false` to keep a read
-  from being retried. `content_script_unreachable` — the request
+  call (`request()`/`post()`/`postJson()`/`requestJson()`/… options, or
+  `fetch(init, { retryOnTimeout })`) for a POST that only reads — a
+  search, a GraphQL query sent as a POST — or a write you know is safe
+  to repeat; without it such a POST loses the cold-start retry. Pass
+  `false` to keep a read from being retried. `content_script_unreachable` — the request
   never reached a tab — is retried for every method. Lengthen on slow
   machines where 2s isn't enough for the SW to wake; shorten if the
   caller is willing to surface the bridge-down error sooner. Pass `0`
@@ -314,12 +316,13 @@ Method-generic JSON helper. Sets `Accept: application/json`; adds `Content-Type:
 const { data, result } = await fp.requestJson<MyShape>('POST', '/api/x', {
   body: { q: 'foo' },
   subdomain: 'api',
+  retryOnTimeout: true, // a read-only search: safe to re-send after a timeout
 });
 ```
 
 Its scope is **serialization + header defaults + 204-handling + JSON.parse only**. It deliberately does NOT assert on the HTTP status or detect a sign-in interstitial — those guards differ per site — so it returns BOTH the parsed `data` and the raw `result: FetchResult`, leaving the consumer to run its own `throwIfNotOk` / `throwIfSignInPage` over `result`. Bridge-level failures still throw the typed errors (via `request()`); only successful round-trips return.
 
-`opts` is `{ subdomain?, domain?, headers?, body? }` (same domain/subdomain semantics as the verb shortcuts; `body` is any JSON-serializable value).
+`opts` is `{ subdomain?, domain?, headers?, body?, retryOnTimeout? }` (same domain/subdomain semantics as the verb shortcuts; `body` is any JSON-serializable value). `retryOnTimeout` works as on `request()`: a POST/PUT/PATCH/DELETE that times out is sent once unless it is `true`, so pass `true` for a POST that only reads (a search, a GraphQL query) to keep the cold-start timeout retry.
 
 #### `await fp.runProbe(fetchFn, probePath): Promise<BridgeProbeResult>`
 

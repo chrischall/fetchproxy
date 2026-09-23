@@ -2710,6 +2710,11 @@ export class FetchproxyServer {
    * Bridge-level failures (no signed-in tab, SW down, timeout) still
    * throw the typed errors via `request()`, exactly like the verb
    * helpers — only successful round-trips (any HTTP status) return.
+   *
+   * `retryOnTimeout` is `RequestOpts.retryOnTimeout`: a timed-out POST is
+   * NOT re-sent unless the caller says it is safe to repeat. A read-only POST
+   * (a search, a GraphQL query) should pass `true` to keep the cold-start
+   * timeout retry (#90).
    */
   async requestJson<T = unknown>(
     method: string,
@@ -2719,6 +2724,8 @@ export class FetchproxyServer {
       domain?: string;
       headers?: Record<string, string>;
       body?: unknown;
+      /** See `RequestOpts.retryOnTimeout`. */
+      retryOnTimeout?: boolean;
     } = {},
   ): Promise<{ data: T | null; result: FetchResult }> {
     const isGet = method.toUpperCase() === 'GET';
@@ -2735,6 +2742,7 @@ export class FetchproxyServer {
       body: sendBody ? JSON.stringify(opts.body) : undefined,
       ...(opts.subdomain !== undefined ? { subdomain: opts.subdomain } : {}),
       ...(opts.domain !== undefined ? { domain: opts.domain } : {}),
+      ...(opts.retryOnTimeout !== undefined ? { retryOnTimeout: opts.retryOnTimeout } : {}),
     });
     // Re-expose the success-arm FetchResult so callers keep their
     // per-site guards. `request()` already threw on any bridge failure,

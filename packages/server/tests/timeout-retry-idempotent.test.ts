@@ -174,6 +174,48 @@ describe('B-BUG-1: timeout retry is limited to idempotent requests', () => {
     await s.close();
   });
 
+  // Fleet MCPs send read-only POST searches and GraphQL queries through
+  // requestJson (compass, homes, zillow, musescore, eventbrite, booli, hemnet,
+  // workday). They must be able to opt back into the #90 cold-start retry.
+  it('requestJson() forwards retryOnTimeout so a read-only POST can opt back in', async () => {
+    const s = new FetchproxyServer(baseOpts);
+    const host = installRecordingHost(s);
+    const pending = s
+      .requestJson('POST', '/search', { body: { q: 'x' }, retryOnTimeout: true })
+      .catch((e: unknown) => e);
+    await vi.advanceTimersByTimeAsync(100);
+    await vi.advanceTimersByTimeAsync(10);
+    expect(host.requests().length).toBe(2);
+    await vi.advanceTimersByTimeAsync(100);
+    const err = await pending;
+    expect(err).toBeInstanceOf(FetchproxyTimeoutError);
+    expect((err as FetchproxyTimeoutError).retrySafe).toBe(true);
+    await s.close();
+  });
+
+  it('requestJson() still sends a timed-out POST once by default', async () => {
+    const s = new FetchproxyServer(baseOpts);
+    const host = installRecordingHost(s);
+    const pending = s.requestJson('POST', '/search', { body: { q: 'x' } }).catch((e: unknown) => e);
+    await vi.advanceTimersByTimeAsync(100);
+    await vi.advanceTimersByTimeAsync(500);
+    const err = await pending;
+    expect(host.requests().length).toBe(1);
+    expect((err as FetchproxyTimeoutError).retrySafe).toBe(false);
+    await s.close();
+  });
+
+  it('requestJson() lets a GET opt out with retryOnTimeout: false', async () => {
+    const s = new FetchproxyServer(baseOpts);
+    const host = installRecordingHost(s);
+    const pending = s.requestJson('GET', '/x', { retryOnTimeout: false }).catch((e: unknown) => e);
+    await vi.advanceTimersByTimeAsync(100);
+    await vi.advanceTimersByTimeAsync(500);
+    await pending;
+    expect(host.requests().length).toBe(1);
+    await s.close();
+  });
+
   it('get() timeouts are marked retry-safe', async () => {
     const s = new FetchproxyServer({ ...baseOpts, bridgeReviveDelayMs: 0 });
     installRecordingHost(s);
