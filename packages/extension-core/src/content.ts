@@ -765,7 +765,11 @@ export async function runFetch(init: FetchInit): Promise<FetchResponse | FetchEr
     return csrfSoftMiss(init.tabUrl);
   }
   const headers: Record<string, string> = { ...(init.headers ?? {}) };
-  if (csrf && !('x-csrf-token' in headers) && !('X-CSRF-Token' in headers)) {
+  // Header names are case-insensitive: a caller's `X-Csrf-Token` must suppress
+  // the injection too, or fetch() merges both into "caller, page" and the
+  // site rejects the corrupted token.
+  const callerSetCsrf = Object.keys(headers).some((k) => k.toLowerCase() === 'x-csrf-token');
+  if (csrf && !callerSetCsrf) {
     headers['x-csrf-token'] = csrf;
   }
   // `inPage` requests are handed to the MAIN-world bridge rather than issued

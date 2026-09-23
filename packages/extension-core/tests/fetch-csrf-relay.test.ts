@@ -208,6 +208,19 @@ describe('content script: runFetch under requireCsrf', () => {
     expect(init.headers['x-csrf-token']).toBe('tok-placeholder');
   });
 
+  it("does not add a second token when the caller set one in another casing (B-BUG-10)", async () => {
+    document.documentElement.dataset.fetchproxyCsrf = 'tok-page';
+    await runFetch({
+      url: 'https://www.opentable.com/dapi/x',
+      method: 'POST',
+      body: '{}',
+      headers: { 'X-Csrf-Token': 'tok-caller' },
+      tabUrl: RESTAURANT,
+    });
+    const init = fetchMock.mock.calls[0]![1] as { headers: Record<string, string> };
+    expect(init.headers).toEqual({ 'X-Csrf-Token': 'tok-caller' });
+  });
+
   it('without the marker a csrf-less tab issues the request as before', async () => {
     const res = await runFetch({
       url: 'https://www.opentable.com/dapi/x',
