@@ -40,11 +40,15 @@ import type {
 declare const process: { env: Record<string, string | undefined> };
 
 export interface Declarations {
-  /** Cookie names the MCP wants to snapshot (subset of declared `cookieKeys`). */
+  /**
+   * Cookie names the MCP wants to snapshot (subset of declared `cookieKeys`).
+   * Exact names only: a trailing-`*` glob is refused, because a lift reads
+   * each key by name and a glob would match nothing.
+   */
   cookies: string[];
-  /** localStorage keys to snapshot. */
+  /** localStorage keys to snapshot. Exact names only (see `cookies`). */
   localStorage: string[];
-  /** sessionStorage keys to snapshot. */
+  /** sessionStorage keys to snapshot. Exact names only (see `cookies`). */
   sessionStorage: string[];
   /** Header captures: each entry's first matching request supplies the value. */
   captureHeaders: CaptureHeaderDecl[];
@@ -365,6 +369,21 @@ async function runOneLift(opts: BootstrapOpts): Promise<Session> {
   const envVal = process.env[envVar];
   if (envVal !== undefined && envVal !== '' && envVal !== '0' && envVal !== 'false') {
     throw new BootstrapDisabledError(opts.serverName, envVar);
+  }
+
+  // B-BUG-14: a lift reads each declared key BY NAME, so a trailing-`*` glob
+  // (legal in a FetchproxyServer's scope) reaches the extension as a literal
+  // name that matches nothing and always comes back empty. Refuse it here,
+  // before any bridge is opened, rather than report the pattern as "missing".
+  for (const bucket of ['cookies', 'localStorage', 'sessionStorage'] as const) {
+    const glob = opts.declare[bucket].find((k) => k.endsWith('*'));
+    if (glob !== undefined) {
+      throw new Error(
+        `fetchproxy bootstrap: declare.${bucket} contains ${JSON.stringify(glob)}, a glob. ` +
+          `A lift reads each key by its exact name, so a glob can never match — list the ` +
+          `concrete key names instead.`,
+      );
+    }
   }
 
   const factory = opts._serverFactory ?? defaultFactory;
