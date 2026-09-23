@@ -42,9 +42,23 @@ import {
   type ExtensionTrustPort,
 } from './extension-trust.js';
 
+/**
+ * B-BUG-8: how long a peer waits for the host to complete the WebSocket
+ * upgrade before giving up. A listener that accepts TCP but never answers
+ * (a wedged or SIGSTOPped host, or some other process on the port) would
+ * otherwise hang the dial — and every verb sharing its connecting promise —
+ * forever. Loopback upgrades complete in milliseconds.
+ */
+export const PEER_DIAL_TIMEOUT_MS = 5_000;
+
 export interface PeerOpts {
   host: string;
   port: number;
+  /**
+   * Bound on the WebSocket dial to the host, in ms. Defaults to
+   * {@link PEER_DIAL_TIMEOUT_MS}; `0` disables it.
+   */
+  dialTimeoutMs?: number;
   identity: Identity;
   mcpId: string;
   serverName: string;
@@ -187,11 +201,13 @@ export async function startPeer(opts: PeerOpts): Promise<InternalPeerHandle> {
   const ws = new WebSocket(`ws://${opts.host}:${opts.port}`, {
     maxPayload: opts.maxPayloadBytes ?? MAX_PAYLOAD_BYTES,
   });
+  const dialTimeoutMs = opts.dialTimeoutMs ?? PEER_DIAL_TIMEOUT_MS;
   await new Promise<void>((resolve, reject) => {
     // Both listeners come off once either fires: leaving the handshake's
     // 'error' listener attached would make it the socket's only one for the
     // rest of the connection, swallowing the first later error into a reject
     // of an already-settled promise.
+    let timer: ReturnType<typeof setTimeout> | undefined;
     const onOpen = (): void => {
       cleanup();
       resolve();
@@ -201,11 +217,28 @@ export async function startPeer(opts: PeerOpts): Promise<InternalPeerHandle> {
       reject(e);
     };
     const cleanup = (): void => {
+      if (timer !== undefined) clearTimeout(timer);
       ws.off('open', onOpen);
       ws.off('error', onError);
     };
     ws.once('open', onOpen);
     ws.once('error', onError);
+    if (dialTimeoutMs > 0) {
+      timer = setTimeout(() => {
+        cleanup();
+        // terminate() emits 'error' on a CONNECTING socket; keep a listener so
+        // it cannot surface as an uncaught exception.
+        ws.on('error', () => undefined);
+        ws.terminate();
+        reject(
+          new Error(
+            `fetchproxy: the process holding ${opts.host}:${opts.port} did not answer the ` +
+              `WebSocket upgrade within ${dialTimeoutMs}ms — it may be wedged or not a ` +
+              `fetchproxy host. Restart the MCP that owns the port (or free it) and retry.`,
+          ),
+        );
+      }, dialTimeoutMs);
+    }
   });
 
   // A socket error is an EventEmitter 'error': with no listener it is an
