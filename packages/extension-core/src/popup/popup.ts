@@ -937,6 +937,14 @@ export function renderPopup(root: HTMLElement, state: PopupState): void {
       graphqlOps: pending.graphqlOps,
       pairCode: '',
     }, previous);
+    // Newly requested cookies get the same HttpOnly-session warning as the
+    // pair prompt (S-SEC-2): Grant is the moment the user decides.
+    const newCookies = pending.cookieKeys.filter((k) => !previous.cookieKeys.includes(k));
+    if (newCookies.length > 0) {
+      const warnDl = elem('dl');
+      appendCookieSessionWarning(warnDl, newCookies);
+      root.appendChild(warnDl);
+    }
 
     const btnRow = elem('div', { class: 'btn-row' });
     const keepBtn = elem('button', { 'data-action': 'keep-as-is', autofocus: 'true' }, 'Keep as is');

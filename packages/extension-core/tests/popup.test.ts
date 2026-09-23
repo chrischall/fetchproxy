@@ -793,6 +793,58 @@ describe('renderPopup', () => {
         expect(container.textContent).toContain('Capability: fetch');
       });
 
+      it('warns about HttpOnly login-session cookies when cookies are newly requested (S-SEC-2)', () => {
+        const empty = {
+          capabilities: ['fetch'],
+          cookieKeys: [] as string[],
+          localStorageKeys: [],
+          sessionStorageKeys: [],
+          captureHeaders: [],
+          indexedDbScopes: [],
+          domSelectors: [],
+          domListSelectors: [],
+          graphqlOps: [],
+          localStoragePointers: [],
+          sessionStoragePointers: [],
+        };
+        renderPopup(container, {
+          mode: 'scope-update',
+          serverName: 'zola-mcp',
+          pending: { ...empty, capabilities: ['fetch', 'read_cookies'], cookieKeys: ['usr'] },
+          previous: empty,
+          onGrant: () => undefined,
+          onKeepAsIs: () => undefined,
+        });
+        const warnings = container.querySelectorAll('.cookie-session-warning');
+        expect(warnings).toHaveLength(1);
+        expect(warnings[0]!.textContent).toMatch(/HttpOnly/);
+      });
+
+      it('shows no cookie-session warning when the update adds no cookies', () => {
+        const scope = {
+          capabilities: ['fetch'],
+          cookieKeys: ['usr'],
+          localStorageKeys: [],
+          sessionStorageKeys: [],
+          captureHeaders: [],
+          indexedDbScopes: [],
+          domSelectors: [],
+          domListSelectors: [],
+          graphqlOps: [],
+          localStoragePointers: [],
+          sessionStoragePointers: [],
+        };
+        renderPopup(container, {
+          mode: 'scope-update',
+          serverName: 'zola-mcp',
+          pending: { ...scope, localStorageKeys: ['x'] },
+          previous: scope,
+          onGrant: () => undefined,
+          onKeepAsIs: () => undefined,
+        });
+        expect(container.querySelector('.cookie-session-warning')).toBeNull();
+      });
+
       it('shows an added graphqlOps entry in the diff, not an empty "(none)" section', () => {
         // Regression: a scope-update whose ONLY change is a new declared
         // GraphQL operation must not render an unreviewable empty diff —
