@@ -292,6 +292,13 @@ interface PeerSlot {
 
 const enc = new TextEncoder();
 
+/**
+ * How many frames in a row for the host's OWN session may fail authentication
+ * before it re-handshakes that session. One is an expected straggler from a
+ * previous session; a run means the keys have diverged.
+ */
+export const OWN_DECRYPT_FAILURES_BEFORE_REHANDSHAKE = 3;
+
 export async function startHost(opts: HostOpts): Promise<HostHandle> {
   // Read once, at boot: the answer cannot change while the process runs, and
   // reading it here is what makes the warning below fire once rather than on
@@ -585,6 +592,58 @@ export async function startHost(opts: HostOpts): Promise<HostHandle> {
       console.error('[fetchproxy] could not derive the pair code:', e);
       return null;
     }
+  };
+
+  /**
+   * Consecutive frames for our OWN session that failed authentication. Reset by
+   * any frame that authenticates, and by every new session.
+   */
+  let ownDecryptFailures = 0;
+
+  /**
+   * B-BUG-4 follow-up: re-handshake our OWN session on the socket we already
+   * have. One undecryptable frame is a straggler from a previous session and
+   * is dropped; a RUN of them means our key and the extension's have diverged,
+   * and before this nothing would ever mend it — every reply for this MCP was
+   * dropped until the process restarted. The old cure, closing the socket, is
+   * not available: that socket is the extension's link for every MCP on this
+   * concentrator.
+   *
+   * So only our half is reset — the session and its ephemeral go, sends wait
+   * on a fresh promise — and a new hello is minted exactly as the extension
+   * hello path does (§1a Rule A, and Rule D's re-check before the commit),
+   * answering the extension session this socket already carries. The
+   * extension treats it like any re-hello for an id this link holds, and its
+   * `ready` lands on the ordinary derivation path. Peers are not involved.
+   */
+  const rehandshakeOwnSession = async (ws: WebSocket): Promise<void> => {
+    const hello = extensionHello;
+    if (extensionWs !== ws || !hello) return;
+    console.warn(
+      `[fetchproxy] ${opts.ownServerName}: ${OWN_DECRYPT_FAILURES_BEFORE_REHANDSHAKE} frames in a ` +
+        `row from the extension failed authentication under this MCP's session key — ` +
+        `re-handshaking this MCP's session (the extension stays connected).`,
+    );
+    ownSession = dropOwnSessionAndEphemeral();
+    resetSessionPromise();
+    const mintedKeypair = await generateSessionKeypair();
+    const mintedHello: HelloFrameFromServer = await buildServerHello({
+      ...ownHelloBase,
+      sessionPub: mintedKeypair.publicKey,
+      answersExtNonce: fromB64(hello.sessionNonce),
+    });
+    // Rule D: the extension may have gone (or been replaced, or a session
+    // derived by some other path) while the crypto ran.
+    if (extensionWs !== ws || extensionHello !== hello || ownSession !== null) {
+      mintedKeypair.privateKey.fill(0);
+      return;
+    }
+    installOwnEphemeral({
+      nonce: fromB64(mintedHello.sessionNonce),
+      pub: mintedKeypair.publicKey,
+      priv: mintedKeypair.privateKey,
+    });
+    ws.send(JSON.stringify(mintedHello));
   };
 
   wss.on('connection', (ws) => {
@@ -1036,6 +1095,7 @@ export async function startHost(opts: HostOpts): Promise<HostHandle> {
             );
             if (extensionWs !== ws) return;
             ownSession = new SessionState(key);
+            ownDecryptFailures = 0;
             // 0.5.2+: receiving a ready means the user has approved (auto-
             // trust path) or just approved (popup path) — the pair-pending
             // hint is no longer actionable, so clear it.
@@ -1103,9 +1163,22 @@ export async function startHost(opts: HostOpts): Promise<HostHandle> {
                   `[fetchproxy] ${opts.ownServerName}: dropped an inbound frame (seq ${frame.seq}) ` +
                     `that failed authentication — most likely a straggler from a previous session.`,
                 );
+                // Counted only against the session that is still live: a
+                // frame opened under a key since replaced says nothing about
+                // the current one.
+                if (session === ownSession) {
+                  ownDecryptFailures += 1;
+                  if (ownDecryptFailures >= OWN_DECRYPT_FAILURES_BEFORE_REHANDSHAKE) {
+                    ownDecryptFailures = 0;
+                    void rehandshakeOwnSession(ws).catch((e: unknown) =>
+                      console.error(`[fetchproxy] ${opts.ownServerName}: re-handshake failed:`, e),
+                    );
+                  }
+                }
                 return;
               }
               // It authenticated under the live key, so the seq is spent.
+              if (session === ownSession) ownDecryptFailures = 0;
               session.commitInboundSeq(frame.seq);
               if (result.stage === 'ok') {
                 ownInnerListeners.forEach((cb) => cb(result.inner));
@@ -1245,6 +1318,7 @@ export async function startHost(opts: HostOpts): Promise<HostHandle> {
         // name it usefully — so keeping the key would buy nothing and cost
         // the forward secrecy this version exists for.
         ownSession = dropOwnSessionAndEphemeral();
+        ownDecryptFailures = 0;
         // A pair code the user never approved is not actionable once the
         // browser holding the popup is gone — and `bridgeHealth().session`
         // ranks `pair_pending` above "extension not attached", so leaving it
