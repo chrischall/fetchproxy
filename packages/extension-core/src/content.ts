@@ -11,9 +11,10 @@ import { MAX_REQUEST_BODY_BYTES, MAX_RESPONSE_BODY_BYTES } from './content-limit
  * fingerprint — which is exactly what Akamai/Cloudflare want to see.
  *
  * Page-level globals (like window.__CSRF_TOKEN__) are NOT accessible
- * from the isolated world. The companion MAIN-world `capture-logger.ts`
- * script copies them to `document.documentElement.dataset.fetchproxyCsrf`
- * so we can pick them up here and forward as headers.
+ * from the isolated world. While serving a fetch, we ask the companion
+ * MAIN-world `capture-logger.ts` script for the token over the shared
+ * message bus (`readPageCsrfToken`) and forward it as a header. Nothing is
+ * persisted in the DOM.
  */
 
 const GRAPHQL_TIMEOUT_MS = 20 * 1000; // 20 s to await the MAIN-world reply
@@ -23,6 +24,10 @@ const GRAPHQL_TIMEOUT_MS = 20 * 1000; // 20 s to await the MAIN-world reply
 // that says which half of the bridge is stuck — could never be the error a
 // caller saw. 20s for the same reason GRAPHQL_TIMEOUT_MS above uses it.
 const IN_PAGE_FETCH_TIMEOUT_MS = 20 * 1000; // 20 s to await the MAIN-world reply
+// The CSRF ask is a same-thread postMessage round-trip; it only waits this
+// long when the MAIN-world script is absent (a tab loaded before the
+// extension was installed), where "no token" is the right answer anyway.
+const CSRF_TIMEOUT_MS = 1000;
 
 interface FetchInit {
   url: string;
@@ -747,17 +752,76 @@ export function runInPageFetch(
   });
 }
 
+/** Window surface `readPageCsrfToken` touches; a fake stands in under test. */
+interface CsrfRelayWindow {
+  addEventListener: (type: string, fn: (e: MessageEvent) => void) => void;
+  removeEventListener: (type: string, fn: (e: MessageEvent) => void) => void;
+  postMessage: (message: unknown, targetOrigin?: string) => void;
+  location?: { origin?: string };
+}
+
+let csrfReqCounter = 0;
+
+/**
+ * Ask the MAIN world (`installCsrfBridge`, capture-logger.ts) for the page's
+ * `window.__CSRF_TOKEN__`. Resolves `undefined` when the page defines none,
+ * when nothing answers within `timeoutMs`, or on any malformed reply. Only a
+ * reply whose `source` is this window and whose `reqId` matches is accepted.
+ * A page script could forge one — it gains nothing: it already holds the
+ * real token, and a forged one only spoils the request it is relaying.
+ */
+export function readPageCsrfToken(
+  win: CsrfRelayWindow = window as unknown as CsrfRelayWindow,
+  timeoutMs: number = CSRF_TIMEOUT_MS,
+): Promise<string | undefined> {
+  return new Promise<string | undefined>((resolve) => {
+    const reqId = ++csrfReqCounter;
+    let settled = false;
+    const finish = (token: string | undefined): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      win.removeEventListener('message', onMessage);
+      resolve(token);
+    };
+    const onMessage = (event: MessageEvent): void => {
+      try {
+        if (event.source !== (win as unknown as MessageEventSource)) return;
+        const data = event.data as
+          | { __fetchproxy?: string; reqId?: number; token?: unknown }
+          | null
+          | undefined;
+        if (!data || typeof data !== 'object' || data.__fetchproxy !== 'csrf-res') return;
+        if (data.reqId !== reqId) return;
+        finish(typeof data.token === 'string' && data.token.length > 0 ? data.token : undefined);
+      } catch {
+        // Never throw out of a window 'message' listener.
+      }
+    };
+    win.addEventListener('message', onMessage);
+    const timer = setTimeout(() => finish(undefined), timeoutMs);
+    try {
+      win.postMessage({ __fetchproxy: 'csrf-req', reqId }, win.location?.origin ?? '*');
+    } catch {
+      finish(undefined);
+    }
+  });
+}
+
 // Exported for unit tests; production callers reach it only via the
 // `fetchproxy-fetch` message above.
-export async function runFetch(init: FetchInit): Promise<FetchResponse | FetchError> {
+export async function runFetch(
+  init: FetchInit,
+  getCsrf: () => Promise<string | undefined> = () => readPageCsrfToken(),
+): Promise<FetchResponse | FetchError> {
   if (init.body && init.body.length > MAX_REQUEST_BODY_BYTES) {
     return { ok: false, error: `request body too large: ${init.body.length} bytes` };
   }
-  // Auto-inject x-csrf-token from the MAIN-world capture-logger's dataset
-  // sync. Caller can override by setting `x-csrf-token` in init.headers
-  // explicitly. Sites that don't expose a CSRF on window.__CSRF_TOKEN__
-  // just won't have anything to forward — dataset is empty, header omitted.
-  const csrf = document.documentElement.dataset.fetchproxyCsrf;
+  // Auto-inject x-csrf-token, asked of the MAIN world for THIS approved
+  // fetch only. Caller can override by setting `x-csrf-token` in
+  // init.headers explicitly. Sites that don't expose a CSRF on
+  // window.__CSRF_TOKEN__ just won't have anything to forward.
+  const csrf = await getCsrf();
   // A write's first pass asks for a tab that can inject the token. This tab
   // can't — say so (typed, so the background keeps walking) rather than send
   // a request the site will 403. See lib/csrf-soft-miss.ts.

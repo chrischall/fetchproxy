@@ -3,9 +3,9 @@
  * background's fetch handler and the content script.
  *
  * Why it exists (#286): sites like OpenTable refuse every write without
- * `x-csrf-token`. The content script injects that header from the tab's
- * `data-fetchproxy-csrf`, which the MAIN-world capture-logger copies from
- * `window.__CSRF_TOKEN__` — and only the site's *app* pages define that
+ * `x-csrf-token`. The content script injects that header with the tab's
+ * `window.__CSRF_TOKEN__`, asked of the MAIN-world capture-logger on demand
+ * — and only the site's *app* pages define that
  * global; a homepage or search tab doesn't. The fetch handler relays through
  * the first matching tab in `chrome.tabs.query` order, so a user whose oldest
  * tab on the site was the homepage got every write 403'd while a tab that

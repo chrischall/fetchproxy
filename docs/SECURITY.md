@@ -340,13 +340,13 @@ The extension's service worker parses every WS frame. A bug (prototype pollution
 
 ### T7 — CSRF token exposure
 
-Some target sites (OpenTable, Resy) use CSRF tokens that live on `window.__CSRF_TOKEN__` in the page MAIN world. The extension syncs this to a `dataset` attribute so the isolated-world content script can read it before issuing a fetch.
+Some target sites (OpenTable, Resy) use CSRF tokens that live on `window.__CSRF_TOKEN__` in the page MAIN world, which the isolated-world content script cannot see. While serving a fetch the background has approved, the content script asks the MAIN-world script for the token over the window's message bus (`readPageCsrfToken` / `installCsrfBridge`) and sets it as `x-csrf-token`.
 
-**Concern.** That dataset attribute is readable by any script running on the page, including any third-party script the target site loads.
+**Concern (and the history).** Up to 3.1.0 the MAIN-world script copied the token into a `<html data-fetchproxy-csrf>` attribute every 2 s on **every site** the user visited, used or not. That moved a secret which lived only in a JS variable into the DOM, where CSS attribute selectors can read it: a site with an HTML/CSS injection but a CSP that blocks script could exfiltrate it with `html[data-fetchproxy-csrf^="a"]{background:url(...)}`. It also fingerprinted the extension on every page. The token is no longer written to the DOM at all.
 
-**Defense — same-origin assumption.** opentable.com → opentable.com. The third-party scripts in question are loaded by opentable.com itself; the CSRF is THEIR CSRF, used to call THEIR endpoints. Exposing it to same-origin scripts isn't a new exposure — they'd find it on `window.__CSRF_TOKEN__` anyway.
+**Defense — on demand, same window, approved fetches only.** The request/reply pair only travels on the page's own window (`event.source === window`, posted to the window's own origin), whose scripts already hold `window.__CSRF_TOKEN__`, so this adds no same-origin exposure. It only happens inside a fetch that passed the background's domain gate — which, since the release after 3.1.0, covers the relaying tab (`tabUrl`) as well as the request URL, so an MCP cannot pick a tab on a site it was not approved for and collect that site's token on its request.
 
-We document this so future contributors don't expand the CSRF-sync pattern to expose tokens cross-origin.
+We document this so future contributors don't expand the CSRF pattern to expose tokens cross-origin or persist them in the DOM.
 
 ### T8 — MCP impersonation
 
