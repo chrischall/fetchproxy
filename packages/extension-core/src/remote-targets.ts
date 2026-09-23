@@ -29,13 +29,11 @@
  * turns these records into connections.
  */
 
-/**
- * Key holding the configured remote targets (an array of records) — in the
- * extension-origin IndexedDB vault since fleet-audit #252 (`vault-records.ts`),
- * not `chrome.storage.local`, where any site's content script could add a
- * bridge for this browser to dial.
- */
-export const REMOTE_TARGETS_KEY = 'remoteBridges';
+// The configured targets live in the extension-origin IndexedDB vault
+// (`vault-records.ts`) since fleet-audit #252, not `chrome.storage.local`,
+// where any site's content script could add a bridge for this browser to dial.
+// The pre-vault storage.local key is owned by `vault-migration.ts`
+// (LEGACY_REMOTE_TARGETS_KEY), the only code that still reads it.
 
 /**
  * `chrome.runtime` message the popup sends after saving targets, so the
