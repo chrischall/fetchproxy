@@ -116,6 +116,17 @@ describe('requestJson<T>', () => {
     expect(data).toBeNull();
   });
 
+  it('whitespace-only body on a 200: returns null data, the same as getJson/postJson', async () => {
+    const s = new TestServer(baseOpts);
+    s.canned = { ok: true, status: 200, url: 'x', body: ' \n\t ' };
+    const { data, result } = await s.requestJson<{ id: number }>('POST', '/api', {
+      body: { q: 1 },
+    });
+    expect(data).toBeNull();
+    expect(result.body).toBe(' \n\t ');
+    await expect(s.getJson('/api')).resolves.toBeNull();
+  });
+
   it('honors subdomain + domain selectors via request() resolution', async () => {
     const s = new TestServer({ ...baseOpts, domains: ['example.com', 'other.com'] });
     s.canned = { ok: true, status: 200, url: 'x', body: '{}' };
