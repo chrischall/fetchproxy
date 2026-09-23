@@ -365,9 +365,14 @@ MCP tool call is the integration test.
   job rewrites caret ranges to the new cohort version; literals get
   left behind.
 - Don't add `NPM_TOKEN` as a secret. The publish pipeline is OIDC.
-- Don't write to `chrome.storage.local` without going through the
-  TrustStore / SessionKeys helpers — they handle the
-  serialization + migration shape.
+- Don't put anything security-relevant in `chrome.storage.local` —
+  every site's content script can read AND write it. Keys, trust
+  records, remote bridge targets and dismissed scope hashes live in the
+  extension-origin IndexedDB vault (`extension-core/src/vault.ts`,
+  reached through `TrustStore` / `vault-records.ts` /
+  `loadOrCreateExtensionIdentity`); the pairing queue lives in
+  `storage.session`. `vault-migration.ts` is the only reader of the
+  legacy `storage.local` keys, and only once.
 - Don't make the `handleServerHello` function impure. It's the
   security-critical decision point and stays under unit-test discipline.
 - Don't merge feature work that adds protocol fields without updating

@@ -5,22 +5,21 @@
  * Trust is identity-bound, not port-bound — same MCP across restarts,
  * port changes, or identity-key re-issuance is the same trust record.
  *
- * Storage: chrome.storage.local key "trustedMcps".
+ * Storage: the extension-origin IndexedDB vault, key "trustedMcps"
+ * (`vault.ts`). Before the vault this was `chrome.storage.local["trustedMcps"]`,
+ * which every site's content script can WRITE — so a compromised renderer
+ * could forge a record for an MCP identity of its choosing (no pair prompt)
+ * or revoke a real one (fleet-audit #252). Content scripts cannot open the
+ * extension origin's IndexedDB. Existing records are imported once, on the
+ * first vault access after upgrading (`vault-migration.ts`), so pairings
+ * survive; after that, `storage.local["trustedMcps"]` is never read.
+ *
  * Major-version invalidation: if the extension's major version changed
  * since the pair was approved, the record is treated as missing
  * (forces re-pair). Patch/minor bumps carry trust forward.
  */
-declare const chrome: {
-  storage: {
-    local: {
-      get: (k: string) => Promise<Record<string, unknown>>;
-      set: (kv: Record<string, unknown>) => Promise<void>;
-      remove: (k: string) => Promise<void>;
-    };
-  };
-};
-
-const STORAGE_KEY = 'trustedMcps';
+import { vaultGet, vaultUpdate } from './vault.js';
+import { ensureVault, sanitiseTrustStore } from './vault-migration.js';
 
 export interface TrustRecord {
   serverName: string;
@@ -178,9 +177,7 @@ export class TrustStore {
       domSelectors: Array.isArray(rec.domSelectors) ? rec.domSelectors : [],
       domListSelectors: Array.isArray(rec.domListSelectors) ? rec.domListSelectors : [],
       graphqlOps: Array.isArray(rec.graphqlOps) ? rec.graphqlOps : [],
-      localStoragePointers: Array.isArray(rec.localStoragePointers)
-        ? rec.localStoragePointers
-        : [],
+      localStoragePointers: Array.isArray(rec.localStoragePointers) ? rec.localStoragePointers : [],
       sessionStoragePointers: Array.isArray(rec.sessionStoragePointers)
         ? rec.sessionStoragePointers
         : [],
@@ -188,19 +185,14 @@ export class TrustStore {
       // to '' so `background.ts:handleServerHello` sees a mismatch
       // against the current extension's pub and triggers re-pair.
       extensionIdentityX25519Pub:
-        typeof rec.extensionIdentityX25519Pub === 'string'
-          ? rec.extensionIdentityX25519Pub
-          : '',
+        typeof rec.extensionIdentityX25519Pub === 'string' ? rec.extensionIdentityX25519Pub : '',
       extensionIdentityEd25519Pub:
-        typeof rec.extensionIdentityEd25519Pub === 'string'
-          ? rec.extensionIdentityEd25519Pub
-          : '',
+        typeof rec.extensionIdentityEd25519Pub === 'string' ? rec.extensionIdentityEd25519Pub : '',
     };
     return normalised;
   }
 
   async put(identityHash: string, input: TrustInput): Promise<void> {
-    const stored = await this.load();
     // Fill defaults for any optional 0.4.0 fields so the stored
     // record matches the canonical shape on read.
     const cookieKeys = input.cookieKeys ?? [];
@@ -213,7 +205,7 @@ export class TrustStore {
     const graphqlOps = input.graphqlOps ?? [];
     const localStoragePointers = input.localStoragePointers ?? [];
     const sessionStoragePointers = input.sessionStoragePointers ?? [];
-    stored.records[identityHash] = {
+    const record: TrustRecord = {
       serverName: input.serverName,
       domains: input.domains,
       capabilities: input.capabilities,
@@ -234,13 +226,15 @@ export class TrustStore {
       pairedAt: Date.now(),
       extensionVersionAtPair: this.extensionVersion,
     };
-    await chrome.storage.local.set({ [STORAGE_KEY]: stored });
+    await this.update((stored) => {
+      stored.records[identityHash] = record;
+    });
   }
 
   async remove(identityHash: string): Promise<void> {
-    const stored = await this.load();
-    delete stored.records[identityHash];
-    await chrome.storage.local.set({ [STORAGE_KEY]: stored });
+    await this.update((stored) => {
+      delete stored.records[identityHash];
+    });
   }
 
   async list(): Promise<Record<string, TrustRecord>> {
@@ -249,8 +243,17 @@ export class TrustStore {
   }
 
   private async load(): Promise<StoredShape> {
-    const got = await chrome.storage.local.get(STORAGE_KEY);
-    const raw = got[STORAGE_KEY] as StoredShape | undefined;
-    return raw && raw.records ? raw : { records: {} };
+    await ensureVault();
+    return sanitiseTrustStore(await vaultGet('trustedMcps')) as StoredShape;
+  }
+
+  /** Atomic read-modify-write, so the popup and the worker cannot race. */
+  private async update(mutate: (stored: StoredShape) => void): Promise<void> {
+    await ensureVault();
+    await vaultUpdate('trustedMcps', (cur) => {
+      const stored = sanitiseTrustStore(cur) as StoredShape;
+      mutate(stored);
+      return stored;
+    });
   }
 }

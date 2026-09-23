@@ -19,6 +19,13 @@ import {
   type InnerFrame,
   type RawKeyPair,
 } from '@fetchproxy/protocol';
+import { loadOrCreateExtensionIdentity } from '../src/extension-identity.js';
+import { freshVault } from './helpers/vault.js';
+import { settle } from './helpers/settle.js';
+
+/** Sleep at least `ms`, then until no socket has sent anything new. */
+const settleFrames = (ms: number): Promise<void> =>
+  settle(() => FakeSocket.opened.map((s) => s.sent.length).join(','), ms);
 
 /**
  * The extension's replay counter advances for a frame that AUTHENTICATED,
@@ -219,20 +226,16 @@ describe('extension replay counter', () => {
   beforeEach(async () => {
     FakeSocket.opened = [];
     storage.clear();
+    freshVault();
     unbindAll();
     links.clear();
     mcpDomains.clear();
     mcpCapabilities.clear();
     state.trust = new TrustStore('2.1.0');
     state.sessions = new SessionKeys();
-    const x = await generateX25519();
-    const ed = await generateEd25519();
-    state.extIdentity = {
-      x25519Pub: x.publicKey,
-      x25519Priv: x.privateKey,
-      ed25519Pub: ed.publicKey,
-      ed25519Priv: ed.privateKey,
-    };
+    // Loaded through the vault, as boot does — which also primes it, so the
+    // first vault access inside a test is not the one-time initialisation.
+    state.extIdentity = await loadOrCreateExtensionIdentity();
     connect();
     localWs = FakeSocket.opened.find((s) => s.url.startsWith('ws://127.0.0.1'))!;
     localWs.open();
@@ -266,7 +269,7 @@ describe('extension replay counter', () => {
     // The counter DID move for the frame that authenticated: replaying it is
     // still refused.
     localWs.message(await sealInnerFrame(key, mcp.mcpId, 1, { type: 'ping' }, 's2e'));
-    await new Promise((r) => setTimeout(r, 20));
+    await settleFrames(20);
     expect(localWs.frames('frame')).toHaveLength(1);
   });
 
@@ -365,7 +368,7 @@ describe('extension replay counter', () => {
     expect(localWs.frames('frame')).toHaveLength(0);
     // seq 5 is spent: a captured frame replayed at it is refused.
     localWs.message(await sealInnerFrame(key, mcp.mcpId, 5, { type: 'ping' }, 's2e'));
-    await new Promise((r) => setTimeout(r, 20));
+    await settleFrames(20);
     expect(localWs.frames('frame')).toHaveLength(0);
 
     // And the session is not wedged — the next seq is answered as usual.
@@ -411,7 +414,7 @@ describe('extension replay counter', () => {
       const calls = claim.mock.calls.length + 1;
       localWs.message(await sealInnerFrame(key, mcp.mcpId, seq, { type: 'ping' }, 's2e'));
       await vi.waitUntil(() => claim.mock.calls.length === calls);
-      await new Promise((r) => setTimeout(r, 20));
+      await settleFrames(20);
     };
 
     await next('replay');

@@ -11,6 +11,13 @@ import {
   PROTOCOL_VERSION,
   type RawKeyPair,
 } from '@fetchproxy/protocol';
+import { loadOrCreateExtensionIdentity } from '../src/extension-identity.js';
+import { freshVault } from './helpers/vault.js';
+import { settle } from './helpers/settle.js';
+
+/** Sleep at least `ms`, then until no socket has sent anything new. */
+const settleFrames = (ms: number): Promise<void> =>
+  settle(() => FakeSocket.opened.map((s) => s.sent.length).join(','), ms);
 
 /**
  * B-BUG-9: a host notice that a peer MCP left drops that MCP's session.
@@ -233,21 +240,16 @@ describe('B-BUG-9: peer-gone', () => {
   beforeEach(async () => {
     FakeSocket.opened = [];
     storage.clear();
+    freshVault();
     unbindAll();
     links.clear();
     mcpDomains.clear();
     mcpCapabilities.clear();
     state.trust = new TrustStore('2.1.0');
     state.sessions = new SessionKeys();
-    const x = await generateX25519();
-    const ed = await generateEd25519();
-    state.extIdentity = {
-      x25519Pub: x.publicKey,
-      x25519Priv: x.privateKey,
-      ed25519Pub: ed.publicKey,
-      ed25519Priv: ed.privateKey,
-      createdAt: 0,
-    };
+    // Loaded through the vault, as boot does — which also primes it, so the
+    // first vault access inside a test is not the one-time initialisation.
+    state.extIdentity = await loadOrCreateExtensionIdentity();
     reconcileRemoteLinks([REMOTE]);
     localWs = FakeSocket.opened.find((s) => s.url.startsWith('ws://127.0.0.1'))!;
     remoteWs = FakeSocket.opened.find((s) => s.url === REMOTE.url)!;
@@ -288,7 +290,7 @@ describe('B-BUG-9: peer-gone', () => {
     const mcpId = 'alltrails-mcp:2.1.3:2222222222222222';
     await linkedOn(remoteWs, mcpId);
     localWs.message({ type: 'peer-gone', mcpId });
-    await new Promise((r) => setTimeout(r, 20));
+    await settleFrames(20);
     expect(state.sessions!.get(mcpId)).not.toBeNull();
     expect(linkForMcp(mcpId)).not.toBeNull();
   });

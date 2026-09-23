@@ -13,6 +13,7 @@
  */
 
 import { TrustStore } from '../trust-store.js';
+import { loadRemoteTargets, saveRemoteTargets } from '../vault-records.js';
 import { normalisePendingPair } from '../lib/pending-pair.js';
 import {
   VERSION_MISMATCH_KEY,
@@ -22,7 +23,7 @@ import {
   type VersionMismatch,
 } from '../lib/version-mismatch.js';
 import {
-  REMOTE_TARGETS_KEY,
+  REMOTE_TARGETS_CHANGED,
   normaliseRemoteTargets,
   validateRemoteTargetToken,
   validateRemoteTargetUrl,
@@ -1334,14 +1335,23 @@ async function bootstrap(): Promise<void> {
    * the popup can only ever persist rows the background will actually dial —
    * the two agree on what a target IS, in one place, rather than the popup
    * writing something the background silently drops.
+   *
+   * The targets live in the extension-origin IndexedDB vault, which content
+   * scripts cannot reach (#252); IndexedDB has no change event the worker
+   * can hear, so a save is followed by a data-less nudge and the worker
+   * re-reads the vault itself.
    */
   const bridgesView = async (links: LinkStatusMessage[]): Promise<BridgesView> => {
-    const got = await chrome.storage!.local.get(REMOTE_TARGETS_KEY);
-    const targets = normaliseRemoteTargets(got[REMOTE_TARGETS_KEY]);
+    const targets = await loadRemoteTargets();
     const statusFor = (id: string): boolean | undefined =>
       links.find((link) => link.id === id)?.connected;
     const write = async (next: RemoteTarget[]): Promise<void> => {
-      await chrome.storage!.local.set({ [REMOTE_TARGETS_KEY]: normaliseRemoteTargets(next) });
+      await saveRemoteTargets(next);
+      try {
+        await chrome.runtime?.sendMessage?.({ type: REMOTE_TARGETS_CHANGED });
+      } catch {
+        // No worker listening right now: it reads the vault when it boots.
+      }
     };
     const localConnected = statusFor('local');
     return {

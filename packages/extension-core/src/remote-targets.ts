@@ -29,8 +29,20 @@
  * turns these records into connections.
  */
 
-/** Storage key holding the configured remote targets (an array of records). */
+/**
+ * Key holding the configured remote targets (an array of records) — in the
+ * extension-origin IndexedDB vault since fleet-audit #252 (`vault-records.ts`),
+ * not `chrome.storage.local`, where any site's content script could add a
+ * bridge for this browser to dial.
+ */
 export const REMOTE_TARGETS_KEY = 'remoteBridges';
+
+/**
+ * `chrome.runtime` message the popup sends after saving targets, so the
+ * service worker reconciles its links. Carries no data: the worker re-reads
+ * the vault.
+ */
+export const REMOTE_TARGETS_CHANGED = 'remote-targets-changed';
 
 /** The subprotocol that names this wire contract to the relay. */
 export const BRIDGE_SUBPROTOCOL = 'fetchproxy.bridge.v1';

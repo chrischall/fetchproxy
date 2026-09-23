@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { handleServerHello, connectedIdentityHashes, applyNeedsPairRecord, CAPTURE_EXTRA_INFO_SPEC, downloadValueFromItem } from '../src/background.js';
 import { TrustStore } from '../src/trust-store.js';
+import { freshVault } from './helpers/vault.js';
 import { normalisePendingPair } from '../src/lib/pending-pair.js';
 
 describe('capture_request_header webRequest spec', () => {
@@ -90,6 +91,7 @@ const DEPS_EXTRA = { extensionSessionNonce: FAKE_EXT_NONCE } as const;
 const helloEphemerals = new Map<string, Uint8Array>();
 
 function mockStorage(): void {
+  freshVault();
   const data: Record<string, unknown> = {};
   (globalThis as { chrome?: unknown }).chrome = {
     storage: {
@@ -968,6 +970,7 @@ describe('dismiss-suppression (scope-update)', () => {
   let storageData: Record<string, unknown>;
 
   beforeEach(() => {
+    freshVault();
     storageData = {};
     (globalThis as { chrome?: unknown }).chrome = {
       storage: {

@@ -22,7 +22,6 @@
  */
 
 import {
-  ed25519Sign,
   ecdhX25519,
   hkdfSha256,
   generateX25519,
@@ -34,6 +33,8 @@ import {
   type ReadyFrame,
 } from '@fetchproxy/protocol';
 import { ensureDomainTab } from '../ensure-domain-tab.js';
+import { signWithExtensionIdentity } from '../extension-identity.js';
+import { recordDismissedScopeHash } from '../vault-records.js';
 import { enc } from '../lib/text.js';
 
 import type { ChromeApi } from '../chrome-api.js';
@@ -47,7 +48,6 @@ import { linkForMcp, sendOnLink } from './links.js';
 import {
   PENDING_PAIR_KEY,
   APPROVED_PAIR_KEY,
-  DISMISSED_SCOPE_KEY,
   DISMISS_SCOPE_UPDATE_KEY,
   mergePending,
   pendingArea,
@@ -188,8 +188,8 @@ export async function onApproval(approved: AnyPendingRecord): Promise<void> {
       // ephemeral pub below, so a relay cannot swap it for one of its own.
       // The MCP verifies this against our claimed Ed25519 pub and gates
       // session-key derivation on it.
-      const sessionSig = await ed25519Sign(
-        state.extIdentity.ed25519Priv,
+      const sessionSig = await signWithExtensionIdentity(
+        state.extIdentity,
         readySignaturePayload(
           sessionNonce,
           link.sessionNonce,
@@ -261,13 +261,11 @@ export async function onScopeUpdateDismiss(key: string, identityHash: string, di
   const area = pendingArea();
   if (!area) return;
   // Record the dismissed scopeHash so we don't re-queue it for this identity.
-  // (The dismissed-hash SET stays in storage.local: it must outlive a browser
-  // restart, and forging it can only suppress a scope-update offer.)
+  // The dismissed-hash SET must outlive a browser restart, so it cannot live
+  // in storage.session with the queue; it lives in the vault, where — unlike
+  // storage.local — no content script can plant a dismissal (#252).
   await withPendingPairLock(async () => {
-    const [pendingGot, dismissedGot] = await Promise.all([
-      area.get(PENDING_PAIR_KEY),
-      chrome.storage.local.get(DISMISSED_SCOPE_KEY),
-    ]);
+    const pendingGot = await area.get(PENDING_PAIR_KEY);
     // Remove from pending.
     const remaining = mergePending(pendingGot[PENDING_PAIR_KEY]);
     delete remaining[key];
@@ -278,12 +276,7 @@ export async function onScopeUpdateDismiss(key: string, identityHash: string, di
       await area.set({ [PENDING_PAIR_KEY]: remaining });
     }
     // Persist dismissed hash: Record<identityHash, string[]>
-    const dismissed = (dismissedGot[DISMISSED_SCOPE_KEY] ?? {}) as Record<string, string[]>;
-    const current = dismissed[identityHash] ?? [];
-    if (!current.includes(dismissedScopeHash)) {
-      dismissed[identityHash] = [...current, dismissedScopeHash];
-    }
-    await chrome.storage.local.set({ [DISMISSED_SCOPE_KEY]: dismissed });
+    await recordDismissedScopeHash(identityHash, dismissedScopeHash);
   });
   await area.remove(DISMISS_SCOPE_UPDATE_KEY);
 }

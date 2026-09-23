@@ -28,7 +28,8 @@ export interface BackgroundState {
   // 0.4.0+: the extension's long-term identity. Loaded once on boot via
   // `loadOrCreateExtensionIdentity`, then threaded into every hello +
   // every ready-frame signature. Generated on first run, persisted in
-  // chrome.storage.local across MV3 service-worker restarts.
+  // the extension-origin IndexedDB vault across MV3 service-worker restarts,
+  // private halves as non-extractable CryptoKeys (see identity-keys.ts).
   extIdentity: ExtensionIdentity | null;
 }
 

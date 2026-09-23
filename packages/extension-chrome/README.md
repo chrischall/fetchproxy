@@ -106,7 +106,7 @@ upgrade.
 | MCP-side identity keys (`~/.fetchproxy/identity/`) | Yes — outside the extension |
 | MCP-captured sessions (e.g. `~/.honeybook-mcp/`) | Yes — outside the extension |
 | Extension identity keypair | No — CWS install starts fresh |
-| Per-MCP trust records | No — stored in the old extension's `chrome.storage.local` |
+| Per-MCP trust records | No — stored in the old extension's own IndexedDB |
 
 **What to do:**
 

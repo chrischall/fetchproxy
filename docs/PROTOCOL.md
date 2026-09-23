@@ -880,8 +880,11 @@ mechanism that a reader should rely on: neither ECDH input is a long-term key an
 more, so an identity holder with a recording of the frames has nothing left to
 derive with.
 
-(0.4.0 gave the extension a long-term identity of its own, stored in
-`chrome.storage.local`; it authenticates the `ready` and is never an ECDH input.)
+(0.4.0 gave the extension a long-term identity of its own; it authenticates
+the `ready` and is never an ECDH input. Its private halves are now
+non-extractable WebCrypto keys in the extension origin's IndexedDB — earlier
+versions (3.2.x) kept them as raw bytes in `chrome.storage.local`, where content scripts could read
+them. See SECURITY.md §T-fake-extension.)
 
 ### Pair code (SAS)
 
@@ -962,7 +965,7 @@ than remembered.
 
 ### Trust store (extension)
 
-`chrome.storage.local["trustedMcps"]`:
+The extension's trust store (`trustedMcps` in the extension origin's IndexedDB vault; in earlier versions `chrome.storage.local["trustedMcps"]`, which content scripts could write — see SECURITY.md §Defense 4):
 
 ```json
 {
