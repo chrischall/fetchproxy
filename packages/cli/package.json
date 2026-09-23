@@ -30,11 +30,11 @@
   },
   "license": "MIT",
   "dependencies": {
-    "@fetchproxy/bootstrap": "^3.2.0",
-    "@fetchproxy/protocol": "^3.2.0",
-    "@fetchproxy/server": "^3.2.0"
+    "@fetchproxy/bootstrap": "^3.2.1",
+    "@fetchproxy/protocol": "^3.2.1",
+    "@fetchproxy/server": "^3.2.1"
   },
   "devDependencies": {
-    "@fetchproxy/test-helpers": "^3.2.0"
+    "@fetchproxy/test-helpers": "^3.2.1"
   }
 }
