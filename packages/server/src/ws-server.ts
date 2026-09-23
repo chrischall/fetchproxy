@@ -1655,7 +1655,7 @@ export class FetchproxyServer {
       for (const c of opts.capabilities) {
         if (!KNOWN_CAPABILITIES.has(c)) {
           throw new Error(
-            `FetchproxyServer: unknown capability ${JSON.stringify(c)} — known values: ["fetch", "read_cookies"]`,
+            `FetchproxyServer: unknown capability ${JSON.stringify(c)} — known values: ${JSON.stringify([...KNOWN_CAPABILITIES])}`,
           );
         }
       }
