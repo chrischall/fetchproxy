@@ -111,7 +111,12 @@ describe('CSRF token on demand (S-SEC-4)', () => {
 
     it('injects the token fetched on demand', async () => {
       await runFetch(
-        { url: 'https://www.opentable.com/x', method: 'POST', body: '{}', tabUrl: 'https://www.opentable.com/' },
+        {
+          url: 'https://www.opentable.com/x',
+          method: 'POST',
+          body: '{}',
+          tabUrl: 'https://www.opentable.com/',
+        },
         async () => 'tok-demand',
       );
       const init = fetchMock.mock.calls[0]![1] as { headers: Record<string, string> };

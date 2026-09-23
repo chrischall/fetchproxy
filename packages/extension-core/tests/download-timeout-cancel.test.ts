@@ -25,7 +25,9 @@ function installDownloads(opts: { resolveDownloadAfterMs?: number } = {}) {
     downloads: {
       onChanged: { addListener: () => {}, removeListener: () => {} },
       download: () =>
-        new Promise<number>((resolve) => setTimeout(() => resolve(42), opts.resolveDownloadAfterMs ?? 0)),
+        new Promise<number>((resolve) =>
+          setTimeout(() => resolve(42), opts.resolveDownloadAfterMs ?? 0),
+        ),
       search: async () => [{ id: 42, state: 'in_progress' }],
       cancel,
       erase,
@@ -49,7 +51,12 @@ describe('download timeout cancels the browser download (B-BUG-12)', () => {
     const { cancel, erase } = installDownloads();
     const p = handleDownloadRequest(
       MCP_ID,
-      { type: 'request', op: 'download', id: 'r1', init: { url: 'https://alltrails.com/big.gpx', timeoutMs: 1000 } },
+      {
+        type: 'request',
+        op: 'download',
+        id: 'r1',
+        init: { url: 'https://alltrails.com/big.gpx', timeoutMs: 1000 },
+      },
       ['alltrails.com'],
     );
     await vi.advanceTimersByTimeAsync(0);
@@ -64,7 +71,12 @@ describe('download timeout cancels the browser download (B-BUG-12)', () => {
     const { cancel } = installDownloads({ resolveDownloadAfterMs: 2000 });
     const p = handleDownloadRequest(
       MCP_ID,
-      { type: 'request', op: 'download', id: 'r2', init: { url: 'https://alltrails.com/big.gpx', timeoutMs: 1000 } },
+      {
+        type: 'request',
+        op: 'download',
+        id: 'r2',
+        init: { url: 'https://alltrails.com/big.gpx', timeoutMs: 1000 },
+      },
       ['alltrails.com'],
     );
     await vi.advanceTimersByTimeAsync(1000);
