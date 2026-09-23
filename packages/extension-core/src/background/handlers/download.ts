@@ -133,6 +133,29 @@ export async function handleDownloadRequest(
     cleanup();
     void sendInner(mcpId, { type: 'response', id: req.id, ok: false, op: 'download', error });
   };
+  // A timed-out download is abandoned, so stop the browser transferring it
+  // and drop its record: left running, it still lands on disk, and the MCP's
+  // retry starts a second copy ('uniquify' → "file (1)"). When the timeout
+  // fires before `download()` has even resolved an id, the cancel runs as
+  // soon as the id arrives (below).
+  let timedOut = false;
+  const cancelAbandoned = (id: number): void => {
+    void downloads
+      .cancel(id)
+      .catch(() => {
+        // already finished or gone
+      })
+      .then(() => downloads.erase({ id }))
+      .catch(() => {
+        // best-effort record cleanup
+      });
+  };
+  const onTimeout = (): void => {
+    if (done) return;
+    timedOut = true;
+    fail('timeout');
+    if (downloadId !== undefined) cancelAbandoned(downloadId);
+  };
   const succeed = async (): Promise<void> => {
     if (done || downloadId === undefined) return;
     // Claim ownership BEFORE the first await: both the onChanged 'complete'
@@ -198,7 +221,7 @@ export async function handleDownloadRequest(
 
   // Listener BEFORE the download so a fast completion isn't missed.
   downloads.onChanged.addListener(onChanged);
-  timer = setTimeout(() => fail('timeout'), timeoutMs);
+  timer = setTimeout(onTimeout, timeoutMs);
 
   try {
     downloadId = await downloads.download({
@@ -209,6 +232,10 @@ export async function handleDownloadRequest(
     });
   } catch (e) {
     fail(`download could not be started: ${String(e)}`);
+    return;
+  }
+  if (timedOut) {
+    cancelAbandoned(downloadId);
     return;
   }
   // Race guard: a tiny file may finish before `download()` even resolved, so

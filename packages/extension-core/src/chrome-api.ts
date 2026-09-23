@@ -146,6 +146,7 @@ export interface ChromeApi {
       }[]
     >;
     erase: (query: { id: number }) => Promise<number[]>;
+    cancel: (downloadId: number) => Promise<void>;
     onChanged: {
       addListener: (
         cb: (delta: { id: number; state?: { current: string }; error?: { current: string } }) => void,
