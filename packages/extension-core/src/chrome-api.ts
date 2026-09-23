@@ -66,6 +66,17 @@ export interface ChromeApi {
         ) => void;
       };
     };
+    /**
+     * Chrome 102+: restricted to trusted contexts (extension pages, service
+     * worker) by default, so content scripts cannot read or write it. Holds
+     * the background's authoritative copy of pending approvals
+     * (`background/pending-integrity.ts`). Optional: absent in most test fakes.
+     */
+    session?: {
+      get: (k: string | string[]) => Promise<Record<string, unknown>>;
+      set: (kv: Record<string, unknown>) => Promise<void>;
+      remove: (k: string) => Promise<void>;
+    };
   };
   tabs: {
     query: (q: { url?: string | string[] }) => Promise<{ id?: number; url?: string }[]>;

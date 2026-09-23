@@ -48,9 +48,11 @@ import { handleServerHello } from './hello.js';
 import { setPairPendingBadge } from './badge.js';
 import {
   applyNeedsPairRecord,
+  type AnyPendingRecord,
   type PendingPairRecord,
   type PendingScopeUpdateRecord,
 } from './pending-records.js';
+import { recordPendingAuthoritative } from './pending-integrity.js';
 import {
   PENDING_PAIR_KEY,
   DISMISSED_SCOPE_KEY,
@@ -243,66 +245,74 @@ export async function onServerHello(link: Link, hello: HelloFrameFromServer): Pr
         }
         const got = await chrome.storage.local.get(PENDING_PAIR_KEY);
         const existing = mergePending(got[PENDING_PAIR_KEY]);
-        const currentEntry = existing[suKey];
-        if (currentEntry) {
-          // Dedup: add mcpId to the existing entry.
-          if (!currentEntry.mcpIds.includes(result.mcpId)) {
-            currentEntry.mcpIds.push(result.mcpId);
-          }
-        } else {
-          const suRecord: PendingScopeUpdateRecord = {
-            key: suKey,
-            kind: 'scope-update',
-            identityHash: su.identityHash,
-            serverName: hello.serverName,
-            version: hello.version,
-            mcpIds: [result.mcpId],
-            domains: [...hello.domains],
-            capabilities: [...su.declaredCapabilities],
-            cookieKeys: [...su.declaredCookieKeys],
-            localStorageKeys: [...su.declaredLocalStorageKeys],
-            sessionStorageKeys: [...su.declaredSessionStorageKeys],
-            captureHeaders: su.declaredCaptureHeaders.map((d) => ({ ...d })),
-            indexedDbScopes: su.declaredIndexedDbScopes.map((d) => ({
-              origin: d.origin,
-              database: d.database,
-              store: d.store,
-              keys: [...d.keys],
-            })),
-            domSelectors: su.declaredDomSelectors.map((d) => ({ ...d })),
-            domListSelectors: su.declaredDomListSelectors.map((d) => ({
-              ...d,
-              fields: d.fields.map((f) => ({ ...f })),
-            })),
-            graphqlOps: su.declaredGraphqlOps.map((d) => ({ ...d })),
-            localStoragePointers: su.declaredLocalStoragePointers.map((d) => ({ ...d })),
-            sessionStoragePointers: su.declaredSessionStoragePointers.map((d) => ({ ...d })),
-            identityX25519Pub: hello.identityX25519Pub,
-            identityEd25519Pub: hello.identityEd25519Pub,
-            previousScope: {
-              capabilities: [...su.approvedCapabilities],
-              cookieKeys: [...su.approvedCookieKeys],
-              localStorageKeys: [...su.approvedLocalStorageKeys],
-              sessionStorageKeys: [...su.approvedSessionStorageKeys],
-              captureHeaders: su.approvedCaptureHeaders.map((d) => ({ ...d })),
-              indexedDbScopes: su.approvedIndexedDbScopes.map((d) => ({
+        // Applied twice: to the storage.local queue the popup reads, and to
+        // the background's trusted-only mirror that approvals are checked
+        // against (pending-integrity.ts). Never copy one into the other —
+        // storage.local is writable from content scripts.
+        const applyScopeUpdate = (dict: Record<string, AnyPendingRecord>): void => {
+          const currentEntry = dict[suKey];
+          if (currentEntry) {
+            // Dedup: add mcpId to the existing entry.
+            if (!currentEntry.mcpIds.includes(result.mcpId)) {
+              currentEntry.mcpIds.push(result.mcpId);
+            }
+          } else {
+            const suRecord: PendingScopeUpdateRecord = {
+              key: suKey,
+              kind: 'scope-update',
+              identityHash: su.identityHash,
+              serverName: hello.serverName,
+              version: hello.version,
+              mcpIds: [result.mcpId],
+              domains: [...hello.domains],
+              capabilities: [...su.declaredCapabilities],
+              cookieKeys: [...su.declaredCookieKeys],
+              localStorageKeys: [...su.declaredLocalStorageKeys],
+              sessionStorageKeys: [...su.declaredSessionStorageKeys],
+              captureHeaders: su.declaredCaptureHeaders.map((d) => ({ ...d })),
+              indexedDbScopes: su.declaredIndexedDbScopes.map((d) => ({
                 origin: d.origin,
                 database: d.database,
                 store: d.store,
                 keys: [...d.keys],
               })),
-              domSelectors: su.approvedDomSelectors.map((d) => ({ ...d })),
-              domListSelectors: su.approvedDomListSelectors.map((d) => ({
+              domSelectors: su.declaredDomSelectors.map((d) => ({ ...d })),
+              domListSelectors: su.declaredDomListSelectors.map((d) => ({
                 ...d,
                 fields: d.fields.map((f) => ({ ...f })),
               })),
-              graphqlOps: su.approvedGraphqlOps.map((d) => ({ ...d })),
-              localStoragePointers: su.approvedLocalStoragePointers.map((d) => ({ ...d })),
-              sessionStoragePointers: su.approvedSessionStoragePointers.map((d) => ({ ...d })),
-            },
-          };
-          existing[suKey] = suRecord;
-        }
+              graphqlOps: su.declaredGraphqlOps.map((d) => ({ ...d })),
+              localStoragePointers: su.declaredLocalStoragePointers.map((d) => ({ ...d })),
+              sessionStoragePointers: su.declaredSessionStoragePointers.map((d) => ({ ...d })),
+              identityX25519Pub: hello.identityX25519Pub,
+              identityEd25519Pub: hello.identityEd25519Pub,
+              previousScope: {
+                capabilities: [...su.approvedCapabilities],
+                cookieKeys: [...su.approvedCookieKeys],
+                localStorageKeys: [...su.approvedLocalStorageKeys],
+                sessionStorageKeys: [...su.approvedSessionStorageKeys],
+                captureHeaders: su.approvedCaptureHeaders.map((d) => ({ ...d })),
+                indexedDbScopes: su.approvedIndexedDbScopes.map((d) => ({
+                  origin: d.origin,
+                  database: d.database,
+                  store: d.store,
+                  keys: [...d.keys],
+                })),
+                domSelectors: su.approvedDomSelectors.map((d) => ({ ...d })),
+                domListSelectors: su.approvedDomListSelectors.map((d) => ({
+                  ...d,
+                  fields: d.fields.map((f) => ({ ...f })),
+                })),
+                graphqlOps: su.approvedGraphqlOps.map((d) => ({ ...d })),
+                localStoragePointers: su.approvedLocalStoragePointers.map((d) => ({ ...d })),
+                sessionStoragePointers: su.approvedSessionStoragePointers.map((d) => ({ ...d })),
+              },
+            };
+            dict[suKey] = suRecord;
+          }
+        };
+        applyScopeUpdate(existing);
+        await recordPendingAuthoritative(applyScopeUpdate);
         await chrome.storage.local.set({ [PENDING_PAIR_KEY]: existing });
       });
       setPairPendingBadge();
@@ -367,6 +377,13 @@ export async function onServerHello(link: Link, hello: HelloFrameFromServer): Pr
     const got = await chrome.storage.local.get(PENDING_PAIR_KEY);
     const existing = mergePending(got[PENDING_PAIR_KEY]);
     applyNeedsPairRecord(existing, pendingKey, newPendingRecord);
+    // The same mutation on the trusted-only mirror approvals are checked
+    // against (pending-integrity.ts). A structured clone: the two dicts must
+    // not share the record object, or the next collapse mutates both through
+    // one reference and the second application double-counts.
+    await recordPendingAuthoritative((dict) =>
+      applyNeedsPairRecord(dict, pendingKey, structuredClone(newPendingRecord)),
+    );
     await chrome.storage.local.set({ [PENDING_PAIR_KEY]: existing });
   });
   // 0.4.2: surface the pending pair without making the user discover

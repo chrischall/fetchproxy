@@ -43,6 +43,7 @@ import { clearPairPendingBadge } from './badge.js';
 import type { AnyPendingRecord } from './pending-records.js';
 import { state } from './state.js';
 import { linkForMcp, sendOnLink } from './links.js';
+import { authoritativeApproval, recordPendingAuthoritative } from './pending-integrity.js';
 import {
   PENDING_PAIR_KEY,
   APPROVED_PAIR_KEY,
@@ -59,8 +60,19 @@ import {
   broadcastConnectionsChanged,
 } from './session-scope.js';
 
-export async function onApproval(approved: AnyPendingRecord): Promise<void> {
+export async function onApproval(claimed: AnyPendingRecord): Promise<void> {
   if (!state.trust || !state.sessions || !state.extIdentity) return;
+  // S-SEC-3: `approvedPair` arrives through chrome.storage.local, which
+  // content scripts can write. Act only on the background's own copy of a
+  // pending record it queued, and only if the approval matches it in
+  // everything the user was shown (./pending-integrity.ts).
+  const check = await authoritativeApproval(claimed);
+  if (!check.ok) {
+    console.warn(`[fetchproxy] onApproval: refused (${check.reason})`);
+    await chrome.storage.local.remove(APPROVED_PAIR_KEY);
+    return;
+  }
+  const approved = check.record;
   // Persist trust. Default to ['fetch'] when older popup state somehow
   // omits the field — defensive, the popup always populates it in 0.2.0+.
   const approvedCapabilities =
@@ -233,6 +245,9 @@ export async function onApproval(approved: AnyPendingRecord): Promise<void> {
   // shares `withPendingPairLock` with `onServerHello` so a hello arriving
   // mid-approval can't race the get/set pair.
   await withPendingPairLock(async () => {
+    await recordPendingAuthoritative((dict) => {
+      delete dict[approved.key];
+    });
     const got = await chrome.storage.local.get(PENDING_PAIR_KEY);
     const remaining = mergePending(got[PENDING_PAIR_KEY]);
     delete remaining[approved.key];
@@ -258,6 +273,9 @@ export async function onScopeUpdateDismiss(key: string, identityHash: string, di
       chrome.storage.local.get(DISMISSED_SCOPE_KEY),
     ]);
     // Remove from pending.
+    await recordPendingAuthoritative((dict) => {
+      delete dict[key];
+    });
     const remaining = mergePending(pendingGot[PENDING_PAIR_KEY]);
     delete remaining[key];
     if (Object.keys(remaining).length === 0) {

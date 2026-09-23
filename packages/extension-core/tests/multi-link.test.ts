@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import {
   ecdhX25519,
   ed25519Sign,
@@ -1251,6 +1251,65 @@ describe('approving a pending pair (v4)', () => {
     expect(state.sessions!.get(mcp.mcpId)).toBeNull();
     expect(warns.mock.calls.flat().join(' ')).toMatch(/sessionPub/);
     warns.mockRestore();
+  });
+
+  describe('with chrome.storage.session (S-SEC-3)', () => {
+    const sessionData = new Map<string, unknown>();
+    beforeEach(() => {
+      sessionData.clear();
+      storage.clear();
+      (chrome.storage as unknown as { session?: unknown }).session = {
+        get: async (k: string | string[]) => {
+          const keys = Array.isArray(k) ? k : [k];
+          const out: Record<string, unknown> = {};
+          for (const key of keys) {
+            if (sessionData.has(key)) out[key] = structuredClone(sessionData.get(key));
+          }
+          return out;
+        },
+        set: async (kv: Record<string, unknown>) => {
+          for (const [k, v] of Object.entries(kv)) sessionData.set(k, structuredClone(v));
+        },
+        remove: async (k: string) => void sessionData.delete(k),
+      };
+    });
+    afterEach(() => {
+      delete (chrome.storage as unknown as { session?: unknown }).session;
+    });
+
+    async function queuedRecord(localWs: FakeSocket, mcp: ScriptedMcp): Promise<AnyPendingRecord> {
+      localWs.message(await helloFrom(mcp, extNonceOf(localWs)));
+      await vi.waitUntil(() => localWs.frames('pair-pending').length > 0);
+      const identityHash = toHex(await sha256(mcp.x.publicKey));
+      const find = (): AnyPendingRecord | undefined =>
+        Object.values((storage.get('pendingPair') ?? {}) as Record<string, AnyPendingRecord>).find(
+          (r) => r.identityHash === identityHash,
+        );
+      await vi.waitUntil(() => find() !== undefined);
+      return structuredClone(find()!);
+    }
+
+    it('completes the pairing for the record the hello queued, exactly as the popup approves it', async () => {
+      const localWs = await freshLink();
+      const mcp = await scriptedMcp('alltrails-mcp:2.1.3:3030303030303030');
+      const rec = await queuedRecord(localWs, mcp);
+      await onApproval(rec);
+      await vi.waitUntil(() => localWs.frames('ready').length > 0);
+      expect(await state.trust!.get(rec.identityHash)).not.toBeNull();
+    });
+
+    it('refuses a record widened in storage.local after the hello queued it', async () => {
+      const warns = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const localWs = await freshLink();
+      const mcp = await scriptedMcp('alltrails-mcp:2.1.3:4040404040404040');
+      const rec = await queuedRecord(localWs, mcp);
+      await onApproval({ ...rec, domains: [...rec.domains, 'bank.example'] } as AnyPendingRecord);
+      await new Promise((r) => setTimeout(r, 20));
+      expect(localWs.frames('ready')).toHaveLength(0);
+      expect(await state.trust!.get(rec.identityHash)).toBeNull();
+      expect(warns.mock.calls.flat().join(' ')).toMatch(/refused/);
+      warns.mockRestore();
+    });
   });
 
   it('answers nothing for an mcpId whose link has dropped', async () => {
