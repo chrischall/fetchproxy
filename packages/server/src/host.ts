@@ -1270,7 +1270,22 @@ export async function startHost(opts: HostOpts): Promise<HostHandle> {
         // mapped slot is still THIS socket — otherwise a late, stale close
         // would evict the live (re-registered) peer and strand it until its
         // next reconnect.
-        if (peers.get(peerMcpId)?.ws === ws) peers.delete(peerMcpId);
+        if (peers.get(peerMcpId)?.ws === ws) {
+          peers.delete(peerMcpId);
+          // B-BUG-9: the extension keeps a session, scope grants and a link
+          // binding per mcpId, and only a whole-link close used to clear
+          // them — so every peer that came and went (each bootstrap lift,
+          // each `fpx` call) left one behind, shown as connected in the
+          // popup. Tell it, gated on its hello as extension-disconnected is
+          // on a peer's: an older extension refuses the unknown type.
+          if (extensionWs && extensionHello?.accepts?.includes('peer-gone')) {
+            try {
+              extensionWs.send(JSON.stringify({ type: 'peer-gone', mcpId: peerMcpId }));
+            } catch {
+              /* extension already gone; its own close tears everything down */
+            }
+          }
+        }
       }
     });
   });

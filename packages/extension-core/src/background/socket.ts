@@ -69,6 +69,7 @@ import {
   localLink,
   remoteLink,
   unbindLink,
+  unbindMcp,
   type Link,
 } from './links.js';
 
@@ -213,6 +214,9 @@ function connectLink(link: Link): void {
       identityX25519Pub: toB64(state.extIdentity.x25519Pub),
       identityEd25519Pub: toB64(state.extIdentity.ed25519Pub),
       sessionNonce: toB64(sessionNonce),
+      // B-BUG-9: host → extension notices this build understands. A host
+      // sends `peer-gone` only to an extension that lists it.
+      accepts: ['peer-gone'],
     };
     ws.send(JSON.stringify(extHello));
   });
@@ -332,8 +336,28 @@ async function onMessage(link: Link, data: string): Promise<void> {
     await onServerHello(link, frame);
   } else if (frame.type === 'frame') {
     await onEncryptedFrame(link, frame);
+  } else if (frame.type === 'peer-gone') {
+    onPeerGone(link, frame.mcpId);
   }
   // ready frames from the host shouldn't reach us; ignore.
+}
+
+/**
+ * B-BUG-9: the host says a peer MCP's socket closed. Drop everything this
+ * extension holds for that mcpId — session key, scope grants, link binding —
+ * as `teardownLink` does for a whole link. Without it every short-lived peer
+ * (a bootstrap lift, an `fpx` call; each has a fresh mcpId) left a session
+ * behind for the life of the link, and the popup showed it as connected.
+ *
+ * Only for an mcpId bound to THIS link: a link speaks for its own MCPs and
+ * nobody else's, the same routing rule `onEncryptedFrame` applies.
+ */
+function onPeerGone(link: Link, mcpId: string): void {
+  if (linkForMcp(mcpId) !== link) return;
+  unbindMcp(mcpId, link);
+  state.sessions?.remove(mcpId);
+  clearSessionScopeFor(mcpId);
+  broadcastConnectionsChanged();
 }
 
 async function onEncryptedFrame(link: Link, frame: EncryptedFrame): Promise<void> {
