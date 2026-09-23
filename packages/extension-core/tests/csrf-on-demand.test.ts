@@ -133,5 +133,25 @@ describe('CSRF token on demand (S-SEC-4)', () => {
       const init = fetchMock.mock.calls[0]![1] as { headers: Record<string, string> };
       expect(init.headers['x-csrf-token']).toBeUndefined();
     });
+
+    it('a caller-supplied token skips the page round-trip and the requireCsrf soft miss', async () => {
+      const getCsrf = vi.fn(async () => undefined);
+      const res = await runFetch(
+        {
+          url: 'https://www.opentable.com/x',
+          method: 'POST',
+          body: '{}',
+          tabUrl: 'https://www.opentable.com/',
+          headers: { 'X-Csrf-Token': 'caller-tok' },
+          requireCsrf: true,
+        },
+        getCsrf,
+      );
+      expect(getCsrf).not.toHaveBeenCalled();
+      expect((res as { ok: boolean }).ok).toBe(true);
+      const init = fetchMock.mock.calls[0]![1] as { headers: Record<string, string> };
+      expect(init.headers['X-Csrf-Token']).toBe('caller-tok');
+      expect(init.headers['x-csrf-token']).toBeUndefined();
+    });
   });
 });
