@@ -34,10 +34,12 @@ export interface ChromeApi {
     /**
      * Optional: absent under vitest and on older Chrome. Used to re-inject
      * content scripts after an update, which otherwise leaves every open tab
-     * without one until the person reloads it by hand.
+     * without one until the person reloads it by hand — and, with
+     * `previousVersion`, as the only signal that authorises the one-time
+     * import out of storage.local (`vault-migration.ts`).
      */
     onInstalled?: {
-      addListener: (cb: (details: { reason: string }) => void) => void;
+      addListener: (cb: (details: { reason: string; previousVersion?: string }) => void) => void;
     };
     /**
      * Part 3: broadcast a message to all extension pages (e.g. open

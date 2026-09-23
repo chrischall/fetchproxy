@@ -40,6 +40,7 @@ import {
 import { REMOTE_TARGETS_CHANGED } from '../remote-targets.js';
 import { onApproval, onScopeUpdateDismiss } from './approval.js';
 import { maybeReinjectOnInstalled } from '../reinject-content-scripts.js';
+import { armInstallSignal, noteInstalled } from '../vault-migration.js';
 
 // Boot: only run in a real MV3 service worker context. Skipped under vitest
 // (no chrome.runtime.getManifest, no chrome.storage.local.onChanged).
@@ -64,8 +65,17 @@ export function maybeBoot(): void {
   // reading from a long-lived tab breaks at once until the person reloads it.
   // Re-inject instead of making them find that out. Guarded like the rest of
   // boot: absent in tests and on older Chrome, where it is simply skipped.
+  //
+  // The same event is the ONLY thing that authorises importing a 3.2.0-or-
+  // earlier install's identity and trust out of storage.local
+  // (`vault-migration.ts`): an empty vault alone is not enough, because a
+  // lost vault is empty too and storage.local is content-script writable.
+  // Arm the wait first, so the identity load below — which can reach the
+  // vault before Chrome dispatches onInstalled — lets it decide.
   if (typeof chrome.runtime.onInstalled?.addListener === 'function') {
+    armInstallSignal();
     chrome.runtime.onInstalled.addListener((details) => {
+      void noteInstalled(details);
       void maybeReinjectOnInstalled(details);
     });
   }

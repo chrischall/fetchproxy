@@ -44,8 +44,20 @@ export function mockLocalArea(data: Record<string, unknown> = {}): LocalArea {
   };
 }
 
-/** Install `chrome.storage.local` (and nothing else) as the given area. */
+/**
+ * Install `chrome.storage.local` as the given area, plus a fresh
+ * `chrome.storage.session` (trusted contexts only in a real browser — the
+ * area the upgrade authorisation lives in; see `chromeSession()`).
+ */
 export function installChromeLocal(area: LocalArea = mockLocalArea()): LocalArea {
-  (globalThis as { chrome?: unknown }).chrome = { storage: { local: area } };
+  (globalThis as { chrome?: unknown }).chrome = {
+    storage: { local: area, session: mockLocalArea() },
+  };
   return area;
+}
+
+/** The `chrome.storage.session` mock `installChromeLocal` installed. */
+export function chromeSession(): LocalArea {
+  return (globalThis as unknown as { chrome: { storage: { session: LocalArea } } }).chrome.storage
+    .session;
 }

@@ -21,6 +21,7 @@ import {
 } from '../src/vault-records.js';
 import { vaultInitIfAbsent } from '../src/vault.js';
 import { generateExtensionIdentity } from '../src/identity-keys.js';
+import { noteInstalled } from '../src/vault-migration.js';
 import { freshVault, installChromeLocal, type LocalArea } from './helpers/vault.js';
 
 /**
@@ -240,6 +241,8 @@ describe('migration from storage.local keeps existing pairings (one time only)',
     };
     local.data['remoteBridges'] = [BRIDGE];
     local.data['dismissedScopeHashes'] = { [identityHash]: ['s1'] };
+    // Chrome's onInstalled for an update from 3.2.0 — the upgrade signal.
+    await noteInstalled({ reason: 'update', previousVersion: '3.2.0' });
     return { hello, identityHash, extPub: x.publicKey };
   }
 
@@ -282,9 +285,10 @@ describe('migration from storage.local keeps existing pairings (one time only)',
     expect(local.data).toEqual({});
   });
 
-  it('an install whose identity already moved (keys-only build) still migrates its trust once', async () => {
-    // A profile that ran a build with the key move but not this one: identity
-    // is in the vault, trust is still in storage.local.
+  it('an identity already in the vault never pulls trust out of storage.local', async () => {
+    // No released build moved the keys without the stores, so a vault with an
+    // identity and trust rows still in storage.local means those rows were
+    // planted. They are discarded.
     const id = await generateExtensionIdentity();
     await vaultInitIfAbsent('identity', { identity: id });
     const { hello, identityHash } = await mcpHello('good-mcp', ['good.example']);
@@ -292,8 +296,36 @@ describe('migration from storage.local keeps existing pairings (one time only)',
       records: { [identityHash]: recordFor(hello, toB64(id.x25519Pub)) },
     };
     const trust = new TrustStore(EXT_VERSION);
-    expect((await decide(trust, hello, id.x25519Pub)).kind).toBe('auto-trust');
+    expect((await decide(trust, hello, id.x25519Pub)).kind).toBe('needs-pair');
     expect('trustedMcps' in local.data).toBe(false);
+  });
+
+  it('an evicted vault does NOT re-import: a planted identity + trust record buys nothing', async () => {
+    // Normal first run, then a content script plants a legacy identity (whose
+    // private key it knows) and a trust record pinned to it, then the vault is
+    // lost (quota eviction, corruption, a manual wipe).
+    await loadOrCreateExtensionIdentity();
+    const x = await generateX25519();
+    const ed = await generateEd25519();
+    local.data['extensionIdentity'] = {
+      x25519Priv: toB64(x.privateKey),
+      x25519Pub: toB64(x.publicKey),
+      ed25519Priv: toB64(ed.privateKey),
+      ed25519Pub: toB64(ed.publicKey),
+      createdAt: 1,
+    };
+    const evil = await mcpHello('evil-mcp', ['bank.example']);
+    local.data['trustedMcps'] = {
+      records: { [evil.identityHash]: recordFor(evil.hello, toB64(x.publicKey)) },
+    };
+    freshVault();
+    const id = await loadOrCreateExtensionIdentity();
+    expect(toB64(id.ed25519Pub)).not.toBe(toB64(ed.publicKey));
+    expect(toB64(id.x25519Pub)).not.toBe(toB64(x.publicKey));
+    const trust = new TrustStore(EXT_VERSION);
+    expect(await trust.list()).toEqual({});
+    expect((await decide(trust, evil.hello, x.publicKey)).kind).not.toBe('auto-trust');
+    expect(local.data).toEqual({});
   });
 
   it('drops malformed legacy rows rather than importing them', async () => {

@@ -11,6 +11,7 @@ import {
   ed25519Verify,
   ecdhX25519,
 } from '@fetchproxy/protocol';
+import { noteInstalled } from '../src/vault-migration.js';
 import { freshVault, installChromeLocal, type LocalArea } from './helpers/vault.js';
 
 /**
@@ -125,9 +126,12 @@ describe('loadOrCreateExtensionIdentity — fresh install', () => {
 
 describe('loadOrCreateExtensionIdentity — migration from storage.local (no re-pair)', () => {
   let local: LocalArea;
-  beforeEach(() => {
+  beforeEach(async () => {
     freshVault();
     local = installChromeLocal();
+    // What Chrome tells the service worker when 3.2.0 (or earlier) updates to
+    // this build — the only thing that authorises reading storage.local.
+    await noteInstalled({ reason: 'update', previousVersion: '3.2.0' });
   });
 
   it('keeps the SAME keys: pubs unchanged, signatures byte-identical to the legacy key', async () => {
