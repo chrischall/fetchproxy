@@ -1430,6 +1430,18 @@ interface ResolvedOpts {
 const DEFAULT_JSON_OK_STATUSES: readonly number[] = [200, 201, 202, 204];
 
 /**
+ * B-BUG-7: parse a JSON helper's response body, treating a 204 or an empty
+ * body as `null`. `null as T` rather than widening the helpers to `T | null`:
+ * these calls used to THROW on an empty body, so no existing caller can have
+ * relied on a value there, and widening the return type would break every
+ * consumer's typecheck for a case that previously never returned at all.
+ */
+function parseJsonBody<T>(response: { status: number; body: string }): T {
+  if (response.status === 204 || response.body.trim() === '') return null as T;
+  return JSON.parse(response.body) as T;
+}
+
+/**
  * Per-call options for the low-level `fetch(init, opts)`. Kept off the wire
  * `FetchInit` on purpose: they steer this server's retry policy and mean
  * nothing to the extension.
@@ -2554,21 +2566,25 @@ export class FetchproxyServer {
    * GET a path and parse the response body as JSON. Throws
    * `FetchproxyHttpError` if the status is outside the default 2xx
    * happy-path set (`[200, 201, 202, 204]`); pass a custom
-   * `expectStatus` to override.
+   * `expectStatus` to override. A 204 or an empty/whitespace body
+   * resolves to `null` (the declared `T` does not say so, to keep
+   * existing call sites compiling — include `| null` in `T` if the
+   * endpoint can answer empty).
    */
   async getJson<T = unknown>(
     path: string,
     opts: BodylessRequestOpts = {},
   ): Promise<T> {
     const response = await this.get(path, this.applyJsonDefaults(opts));
-    return JSON.parse(response.body) as T;
+    return parseJsonBody<T>(response);
   }
 
   /**
    * POST a JSON body and parse the response body as JSON. The body is
    * `JSON.stringify`'d; `Content-Type: application/json` is set unless
    * the caller already provided one. Defaults `expectStatus` to the 2xx
-   * happy-path set.
+   * happy-path set. A 204 or an empty/whitespace body resolves to `null`
+   * rather than throwing after the write already happened (see `getJson`).
    */
   async postJson<T = unknown>(
     path: string,
@@ -2584,7 +2600,7 @@ export class FetchproxyServer {
       headers,
       body: body === undefined ? undefined : JSON.stringify(body),
     });
-    return JSON.parse(response.body) as T;
+    return parseJsonBody<T>(response);
   }
 
   /**
