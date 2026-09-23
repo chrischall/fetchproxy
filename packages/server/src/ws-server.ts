@@ -489,6 +489,12 @@ export interface FetchResultError {
    * arm; undefined for other failure kinds.
    */
   elapsedMs?: number;
+  /**
+   * B-BUG-13: when `kind === 'session_not_ready'`, the error the local send
+   * threw (e.g. `FetchproxySessionNotReadyError`, with its `hint` and
+   * `pairCode`). `request()` and the verb shortcuts rethrow it unchanged.
+   */
+  cause?: unknown;
 }
 
 /**
@@ -2247,7 +2253,20 @@ export class FetchproxyServer {
         this.pending.set(id, resolve);
       }),
     );
-    await this.sendInnerFrame(inner);
+    try {
+      await this.sendInnerFrame(inner);
+    } catch (err) {
+      // B-BUG-13: the frame never reached the bridge, so nothing ran in a
+      // tab. Honour fetch()'s envelope contract instead of rejecting, and
+      // keep the original error so request() can rethrow it typed.
+      return {
+        ok: false,
+        error: err instanceof Error ? err.message : String(err),
+        kind: 'session_not_ready',
+        retryAttempted: false,
+        cause: err,
+      };
+    }
     const timeoutMs = this.opts.fetchTimeoutMs;
     if (timeoutMs === undefined || timeoutMs <= 0) return pending;
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -2496,6 +2515,10 @@ export class FetchproxyServer {
       opts.retryOnTimeout !== undefined ? { retryOnTimeout: opts.retryOnTimeout } : {},
     );
     if (!result.ok) {
+      // B-BUG-13: a local send failure keeps the typed error it always threw.
+      if (result.kind === 'session_not_ready' && result.cause instanceof Error) {
+        throw result.cause;
+      }
       // retryAttempted rides on the envelope — per-call local context,
       // so it's race-safe across concurrent calls. Test subclasses
       // overriding fetch() may not set the field; default to `false`

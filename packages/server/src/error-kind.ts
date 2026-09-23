@@ -55,6 +55,13 @@ export type FetchErrorKind =
    * must never be mistaken for "not found" — that's the silent-data-
    * corruption failure class the cohort guards against. */
   | 'bot_challenge'
+  /** B-BUG-13: the request never left this process — the send to the
+   * bridge failed first (the extension never confirmed a session, a pair
+   * is awaiting approval, the extension refused the hello, or no extension
+   * is connected to the host). Not produced by `classifyFetchError`;
+   * emitted directly by `FetchproxyServer.fetch()`. Safe to retry once the
+   * user has acted: nothing reached a tab. */
+  | 'session_not_ready'
   /** Catch-all for strings this classifier doesn't recognise yet.
    * Forward-compat: a future extension version emitting a new error
    * template lands here until the classifier is updated. */
