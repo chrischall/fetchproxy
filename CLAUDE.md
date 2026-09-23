@@ -49,7 +49,7 @@ behind it before.
 
 | | |
 |---|---|
-| `npm test` | `vitest run` across the whole monorepo (1899 tests in 143 files), all mocked, no network. Must stay green. `vitest.config.ts` excludes `**/.claude/**` and `**/dist/**` so stale agent worktrees don't poison discovery. |
+| `npm test` | `vitest run` across the whole monorepo, all mocked, no network. (No test count here on purpose — a hard-coded one drifted; the run prints the current figure.) Must stay green. `vitest.config.ts` excludes `**/.claude/**` and `**/dist/**` so stale agent worktrees don't poison discovery. |
 | `npm run build` | `npm run build --workspaces --if-present` — all **seven**: a `tsc -b` for protocol, server, bootstrap, cli, extension-core and test-helpers, plus extension-chrome's esbuild bundle (`tsx build.ts`). npm runs them in workspace order, which is alphabetical (`bootstrap` first, `protocol` fifth), so the build order is NOT the dependency order; what makes that safe is each package's `tsc -b` following its own `references`, so `protocol/dist` is built before anything that imports it via its `exports`→`dist/`. Don't demote a package to a bare `tsc` — that is the thing the references are carrying. |
 | `npm run typecheck` | `tsc -b` over protocol, server, bootstrap, **cli**, extension-core, test-helpers — the script's own project list, cli included. extension-chrome is typechecked by its esbuild build instead. |
 | `npm run build --workspace=@fetchproxy/extension-chrome` | Rebuild just the unpacked extension after a source edit. Drop into `chrome://extensions/` → fetchproxy → reload. **No sourcemaps** — this is the command the release workflow zips, so release is the default. |
