@@ -119,11 +119,15 @@ function isAllowedUrl(reqUrl: string, declared: string[]): boolean {
 
 `opentable-mcp` declares `["opentable.com"]` → the extension rejects fetches to anything not under `*.opentable.com`. A backdoored opentable-mcp can still leak your OpenTable data (we can't fix that without making the MCP useless), but it cannot ALSO be used to read your bank, email, or Slack.
 
+The same check applies to the **tab that relays the request** (`init.tabUrl`), not just the request URL — as it always did for `graphql_query` and legacy `read_cookies`. Up to 3.1.0 the fetch verb checked only the URL, so an MCP could name any open tab (the user's bank) as its relay and that tab's content script would attach the bank page's CSRF token to a request bound for the MCP's own domain. The `viaTab` guard in `@fetchproxy/server` runs in the MCP's own process and cannot be the enforcement point; the extension now refuses a `tabUrl` outside the declared domains.
+
 If an MCP legitimately needs more than one domain (rare), it enumerates them: `domains: ["honeybook.com", "hbsplit.com"]`. There is no wildcard syntax.
 
 **Defense 2 — capability allowlist.** Each MCP also declares a `capabilities: [...]` set. `fetch` is the default; `read_cookies` is opt-in. A backdoored MCP can't escalate to verbs the user didn't approve at pair time — the trust record stores the approved set, and the extension rejects any inner request whose `op` isn't in it.
 
 **Defense 3 — pair record locks both sets.** If the MCP later declares a different `domains` or `capabilities` set (set-equality check, order-insensitive), the extension treats the trust record as missing and falls back to a re-pair prompt. So a compromised MCP that secretly widens its domain list to add a new target site or asks for `read_cookies` post-pair forces a fresh popup with the new ask in plain view.
+
+**Defense 4 — approvals come only from the extension's own queue.** The popup hands its decision to the service worker through `chrome.storage.local` (`pendingPair` → `approvedPair`), and `storage.local` is writable from content scripts, which run on every site. So the service worker keeps its own copy of every pending request in `chrome.storage.session` — restricted to extension pages and the service worker by default — and honours an approval only if that copy exists and matches it in everything the user was shown (`background/pending-integrity.ts`). A renderer compromise on some unrelated site therefore cannot mint trust for an identity or widen an approved scope without the popup. Residual: `remoteBridges` and `dismissedScopeHashes` still live in `storage.local`; a forged remote bridge target still has to get each MCP it relays through the pair prompt, and a forged dismissal only suppresses a scope-update offer.
 
 **Residual risk:** Same-domain, same-capability exfil is unavoidable for the data the MCP is *supposed* to access. If an MCP gets compromised, you lose what it had legitimate access to. This is the same tradeoff as any third-party tool you grant access to a service.
 
