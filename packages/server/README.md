@@ -321,7 +321,7 @@ Two convenience methods that consolidate boilerplate the Pattern-A cohort (zillo
 
 #### `await fp.requestJson<T>(method, path, opts?): Promise<{ data: T | null; result: FetchResult }>`
 
-Method-generic JSON helper. Sets `Accept: application/json`; adds `Content-Type: application/json` for a non-GET request that carries a `body` (unless the caller set one); `JSON.stringify`s the body; treats `204` / empty body as `data: null`; otherwise `JSON.parse`s.
+Method-generic JSON helper. Sets `Accept: application/json`; adds `Content-Type: application/json` for a non-GET request that carries a `body` (unless the caller set one); `JSON.stringify`s the body; treats `204`, an empty body or a whitespace-only body as `data: null` (the same rule as `getJson` / `postJson`); otherwise `JSON.parse`s.
 
 ```ts
 const { data, result } = await fp.requestJson<MyShape>('POST', '/api/x', {
