@@ -1,5 +1,19 @@
 # Changelog
 
+## [3.2.0](https://github.com/chrischall/fetchproxy/compare/v3.1.0...v3.2.0) (2026-09-23)
+
+
+### Features
+
+* **server:** never re-send writes after a timeout, add retryOnTimeout opt-in, and harden the peer/host lifecycle ([#387](https://github.com/chrischall/fetchproxy/issues/387)) ([75ab399](https://github.com/chrischall/fetchproxy/commit/75ab399027b04b315d05c4e91b4aef4e287c61ea))
+
+
+### Bug Fixes
+
+* **extension:** scope relay tabs to approved origins and harden CSRF and pairing ([#385](https://github.com/chrischall/fetchproxy/issues/385)) ([34fac36](https://github.com/chrischall/fetchproxy/commit/34fac36b6e3ad87bc23aeb777940507ea48ed4d0))
+* **extension:** skip the CSRF round-trip for caller-supplied tokens and contain download-cancel throws ([#392](https://github.com/chrischall/fetchproxy/issues/392)) ([2e4ca4f](https://github.com/chrischall/fetchproxy/commit/2e4ca4fd7ed6e91613b20dbe8e76a528b0caf600))
+* **server:** requestJson treats a whitespace-only body as empty, like getJson/postJson ([#390](https://github.com/chrischall/fetchproxy/issues/390)) ([0730b3d](https://github.com/chrischall/fetchproxy/commit/0730b3ddba3eb9142996aa95572009eeab0e7a17))
+
 ## [3.1.0](https://github.com/chrischall/fetchproxy/compare/v3.0.1...v3.1.0) (2026-09-21)
 
 
