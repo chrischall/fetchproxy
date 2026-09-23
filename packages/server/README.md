@@ -76,7 +76,7 @@ parity with this table. For longer "when to override" guidance, see
 | `onPairCode` | `(code: string) => void` | (off by default) | Invoked once with the joint pair code on extension hello, so an MCP can surface it via stderr / MCP logging. |
 | `fetchTimeoutMs` | `number` | `30_000` | Per-request timeout for `fetch()`. `0` opts back into legacy hang-forever. ([#58](https://github.com/chrischall/fetchproxy/issues/58)) |
 | `verbDeadlineGraceMs` | `number` | `15_000` | How much longer than a verb's OWN `timeoutMs` the server waits for that verb's reply. You should not need it; a hosted bridge with a long round trip is the case it exists for. ([#237](https://github.com/chrischall/mcp-utils/issues/237)) |
-| `bridgeReviveDelayMs` | `number` | `2_000` | Delay before the one-shot retry on the SW-eviction cold-start symptom — `content_script_unreachable`, plus a `fetch()` `timeout` ([#90](https://github.com/chrischall/fetchproxy/issues/90)). Gives Chrome a moment to wake the evicted MV3 SW. `0` disables. ([#58](https://github.com/chrischall/fetchproxy/issues/58)) |
+| `bridgeReviveDelayMs` | `number` | `2_000` | Delay before the one-shot retry on the SW-eviction cold-start symptom — `content_script_unreachable`, plus a `fetch()` `timeout` of an idempotent request ([#90](https://github.com/chrischall/fetchproxy/issues/90); writes are not re-sent after a timeout unless the call passes `retryOnTimeout: true`). Gives Chrome a moment to wake the evicted MV3 SW. `0` disables. ([#58](https://github.com/chrischall/fetchproxy/issues/58)) |
 | `keepAliveIntervalMs` | `number` | `20_000` | Server-initiated ping cadence that keeps the MV3 SW resident across activity bursts. Below Chrome's ~30s eviction threshold with real margin. Pass `0` to disable. Default flipped from `undefined` in 0.10.0 ([#71](https://github.com/chrischall/fetchproxy/issues/71)), tightened from `25_000` → `20_000` in [#90](https://github.com/chrischall/fetchproxy/issues/90) (25s still lost the cold-start race). ([#67](https://github.com/chrischall/fetchproxy/issues/67)) |
 | `keepAliveMaxIdleMs` | `number` | `300_000` (5 min) | How long after the most-recent activity the keep-alive pings keep firing. No-op when `keepAliveIntervalMs` is `0`. ([#67](https://github.com/chrischall/fetchproxy/issues/67)) |
 | `cookieKeys` | `string[]` | `[]` | Declared cookie names for `readCookies({ keys })`. Gates the call site (gate #1) before the extension re-checks (gate #2). |
@@ -125,7 +125,16 @@ row). One variable has no option beside it:
   cold-start symptom: `content_script_unreachable`, plus a `fetch()`
   server-side `timeout` (#90 — a fully-cold worker often surfaces the
   first post-idle `fetch()` as a timeout while Chrome spins the SW up,
-  so a cold-start never surfaces to the caller). Lengthen on slow
+  so a cold-start never surfaces to the caller). **The timeout retry
+  only re-sends idempotent requests (GET/HEAD/OPTIONS).** A timeout
+  means the reply is late, not that the request never ran, so a
+  POST/PUT/PATCH/DELETE is sent exactly once and its
+  `FetchproxyTimeoutError` carries `retrySafe: false` (which
+  `retryOnceOnTimeout` honours). Pass `retryOnTimeout: true` on the
+  call (`request()`/`post()`/… options, or `fetch(init, { retryOnTimeout })`)
+  for a write you know is safe to repeat, or `false` to keep a read
+  from being retried. `content_script_unreachable` — the request
+  never reached a tab — is retried for every method. Lengthen on slow
   machines where 2s isn't enough for the SW to wake; shorten if the
   caller is willing to surface the bridge-down error sooner. Pass `0`
   to disable the retry entirely.

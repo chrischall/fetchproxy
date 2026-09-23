@@ -612,6 +612,16 @@ export interface RequestOpts {
    * which is why nothing downgrades automatically.
    */
   credentials?: 'include' | 'omit';
+  /**
+   * Re-send this request once after a transport TIMEOUT (the MV3
+   * service-worker cold-start retry). A timeout only means the reply has not
+   * arrived — the extension may already have run the request — so by default
+   * only idempotent methods (GET/HEAD/OPTIONS) are re-sent. Set `true` for a
+   * write you know is safe to repeat; set `false` to stop a read from being
+   * retried. A request that never reached a tab (`content_script_unreachable`)
+   * is retried for every method regardless.
+   */
+  retryOnTimeout?: boolean;
 }
 
 /**
@@ -635,6 +645,8 @@ export interface BodylessRequestOpts {
   inPage?: boolean;
   /** Same as `RequestOpts.credentials`. */
   credentials?: 'include' | 'omit';
+  /** Same as `RequestOpts.retryOnTimeout`. */
+  retryOnTimeout?: boolean;
 }
 
 /**
@@ -1061,6 +1073,15 @@ export class FetchproxyTimeoutError extends FetchproxyProtocolError {
    */
   readonly requestedTimeoutMs: number | null;
 
+  /**
+   * B-BUG-1: whether re-sending this request is safe. A timeout only means
+   * the reply did not arrive in time — the extension may already have run the
+   * request in the tab — so this is `false` for a non-idempotent `fetch`
+   * (anything but GET/HEAD/OPTIONS) the caller did not mark `retryOnTimeout`.
+   * `retryOnceOnTimeout` honours it. Defaults to `true` (the read verbs).
+   */
+  readonly retrySafe: boolean;
+
   constructor(args: {
     url: string;
     timeoutMs: number;
@@ -1069,6 +1090,8 @@ export class FetchproxyTimeoutError extends FetchproxyProtocolError {
     elapsedMs?: number;
     retryAttempted?: boolean;
     requestedTimeoutMs?: number;
+    /** See `retrySafe`. Defaults to `true`. */
+    retrySafe?: boolean;
     /**
      * The reply grace actually applied to this call (`verbDeadlineGraceMs`,
      * defaulting to `VERB_DEADLINE_GRACE_MS`). Passed rather than read off the
@@ -1108,6 +1131,7 @@ export class FetchproxyTimeoutError extends FetchproxyProtocolError {
     this.elapsedMs = args.elapsedMs ?? args.timeoutMs;
     this.retryAttempted = args.retryAttempted ?? false;
     this.requestedTimeoutMs = args.requestedTimeoutMs ?? null;
+    this.retrySafe = args.retrySafe ?? true;
   }
 }
 
@@ -1404,6 +1428,28 @@ interface ResolvedOpts {
 }
 
 const DEFAULT_JSON_OK_STATUSES: readonly number[] = [200, 201, 202, 204];
+
+/**
+ * Per-call options for the low-level `fetch(init, opts)`. Kept off the wire
+ * `FetchInit` on purpose: they steer this server's retry policy and mean
+ * nothing to the extension.
+ */
+export interface FetchCallOpts {
+  /** See `RequestOpts.retryOnTimeout`. */
+  retryOnTimeout?: boolean;
+}
+
+/** HTTP methods that are safe to re-send after an ambiguous timeout. */
+const TIMEOUT_RETRY_SAFE_METHODS: ReadonlySet<string> = new Set(['GET', 'HEAD', 'OPTIONS']);
+
+/**
+ * B-BUG-1: may a request that TIMED OUT be sent again? An explicit per-call
+ * choice wins; otherwise only idempotent, side-effect-free methods.
+ */
+export function isRetrySafeOnTimeout(method: string, retryOnTimeout?: boolean): boolean {
+  if (retryOnTimeout !== undefined) return retryOnTimeout;
+  return TIMEOUT_RETRY_SAFE_METHODS.has(method.toUpperCase());
+}
 
 /** Result of a successful `read_cookies` call. */
 export interface ReadCookiesResult {
@@ -1915,7 +1961,10 @@ export class FetchproxyServer {
    * only when the bridge itself failed (no signed-in tab, extension
    * offline, etc.).
    */
-  async fetch(init: FetchInit): Promise<FetchResult | FetchResultError> {
+  async fetch(
+    init: FetchInit,
+    fetchOpts: FetchCallOpts = {},
+  ): Promise<FetchResult | FetchResultError> {
     // 0.5.3+: connect lazily on first verb call. `listen()` only loads
     // identity now; the bridge port bind / WS dial happens here so a
     // configured-but-unused MCP doesn't tie up resources at boot.
@@ -1959,7 +2008,16 @@ export class FetchproxyServer {
     if (isColdStartSymptom) {
       this.lastEvictionDetectedAt = Date.now();
     }
-    if (isColdStartSymptom && reviveMs !== undefined && reviveMs > 0) {
+    // B-BUG-1: a `timeout` does NOT prove the request never ran — the tab may
+    // have sent it and only the reply is late. Re-sending a POST there can
+    // book or pay twice, so a timeout is retried only when the request is
+    // safe to repeat. `content_script_unreachable` provably never reached a
+    // tab and stays retried for every method.
+    const retryable =
+      isColdStartSymptom &&
+      (first.kind === 'content_script_unreachable' ||
+        isRetrySafeOnTimeout(init.method, fetchOpts.retryOnTimeout));
+    if (retryable && reviveMs !== undefined && reviveMs > 0) {
       this.lazyReviveAttempts += 1;
       await new Promise((r) => setTimeout(r, reviveMs));
       const second = await this._fetchOnceWithTimeout(init);
@@ -2312,6 +2370,7 @@ export class FetchproxyServer {
     url: string,
     op: 'fetch' | 'capture_request_header',
     retryAttempted: boolean,
+    retrySafe = true,
   ): Error {
     if (result.kind === 'timeout') {
       return new FetchproxyTimeoutError({
@@ -2321,6 +2380,7 @@ export class FetchproxyServer {
         port: this.opts.port,
         elapsedMs: result.elapsedMs,
         retryAttempted,
+        retrySafe,
       });
     }
     if (result.kind === 'content_script_unreachable') {
@@ -2419,7 +2479,10 @@ export class FetchproxyServer {
       // every version before this option existed.
       ...(opts.credentials === 'omit' ? { credentials: 'omit' as const } : {}),
     };
-    const result = await this.fetch(init);
+    const result = await this.fetch(
+      init,
+      opts.retryOnTimeout !== undefined ? { retryOnTimeout: opts.retryOnTimeout } : {},
+    );
     if (!result.ok) {
       // retryAttempted rides on the envelope — per-call local context,
       // so it's race-safe across concurrent calls. Test subclasses
@@ -2430,6 +2493,7 @@ export class FetchproxyServer {
         init.url,
         'fetch',
         result.retryAttempted ?? false,
+        isRetrySafeOnTimeout(method, opts.retryOnTimeout),
       );
     }
     const response: HttpResponse = {

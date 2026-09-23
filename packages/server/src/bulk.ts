@@ -75,7 +75,9 @@ export async function mapWithConcurrency<T, R>(
 }
 
 /**
- * Run `fn`; if it throws {@link FetchproxyTimeoutError}, retry once.
+ * Run `fn`; if it throws {@link FetchproxyTimeoutError}, retry once —
+ * unless the error is marked `retrySafe: false` (a timed-out POST/PUT/
+ * PATCH/DELETE that may already have reached the server), which propagates.
  * Any other error propagates immediately without retry. A second
  * `FetchproxyTimeoutError` on the retry also propagates.
  *
@@ -93,7 +95,9 @@ export async function retryOnceOnTimeout<T>(
   try {
     return await fn();
   } catch (err) {
-    if (err instanceof FetchproxyTimeoutError) {
+    // B-BUG-1: a timed-out write may already have run in the tab; never
+    // re-send one the bridge marked unsafe to repeat.
+    if (err instanceof FetchproxyTimeoutError && err.retrySafe) {
       return await fn();
     }
     throw err;
