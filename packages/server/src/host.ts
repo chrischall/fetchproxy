@@ -11,7 +11,7 @@ import {
   fromB64,
   toB64,
   hkdfSha256,
-  openEncryptedFrame,
+  openEncryptedFrameDetailed,
   peekHelloVersion,
   sealInnerFrame,
   validateFrame,
@@ -1077,24 +1077,59 @@ export async function startHost(opts: HostOpts): Promise<HostHandle> {
                 );
               }
               if (claim !== 'ok') return;
-              let inner;
+              let result;
               try {
                 // 'e2s': this socket is the extension's, so a frame the host
                 // itself sealed and had reflected back at it fails the tag
                 // rather than arriving as a well-formed inner frame.
-                inner = await openEncryptedFrame(session.sessionKey, frame, 'e2s');
+                result = await openEncryptedFrameDetailed(session.sessionKey, frame, 'e2s');
               } catch (e) {
-                // A frame that fails GCM authentication never happened: give
-                // the claim back and leave the counter where it was —
-                // otherwise one forged frame with a high seq takes every
-                // genuine frame already in flight behind it down with the
-                // socket it tears up.
+                // Documented never to throw; the claim must not leak if it does.
                 session.releaseInboundSeq(frame.seq);
                 throw e;
               }
-              // Only now is the seq spent.
+              // B-BUG-4: mirror peer.ts. This socket is the EXTENSION's, shared
+              // by every MCP on the concentrator, so one bad frame on the
+              // host's own session must never close it — that used to reject
+              // every MCP's in-flight calls and renegotiate every session.
+              if (result.stage === 'decrypt-failed') {
+                // A frame that fails GCM authentication never happened: give
+                // the claim back and leave the counter where it was —
+                // otherwise one forged frame with a high seq takes every
+                // genuine frame already in flight behind it. Typically a
+                // straggler from a previous session; drop it.
+                session.releaseInboundSeq(frame.seq);
+                console.warn(
+                  `[fetchproxy] ${opts.ownServerName}: dropped an inbound frame (seq ${frame.seq}) ` +
+                    `that failed authentication — most likely a straggler from a previous session.`,
+                );
+                return;
+              }
+              // It authenticated under the live key, so the seq is spent.
               session.commitInboundSeq(frame.seq);
-              ownInnerListeners.forEach((cb) => cb(inner));
+              if (result.stage === 'ok') {
+                ownInnerListeners.forEach((cb) => cb(result.inner));
+              } else {
+                // 'validation-failed': a genuine frame from the live
+                // extension with a malformed payload (e.g. version skew in a
+                // response shape). Say so loudly and fail just the call
+                // waiting on it, when its id is recoverable.
+                console.error(
+                  '[fetchproxy] host: received a frame that decrypted OK but failed validation:',
+                  result.error,
+                );
+                const recoveredId = result.recoveredId;
+                if (recoveredId !== undefined) {
+                  ownInnerListeners.forEach((cb) =>
+                    cb({
+                      type: 'response',
+                      id: recoveredId,
+                      ok: false,
+                      error: `malformed response failed protocol validation: ${String(result.error)}`,
+                    }),
+                  );
+                }
+              }
             } else {
               const slot = peers.get(frame.mcpId);
               if (slot) slot.ws.send(JSON.stringify(frame));

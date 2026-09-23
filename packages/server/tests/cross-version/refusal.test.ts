@@ -323,21 +323,23 @@ describe('cross-version: a v3 peer meets a v4 host', () => {
       ext.close();
     });
 
-    it('is refused on the wire too: never delivered, and the socket goes down rather than hanging', async () => {
-      const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+    it('is refused on the wire too: never delivered, and dropped loudly without costing the shared link', async () => {
+      const warns = vi.spyOn(console, 'warn').mockImplementation(() => {});
       const { key, ext } = await linked();
 
       const received: InnerFrame[] = [];
       host!.onOwnInner((inner) => received.push(inner));
 
       ext.ws.send(JSON.stringify(await sealTheV3Way(key, MCP_ID, 1, { type: 'pong' })));
-      // The host tears the socket down over a frame it cannot open. The code
-      // is the pre-existing generic teardown and not this group's business;
-      // what is this group's business is that the answer ARRIVES — a v3 frame
-      // must not sit in a session that then waits somebody's timeout out.
-      await settleOrFail(ext.closed(), 'the socket close');
+      // B-BUG-4: the host used to tear the EXTENSION socket down over a frame
+      // it could not open — the socket every MCP on the concentrator shares.
+      // It now drops the frame with a warning, as a peer does, and the seq
+      // stays unspent: a genuine v4 frame under the same seq still opens.
+      await vi.waitFor(() => expect(warns).toHaveBeenCalled());
       expect(received).toHaveLength(0);
-      expect(errors).toHaveBeenCalled();
+      ext.ws.send(JSON.stringify(await sealInnerFrame(key, MCP_ID, 1, { type: 'pong' }, 'e2s')));
+      await vi.waitFor(() => expect(received).toHaveLength(1));
+      expect(ext.ws.readyState).toBe(ext.ws.OPEN);
 
       ext.close();
     });
