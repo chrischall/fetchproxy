@@ -8,6 +8,7 @@ import {
   rm,
   unlink,
   link,
+  lstat,
 } from 'node:fs/promises';
 import { randomBytes } from 'node:crypto';
 import { isAbsolute, join } from 'node:path';
@@ -211,7 +212,11 @@ const STAGING_BYTES = 6;
  * Best-effort: failing to list or remove a leftover is no reason to refuse the
  * write that would otherwise give this server an identity at all.
  */
-async function sweepStagingFiles(dir: string, serverName: string): Promise<void> {
+async function sweepStagingFiles(
+  dir: string,
+  serverName: string,
+  opts: { olderThanMs?: number } = {},
+): Promise<void> {
   const base = safeIdentityFileBase(serverName).replace(/[.]/g, '\\.');
   const staging = new RegExp(`^${base}\\.json\\.[0-9a-f]{${STAGING_BYTES * 2}}\\.tmp$`);
   let names: string[];
@@ -220,10 +225,19 @@ async function sweepStagingFiles(dir: string, serverName: string): Promise<void>
   } catch {
     return;
   }
+  const cutoff = opts.olderThanMs === undefined ? null : Date.now() - opts.olderThanMs;
   await Promise.all(
     names
       .filter((name) => staging.test(name))
-      .map((name) => unlink(join(dir, name)).catch(() => undefined)),
+      .map(async (name) => {
+        const path = join(dir, name);
+        if (cutoff !== null) {
+          // Leave a concurrent writer's fresh staging file alone.
+          const st = await lstat(path).catch(() => null);
+          if (st === null || st.mtimeMs > cutoff) return;
+        }
+        await unlink(path).catch(() => undefined);
+      }),
   );
 }
 
@@ -330,7 +344,9 @@ async function publishIdentityIfAbsent(
   id: Identity,
 ): Promise<boolean> {
   const path = identityFilePath(dir, serverName);
-  await sweepStagingFiles(dir, serverName);
+  // Only leftovers old enough to be a crashed writer's: the racers this path
+  // exists for must not sweep each other's staging files out from under them.
+  await sweepStagingFiles(dir, serverName, { olderThanMs: 60_000 });
   const tmp = `${path}.${randomBytes(STAGING_BYTES).toString('hex')}.tmp`;
   try {
     await writeFile(tmp, serializeIdentity(id), { mode: 0o600, flag: 'wx' });

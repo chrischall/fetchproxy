@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { FetchproxyServer, FetchproxyBridgeDownError } from '../src/index.js';
 import { installFakeHost } from './helpers/fake-host.js';
 
@@ -27,7 +27,17 @@ const okValue = (verb: Verb): unknown =>
     ? { path: '/tmp/x.pdf', bytes: 1, mime: 'application/pdf', finalUrl: URL }
     : 'https://cdn.example.com/x';
 
-const tick = () => new Promise((r) => setTimeout(r, 5));
+/** Wait until the server has sent a request frame other than `prev`. */
+const nextRequestId = async (
+  h: ReturnType<typeof installFakeHost>,
+  prev: number | null = null,
+): Promise<number> => {
+  await vi.waitFor(() => {
+    const id = h.lastInner()?.id;
+    expect(id !== undefined && id !== prev).toBe(true);
+  });
+  return h.lastInner()!.id;
+};
 
 for (const verb of ['capture_redirect', 'download'] as const) {
   describe(`${verb} — lazy-revive`, () => {
@@ -35,12 +45,9 @@ for (const verb of ['capture_redirect', 'download'] as const) {
       const s = new FetchproxyServer({ ...opts, bridgeReviveDelayMs: 1 });
       const h = installFakeHost(s);
       const p = call(s, verb);
-      await tick();
-      const first = h.lastInner()!.id;
+      const first = await nextRequestId(h);
       h.reply({ type: 'response', id: first, ok: false, op: verb, error: SW_ERROR });
-      await tick();
-      const second = h.lastInner()!.id;
-      expect(second).not.toBe(first);
+      const second = await nextRequestId(h, first);
       h.reply({ type: 'response', id: second, ok: true, op: verb, value: okValue(verb) } as never);
       await expect(p).resolves.toEqual(okValue(verb));
       const health = s.bridgeHealth();
@@ -53,10 +60,10 @@ for (const verb of ['capture_redirect', 'download'] as const) {
       const s = new FetchproxyServer({ ...opts, bridgeReviveDelayMs: 1 });
       const h = installFakeHost(s);
       const p = call(s, verb).catch((e: unknown) => e);
-      await tick();
-      h.reply({ type: 'response', id: h.lastInner()!.id, ok: false, op: verb, error: SW_ERROR });
-      await tick();
-      h.reply({ type: 'response', id: h.lastInner()!.id, ok: false, op: verb, error: SW_ERROR });
+      const first = await nextRequestId(h);
+      h.reply({ type: 'response', id: first, ok: false, op: verb, error: SW_ERROR });
+      const second = await nextRequestId(h, first);
+      h.reply({ type: 'response', id: second, ok: false, op: verb, error: SW_ERROR });
       const err = await p;
       expect(err).toBeInstanceOf(FetchproxyBridgeDownError);
       expect((err as FetchproxyBridgeDownError).retryAttempted).toBe(true);
@@ -68,8 +75,13 @@ for (const verb of ['capture_redirect', 'download'] as const) {
       const s = new FetchproxyServer({ ...opts, bridgeReviveDelayMs: 0 });
       const h = installFakeHost(s);
       const p = call(s, verb).catch((e: unknown) => e);
-      await tick();
-      h.reply({ type: 'response', id: h.lastInner()!.id, ok: false, op: verb, error: SW_ERROR });
+      h.reply({
+        type: 'response',
+        id: await nextRequestId(h),
+        ok: false,
+        op: verb,
+        error: SW_ERROR,
+      });
       const err = await p;
       expect((err as FetchproxyBridgeDownError).retryAttempted).toBe(false);
       expect(s.bridgeHealth().swEviction.lastEvictionDetectedAt).not.toBeNull();
@@ -79,8 +91,7 @@ for (const verb of ['capture_redirect', 'download'] as const) {
       const s = new FetchproxyServer({ ...opts, bridgeReviveDelayMs: 1 });
       const h = installFakeHost(s);
       const p = call(s, verb).catch((e: unknown) => e);
-      await tick();
-      h.reply({ type: 'response', id: h.lastInner()!.id, ok: false, op: verb, error: 'boom' });
+      h.reply({ type: 'response', id: await nextRequestId(h), ok: false, op: verb, error: 'boom' });
       const err = await p;
       expect(err).not.toBeInstanceOf(FetchproxyBridgeDownError);
       expect(s.bridgeHealth().lastFailureReason).toBe(`${verb}: boom`);
