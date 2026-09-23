@@ -10,6 +10,7 @@ import {
   link,
   lstat,
 } from 'node:fs/promises';
+import type { Stats } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import { isAbsolute, join } from 'node:path';
 import { homedir } from 'node:os';
@@ -323,6 +324,7 @@ export async function loadOrCreateIdentity(
   // existing file, so exactly one candidate is published and every loser
   // re-reads and adopts the winner's.
   let unreadable: unknown = null;
+  let recovered = false;
   for (let attempt = 0; attempt < 5; attempt++) {
     const id = await generateIdentity();
     if (await publishIdentityIfAbsent(dir, serverName, id)) return id;
@@ -340,6 +342,15 @@ export async function loadOrCreateIdentity(
       // file that is still unreadable after every attempt is reported as is.
       if (!(e instanceof SyntaxError)) throw e;
       unreadable = e;
+      // ...unless no winner is coming: a crash between that create and that
+      // write leaves the file empty or cut short for good. Once it is too old
+      // to be a live racer's, clear it and let the exclusive create run again.
+      // One recovery per call, and it does not spend an attempt.
+      if (!recovered && (await removeAbandonedIdentity(path))) {
+        recovered = true;
+        attempt--;
+        continue;
+      }
       await new Promise((r) => setTimeout(r, 20 * (attempt + 1)));
     }
   }
@@ -364,7 +375,9 @@ const NO_HARD_LINKS: ReadonlySet<string> = new Set(['EPERM', 'ENOTSUP', 'EOPNOTS
  * final file exclusively (`wx`). That keeps the property that matters — two
  * racers can never both publish, and neither replaces the other — at the cost
  * of atomic visibility: a loser can read the file before its bytes are in,
- * which `loadOrCreateIdentity` waits out.
+ * which `loadOrCreateIdentity` waits out — and a crash between the create and
+ * the write leaves that state behind for good, which `removeAbandonedIdentity`
+ * clears once it is too old to be a live racer's (fleet-audit#311).
  */
 async function publishIdentityIfAbsent(
   dir: string,
@@ -407,5 +420,95 @@ async function publishIdentityIfAbsent(
     throw e;
   } finally {
     await rm(tmp, { force: true });
+  }
+}
+
+/**
+ * How old an unreadable identity file must be before it counts as a crashed
+ * first run's rather than a racer's that is still between its exclusive create
+ * and its write. That gap is one `writeFile` of a few hundred bytes, so a file
+ * this old with no bytes in it is not going to get any.
+ */
+const ABANDONED_IDENTITY_MS = 5_000;
+
+/** How old a recovery lock must be before its holder is presumed dead. */
+const RECOVERY_LOCK_STALE_MS = 30_000;
+
+/**
+ * Whether `text` could be what a crashed first run left: nothing at all, or a
+ * prefix of `serializeIdentity`'s output — which opens with `{` and closes with
+ * `}`, so a cut-short one opens and never closes. A file that is complete but
+ * still unparseable was edited, not abandoned, and is reported, not replaced.
+ */
+function looksAbandoned(text: string): boolean {
+  const t = text.trim();
+  return t === '' || (t.startsWith('{') && !t.endsWith('}'));
+}
+
+function sameFile(a: Stats, b: Stats): boolean {
+  return a.dev === b.dev && a.ino === b.ino && a.size === b.size && a.mtimeMs === b.mtimeMs;
+}
+
+/**
+ * Take `lock` by exclusive create. A lock older than `RECOVERY_LOCK_STALE_MS`
+ * belongs to a recoverer that died holding it and is broken once; a live one
+ * means another process is recovering, and the caller waits for its result.
+ */
+async function takeRecoveryLock(lock: string): Promise<Stats | null> {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      await writeFile(lock, `${process.pid}\n`, { mode: 0o600, flag: 'wx' });
+      return await lstat(lock);
+    } catch (e: unknown) {
+      if ((e as NodeJS.ErrnoException).code !== 'EEXIST') return null;
+      const st = await lstat(lock).catch(() => null);
+      if (st === null) continue;
+      if (Date.now() - st.mtimeMs < RECOVERY_LOCK_STALE_MS) return null;
+      const again = await lstat(lock).catch(() => null);
+      if (again === null || !sameFile(st, again)) continue;
+      await unlink(lock).catch(() => undefined);
+    }
+  }
+  return null;
+}
+
+/**
+ * Remove the identity file at `path` if, and only if, it is a crashed first
+ * run's leftover (see `looksAbandoned`, `ABANDONED_IDENTITY_MS`). Returns
+ * whether it did; the caller then publishes through `publishIdentityIfAbsent`
+ * like any first run, so the replacement is still created exclusively and two
+ * racing recoveries still converge on one identity.
+ *
+ * Only removal needs care, and it gets three guards. It happens under an
+ * exclusive-create lock, so two recoverers cannot both judge the same leftover
+ * abandoned and then have the second unlink the identity the first just
+ * published. Under that lock the file is judged afresh, and it is unlinked only
+ * if `lstat` still reports the same file (device, inode, size, mtime) as when
+ * it was read, so nothing that arrived in between is removed. And a file that
+ * parses is never a candidate — this is reached only from a SyntaxError — so
+ * a valid identity is never replaced, however old.
+ *
+ * Best effort: any failure here returns false and leaves the caller to report
+ * the unreadable file as before.
+ */
+async function removeAbandonedIdentity(path: string): Promise<boolean> {
+  const lock = `${path}.recover.lock`;
+  const held = await takeRecoveryLock(lock);
+  if (held === null) return false;
+  try {
+    const before = await lstat(path);
+    if (!before.isFile() || Date.now() - before.mtimeMs < ABANDONED_IDENTITY_MS) return false;
+    if (!looksAbandoned(await readFile(path, 'utf8'))) return false;
+    const now = await lstat(path);
+    if (!sameFile(before, now)) return false;
+    await unlink(path);
+    return true;
+  } catch {
+    return false;
+  } finally {
+    // Release only our own lock: if it was broken and retaken meanwhile, the
+    // lock there now is somebody else's.
+    const st = await lstat(lock).catch(() => null);
+    if (st !== null && sameFile(held, st)) await unlink(lock).catch(() => undefined);
   }
 }
