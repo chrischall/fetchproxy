@@ -54,7 +54,7 @@ describe('download timeout cancels the browser download (B-BUG-12)', () => {
       {
         type: 'request',
         op: 'download',
-        id: 'r1',
+        id: 1,
         init: { url: 'https://alltrails.com/big.gpx', timeoutMs: 1000 },
       },
       ['alltrails.com'],
@@ -74,7 +74,7 @@ describe('download timeout cancels the browser download (B-BUG-12)', () => {
       {
         type: 'request',
         op: 'download',
-        id: 'r2',
+        id: 2,
         init: { url: 'https://alltrails.com/big.gpx', timeoutMs: 1000 },
       },
       ['alltrails.com'],

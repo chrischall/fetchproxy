@@ -84,7 +84,8 @@ async function handleReadCookiesLegacy(
   // pre-reload tab can shadow a fresh one if we only `.find()` the
   // first match).
   const result = await sendToFirstResponsiveTab(
-    (t) => isTabUrlMatch(t, tabUrl),
+    // Candidate tab domain-checked as well as the tabUrl string (S-SEC-1).
+    (t) => isTabUrlMatch(t, tabUrl) && isUrlAllowedForAnyDomain(t, domains),
     () => ({ kind: 'fetchproxy-read-cookies' }),
     tabUrl,
   );

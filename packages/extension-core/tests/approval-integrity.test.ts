@@ -86,6 +86,7 @@ beforeEach(async () => {
     x25519Priv: x.privateKey,
     ed25519Pub: ed.publicKey,
     ed25519Priv: ed.privateKey,
+    createdAt: 0,
   };
 });
 

@@ -76,4 +76,44 @@ describe('fetch handler: tabUrl is domain-checked (S-SEC-1)', () => {
     expect(messaged).toEqual([2]);
     expect(sent[0]!.inner).toMatchObject({ ok: true });
   });
+
+  for (const [declared, tabUrl, realTab] of [
+    ['shop.com', 'https://shop.com', 'https://shop.com.au/account'],
+    ['bank.co', 'https://bank.co', 'https://bank.com/'],
+    ['bank.co', 'https://bank.co', 'https://bank.co.uk/'],
+  ] as const) {
+    it(`never relays through ${realTab} for a slashless tabUrl ${tabUrl} on ${declared}`, async () => {
+      const messaged = installTabs([{ id: 9, url: realTab }]);
+      await handleFetchRequest(
+        MCP_ID,
+        {
+          type: 'request',
+          id: 5,
+          op: 'fetch',
+          init: { url: `https://${declared}/api`, method: 'POST', body: '{}', tabUrl },
+        },
+        [declared],
+      );
+      expect(messaged).toEqual([]);
+      expect(sent.at(-1)!.inner).toMatchObject({ ok: false });
+    });
+  }
+});
+
+describe('legacy read_cookies picks only tabs on approved domains (S-SEC-1)', () => {
+  beforeEach(() => {
+    sent.length = 0;
+  });
+
+  it('never reads document.cookie from a look-alike host', async () => {
+    const { handleReadCookiesRequest } = await import('../src/background/handlers/cookies.js');
+    const messaged = installTabs([{ id: 3, url: 'https://shop.com.au/account' }]);
+    await handleReadCookiesRequest(
+      MCP_ID,
+      { type: 'request', id: 6, op: 'read_cookies', init: { tabUrl: 'https://shop.com' } } as never,
+      ['shop.com'],
+    );
+    expect(messaged).toEqual([]);
+    expect(sent.at(-1)!.inner).toMatchObject({ ok: false, op: 'read_cookies' });
+  });
 });

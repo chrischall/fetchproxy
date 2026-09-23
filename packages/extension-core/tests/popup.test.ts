@@ -1073,7 +1073,7 @@ describe('renderPopup', () => {
           serverName: 'future-mcp',
           version: '0.0.1',
           domains: ['future.example'],
-          // @ts-expect-error - testing forward-compat with unknown verbs
+          // Forward-compat with unknown verbs (capabilities is string[]).
           capabilities: ['fetch', 'frobnicate'],
           pairCode: '1111-2222',
         },

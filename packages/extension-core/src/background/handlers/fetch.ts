@@ -94,7 +94,11 @@ export async function handleFetchRequest(
     requireCsrf?: unknown;
   };
   void _inbound;
-  const matcher = (tabUrl: string): boolean => isTabUrlMatch(tabUrl, init.tabUrl);
+  // The CANDIDATE tab is domain-checked too, not just the tabUrl string —
+  // belt and braces over `isTabUrlMatch`'s origin check (S-SEC-1), so no
+  // matching rule can ever hand the request to a tab off the declared domains.
+  const matcher = (tabUrl: string): boolean =>
+    isTabUrlMatch(tabUrl, init.tabUrl) && isUrlAllowedForAnyDomain(tabUrl, domains);
   const build =
     (requireCsrf: boolean) =>
     (tabUrl: string): unknown => ({
