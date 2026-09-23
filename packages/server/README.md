@@ -185,7 +185,10 @@ row). One variable has no option beside it:
   their original deadline; the ones that may already have run in the
   browser (other `fetch` methods, `writeCookies`, `download`, and a
   `graphqlQuery` not marked `retryOnTimeout: true`) fail with an error
-  saying so, rather than being repeated. Before this, every
+  saying so, rather than being repeated. A request that was still
+  waiting in this process — never written to the old host's socket —
+  fails with `request not sent … It is safe to retry` instead, since
+  nothing reached the browser. Before this, every
   in-flight call on every peer failed with `extension disconnected`.
 
 ## API

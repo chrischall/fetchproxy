@@ -201,6 +201,18 @@ export interface InternalPeerHandle extends PeerHandle {
 
 const enc = new TextEncoder();
 
+/**
+ * The error for a request that never left this process because the link to
+ * the host closed first. Distinct from the host-loss "may already have run":
+ * nothing reached the browser, so the caller can simply retry.
+ */
+function notSentError(): Error {
+  return new Error(
+    'fetchproxy: request not sent — the connection to the bridge host closed before it went ' +
+      'out, so nothing reached the browser. It is safe to retry.',
+  );
+}
+
 export async function startPeer(opts: PeerOpts): Promise<InternalPeerHandle> {
   // The same cap the host puts on what a peer sends it. Without it host→peer
   // sat at `ws`'s 100 MiB default: that much of this MCP's memory, allocated
@@ -997,10 +1009,18 @@ export async function startPeer(opts: PeerOpts): Promise<InternalPeerHandle> {
       // promise's resolved value (which is permanently the first session).
       // Bounded so a never-confirmed session surfaces a clear
       // FetchproxySessionNotReadyError instead of hanging indefinitely.
-      await awaitSessionReady(sessionPromise, {
-        mcpId: opts.mcpId,
-        pendingPairCode: () => pendingPairCode,
-      });
+      try {
+        await awaitSessionReady(sessionPromise, {
+          mcpId: opts.mcpId,
+          pendingPairCode: () => pendingPairCode,
+        });
+      } catch (e) {
+        // Queued for a session and the link to the host went first: the
+        // frame never left this process, and the caller must be told THAT
+        // rather than the handshake's internal reason.
+        if (ws.readyState !== WebSocket.OPEN) throw notSentError();
+        throw e;
+      }
       // `session` is non-null once `sessionPromise` has resolved — it is set
       // two statements before `resolveFirstReady(session)` — EXCEPT across an
       // `extension-disconnected` that landed between that resolution and this
@@ -1020,6 +1040,14 @@ export async function startPeer(opts: PeerOpts): Promise<InternalPeerHandle> {
         plaintext,
         's2e',
       );
+      // The socket can close while the frame is being sealed, and `ws`
+      // DISCARDS a send on a socket that is not open — no throw, no error
+      // event — so this call would resolve as if it had gone out. Checked
+      // here, where nothing can run between the check and the send: a frame
+      // written to an OPEN socket may have reached the browser, one refused
+      // here provably did not, and that is the line the host-loss error
+      // messages are drawn on.
+      if (ws.readyState !== WebSocket.OPEN) throw notSentError();
       ws.send(JSON.stringify(sealed));
     },
     onInner: (cb) => {
