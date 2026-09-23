@@ -227,6 +227,17 @@ needs to even attempt Trusted Publisher, and `npm publish` errors
 with `ENEEDAUTH`. (An earlier version of this doc described
 stripping it as the fix; that was the bug.)
 
+Both publish jobs (`release-please.yml` → `publish`,
+`release-please-next.yml` → `publish-rc`) run in the **`npm-publish`
+environment** and carry an `if: github.ref == 'refs/heads/main'` guard.
+Trusted Publishing trusts a workflow *filename*, so without that binding
+anyone who can push a branch and dispatch could publish the branch's code
+under valid provenance. The YAML guard is editable from a branch; the
+environment's deployment-branch policy (main only, set on GitHub) and the
+environment name on each package's npm Trusted Publisher are not — those
+two are what actually enforce it. `tests/publish-jobs-are-bound-to-main.test.ts`
+fails if a publish job loses either line.
+
 ### PRs + auto-merge
 
 Default workflow: branch + PR. The merge itself is automated by the
@@ -289,7 +300,8 @@ MCP tool call is the integration test.
   after tagging, which is the failure chrischall/workflows#283 was opened
   for and which no amount of re-running fixes — fire `release-please.yml`
   via `workflow_dispatch` with the `republish_tag` input (e.g. `v1.3.3`)
-  to re-run *only* the publish job against the existing tag: the
+  — dispatched **from `main`** (the publish job is bound to main; see
+  "npm publish" above) — to re-run *only* the publish job against the existing tag: the
   release-please step is skipped, the version is derived from the tag, and
   the tag is confirmed to exist before anything publishes. No new release
   PR, no version bump. Idempotency makes a re-run SAFE; it does not make
