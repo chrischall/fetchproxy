@@ -3087,68 +3087,11 @@ export class FetchproxyServer {
       );
     }
     const callOpts = { ...resolved, ...(opts?.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}) };
-    try {
-      const result = await this._captureRequestHeaderOnce(callOpts);
-      this.recordSuccess();
-      return result;
-    } catch (err) {
-      const swDown =
-        err instanceof FetchproxyProtocolError &&
-        classifyFetchError(err.message) === 'content_script_unreachable';
-      if (!swDown) {
-        this.recordFailure(
-          `capture_request_header: ${(err as Error).message ?? String(err)}`,
-        );
-        throw err;
-      }
-      // 0.10.0+ (#73): mirror fetch()'s eviction-detection stamp — the
-      // SW-eviction symptom counter ticks regardless of the retry knob.
-      this.lastEvictionDetectedAt = Date.now();
-      const reviveMs = this.opts.bridgeReviveDelayMs ?? 0;
-      // 0.8.0+: lazy-revive — give Chrome a moment to wake the SW.
-      if (reviveMs > 0) {
-        this.lazyReviveAttempts += 1;
-        await new Promise((r) => setTimeout(r, reviveMs));
-        try {
-          const result = await this._captureRequestHeaderOnce(callOpts);
-          this.lazyReviveSuccesses += 1;
-          this.recordSuccess();
-          return result;
-        } catch (retryErr) {
-          const stillDown =
-            retryErr instanceof FetchproxyProtocolError &&
-            classifyFetchError(retryErr.message) === 'content_script_unreachable';
-          if (!stillDown) {
-            this.recordFailure(
-              `capture_request_header: ${(retryErr as Error).message ?? String(retryErr)}`,
-            );
-            throw retryErr;
-          }
-          this.recordFailure(
-            `capture_request_header bridge-down: ${(retryErr as Error).message}`,
-          );
-          throw new FetchproxyBridgeDownError({
-            originalError: (retryErr as Error).message,
-            retryAttempted: true,
-            op: 'capture_request_header',
-            url: `https://${resolved.host}${resolved.path ?? '/*'}`,
-            role: this.role,
-            port: this.opts.port,
-          });
-        }
-      }
-      this.recordFailure(
-        `capture_request_header bridge-down: ${(err as Error).message}`,
-      );
-      throw new FetchproxyBridgeDownError({
-        originalError: (err as Error).message,
-        retryAttempted: false,
-        op: 'capture_request_header',
-        url: `https://${resolved.host}${resolved.path ?? '/*'}`,
-        role: this.role,
-        port: this.opts.port,
-      });
-    }
+    return this.withLazyRevive(
+      'capture_request_header',
+      `https://${resolved.host}${resolved.path ?? '/*'}`,
+      () => this._captureRequestHeaderOnce(callOpts),
+    );
   }
 
   private async _captureRequestHeaderOnce(opts: {
@@ -3213,60 +3156,11 @@ export class FetchproxyServer {
     // 0.5.3+: lazy connect — see the doc comment on `ensureConnected`.
     await this.ensureConnected();
     this.throwIfPendingPair();
-    try {
-      const result = await this._captureRedirectOnce(opts);
-      this.recordSuccess();
-      return result;
-    } catch (err) {
-      const swDown =
-        err instanceof FetchproxyProtocolError &&
-        classifyFetchError(err.message) === 'content_script_unreachable';
-      if (!swDown) {
-        this.recordFailure(`capture_redirect: ${(err as Error).message ?? String(err)}`);
-        throw err;
-      }
-      // 0.10.0+ (#73): mirror fetch()'s eviction-detection stamp.
-      this.lastEvictionDetectedAt = Date.now();
-      const reviveMs = this.opts.bridgeReviveDelayMs ?? 0;
-      if (reviveMs > 0) {
-        this.lazyReviveAttempts += 1;
-        await new Promise((r) => setTimeout(r, reviveMs));
-        try {
-          const result = await this._captureRedirectOnce(opts);
-          this.lazyReviveSuccesses += 1;
-          this.recordSuccess();
-          return result;
-        } catch (retryErr) {
-          const stillDown =
-            retryErr instanceof FetchproxyProtocolError &&
-            classifyFetchError(retryErr.message) === 'content_script_unreachable';
-          if (!stillDown) {
-            this.recordFailure(
-              `capture_redirect: ${(retryErr as Error).message ?? String(retryErr)}`,
-            );
-            throw retryErr;
-          }
-          this.recordFailure(`capture_redirect bridge-down: ${(retryErr as Error).message}`);
-          throw new FetchproxyBridgeDownError({
-            originalError: (retryErr as Error).message,
-            retryAttempted: true,
-            op: 'capture_redirect',
-            url: `https://${opts.host}${opts.path ?? '/*'}`,
-            role: this.role,
-            port: this.opts.port,
-          });
-        }
-      }
-      this.recordFailure(`capture_redirect bridge-down: ${(err as Error).message}`);
-      throw new FetchproxyBridgeDownError({
-        originalError: (err as Error).message,
-        retryAttempted: false,
-        op: 'capture_redirect',
-        url: `https://${opts.host}${opts.path ?? '/*'}`,
-        role: this.role,
-        port: this.opts.port,
-      });
-    }
+    return this.withLazyRevive(
+      'capture_redirect',
+      `https://${opts.host}${opts.path ?? '/*'}`,
+      () => this._captureRedirectOnce(opts),
+    );
   }
 
   private async _captureRedirectOnce(opts: {
@@ -3327,57 +3221,66 @@ export class FetchproxyServer {
     assertUrlInDomains('download url', opts.url, this.opts.domains);
     await this.ensureConnected();
     this.throwIfPendingPair();
-    try {
-      const result = await this._downloadOnce(opts);
-      this.recordSuccess();
-      return result;
-    } catch (err) {
-      const swDown =
-        err instanceof FetchproxyProtocolError &&
-        classifyFetchError(err.message) === 'content_script_unreachable';
-      if (!swDown) {
-        this.recordFailure(`download: ${(err as Error).message ?? String(err)}`);
-        throw err;
-      }
-      // Mirror fetch()/capture_redirect's lazy-revive on SW eviction.
-      this.lastEvictionDetectedAt = Date.now();
-      const reviveMs = this.opts.bridgeReviveDelayMs ?? 0;
-      if (reviveMs > 0) {
-        this.lazyReviveAttempts += 1;
-        await new Promise((r) => setTimeout(r, reviveMs));
-        try {
-          const result = await this._downloadOnce(opts);
-          this.lazyReviveSuccesses += 1;
-          this.recordSuccess();
-          return result;
-        } catch (retryErr) {
-          const stillDown =
-            retryErr instanceof FetchproxyProtocolError &&
-            classifyFetchError(retryErr.message) === 'content_script_unreachable';
-          if (!stillDown) {
-            this.recordFailure(`download: ${(retryErr as Error).message ?? String(retryErr)}`);
-            throw retryErr;
-          }
-          this.recordFailure(`download bridge-down: ${(retryErr as Error).message}`);
-          throw new FetchproxyBridgeDownError({
-            originalError: (retryErr as Error).message,
-            retryAttempted: true,
-            op: 'download',
-            url: opts.url,
-            role: this.role,
-            port: this.opts.port,
-          });
-        }
-      }
-      this.recordFailure(`download bridge-down: ${(err as Error).message}`);
-      throw new FetchproxyBridgeDownError({
-        originalError: (err as Error).message,
-        retryAttempted: false,
-        op: 'download',
-        url: opts.url,
+    return this.withLazyRevive('download', opts.url, () => this._downloadOnce(opts));
+  }
+
+  /**
+   * B-QUAL-1: the lazy-revive policy for the throwing verbs
+   * (`capture_request_header`, `capture_redirect`, `download`), in one place.
+   * Runs `once`; on the SW-eviction symptom (`content_script_unreachable` —
+   * the request provably never reached a tab, so re-sending is safe) stamps
+   * the eviction counter, waits `bridgeReviveDelayMs` and retries once, then
+   * surfaces a `FetchproxyBridgeDownError`. Every other error is recorded and
+   * rethrown untouched. `fetch()` keeps its own envelope-shaped variant.
+   */
+  private async withLazyRevive<T>(
+    op: 'capture_request_header' | 'capture_redirect' | 'download',
+    url: string,
+    once: () => Promise<T>,
+  ): Promise<T> {
+    const isSwDown = (e: unknown): boolean =>
+      e instanceof FetchproxyProtocolError &&
+      classifyFetchError(e.message) === 'content_script_unreachable';
+    const bridgeDown = (e: unknown, retryAttempted: boolean): FetchproxyBridgeDownError => {
+      this.recordFailure(`${op} bridge-down: ${(e as Error).message}`);
+      return new FetchproxyBridgeDownError({
+        originalError: (e as Error).message,
+        retryAttempted,
+        op,
+        url,
         role: this.role,
         port: this.opts.port,
       });
+    };
+    try {
+      const result = await once();
+      this.recordSuccess();
+      return result;
+    } catch (err) {
+      if (!isSwDown(err)) {
+        this.recordFailure(`${op}: ${(err as Error).message ?? String(err)}`);
+        throw err;
+      }
+      // 0.10.0+ (#73): the symptom is the eviction signal, whether or not
+      // the retry is enabled.
+      this.lastEvictionDetectedAt = Date.now();
+      const reviveMs = this.opts.bridgeReviveDelayMs ?? 0;
+      if (reviveMs <= 0) throw bridgeDown(err, false);
+      // 0.8.0+: lazy-revive — give Chrome a moment to wake the SW.
+      this.lazyReviveAttempts += 1;
+      await new Promise((r) => setTimeout(r, reviveMs));
+      try {
+        const result = await once();
+        this.lazyReviveSuccesses += 1;
+        this.recordSuccess();
+        return result;
+      } catch (retryErr) {
+        if (!isSwDown(retryErr)) {
+          this.recordFailure(`${op}: ${(retryErr as Error).message ?? String(retryErr)}`);
+          throw retryErr;
+        }
+        throw bridgeDown(retryErr, true);
+      }
     }
   }
 
