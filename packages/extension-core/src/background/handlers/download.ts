@@ -139,9 +139,13 @@ export async function handleDownloadRequest(
   // fires before `download()` has even resolved an id, the cancel runs as
   // soon as the id arrives (below).
   let timedOut = false;
+  // Runs inside the onTimeout setTimeout callback, so nothing may throw out of
+  // it: `Promise.resolve().then(...)` turns a SYNCHRONOUS throw from
+  // downloads.cancel/erase into a rejection the .catch()es absorb, matching
+  // cleanup()/succeed() in this file.
   const cancelAbandoned = (id: number): void => {
-    void downloads
-      .cancel(id)
+    void Promise.resolve()
+      .then(() => downloads.cancel(id))
       .catch(() => {
         // already finished or gone
       })
