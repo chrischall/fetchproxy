@@ -18,7 +18,6 @@ export { handleServerHello, type HandleHelloDeps, type HandleHelloResult } from 
 // validation is the contract a relay's own setup flow has to satisfy — a
 // target this rejects is one the extension will never dial.
 export {
-  REMOTE_TARGETS_KEY,
   BRIDGE_SUBPROTOCOL,
   BRIDGE_TOKEN_SUBPROTOCOL_PREFIX,
   MAX_REMOTE_TARGETS,
