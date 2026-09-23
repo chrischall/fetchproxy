@@ -33,7 +33,10 @@ async function linkedHost(): Promise<{ key: Uint8Array; received: InnerFrame[] }
   const port = (el.server.address() as AddressInfo).port;
   host = await startHost({
     httpServer: el.server,
-    ownIdentity: await loadOrCreateIdentity('opentable-mcp', mkdtempSync(join(tmpdir(), 'fp-badframe-'))),
+    ownIdentity: await loadOrCreateIdentity(
+      'opentable-mcp',
+      mkdtempSync(join(tmpdir(), 'fp-badframe-')),
+    ),
     ownMcpId: MCP_ID,
     ownServerName: 'opentable-mcp',
     ownVersion: '0.9.1',
@@ -53,7 +56,9 @@ describe('B-BUG-4: host survives one bad frame on its own session', () => {
     vi.spyOn(console, 'error').mockImplementation(() => undefined);
     const { key, received } = await linkedHost();
     const wrongKey = new Uint8Array(32).fill(7);
-    ext!.ws.send(JSON.stringify(await sealInnerFrame(wrongKey, MCP_ID, 1, { type: 'pong' }, 'e2s')));
+    ext!.ws.send(
+      JSON.stringify(await sealInnerFrame(wrongKey, MCP_ID, 1, { type: 'pong' }, 'e2s')),
+    );
     // The genuine frame behind it (same seq — the forged one must not spend it).
     ext!.ws.send(JSON.stringify(await sealInnerFrame(key, MCP_ID, 1, { type: 'pong' }, 'e2s')));
     await vi.waitFor(() => expect(received).toHaveLength(1));

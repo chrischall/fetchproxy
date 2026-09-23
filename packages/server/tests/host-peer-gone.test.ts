@@ -83,9 +83,7 @@ describe('B-BUG-9: host → extension peer-gone', () => {
   it('tells an extension that accepts it when a peer disconnects', async () => {
     const { ext, extSeen, peer, peerMcpId } = await setup(['peer-gone']);
     peer.close();
-    await vi.waitFor(() =>
-      expect(extSeen).toContainEqual({ type: 'peer-gone', mcpId: peerMcpId }),
-    );
+    await vi.waitFor(() => expect(extSeen).toContainEqual({ type: 'peer-gone', mcpId: peerMcpId }));
     ext.close();
   });
 

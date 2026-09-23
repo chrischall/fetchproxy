@@ -47,14 +47,22 @@ describe('B-BUG-6: a peer survives its host exiting', () => {
     await server.listen();
     const mcpId = (server as unknown as { mcpId: string }).mcpId;
 
-    const get = server.fetch({ url: 'https://resy.com/a', method: 'GET', tabUrl: 'https://resy.com/' });
+    const get = server.fetch({
+      url: 'https://resy.com/a',
+      method: 'GET',
+      tabUrl: 'https://resy.com/',
+    });
     // The peer handshake with the short-lived "host".
     await rig.waitForHello();
     const ext1 = await newFakeExtension();
     await rig.relayExtensionHello(ext1);
     await rig.answerReady(ext1, await rig.waitForHello(1));
     await rig.waitForFrames(1);
-    const post = server.fetch({ url: 'https://resy.com/book', method: 'POST', tabUrl: 'https://resy.com/' });
+    const post = server.fetch({
+      url: 'https://resy.com/book',
+      method: 'POST',
+      tabUrl: 'https://resy.com/',
+    });
     await rig.waitForFrames(2);
 
     // The short-lived host exits, releasing the port.
@@ -70,8 +78,12 @@ describe('B-BUG-6: a peer survives its host exiting', () => {
     await vi.waitFor(() => expect(server!.bridgeHealth().role).toBe('host'));
     ext = await connectMockExtension(rig.port);
     const key = await ext.completeHandshake(mcpId);
-    await vi.waitFor(() => expect(ext!.framesFor(mcpId).some((f) => f.type === 'frame')).toBe(true));
-    const sealed = ext.framesFor(mcpId).find((f) => f.type === 'frame') as unknown as EncryptedFrame;
+    await vi.waitFor(() =>
+      expect(ext!.framesFor(mcpId).some((f) => f.type === 'frame')).toBe(true),
+    );
+    const sealed = ext
+      .framesFor(mcpId)
+      .find((f) => f.type === 'frame') as unknown as EncryptedFrame;
     const req = (await openEncryptedFrame(key, sealed, 's2e')) as InnerRequest;
     expect(req.op).toBe('fetch');
     if (req.op === 'fetch') expect(req.init.method).toBe('GET');
@@ -81,7 +93,15 @@ describe('B-BUG-6: a peer survives its host exiting', () => {
           key,
           mcpId,
           1,
-          { type: 'response', id: req.id, ok: true, op: 'fetch', status: 200, url: 'https://resy.com/a', body: 'ok' },
+          {
+            type: 'response',
+            id: req.id,
+            ok: true,
+            op: 'fetch',
+            status: 200,
+            url: 'https://resy.com/a',
+            body: 'ok',
+          },
           'e2s',
         ),
       ),

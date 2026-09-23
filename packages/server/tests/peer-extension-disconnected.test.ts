@@ -32,7 +32,10 @@ afterEach(async () => {
 
 async function linked() {
   rig = await startFakeConcentrator();
-  const identity = await loadOrCreateIdentity('resy-mcp', mkdtempSync(join(tmpdir(), 'fp-peer-disc-')));
+  const identity = await loadOrCreateIdentity(
+    'resy-mcp',
+    mkdtempSync(join(tmpdir(), 'fp-peer-disc-')),
+  );
   peer = await startPeer({
     host: '127.0.0.1',
     port: rig.port,
@@ -55,7 +58,10 @@ async function linked() {
 async function stillPending(p: Promise<unknown>): Promise<boolean> {
   const marker = Symbol('pending');
   const settled = await Promise.race([
-    p.then(() => 'settled', () => 'settled'),
+    p.then(
+      () => 'settled',
+      () => 'settled',
+    ),
     new Promise((r) => setTimeout(() => r(marker), 150)),
   ]);
   return settled === marker;

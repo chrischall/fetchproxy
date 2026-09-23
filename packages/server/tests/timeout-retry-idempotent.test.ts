@@ -1,9 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import {
-  FetchproxyServer,
-  FetchproxyTimeoutError,
-  retryOnceOnTimeout,
-} from '../src/index.js';
+import { FetchproxyServer, FetchproxyTimeoutError, retryOnceOnTimeout } from '../src/index.js';
 import type { InnerFrame, InnerRequest } from '@fetchproxy/protocol';
 
 // B-BUG-1: a `timeout` only means the reply has not arrived yet — the
@@ -42,8 +38,7 @@ function installRecordingHost(server: FetchproxyServer) {
   (server as unknown as { hostHandle: typeof fakeHostHandle }).hostHandle = fakeHostHandle;
   (server as unknown as { role: 'host' | 'peer' | null }).role = 'host';
   return {
-    requests: (): InnerRequest[] =>
-      sent.filter((f): f is InnerRequest => f.type === 'request'),
+    requests: (): InnerRequest[] => sent.filter((f): f is InnerRequest => f.type === 'request'),
     reply: (frame: InnerFrame) => {
       (server as unknown as { onInner(i: InnerFrame): void }).onInner(frame);
     },
@@ -128,7 +123,13 @@ describe('B-BUG-1: timeout retry is limited to idempotent requests', () => {
     const host = installRecordingHost(s);
     const pending = s.fetch(init('POST'));
     await vi.advanceTimersByTimeAsync(0);
-    host.reply({ type: 'response', id: host.requests()[0]!.id, ok: false, op: 'fetch', error: SW_ERROR });
+    host.reply({
+      type: 'response',
+      id: host.requests()[0]!.id,
+      ok: false,
+      op: 'fetch',
+      error: SW_ERROR,
+    });
     await vi.advanceTimersByTimeAsync(10);
     expect(host.requests().length).toBe(2);
     host.reply({

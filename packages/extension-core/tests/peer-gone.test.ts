@@ -87,7 +87,9 @@ class FakeSocket {
 
   /** Frames this socket sent, parsed, of one `type`. */
   frames<T = Record<string, unknown>>(type: string): T[] {
-    return this.sent.map((s) => JSON.parse(s) as T).filter((f) => (f as { type: string }).type === type);
+    return this.sent
+      .map((s) => JSON.parse(s) as T)
+      .filter((f) => (f as { type: string }).type === type);
   }
 }
 
@@ -135,9 +137,8 @@ const { state } = await import('../src/background/state.js');
 const { links, linkForMcp, unbindAll } = await import('../src/background/links.js');
 const { TrustStore } = await import('../src/trust-store.js');
 const { SessionKeys } = await import('../src/session-keys.js');
-const { mcpDomains, mcpCapabilities, connectedIdentityHashes } = await import(
-  '../src/background/session-scope.js'
-);
+const { mcpDomains, mcpCapabilities, connectedIdentityHashes } =
+  await import('../src/background/session-scope.js');
 
 // ---------------------------------------------------------------------------
 // A scripted MCP: real identity, real signatures, real ECDH.
@@ -217,7 +218,6 @@ async function trustMcp(mcp: ScriptedMcp): Promise<void> {
     extensionIdentityEd25519Pub: toB64(state.extIdentity!.ed25519Pub),
   });
 }
-
 
 const REMOTE = {
   id: 'host1',

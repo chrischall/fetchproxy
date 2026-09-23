@@ -30,8 +30,14 @@ describe('B-BUG-11: concurrent first-run identity creation', () => {
 describe('B-BUG-11: concurrent extension-pin writes', () => {
   it('do not collide on a shared staging file', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'fp-pin-race-'));
-    const pin = (n: number) => ({ identityX25519Pub: `x${n}`, identityEd25519Pub: `e${n}`, pinnedAt: n });
-    await Promise.all(Array.from({ length: 8 }, (_, n) => writeExtensionPin('racer-mcp', pin(n), dir)));
+    const pin = (n: number) => ({
+      identityX25519Pub: `x${n}`,
+      identityEd25519Pub: `e${n}`,
+      pinnedAt: n,
+    });
+    await Promise.all(
+      Array.from({ length: 8 }, (_, n) => writeExtensionPin('racer-mcp', pin(n), dir)),
+    );
     const got = await readExtensionPin('racer-mcp', dir);
     expect(got).not.toBeNull();
     expect(readdirSync(dir).filter((n) => n.endsWith('.tmp'))).toEqual([]);
