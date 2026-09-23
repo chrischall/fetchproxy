@@ -119,24 +119,33 @@ function isAllowedUrl(reqUrl: string, declared: string[]): boolean {
 
 `opentable-mcp` declares `["opentable.com"]` → the extension rejects fetches to anything not under `*.opentable.com`. A backdoored opentable-mcp can still leak your OpenTable data (we can't fix that without making the MCP useless), but it cannot ALSO be used to read your bank, email, or Slack.
 
+The same check applies to the **tab that relays the request** (`init.tabUrl`), not just the request URL — as it always did for `graphql_query` and legacy `read_cookies`. Up to 3.1.0 the fetch verb checked only the URL, so an MCP could name any open tab (the user's bank) as its relay and that tab's content script would attach the bank page's CSRF token to a request bound for the MCP's own domain. The `viaTab` guard in `@fetchproxy/server` runs in the MCP's own process and cannot be the enforcement point; the extension now refuses a `tabUrl` outside the declared domains.
+
 If an MCP legitimately needs more than one domain (rare), it enumerates them: `domains: ["honeybook.com", "hbsplit.com"]`. There is no wildcard syntax.
 
 **Defense 2 — capability allowlist.** Each MCP also declares a `capabilities: [...]` set. `fetch` is the default; `read_cookies` is opt-in. A backdoored MCP can't escalate to verbs the user didn't approve at pair time — the trust record stores the approved set, and the extension rejects any inner request whose `op` isn't in it.
 
 **Defense 3 — pair record locks both sets.** If the MCP later declares a different `domains` or `capabilities` set (set-equality check, order-insensitive), the extension treats the trust record as missing and falls back to a re-pair prompt. So a compromised MCP that secretly widens its domain list to add a new target site or asks for `read_cookies` post-pair forces a fresh popup with the new ask in plain view.
 
+**Defense 4 — the pairing queue and approvals never touch storage that content scripts can write.** The extension injects content scripts into every site, and content scripts can read and write `chrome.storage.local`. Up to 3.1.0 the pending-pair queue and the popup's decision (`pendingPair` → `approvedPair`, and `dismissedScopeUpdate`) travelled through `storage.local`, and the service worker trusted whatever `approvedPair` appeared there. A renderer compromise on any site could therefore have approved an identity of its choosing, with any domains and capabilities, without the popup. The queue and both decisions now live in `chrome.storage.session`, which Chrome restricts to extension pages and the service worker by default; the service worker listens for decisions there only, ignores those keys in `storage.local`, and deletes any left over from an older version at boot. Where `storage.session` is missing (Chrome < 102, excluded by the manifest's `minimum_chrome_version`) it fails closed: nothing is queued and nothing can be approved. Cancel removes the request from the queue, and the queue does not outlive the browser session — a request from before a restart is simply asked again by its MCP. What this does NOT cover: trust records (`trustedMcps`), `remoteBridges` and `dismissedScopeHashes` still live in `storage.local`. A content script able to write storage.local could therefore still forge or revoke a trust record directly, add a remote bridge target (whose MCPs must still pass the pair prompt), or suppress a scope-update offer. Moving the trust store is a larger change; this defense closes the approval channel only.
+
 **Residual risk:** Same-domain, same-capability exfil is unavoidable for the data the MCP is *supposed* to access. If an MCP gets compromised, you lose what it had legitimate access to. This is the same tradeoff as any third-party tool you grant access to a service.
 
 ### T-cookie-exfil — `read_cookies` misuse
 
-`read_cookies` is the most-elevated capability in the protocol. The extension reads `document.cookie` from a tab on a declared domain and returns the string. Only non-HttpOnly cookies are visible to page JS — the HTTP-only session token that actually authenticates the user is NOT included — but the value still contains things like CSRF tokens and "is logged in?" markers and is enough to break a site's auth bootstrap in some designs.
+`read_cookies` is the most-elevated read capability in the protocol, and it **can return HttpOnly cookies, including the session cookie that signs the user in**. It has two request shapes:
+
+- **`{ origin, keys }`** (0.3.0+, what `FetchproxyServer.readCookies({ keys })` and `@fetchproxy/bootstrap` send) — the background reads each named cookie with `chrome.cookies.get`, which sees HttpOnly cookies. That is the reason the shape exists: many sites keep the login session in an HttpOnly cookie, and the cookie-session MCPs (e.g. zola-mcp's `usr`, infinitecampus-mcp's `JSESSIONID`, canvas-parent-mcp's `pseudonym_credentials`) lift exactly that cookie and replay it from Node. An MCP holding it can act as the user from anywhere, outside the browser, the extension and the domain gate, until the site expires the session.
+- **`{ tabUrl }`** (legacy 0.2.0 shape, `readCookies()` with no `keys`) — the content script returns the tab's `document.cookie`, which omits HttpOnly cookies.
+
+Earlier versions of this document said only non-HttpOnly cookies were visible. That was true of the legacy shape only, and wrong for the one every current MCP uses.
 
 **Defenses:**
 
 1. **Opt-in at the wire level.** `read_cookies` only works if the MCP declared it in `capabilities`. Omitting it disables the verb entirely; even the `FetchproxyServer.readCookies()` helper throws synchronously at the call site so an MCP author who forgot to declare it gets a clear error.
 2. **Approved at pair time.** The popup labels `read_cookies` with a visible warning marker (a `cap-warn`-styled list entry that decorates the label with a warning glyph) so the user notices the elevated trust. The trust record stores the approved capability set; a post-pair upgrade to `read_cookies` forces a re-pair with the new ask spelled out.
 3. **Domain-bound.** Like `fetch`, `read_cookies` must target a tab on a declared domain — there's no way to read cookies from outside the MCP's allowlist.
-4. **HTTP-only cookies are not exposed.** The browser refuses to surface them to page JS. fetchproxy doesn't have a side channel to read them either — it relies on `document.cookie`, same as any in-page script.
+4. **Named cookies only.** The `{ origin, keys }` shape reads only the cookie names the MCP declared in `cookieKeys` and the user approved at pair time; the pair popup lists every name and warns that they can include HttpOnly login-session cookies. It is NOT a defense against session exfiltration: if a declared name is the session cookie, the MCP gets the session. Only approve `read_cookies` for an MCP you would trust with your login on those domains.
 
 **Residual risk:** A user who approves a pair with `read_cookies` is giving the MCP a powerful read primitive for the declared domains. The popup tries to make that visible; the trust record forces re-approval on change. There is no further defense — if you don't trust the MCP, don't approve the pair.
 
@@ -340,13 +349,13 @@ The extension's service worker parses every WS frame. A bug (prototype pollution
 
 ### T7 — CSRF token exposure
 
-Some target sites (OpenTable, Resy) use CSRF tokens that live on `window.__CSRF_TOKEN__` in the page MAIN world. The extension syncs this to a `dataset` attribute so the isolated-world content script can read it before issuing a fetch.
+Some target sites (OpenTable, Resy) use CSRF tokens that live on `window.__CSRF_TOKEN__` in the page MAIN world, which the isolated-world content script cannot see. While serving a fetch the background has approved, the content script asks the MAIN-world script for the token over the window's message bus (`readPageCsrfToken` / `installCsrfBridge`) and sets it as `x-csrf-token`.
 
-**Concern.** That dataset attribute is readable by any script running on the page, including any third-party script the target site loads.
+**Concern (and the history).** Up to 3.1.0 the MAIN-world script copied the token into a `<html data-fetchproxy-csrf>` attribute every 2 s on **every site** the user visited, used or not. That moved a secret which lived only in a JS variable into the DOM, where CSS attribute selectors can read it: a site with an HTML/CSS injection but a CSP that blocks script could exfiltrate it with `html[data-fetchproxy-csrf^="a"]{background:url(...)}`. It also fingerprinted the extension on every page. The token is no longer written to the DOM at all.
 
-**Defense — same-origin assumption.** opentable.com → opentable.com. The third-party scripts in question are loaded by opentable.com itself; the CSRF is THEIR CSRF, used to call THEIR endpoints. Exposing it to same-origin scripts isn't a new exposure — they'd find it on `window.__CSRF_TOKEN__` anyway.
+**Defense — on demand, same window, approved fetches only.** The request/reply pair only travels on the page's own window (`event.source === window`, posted to the window's own origin), whose scripts already hold `window.__CSRF_TOKEN__`, so this adds no same-origin exposure. It only happens inside a fetch that passed the background's domain gate — which, since the release after 3.1.0, covers the relaying tab (`tabUrl`) as well as the request URL, so an MCP cannot pick a tab on a site it was not approved for and collect that site's token on its request.
 
-We document this so future contributors don't expand the CSRF-sync pattern to expose tokens cross-origin.
+We document this so future contributors don't expand the CSRF pattern to expose tokens cross-origin or persist them in the DOM.
 
 ### T8 — MCP impersonation
 

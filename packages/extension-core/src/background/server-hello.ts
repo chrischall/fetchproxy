@@ -55,6 +55,7 @@ import {
   PENDING_PAIR_KEY,
   DISMISSED_SCOPE_KEY,
   mergePending,
+  pendingArea,
   withPendingPairLock,
 } from './pending-pair-store.js';
 import {
@@ -241,7 +242,15 @@ export async function onServerHello(link: Link, hello: HelloFrameFromServer): Pr
           // Suppressed: user dismissed this scope, don't re-queue.
           return;
         }
-        const got = await chrome.storage.local.get(PENDING_PAIR_KEY);
+        // The queue lives in storage.session — trusted contexts only, never
+        // storage.local (S-SEC-3; see `pendingArea()`). Without it, fail
+        // closed: nothing is queued, so nothing can be approved.
+        const area = pendingArea();
+        if (!area) {
+          console.error('[fetchproxy] chrome.storage.session unavailable; scope update not queued');
+          return;
+        }
+        const got = await area.get(PENDING_PAIR_KEY);
         const existing = mergePending(got[PENDING_PAIR_KEY]);
         const currentEntry = existing[suKey];
         if (currentEntry) {
@@ -303,7 +312,7 @@ export async function onServerHello(link: Link, hello: HelloFrameFromServer): Pr
           };
           existing[suKey] = suRecord;
         }
-        await chrome.storage.local.set({ [PENDING_PAIR_KEY]: existing });
+        await area.set({ [PENDING_PAIR_KEY]: existing });
       });
       setPairPendingBadge();
     }
@@ -364,10 +373,17 @@ export async function onServerHello(link: Link, hello: HelloFrameFromServer): Pr
     identityEd25519Pub: result.identityEd25519Pub,
   };
   await withPendingPairLock(async () => {
-    const got = await chrome.storage.local.get(PENDING_PAIR_KEY);
+    // storage.session, never storage.local (S-SEC-3; see `pendingArea()`).
+    // Without it, fail closed: nothing is queued, so nothing can be approved.
+    const area = pendingArea();
+    if (!area) {
+      console.error('[fetchproxy] chrome.storage.session unavailable; pair request not queued');
+      return;
+    }
+    const got = await area.get(PENDING_PAIR_KEY);
     const existing = mergePending(got[PENDING_PAIR_KEY]);
     applyNeedsPairRecord(existing, pendingKey, newPendingRecord);
-    await chrome.storage.local.set({ [PENDING_PAIR_KEY]: existing });
+    await area.set({ [PENDING_PAIR_KEY]: existing });
   });
   // 0.4.2: surface the pending pair without making the user discover
   // it manually — paint the action-icon badge and best-effort try to

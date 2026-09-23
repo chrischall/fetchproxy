@@ -6,13 +6,11 @@
  *
  * This script runs in MAIN world and does two things:
  *
- *  1. Copies a small set of well-known page globals onto
- *     `document.documentElement.dataset` so the isolated-world content
- *     script can pick them up and forward them as headers on the fetch.
- *     v1 hardcodes one mapping: `window.__CSRF_TOKEN__` →
- *     `data-fetchproxy-csrf`, which `content.ts` reads + sets as
- *     `x-csrf-token` on every fetch. This is what OpenTable + similar
- *     Akamai-fronted sites need to clear their bot check.
+ *  1. Answers the isolated-world content script's on-demand request for
+ *     `window.__CSRF_TOKEN__` (`installCsrfBridge`), which `content.ts`
+ *     sets as `x-csrf-token` on the fetch it is serving. This is what
+ *     OpenTable + similar Akamai-fronted sites need to clear their bot
+ *     check. The token is never written into the DOM.
  *
  *  2. Runs the Apollo GraphQL bridge (`graphql` capability). Some
  *     endpoints (OpenTable's `RestaurantsAvailability`) reject the
@@ -27,10 +25,9 @@
  *     captured document + the MCP's variables. Whatever telemetry link
  *     OpenTable wired in runs automatically — this IS the organic path.
  *
- * Security: dataset attributes are readable by any same-origin script.
- * The page's own scripts already have window.__CSRF_TOKEN__, so this
- * doesn't expand the same-origin attack surface. Cross-origin code
- * cannot read another origin's DOM datasets. The Apollo bridge only
+ * Security: the CSRF reply is posted to this window's own origin, whose
+ * scripts already have window.__CSRF_TOKEN__, and only when the isolated
+ * world asks while serving an approved fetch. The Apollo bridge only
  * accepts messages where `event.source === window` (our own window's
  * message bus, shared by MAIN + isolated worlds — a cross-origin frame
  * has a different `source`) carrying the private `__fetchproxy` marker,
@@ -48,21 +45,54 @@ declare global {
   }
 }
 
-const SYNC_INTERVAL_MS = 2000;
-const DATASET_KEY = 'fetchproxyCsrf';
 /** Sentinel for a probe that outran its budget; `''` and `false` are both real answers. */
 const PROBE_TIMEOUT = Symbol('probe-timeout');
 /** Short on purpose: this runs on a path that has ALREADY failed, and the
  *  caller is waiting on the reply it annotates. */
 const PROBE_TIMEOUT_MS = 3000;
 
-function syncCsrf(): void {
-  const token = window.__CSRF_TOKEN__;
-  if (typeof token === 'string' && token.length > 0) {
-    document.documentElement.dataset[DATASET_KEY] = token;
-  } else {
-    delete document.documentElement.dataset[DATASET_KEY];
-  }
+/** The private markers on the isolated ⇄ MAIN CSRF-token envelope. */
+const CSRF_REQ_MARKER = 'csrf-req';
+const CSRF_RES_MARKER = 'csrf-res';
+
+/** Subset of `Window` the CSRF bridge touches; a fake stands in under test. */
+export interface CsrfBridgeWindow {
+  __CSRF_TOKEN__?: unknown;
+  addEventListener: (type: string, fn: (e: any) => void) => void;
+  postMessage: (message: unknown, targetOrigin?: string) => void;
+  location?: { origin?: string };
+}
+
+/**
+ * Hand `window.__CSRF_TOKEN__` to the isolated world ON DEMAND.
+ *
+ * This used to copy the token into `<html data-fetchproxy-csrf>` every 2s on
+ * EVERY site the user visited, whether or not any MCP used it. That moved a
+ * secret which only lived in a JS variable into the DOM, where CSS attribute
+ * selectors can read it (a site with an HTML/CSS injection but a CSP that
+ * blocks script could exfiltrate it with `html[data-fetchproxy-csrf^="a"]`),
+ * and fingerprinted the extension on every page. Now the isolated world asks
+ * for it only while serving a fetch the background has approved, and the
+ * reply goes to this window's own origin — same audience as the page script
+ * that already holds the global.
+ */
+export function installCsrfBridge(win: CsrfBridgeWindow): void {
+  win.addEventListener('message', (event: any) => {
+    try {
+      if (!event || event.source !== win) return;
+      const data = event.data;
+      if (!data || typeof data !== 'object' || data.__fetchproxy !== CSRF_REQ_MARKER) return;
+      if (typeof data.reqId !== 'number') return;
+      const token = win.__CSRF_TOKEN__;
+      post(win, {
+        __fetchproxy: CSRF_RES_MARKER,
+        reqId: data.reqId,
+        token: typeof token === 'string' && token.length > 0 ? token : null,
+      });
+    } catch {
+      // Never throw out of a window 'message' listener.
+    }
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -108,7 +138,10 @@ export interface ApolloBridgeWindow {
   location?: { origin?: string };
 }
 
-function post(win: ApolloBridgeWindow, message: unknown): void {
+function post(
+  win: Pick<ApolloBridgeWindow, 'postMessage' | 'location'>,
+  message: unknown,
+): void {
   try {
     win.postMessage(message, win.location?.origin ?? '*');
   } catch {
@@ -661,10 +694,7 @@ export function installApolloBridge(win: ApolloBridgeWindow): void {
 const underTest = !!(globalThis as any)?.process?.env?.VITEST;
 
 if (!underTest && typeof window !== 'undefined') {
-  // First sync immediately so a fetch issued right after extension load
-  // has the token; then refresh every 2s in case the page rotates it.
-  syncCsrf();
-  setInterval(syncCsrf, SYNC_INTERVAL_MS);
+  installCsrfBridge(window as unknown as CsrfBridgeWindow);
   installApolloBridge(window as unknown as ApolloBridgeWindow);
   installFetchBridge(window as unknown as FetchBridgeWindow);
 }

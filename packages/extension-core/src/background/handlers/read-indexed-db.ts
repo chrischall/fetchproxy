@@ -68,7 +68,8 @@ export async function handleReadIndexedDbRequest(
   // (no content script) can shadow a fresh one, and the user shouldn't
   // have to refresh every page after every extension update.
   const result = await sendToFirstResponsiveTab(
-    (t) => isTabUrlMatch(t, tabUrl),
+    // Candidate tab domain-checked as well as the origin (S-SEC-1).
+    (t) => isTabUrlMatch(t, tabUrl) && isUrlAllowedForAnyDomain(t, domains),
     () => ({
       kind: 'fetchproxy-read-indexed-db',
       database: req.init.database,

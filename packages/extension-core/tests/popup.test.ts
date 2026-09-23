@@ -462,6 +462,42 @@ describe('renderPopup', () => {
       expect(container.textContent).toContain('hb_session');
     });
 
+    it('warns that the listed cookies can include the HttpOnly login session (S-SEC-2)', () => {
+      renderPopup(container, {
+        mode: 'pending-pair',
+        pending: {
+          serverName: 'zola-mcp',
+          version: '0.7.0',
+          domains: ['zola.com'],
+          capabilities: ['fetch', 'read_cookies'],
+          cookieKeys: ['usr'],
+          pairCode: '1111-2222',
+        },
+        onApprove: () => undefined,
+        onCancel: () => undefined,
+      });
+      const warning = container.querySelector('.cookie-session-warning');
+      expect(warning).not.toBeNull();
+      expect(warning!.textContent).toMatch(/HttpOnly/);
+      expect(warning!.textContent).toMatch(/sign(ed)? in as you/i);
+    });
+
+    it('shows no cookie-session warning when no cookieKeys are declared', () => {
+      renderPopup(container, {
+        mode: 'pending-pair',
+        pending: {
+          serverName: 'x-mcp',
+          version: '0.1.0',
+          domains: ['x.com'],
+          capabilities: ['fetch'],
+          pairCode: '1111-2222',
+        },
+        onApprove: () => undefined,
+        onCancel: () => undefined,
+      });
+      expect(container.querySelector('.cookie-session-warning')).toBeNull();
+    });
+
     it('renders localStorageKeys when read_local_storage declared', () => {
       renderPopup(container, {
         mode: 'pending-pair',
@@ -673,6 +709,8 @@ describe('renderPopup', () => {
       // 'read_cookies' was added; 'auth' was already approved; 'MTOKEN' is new.
       expect(container.textContent).toContain('Capability: read_cookies');
       expect(container.textContent).toContain('Cookie: MTOKEN');
+      // A newly requested cookie carries the HttpOnly-session warning (S-SEC-2).
+      expect(container.querySelector('.cookie-session-warning')).not.toBeNull();
       expect(container.textContent).toContain('localStorage: tokenExpiry');
       // The approve button should be labeled "Approve update".
       const approve = container.querySelector('[data-action="approve"]') as HTMLButtonElement;
@@ -753,6 +791,58 @@ describe('renderPopup', () => {
         expect(container.textContent).toContain('Capability: capture_request_header');
         // The kept capability should appear under "Previously approved".
         expect(container.textContent).toContain('Capability: fetch');
+      });
+
+      it('warns about HttpOnly login-session cookies when cookies are newly requested (S-SEC-2)', () => {
+        const empty = {
+          capabilities: ['fetch'],
+          cookieKeys: [] as string[],
+          localStorageKeys: [],
+          sessionStorageKeys: [],
+          captureHeaders: [],
+          indexedDbScopes: [],
+          domSelectors: [],
+          domListSelectors: [],
+          graphqlOps: [],
+          localStoragePointers: [],
+          sessionStoragePointers: [],
+        };
+        renderPopup(container, {
+          mode: 'scope-update',
+          serverName: 'zola-mcp',
+          pending: { ...empty, capabilities: ['fetch', 'read_cookies'], cookieKeys: ['usr'] },
+          previous: empty,
+          onGrant: () => undefined,
+          onKeepAsIs: () => undefined,
+        });
+        const warnings = container.querySelectorAll('.cookie-session-warning');
+        expect(warnings).toHaveLength(1);
+        expect(warnings[0]!.textContent).toMatch(/HttpOnly/);
+      });
+
+      it('shows no cookie-session warning when the update adds no cookies', () => {
+        const scope = {
+          capabilities: ['fetch'],
+          cookieKeys: ['usr'],
+          localStorageKeys: [],
+          sessionStorageKeys: [],
+          captureHeaders: [],
+          indexedDbScopes: [],
+          domSelectors: [],
+          domListSelectors: [],
+          graphqlOps: [],
+          localStoragePointers: [],
+          sessionStoragePointers: [],
+        };
+        renderPopup(container, {
+          mode: 'scope-update',
+          serverName: 'zola-mcp',
+          pending: { ...scope, localStorageKeys: ['x'] },
+          previous: scope,
+          onGrant: () => undefined,
+          onKeepAsIs: () => undefined,
+        });
+        expect(container.querySelector('.cookie-session-warning')).toBeNull();
       });
 
       it('shows an added graphqlOps entry in the diff, not an empty "(none)" section', () => {
@@ -1035,7 +1125,7 @@ describe('renderPopup', () => {
           serverName: 'future-mcp',
           version: '0.0.1',
           domains: ['future.example'],
-          // @ts-expect-error - testing forward-compat with unknown verbs
+          // Forward-compat with unknown verbs (capabilities is string[]).
           capabilities: ['fetch', 'frobnicate'],
           pairCode: '1111-2222',
         },

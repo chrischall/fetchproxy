@@ -8,7 +8,7 @@
  *
  * renderPopup is a pure DOM-rendering function (unit-tested). The bottom
  * of this file is the bootstrap that reads chrome.storage state and
- * wires Approve/Cancel callbacks to chrome.storage writes the background
+ * wires Approve/Cancel callbacks to chrome.storage.session writes the background
  * script picks up.
  */
 
@@ -308,6 +308,22 @@ function appendScopeSubList(
   for (const k of keys) ul.appendChild(elem('li', {}, k));
   dd.appendChild(ul);
   dl.appendChild(dd);
+}
+
+/**
+ * `read_cookies` reads each declared name with `chrome.cookies.get`, which
+ * returns HttpOnly cookies — including the session cookie that signs the
+ * user in (several MCPs exist precisely to lift one). A user who knows that
+ * page JS cannot see HttpOnly cookies would otherwise assume the login
+ * session never leaves the browser, so say it at the moment they decide.
+ */
+export const COOKIE_SESSION_WARNING =
+  'These cookies can include HttpOnly login-session cookies. The MCP receives their values ' +
+  'and can use them to stay signed in as you outside this browser.';
+
+function appendCookieSessionWarning(dl: HTMLElement, keys: readonly string[] | undefined): void {
+  if (!keys || keys.length === 0) return;
+  dl.appendChild(elem('dd', { class: 'cap-warn cookie-session-warning' }, `⚠️ ${COOKIE_SESSION_WARNING}`));
 }
 
 function appendCaptureHeadersSubList(
@@ -921,6 +937,14 @@ export function renderPopup(root: HTMLElement, state: PopupState): void {
       graphqlOps: pending.graphqlOps,
       pairCode: '',
     }, previous);
+    // Newly requested cookies get the same HttpOnly-session warning as the
+    // pair prompt (S-SEC-2): Grant is the moment the user decides.
+    const newCookies = pending.cookieKeys.filter((k) => !previous.cookieKeys.includes(k));
+    if (newCookies.length > 0) {
+      const warnDl = elem('dl');
+      appendCookieSessionWarning(warnDl, newCookies);
+      root.appendChild(warnDl);
+    }
 
     const btnRow = elem('div', { class: 'btn-row' });
     const keepBtn = elem('button', { 'data-action': 'keep-as-is', autofocus: 'true' }, 'Keep as is');
@@ -1003,6 +1027,7 @@ export function renderPopup(root: HTMLElement, state: PopupState): void {
     caps.includes('write_cookies') ? 'Read and overwrite cookies' : 'Read cookies',
     pending.cookieKeys,
   );
+  appendCookieSessionWarning(dl, pending.cookieKeys);
   appendScopeSubList(dl, 'Read localStorage', pending.localStorageKeys);
   appendScopeSubList(dl, 'Read sessionStorage', pending.sessionStorageKeys);
   appendCaptureHeadersSubList(dl, pending.captureHeaders);
@@ -1141,6 +1166,12 @@ declare const chrome: {
       set: (kv: Record<string, unknown>) => Promise<void>;
       remove: (k: string) => Promise<void>;
     };
+    /** Trusted contexts only (Chrome 102+): the pairing queue's channel. */
+    session?: {
+      get: (k: string | string[]) => Promise<Record<string, unknown>>;
+      set: (kv: Record<string, unknown>) => Promise<void>;
+      remove: (k: string) => Promise<void>;
+    };
   };
 };
 
@@ -1161,12 +1192,21 @@ async function bootstrap(): Promise<void> {
     renderPopup(root, { mode: 'empty' });
     return;
   }
+  // The pairing queue and every decision on it go through
+  // chrome.storage.session — trusted contexts only — never storage.local,
+  // which content scripts on every site can write (S-SEC-3). The background
+  // listens there alone. No session area (Chrome < 102) means no pairing.
+  const queue = chrome.storage.session;
+  if (!queue) {
+    renderPopup(root, { mode: 'empty' });
+    return;
+  }
 
   // Hoisted so onApprove/onCancel can re-render the next entry without
   // re-reading from storage (storage gets the write but we want immediate
   // visual feedback, before the next popup open).
   const renderNext = async (): Promise<void> => {
-    const got = await chrome.storage!.local.get(['pendingPair']);
+    const got = await queue.get(['pendingPair']);
     const dict = readPendingDict(got['pendingPair']);
     const entries = Object.values(dict);
     if (entries.length === 0) {
@@ -1180,13 +1220,13 @@ async function bootstrap(): Promise<void> {
 
     // Helper: remove this entry and re-render.
     const removePendingAndContinue = async (): Promise<void> => {
-      const cur = await chrome.storage!.local.get(['pendingPair']);
+      const cur = await queue.get(['pendingPair']);
       const d = readPendingDict(cur['pendingPair']);
       delete d[pending.key];
       if (Object.keys(d).length === 0) {
-        await chrome.storage!.local.remove('pendingPair');
+        await queue.remove('pendingPair');
       } else {
-        await chrome.storage!.local.set({ pendingPair: d });
+        await queue.set({ pendingPair: d });
       }
       await renderNext();
     };
@@ -1221,7 +1261,7 @@ async function bootstrap(): Promise<void> {
           void (async () => {
             // Write approvedPair — background SW picks it up via onChanged,
             // calls onApproval(scope-update) → trust.put with declared scope.
-            await chrome.storage!.local.set({ approvedPair: pending });
+            await queue.set({ approvedPair: pending });
             await removePendingAndContinue();
           })();
         },
@@ -1232,7 +1272,7 @@ async function bootstrap(): Promise<void> {
             // Extract the declared scopeHash from the key (format: `${identityHash}:${scopeHash}`).
             const colonIdx = pending.key.indexOf(':');
             const dismissedHash = colonIdx >= 0 ? pending.key.slice(colonIdx + 1) : pending.key;
-            await chrome.storage!.local.set({
+            await queue.set({
               dismissedScopeUpdate: {
                 key: pending.key,
                 identityHash: pending.identityHash,
@@ -1277,7 +1317,7 @@ async function bootstrap(): Promise<void> {
         void (async () => {
           // Persist approval (background SW picks it up via the onChanged
           // listener and runs onApproval -> trust.put + ready frame).
-          await chrome.storage!.local.set({ approvedPair: pending });
+          await queue.set({ approvedPair: pending });
           await removePendingAndContinue();
         })();
       },
@@ -1397,7 +1437,7 @@ async function bootstrap(): Promise<void> {
 
   // Branch: pending pairs take precedence over the status list. If no
   // pending pairs, render the trusted-MCPs status view.
-  const got0 = await chrome.storage.local.get(['pendingPair']);
+  const got0 = await queue.get(['pendingPair']);
   const dict0 = readPendingDict(got0['pendingPair']);
   if (Object.keys(dict0).length > 0) {
     await renderNext();

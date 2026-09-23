@@ -328,8 +328,10 @@ MCP tool call is the integration test.
   tab on the declared apex. `isTabUrlOnOrigin()` (added in PR #4)
   is the right helper.
 - **Writes prefer a relay tab that can inject `x-csrf-token`** (#286).
-  The content script injects the header from `data-fetchproxy-csrf`,
-  copied from `window.__CSRF_TOKEN__` by the MAIN-world logger — and
+  The content script injects the header with `window.__CSRF_TOKEN__`,
+  asked of the MAIN-world logger on demand for each approved fetch
+  (`readPageCsrfToken` ⇄ `installCsrfBridge`; the token is never written
+  to the DOM — it used to sit in `data-fetchproxy-csrf` on every site) — and
   only a site's *app* pages define that global (OpenTable's homepage
   doesn't; its `/r/`, `/booking/`, `/user/` pages do). Because the
   relay walk takes tabs in `chrome.tabs.query` order, a homepage tab

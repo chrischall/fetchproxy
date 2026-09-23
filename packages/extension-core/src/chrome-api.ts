@@ -66,6 +66,25 @@ export interface ChromeApi {
         ) => void;
       };
     };
+    /**
+     * Chrome 102+ (the manifest's `minimum_chrome_version`): restricted to
+     * trusted contexts (extension pages, service worker) by default, so
+     * content scripts cannot read or write it. Carries the pairing queue and
+     * the popup's decisions (`pendingPair`, `approvedPair`,
+     * `dismissedScopeUpdate`) — see `background/pending-pair-store.ts`.
+     * Optional in the type so a missing area fails CLOSED at runtime rather
+     * than throwing.
+     */
+    session?: {
+      get: (k: string | string[]) => Promise<Record<string, unknown>>;
+      set: (kv: Record<string, unknown>) => Promise<void>;
+      remove: (k: string) => Promise<void>;
+      onChanged?: {
+        addListener: (
+          cb: (changes: Record<string, { newValue?: unknown; oldValue?: unknown }>) => void,
+        ) => void;
+      };
+    };
   };
   tabs: {
     query: (q: { url?: string | string[] }) => Promise<{ id?: number; url?: string }[]>;
@@ -146,6 +165,7 @@ export interface ChromeApi {
       }[]
     >;
     erase: (query: { id: number }) => Promise<number[]>;
+    cancel: (downloadId: number) => Promise<void>;
     onChanged: {
       addListener: (
         cb: (delta: { id: number; state?: { current: string }; error?: { current: string } }) => void,

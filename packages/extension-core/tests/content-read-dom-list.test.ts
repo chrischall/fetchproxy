@@ -74,9 +74,6 @@ describe('readDomListValues (isolated-world REPEATED DOM read)', () => {
   });
 
   it('uses the item element itself when a field has no selector', () => {
-    // A <div>, not <li>: HTMLLIElement carries its own numeric `.value`
-    // (default 0, for <ol>), which the value-then-textContent fallback (the
-    // same rule readDomValues uses) would read instead of the text.
     document.body.innerHTML = `<div class="row">first</div><div class="row">second</div>`;
     const rows = readDomListValues({
       itemSelector: '.row',
@@ -106,5 +103,22 @@ describe('readDomListValues (isolated-world REPEATED DOM read)', () => {
       fields: [{ name: 'text', selector: '.body' }],
     });
     expect(rows).toEqual([{ text: 'block text' }]);
+  });
+
+  it('reads <li> items and <button> fields by their text, not .value (B-BUG-2)', () => {
+    document.body.innerHTML = `
+      <ul>
+        <li class="row">first <button class="act">Reply</button></li>
+        <li class="row">second <button class="act">Delete</button></li>
+      </ul>
+    `;
+    const rows = readDomListValues({
+      itemSelector: '.row',
+      fields: [{ name: 'text' }, { name: 'action', selector: '.act' }],
+    });
+    expect(rows).toEqual([
+      { text: 'first Reply', action: 'Reply' },
+      { text: 'second Delete', action: 'Delete' },
+    ]);
   });
 });

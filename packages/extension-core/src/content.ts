@@ -11,9 +11,10 @@ import { MAX_REQUEST_BODY_BYTES, MAX_RESPONSE_BODY_BYTES } from './content-limit
  * fingerprint — which is exactly what Akamai/Cloudflare want to see.
  *
  * Page-level globals (like window.__CSRF_TOKEN__) are NOT accessible
- * from the isolated world. The companion MAIN-world `capture-logger.ts`
- * script copies them to `document.documentElement.dataset.fetchproxyCsrf`
- * so we can pick them up here and forward as headers.
+ * from the isolated world. While serving a fetch, we ask the companion
+ * MAIN-world `capture-logger.ts` script for the token over the shared
+ * message bus (`readPageCsrfToken`) and forward it as a header. Nothing is
+ * persisted in the DOM.
  */
 
 const GRAPHQL_TIMEOUT_MS = 20 * 1000; // 20 s to await the MAIN-world reply
@@ -23,6 +24,10 @@ const GRAPHQL_TIMEOUT_MS = 20 * 1000; // 20 s to await the MAIN-world reply
 // that says which half of the bridge is stuck — could never be the error a
 // caller saw. 20s for the same reason GRAPHQL_TIMEOUT_MS above uses it.
 const IN_PAGE_FETCH_TIMEOUT_MS = 20 * 1000; // 20 s to await the MAIN-world reply
+// The CSRF ask is a same-thread postMessage round-trip; it only waits this
+// long when the MAIN-world script is absent (a tab loaded before the
+// extension was installed), where "no token" is the right answer anyway.
+const CSRF_TIMEOUT_MS = 1000;
 
 interface FetchInit {
   url: string;
@@ -95,6 +100,8 @@ chrome.runtime.onMessage.addListener(
   (
     msg: {
       kind?: string;
+      /** Origin of the tab URL the background matched; see below. */
+      expectedOrigin?: string;
       init?: FetchInit | GraphqlQueryRelayInit;
       keys?: string[];
       database?: string;
@@ -110,6 +117,19 @@ chrome.runtime.onMessage.addListener(
     _sender,
     sendResponse,
   ) => {
+    // Tab-navigation TOCTOU: the background matched (and domain-checked) this
+    // tab by the URL `chrome.tabs.query` reported, then messaged it. If the
+    // tab navigated to another site in between, THIS script is running on a
+    // page the MCP was never approved for. Refuse, typed, so the background's
+    // tab walk moves on to the next matching tab.
+    if (typeof msg.expectedOrigin === 'string' && msg.expectedOrigin !== location.origin) {
+      sendResponse({
+        ok: false,
+        wrongOrigin: true,
+        error: `tab navigated away from ${msg.expectedOrigin} (now on ${location.origin}); not serving`,
+      });
+      return false;
+    }
     if (msg.kind === 'fetchproxy-fetch' && msg.init) {
       void runFetch(msg.init as FetchInit)
         .then(sendResponse)
@@ -412,6 +432,24 @@ function readStorageWithPointers(
 }
 
 /**
+ * An element's readable value: `.value` for FORM CONTROLS only (input,
+ * textarea, select), `.textContent` for everything else. `.value ?? text`
+ * was wrong for elements whose `.value` is a non-nullish default —
+ * `HTMLLIElement.value` is `0` and `HTMLButtonElement.value` is `''` — so an
+ * `<li>` read as "0" and a `<button>` as the empty string.
+ */
+function elementValue(el: Element): string | null {
+  if (
+    el instanceof HTMLInputElement ||
+    el instanceof HTMLTextAreaElement ||
+    el instanceof HTMLSelectElement
+  ) {
+    return el.value;
+  }
+  return el.textContent;
+}
+
+/**
  * Read declared DOM selectors from the live document (isolated world).
  *
  * For each selector: `document.querySelector(selector)`; then the value is
@@ -430,7 +468,7 @@ export function readDomValues(
     if (el === null) continue;
     const raw: unknown = decl.attribute
       ? el.getAttribute(decl.attribute)
-      : ((el as HTMLInputElement).value ?? el.textContent);
+      : elementValue(el);
     if (raw === null || raw === undefined) continue;
     values[decl.name] = String(raw);
   }
@@ -452,7 +490,7 @@ function readDomListField(
   if (el === null) return undefined;
   const raw: unknown = field.attribute
     ? el.getAttribute(field.attribute)
-    : ((el as HTMLInputElement).value ?? el.textContent);
+    : elementValue(el);
   if (raw === null || raw === undefined) return undefined;
   return String(raw);
 }
@@ -484,10 +522,11 @@ export function readDomListValues(selector: {
   });
 }
 
-async function runReadIndexedDb(
+export async function runReadIndexedDb(
   database: string,
   store: string,
   keys: string[],
+  idb: IDBFactory = window.indexedDB,
 ): Promise<IdbResponse | IdbError> {
   // Open the IDB via the standard API, run a readonly transaction
   // against `store`, gather values for each key, close the DB, and
@@ -510,12 +549,31 @@ async function runReadIndexedDb(
     };
     let openReq: IDBOpenDBRequest;
     try {
-      openReq = window.indexedDB.open(database);
+      openReq = idb.open(database);
     } catch (e) {
       finish({ ok: false, error: `indexedDB.open threw: ${(e as Error).message}` });
       return;
     }
+    // `open(name)` with no version CREATES a database that doesn't exist yet
+    // (at v1, with no stores), and that would break the site: its own later
+    // `open(name, 1)` sees no upgrade and runs against a store-less DB until
+    // the user clears site data. `upgradeneeded` on a versionless open only
+    // fires for a brand-new database, so abort that transaction — which, for
+    // a new database, discards it — and report it as not present.
+    let notPresent = false;
+    openReq.onupgradeneeded = (): void => {
+      notPresent = true;
+      try {
+        openReq.transaction?.abort();
+      } catch {
+        // already finishing — onerror still reports
+      }
+    };
     openReq.onerror = (): void => {
+      if (notPresent) {
+        finish({ ok: false, error: `database "${database}" not present` });
+        return;
+      }
       finish({
         ok: false,
         error: `indexedDB.open(${database}) failed: ${openReq.error?.message ?? 'unknown'}`,
@@ -523,6 +581,10 @@ async function runReadIndexedDb(
     };
     openReq.onsuccess = (): void => {
       db = openReq.result;
+      if (notPresent) {
+        finish({ ok: false, error: `database "${database}" not present` });
+        return;
+      }
       let tx: IDBTransaction;
       try {
         if (!db.objectStoreNames.contains(store)) {
@@ -705,17 +767,76 @@ export function runInPageFetch(
   });
 }
 
+/** Window surface `readPageCsrfToken` touches; a fake stands in under test. */
+interface CsrfRelayWindow {
+  addEventListener: (type: string, fn: (e: MessageEvent) => void) => void;
+  removeEventListener: (type: string, fn: (e: MessageEvent) => void) => void;
+  postMessage: (message: unknown, targetOrigin?: string) => void;
+  location?: { origin?: string };
+}
+
+let csrfReqCounter = 0;
+
+/**
+ * Ask the MAIN world (`installCsrfBridge`, capture-logger.ts) for the page's
+ * `window.__CSRF_TOKEN__`. Resolves `undefined` when the page defines none,
+ * when nothing answers within `timeoutMs`, or on any malformed reply. Only a
+ * reply whose `source` is this window and whose `reqId` matches is accepted.
+ * A page script could forge one — it gains nothing: it already holds the
+ * real token, and a forged one only spoils the request it is relaying.
+ */
+export function readPageCsrfToken(
+  win: CsrfRelayWindow = window as unknown as CsrfRelayWindow,
+  timeoutMs: number = CSRF_TIMEOUT_MS,
+): Promise<string | undefined> {
+  return new Promise<string | undefined>((resolve) => {
+    const reqId = ++csrfReqCounter;
+    let settled = false;
+    const finish = (token: string | undefined): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      win.removeEventListener('message', onMessage);
+      resolve(token);
+    };
+    const onMessage = (event: MessageEvent): void => {
+      try {
+        if (event.source !== (win as unknown as MessageEventSource)) return;
+        const data = event.data as
+          | { __fetchproxy?: string; reqId?: number; token?: unknown }
+          | null
+          | undefined;
+        if (!data || typeof data !== 'object' || data.__fetchproxy !== 'csrf-res') return;
+        if (data.reqId !== reqId) return;
+        finish(typeof data.token === 'string' && data.token.length > 0 ? data.token : undefined);
+      } catch {
+        // Never throw out of a window 'message' listener.
+      }
+    };
+    win.addEventListener('message', onMessage);
+    const timer = setTimeout(() => finish(undefined), timeoutMs);
+    try {
+      win.postMessage({ __fetchproxy: 'csrf-req', reqId }, win.location?.origin ?? '*');
+    } catch {
+      finish(undefined);
+    }
+  });
+}
+
 // Exported for unit tests; production callers reach it only via the
 // `fetchproxy-fetch` message above.
-export async function runFetch(init: FetchInit): Promise<FetchResponse | FetchError> {
+export async function runFetch(
+  init: FetchInit,
+  getCsrf: () => Promise<string | undefined> = () => readPageCsrfToken(),
+): Promise<FetchResponse | FetchError> {
   if (init.body && init.body.length > MAX_REQUEST_BODY_BYTES) {
     return { ok: false, error: `request body too large: ${init.body.length} bytes` };
   }
-  // Auto-inject x-csrf-token from the MAIN-world capture-logger's dataset
-  // sync. Caller can override by setting `x-csrf-token` in init.headers
-  // explicitly. Sites that don't expose a CSRF on window.__CSRF_TOKEN__
-  // just won't have anything to forward — dataset is empty, header omitted.
-  const csrf = document.documentElement.dataset.fetchproxyCsrf;
+  // Auto-inject x-csrf-token, asked of the MAIN world for THIS approved
+  // fetch only. Caller can override by setting `x-csrf-token` in
+  // init.headers explicitly. Sites that don't expose a CSRF on
+  // window.__CSRF_TOKEN__ just won't have anything to forward.
+  const csrf = await getCsrf();
   // A write's first pass asks for a tab that can inject the token. This tab
   // can't — say so (typed, so the background keeps walking) rather than send
   // a request the site will 403. See lib/csrf-soft-miss.ts.
@@ -723,7 +844,11 @@ export async function runFetch(init: FetchInit): Promise<FetchResponse | FetchEr
     return csrfSoftMiss(init.tabUrl);
   }
   const headers: Record<string, string> = { ...(init.headers ?? {}) };
-  if (csrf && !('x-csrf-token' in headers) && !('X-CSRF-Token' in headers)) {
+  // Header names are case-insensitive: a caller's `X-Csrf-Token` must suppress
+  // the injection too, or fetch() merges both into "caller, page" and the
+  // site rejects the corrupted token.
+  const callerSetCsrf = Object.keys(headers).some((k) => k.toLowerCase() === 'x-csrf-token');
+  if (csrf && !callerSetCsrf) {
     headers['x-csrf-token'] = csrf;
   }
   // `inPage` requests are handed to the MAIN-world bridge rather than issued

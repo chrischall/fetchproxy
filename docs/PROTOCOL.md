@@ -164,7 +164,7 @@ concatenate to the same signed message.
 `capabilities` is an optional non-empty array of inner-verb capability strings the MCP wants the extension to expose. Known values:
 
 - `"fetch"` — issue HTTP requests against the user's signed-in tab. Default; if `capabilities` is omitted, the extension treats it as `["fetch"]`.
-- `"read_cookies"` — read non-HttpOnly `document.cookie` from a matching tab. Strictly opt-in; the popup shows a visible warning so the user notices the elevated trust.
+- `"read_cookies"` — read the declared `cookieKeys` for an origin via `chrome.cookies.get`, which **includes HttpOnly cookies such as the login session** (the legacy `{tabUrl}` form reads the tab's `document.cookie`, non-HttpOnly only). Strictly opt-in; the popup lists the cookie names and warns that they may include the login session.
 - `"graphql"` — invoke a declared GraphQL operation through the matched tab's OWN Apollo client (`window.__APOLLO_CLIENT__`) in the page MAIN world, reusing the live `DocumentNode` the page already observed for the declared `operationName`. This runs the exact code path the page itself uses, so it carries whatever per-request bot-telemetry the page's Apollo link injects — clearing edge bot-protection (e.g. Akamai) that the isolated-world `fetch` path cannot. The MCP declares an allowlist of operations in `graphqlOps` (see below); a per-call request references one by `name` and supplies its own `variables`. Strictly opt-in; elevated; the popup shows the declared operations verbatim. It does NOT add arbitrary page-JS execution — only the declared operations, through the page's own client, are reachable.
 
 Unknown values are rejected at validation time. The trust record stores the approved capability set; if the same MCP later declares a different set (upgrade or downgrade), the extension treats it as a re-pair and prompts the user again. The check is order-insensitive — `["fetch", "read_cookies"]` and `["read_cookies", "fetch"]` are equivalent.
@@ -492,7 +492,7 @@ Semantics:
 - `method`: any HTTP verb. `GET`, `POST`, `PUT`, `DELETE`, `PATCH`, etc.
 - `headers`: optional. `Cookie`, `User-Agent`, `Origin`, `Referer` are controlled by the browser and ignored if set here. `credentials: 'include'` is always implied.
 - `body`: optional string. The caller serialises JSON.
-- `tabUrl`: required. Prefix-matched against `chrome.tabs.query({})`. First match wins. If no match, the response is `ok: false`. After a successful pair, the extension proactively opens `https://${domains[0]}/` if no matching tab is open. (Future: open a tab for every declared domain.)
+- `tabUrl`: required. Must itself be on one of the MCP's declared `domains` (or a subdomain of one), exactly like `url` — a request naming a relay tab outside them is refused before any tab is messaged. Prefix-matched against `chrome.tabs.query({})`. First match wins. If no match, the response is `ok: false`. After a successful pair, the extension proactively opens `https://${domains[0]}/` if no matching tab is open. (Future: open a tab for every declared domain.)
 - `inPage`: optional boolean, default `false`. When `true` the request is issued by the page's MAIN world instead of the content script's isolated world — same URL, method, body, injected CSRF header and cookies; only the calling world differs. Requires the `fetch_in_page` capability: the background rejects `inPage: true` from an MCP that didn't declare it, before the request reaches any tab. Must be a real boolean — a non-boolean is a protocol error, never coerced.
 
   Use it only where the isolated world genuinely fails. Some edge bot-managers accept a request from the page and reject the byte-identical one from the isolated world: on opentable.com a GraphQL **mutation** POST 403s from the isolated world and returns 200 from the page, while GraphQL queries and REST writes pass from either. The cost is that page script can see and patch `window.fetch`, so a flagged request loses the isolated world's tamper resistance — see `T-in-page-fetch` in [SECURITY.md](./SECURITY.md). Flag individual calls, never everything.
@@ -501,7 +501,7 @@ Semantics:
 
 ##### `op: "read_cookies"`
 
-The extension returns `document.cookie` from a tab matching `tabUrl`. Only non-HttpOnly cookies are visible to page JS — that's the intentional security model.
+Legacy shape: the extension returns `document.cookie` from a tab matching `tabUrl`, so only non-HttpOnly cookies are included. The `{ origin, keys }` shape (see `ReadCookiesInitV3` in `packages/protocol/src/frames.ts`) reads each declared key with `chrome.cookies.get` and **does return HttpOnly cookies, including session cookies** — see `docs/SECURITY.md` §T-cookie-exfil.
 
 ```jsonc
 {
@@ -1013,7 +1013,7 @@ The MCP-side identity pin (§`T-fake-extension` in `docs/SECURITY.md`, 1.12.0+) 
 ## What's not in the protocol (closed by design)
 
 - `eval_js`, `inject_script` — no arbitrary JS execution in tabs. `graphql` does not add this: it can only invoke an operation the MCP declared in `graphqlOps`, through the page's own Apollo client, and only once the page's client has organically observed that operation.
-- `read_storage` (localStorage, IndexedDB) — no general exfiltration primitives. `read_cookies` is a deliberate, narrow exception: the user explicitly opts in at pair time, and only non-HttpOnly cookies are visible to page JS.
+- `read_storage` (localStorage, IndexedDB) — no general exfiltration primitives. `read_cookies` is a deliberate, narrow exception: the user explicitly opts in at pair time to a named list of cookies — which can include HttpOnly session cookies.
 - `click`, `navigate` — no UI automation. Use claude-in-chrome for that.
 - Wildcard MCPs — the declared `domains` set must be enumerated explicitly. No `*.com` or "any domain" wildcards.
 - Wildcard capabilities — the declared `capabilities` set must be enumerated explicitly. Unknown capability strings are rejected by the validator.

@@ -41,14 +41,21 @@ export function isUrlAllowedForAnyDomain(
 }
 
 /**
- * Returns true iff a tab's URL begins with the prefix the MCP server
- * supplied in `init.tabUrl`. The MCP picks a coarse prefix
- * ("https://www.opentable.com/") and the extension finds the first
- * matching open tab.
+ * Returns true iff a tab is on the ORIGIN `init.tabUrl` names and its path
+ * (plus query/hash) begins with that URL's. The MCP picks a coarse prefix
+ * ("https://www.opentable.com/") and the extension finds the first matching
+ * open tab.
+ *
+ * Origin-aware since S-SEC-1: this used to be a raw `startsWith` on the two
+ * strings, so a slashless `https://shop.com` matched a tab on
+ * `https://shop.com.au/…` and `https://bank.co` one on `https://bank.com/` —
+ * the domain check on the `tabUrl` string passed, and a tab on another site
+ * relayed the request. Both sides are now parsed; scheme, port and host must
+ * agree, and only the path is prefix-matched. Anything unparseable, or not
+ * http(s), never matches.
  */
 export function isTabUrlMatch(tabUrl: string, prefix: string): boolean {
-  if (tabUrl.startsWith(prefix)) return true;
-  // 2.2.1: retry with `www.` treated as optional on both sides.
+  // 2.2.1: `www.` is treated as optional on both sides.
   //
   // A relay tab defaults to `https://<host-of-the-request>/`, so an MCP with
   // `defaultSubdomain: 'www'` demands a `www.` tab even on sites whose apex

@@ -170,6 +170,9 @@ describe('fetch handler: CSRF-bearing relay tab preference (#286)', () => {
 
 describe('content script: runFetch under requireCsrf', () => {
   const fetchMock = vi.fn();
+  // What the MAIN world would answer for window.__CSRF_TOKEN__ (S-SEC-4).
+  let pageToken: string | undefined;
+  const getCsrf = async (): Promise<string | undefined> => pageToken;
   beforeEach(() => {
     fetchMock.mockReset();
     fetchMock.mockResolvedValue({
@@ -178,7 +181,7 @@ describe('content script: runFetch under requireCsrf', () => {
       text: async () => '{}',
     });
     (globalThis as { fetch?: unknown }).fetch = fetchMock;
-    delete document.documentElement.dataset.fetchproxyCsrf;
+    pageToken = undefined;
   });
 
   it('soft-misses without touching the network when the tab has no token', async () => {
@@ -188,24 +191,37 @@ describe('content script: runFetch under requireCsrf', () => {
       body: '{}',
       tabUrl: HOME,
       requireCsrf: true,
-    });
+    }, getCsrf);
     expect(isCsrfSoftMiss(res)).toBe(true);
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it('serves the request with x-csrf-token when the tab has one', async () => {
-    document.documentElement.dataset.fetchproxyCsrf = 'tok-placeholder';
+    pageToken = 'tok-placeholder';
     const res = await runFetch({
       url: 'https://www.opentable.com/dapi/x',
       method: 'POST',
       body: '{}',
       tabUrl: RESTAURANT,
       requireCsrf: true,
-    });
+    }, getCsrf);
     expect(res).toMatchObject({ ok: true, status: 200 });
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const init = fetchMock.mock.calls[0]![1] as { headers: Record<string, string> };
     expect(init.headers['x-csrf-token']).toBe('tok-placeholder');
+  });
+
+  it("does not add a second token when the caller set one in another casing (B-BUG-10)", async () => {
+    pageToken = 'tok-page';
+    await runFetch({
+      url: 'https://www.opentable.com/dapi/x',
+      method: 'POST',
+      body: '{}',
+      headers: { 'X-Csrf-Token': 'tok-caller' },
+      tabUrl: RESTAURANT,
+    }, getCsrf);
+    const init = fetchMock.mock.calls[0]![1] as { headers: Record<string, string> };
+    expect(init.headers).toEqual({ 'X-Csrf-Token': 'tok-caller' });
   });
 
   it('without the marker a csrf-less tab issues the request as before', async () => {
@@ -214,7 +230,7 @@ describe('content script: runFetch under requireCsrf', () => {
       method: 'POST',
       body: '{}',
       tabUrl: HOME,
-    });
+    }, getCsrf);
     expect(res).toMatchObject({ ok: true, status: 200 });
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
@@ -264,13 +280,13 @@ describe('runFetch credentials', () => {
 
   it("defaults to 'include', unchanged from before the option existed", async () => {
     const f = spyFetch();
-    await runFetch(init() as never);
+    await runFetch(init() as never, async () => undefined);
     expect((f.mock.calls[0] as unknown[])[1]).toMatchObject({ credentials: 'include' });
   });
 
   it("sends 'omit' when the caller asked for it", async () => {
     const f = spyFetch();
-    await runFetch(init({ credentials: 'omit' }) as never);
+    await runFetch(init({ credentials: 'omit' }) as never, async () => undefined);
     expect((f.mock.calls[0] as unknown[])[1]).toMatchObject({ credentials: 'omit' });
   });
 });

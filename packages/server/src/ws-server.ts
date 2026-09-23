@@ -1410,10 +1410,10 @@ export interface ReadCookiesResult {
   /** Discriminator for the union with `ReadCookiesResultError`. */
   ok: true;
   /**
-   * Raw `document.cookie` value (semicolon-separated `k=v` pairs).
-   * HttpOnly cookies are NOT included — they're invisible to page JS
-   * by design, which is the intentional security boundary of the
-   * `read_cookies` capability.
+   * Semicolon-separated `k=v` pairs. On the legacy no-`keys` path this is
+   * the tab's `document.cookie`, so HttpOnly cookies are absent. On the
+   * `keys` path the extension reads each name with `chrome.cookies.get`,
+   * which DOES return HttpOnly cookies (session cookies included).
    */
   cookies: string;
 }
@@ -2667,18 +2667,19 @@ export class FetchproxyServer {
   }
 
   /**
-   * Snapshot the user's non-HttpOnly cookies for the chosen domain.
+   * Read the user's cookies for the chosen domain.
    *
    * Requires `'read_cookies'` in `FetchproxyServerOpts.capabilities`.
    * Throws a developer-facing `Error` at the call site if the MCP did
    * not declare the capability — this is a programming mistake, not a
    * runtime condition.
    *
-   * The returned string is the raw `document.cookie` value (semicolon-
-   * separated `k=v` pairs). HttpOnly cookies are NOT visible to page JS
-   * and are therefore not included; the underlying threat model assumes
-   * the cookies that matter for the auth bootstrap (session tokens, csrf
-   * cookies that the page itself reads) are non-HttpOnly.
+   * The returned string is semicolon-separated `k=v` pairs. With `keys`
+   * (each in the declared `cookieKeys`), the extension reads each name via
+   * `chrome.cookies.get`, which INCLUDES HttpOnly cookies — the login
+   * session cookie among them; that is what cookie-session MCPs use it
+   * for. Without `keys` (legacy), it is the tab's `document.cookie`, which
+   * omits HttpOnly cookies. See docs/SECURITY.md §T-cookie-exfil.
    *
    * Throws `FetchproxyProtocolError` if the bridge could not deliver
    * the request (no signed-in tab, extension offline, etc.).

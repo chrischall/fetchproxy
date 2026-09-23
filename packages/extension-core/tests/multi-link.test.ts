@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import {
   ecdhX25519,
   ed25519Sign,
@@ -99,6 +99,8 @@ class FakeSocket {
 }
 
 const storage = new Map<string, unknown>();
+/** `chrome.storage.session`: where the pairing queue lives (S-SEC-3). */
+const sessionStorage = new Map<string, unknown>();
 
 /**
  * Every `chrome.runtime.sendMessage` the background made, in order.
@@ -130,6 +132,20 @@ vi.stubGlobal('chrome', {
         for (const [k, v] of Object.entries(kv)) storage.set(k, v);
       },
       remove: async (k: string) => void storage.delete(k),
+    },
+    session: {
+      get: async (k: string | string[]) => {
+        const keys = Array.isArray(k) ? k : [k];
+        const out: Record<string, unknown> = {};
+        for (const key of keys) {
+          if (sessionStorage.has(key)) out[key] = structuredClone(sessionStorage.get(key));
+        }
+        return out;
+      },
+      set: async (kv: Record<string, unknown>) => {
+        for (const [k, v] of Object.entries(kv)) sessionStorage.set(k, structuredClone(v));
+      },
+      remove: async (k: string) => void sessionStorage.delete(k),
     },
   },
   tabs: { query: async () => [], create: async () => ({ id: 1 }) },
@@ -282,6 +298,7 @@ describe('two bridges at once', () => {
       x25519Priv: x.privateKey,
       ed25519Pub: ed.publicKey,
       ed25519Priv: ed.privateKey,
+      createdAt: 0,
     };
 
     reconcileRemoteLinks([REMOTE]);
@@ -1251,6 +1268,33 @@ describe('approving a pending pair (v4)', () => {
     expect(state.sessions!.get(mcp.mcpId)).toBeNull();
     expect(warns.mock.calls.flat().join(' ')).toMatch(/sessionPub/);
     warns.mockRestore();
+  });
+
+  describe('the pairing queue (S-SEC-3)', () => {
+    beforeEach(() => {
+      sessionStorage.clear();
+      storage.clear();
+    });
+
+    it('is written to chrome.storage.session and never to chrome.storage.local', async () => {
+      const localWs = await freshLink();
+      const mcp = await scriptedMcp('alltrails-mcp:2.1.3:3030303030303030');
+      localWs.message(await helloFrom(mcp, extNonceOf(localWs)));
+      await vi.waitUntil(() => localWs.frames('pair-pending').length > 0);
+      const identityHash = toHex(await sha256(mcp.x.publicKey));
+      const find = (): AnyPendingRecord | undefined =>
+        Object.values(
+          (sessionStorage.get('pendingPair') ?? {}) as Record<string, AnyPendingRecord>,
+        ).find((r) => r.identityHash === identityHash);
+      await vi.waitUntil(() => find() !== undefined);
+      expect(storage.has('pendingPair')).toBe(false);
+
+      // And the record exactly as queued (what the popup writes back) pairs.
+      await onApproval(structuredClone(find()!));
+      await vi.waitUntil(() => localWs.frames('ready').length > 0);
+      expect(await state.trust!.get(identityHash)).not.toBeNull();
+      expect(sessionStorage.has('pendingPair')).toBe(false);
+    });
   });
 
   it('answers nothing for an mcpId whose link has dropped', async () => {

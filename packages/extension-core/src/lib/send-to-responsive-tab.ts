@@ -136,6 +136,32 @@ export async function sendToFirstResponsiveTab(
   }
 }
 
+/**
+ * Stamp a tab message with the ORIGIN of the tab URL it was matched on, so
+ * the content script can refuse to serve if the tab has since navigated to
+ * another site (tab-navigation TOCTOU; see content.ts). Non-object messages
+ * pass through untouched.
+ */
+function stampOrigin(message: unknown, tabUrl: string): unknown {
+  if (message === null || typeof message !== 'object') return message;
+  let expectedOrigin: string;
+  try {
+    expectedOrigin = new URL(tabUrl).origin;
+  } catch {
+    return message;
+  }
+  return { ...(message as Record<string, unknown>), expectedOrigin };
+}
+
+function isWrongOrigin(response: unknown): boolean {
+  return (
+    response !== null &&
+    typeof response === 'object' &&
+    (response as { ok?: unknown }).ok === false &&
+    (response as { wrongOrigin?: unknown }).wrongOrigin === true
+  );
+}
+
 /** One pass over the currently open tabs. The retry above calls it repeatedly. */
 async function attemptSend(
   matcher: (tabUrl: string) => boolean,
@@ -165,6 +191,10 @@ async function attemptSend(
   // tab misses — the miss carries the actionable "open a page that triggers
   // this operation" hint, which is still the right remedy in that case.
   let firstSoftMiss: { response: unknown; tabUrl: string } | null = null;
+  // A tab that navigated off the origin it was matched on between the query
+  // and the message (the content script answers `wrongOrigin`). Skipped like
+  // a tab with no listener; reported only if no other tab serves.
+  let lastWrongOrigin: { response: unknown; tabUrl: string } | null = null;
   for (const match of matches) {
     // `match.id` is guaranteed `number` by the filter above, but the
     // chrome typings still type it as `number | undefined` so we use a
@@ -172,7 +202,11 @@ async function attemptSend(
     const id = match.id as number;
     const tabUrl = match.url ?? tabUrlForError;
     try {
-      const response = await chrome.tabs.sendMessage(id, buildMessage(tabUrl));
+      const response = await chrome.tabs.sendMessage(id, stampOrigin(buildMessage(tabUrl), tabUrl));
+      if (isWrongOrigin(response)) {
+        lastWrongOrigin = { response, tabUrl };
+        continue;
+      }
       // A soft miss means "this tab can't serve the request, but another
       // matching tab might" — the graphql bridge's per-tab DocumentNode
       // cache is the only such case today. Keep walking rather than let one
@@ -191,12 +225,13 @@ async function attemptSend(
       return { result: { kind: 'throw', error: msg }, urlMatches: matches.length };
     }
   }
-  if (firstSoftMiss !== null) {
+  const fallback = firstSoftMiss ?? lastWrongOrigin;
+  if (fallback !== null) {
     return {
       result: {
         kind: 'response',
-        response: firstSoftMiss.response,
-        tabUrl: firstSoftMiss.tabUrl,
+        response: fallback.response,
+        tabUrl: fallback.tabUrl,
       },
       urlMatches: matches.length,
     };

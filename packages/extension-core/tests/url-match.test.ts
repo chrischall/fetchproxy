@@ -129,9 +129,26 @@ describe('www is optional on both sides (2.2.1)', () => {
     expect(isTabUrlMatch('http://etix.com/ticket', 'https://www.etix.com/')).toBe(false);
   });
 
-  it('leaves a malformed prefix falling back to plain prefix semantics', () => {
-    expect(isTabUrlMatch('not a url', 'not a url')).toBe(true);
+  it('never matches a malformed prefix or tab URL', () => {
+    // A string prefix was the escape hatch the origin-aware match closes
+    // (S-SEC-1): nothing unparseable can be judged to be on an origin.
+    expect(isTabUrlMatch('not a url', 'not a url')).toBe(false);
     expect(isTabUrlMatch('https://etix.com/', 'not a url')).toBe(false);
+  });
+});
+
+describe('isTabUrlMatch is origin-aware (S-SEC-1)', () => {
+  it('does not let a slashless prefix reach a longer host', () => {
+    expect(isTabUrlMatch('https://shop.com.au/account', 'https://shop.com')).toBe(false);
+    expect(isTabUrlMatch('https://bank.com/', 'https://bank.co')).toBe(false);
+    expect(isTabUrlMatch('https://bank.co.uk/login', 'https://bank.co')).toBe(false);
+    expect(isTabUrlMatch('https://shop.com:8443/', 'https://shop.com')).toBe(false);
+  });
+
+  it('still matches the same origin with or without a trailing slash', () => {
+    expect(isTabUrlMatch('https://shop.com/account', 'https://shop.com')).toBe(true);
+    expect(isTabUrlMatch('https://bank.co.uk/login', 'https://bank.co.uk')).toBe(true);
+    expect(isTabUrlMatch('https://www.opentable.com/r/x', 'https://www.opentable.com/r')).toBe(true);
   });
 });
 

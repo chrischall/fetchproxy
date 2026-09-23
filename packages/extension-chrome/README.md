@@ -80,6 +80,7 @@ rule out when a change "did nothing".
 ## Manifest highlights
 
 - `manifest_version: 3` (MV3 service worker).
+- `minimum_chrome_version: "102"` — the first Chrome with `chrome.storage.session`, which carries the pairing queue and the popup's approve/cancel decisions. Unlike `storage.local`, it is closed to content scripts (which run on every site), so no page can forge an approval. It adds no permission and causes no re-prompt; a browser older than 102 cannot install or update to this version.
 - `host_permissions: ["<all_urls>"]` — required because per-MCP domains are dynamic and enforced inside the extension, not statically in the manifest.
 - `content_scripts` registers both an isolated-world dispatcher (`content.js`) and a MAIN-world capture helper (`capture-logger.js`) at `<all_urls>`. Routing/allowlist enforcement happens inside the scripts themselves once the background dispatches a request.
 - `permissions: ["alarms"]` — used solely for the MV3 service-worker keepalive (`chrome.alarms` ticks every ~24s to wake the SW from idle so the WS bridge stays reachable between bursts of MCP traffic). No alarm payload, no scheduling beyond the single keepalive.
