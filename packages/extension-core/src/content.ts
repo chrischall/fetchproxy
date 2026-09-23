@@ -412,6 +412,24 @@ function readStorageWithPointers(
 }
 
 /**
+ * An element's readable value: `.value` for FORM CONTROLS only (input,
+ * textarea, select), `.textContent` for everything else. `.value ?? text`
+ * was wrong for elements whose `.value` is a non-nullish default —
+ * `HTMLLIElement.value` is `0` and `HTMLButtonElement.value` is `''` — so an
+ * `<li>` read as "0" and a `<button>` as the empty string.
+ */
+function elementValue(el: Element): string | null {
+  if (
+    el instanceof HTMLInputElement ||
+    el instanceof HTMLTextAreaElement ||
+    el instanceof HTMLSelectElement
+  ) {
+    return el.value;
+  }
+  return el.textContent;
+}
+
+/**
  * Read declared DOM selectors from the live document (isolated world).
  *
  * For each selector: `document.querySelector(selector)`; then the value is
@@ -430,7 +448,7 @@ export function readDomValues(
     if (el === null) continue;
     const raw: unknown = decl.attribute
       ? el.getAttribute(decl.attribute)
-      : ((el as HTMLInputElement).value ?? el.textContent);
+      : elementValue(el);
     if (raw === null || raw === undefined) continue;
     values[decl.name] = String(raw);
   }
@@ -452,7 +470,7 @@ function readDomListField(
   if (el === null) return undefined;
   const raw: unknown = field.attribute
     ? el.getAttribute(field.attribute)
-    : ((el as HTMLInputElement).value ?? el.textContent);
+    : elementValue(el);
   if (raw === null || raw === undefined) return undefined;
   return String(raw);
 }

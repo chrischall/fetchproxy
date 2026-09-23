@@ -56,4 +56,20 @@ describe('readDomValues (isolated-world DOM read)', () => {
     const values = readDomValues([{ name: 'd', selector: '#d' }]);
     expect(values).toEqual({ d: 'block text' });
   });
+
+  it('reads the text of an <li> and a <button>, not their .value (B-BUG-2)', () => {
+    document.body.innerHTML = `
+      <ol><li id="item">List item text</li></ol>
+      <button id="btn">Book now</button>
+      <textarea id="ta">typed</textarea>
+      <select id="sel"><option value="a">A</option><option value="b" selected>B</option></select>
+    `;
+    const values = readDomValues([
+      { name: 'item', selector: '#item' },
+      { name: 'btn', selector: '#btn' },
+      { name: 'ta', selector: '#ta' },
+      { name: 'sel', selector: '#sel' },
+    ]);
+    expect(values).toEqual({ item: 'List item text', btn: 'Book now', ta: 'typed', sel: 'b' });
+  });
 });
