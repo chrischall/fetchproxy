@@ -73,6 +73,23 @@ export type FetchErrorKind =
  * so we can't anchor on prefixes alone).
  */
 export function classifyFetchError(error: string): FetchErrorKind {
+  // Checked FIRST: `fetch threw:` means the page's own `fetch()` ran and
+  // threw, so the request was attempted in a tab. Its message is whatever the
+  // page's error said, and a page error that happens to contain Chrome's
+  // runtime phrasing must not be read as `content_script_unreachable` — that
+  // kind means "never reached a tab" and is re-sent for every method, so the
+  // misread would repeat a POST that may already have run.
+  //
+  // The optional `in-page ` prefix is the MAIN-world bridge tagging which world
+  // it came from (capture-logger.ts, #273). It is a DIAGNOSTIC on the message,
+  // not a different failure: the upstream cause is the same network/DNS/CORS
+  // shape either way, and a caller branching on `kind` wants the same branch.
+  // Anchored without it, the tag silently demoted every in-page failure to
+  // `other` — so any message template change here has to be walked back to
+  // this file.
+  if (/^(in-page )?fetch threw:/.test(error)) {
+    return 'tab_fetch_failed';
+  }
   // Order matters: content_script_unreachable and tab_fetch_failed
   // BOTH show up under the `tab fetch failed:` wrapper, so the
   // more-specific Chrome runtime strings have to be checked first.
@@ -87,16 +104,6 @@ export function classifyFetchError(error: string): FetchErrorKind {
     return 'content_script_unreachable';
   }
   if (/^tab fetch failed:/.test(error)) {
-    return 'tab_fetch_failed';
-  }
-  // The optional `in-page ` prefix is the MAIN-world bridge tagging which world
-  // it came from (capture-logger.ts, #273). It is a DIAGNOSTIC on the message,
-  // not a different failure: the upstream cause is the same network/DNS/CORS
-  // shape either way, and a caller branching on `kind` wants the same branch.
-  // Anchored without it, the tag silently demoted every in-page failure to
-  // `other` — so any message template change here has to be walked back to
-  // this file.
-  if (/^(in-page )?fetch threw:/.test(error)) {
     return 'tab_fetch_failed';
   }
   if (/^no tab matching /.test(error)) {
