@@ -40,12 +40,8 @@ import {
 } from '@fetchproxy/protocol';
 
 import type { ChromeApi } from '../chrome-api.js';
-import {
-  REMOTE_TARGETS_KEY,
-  bridgeSubprotocols,
-  normaliseRemoteTargets,
-  type RemoteTarget,
-} from '../remote-targets.js';
+import { bridgeSubprotocols, type RemoteTarget } from '../remote-targets.js';
+import { loadRemoteTargets } from '../vault-records.js';
 // `MIN_SERVER_VERSION` — the `@fetchproxy/server` version at which protocol 4
 // lands — is named in the refusal below, because a version number with no
 // remedy beside it is a diagnosis the reader cannot act on. It lives in
@@ -125,11 +121,14 @@ export function reconcileRemoteLinks(targets: RemoteTarget[]): void {
   connect();
 }
 
-/** Read the configured targets from storage and reconcile onto them. */
+/**
+ * Read the configured targets from the vault and reconcile onto them. The
+ * vault, not `storage.local`: a content script can write the latter, and a
+ * bridge this browser dials must be one the user configured (#252).
+ */
 export async function loadRemoteLinks(): Promise<void> {
   try {
-    const got = await chrome.storage.local.get(REMOTE_TARGETS_KEY);
-    reconcileRemoteLinks(normaliseRemoteTargets(got[REMOTE_TARGETS_KEY]));
+    reconcileRemoteLinks(await loadRemoteTargets());
   } catch (e) {
     console.error('[fetchproxy] could not read remote bridge targets:', e);
   }

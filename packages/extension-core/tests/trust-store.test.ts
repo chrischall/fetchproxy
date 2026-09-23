@@ -1,7 +1,17 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { TrustStore } from '../src/trust-store.js';
+import { freshVault } from './helpers/vault.js';
+import { vaultUpdate } from '../src/vault.js';
+import { ensureVault } from '../src/vault-migration.js';
+
+/** Write a raw trust-store value into the vault, bypassing `put`. */
+async function seedVaultTrust(v: unknown): Promise<void> {
+  await ensureVault();
+  await vaultUpdate('trustedMcps', () => v);
+}
 
 function mockStorage(): { data: Record<string, unknown> } {
+  freshVault();
   const data: Record<string, unknown> = {};
   (globalThis as { chrome?: unknown }).chrome = {
     storage: {
@@ -146,9 +156,7 @@ describe('TrustStore (identity-hash keyed)', () => {
     // trusted from a normal extension version. This is the conservative
     // path the user would actually want (anything weird → re-pair).
     const store = new TrustStore('0.2.0');
-    const cs = (globalThis as { chrome?: { storage: { local: { set: (kv: Record<string, unknown>) => Promise<void> } } } }).chrome!.storage.local;
-    await cs.set({
-      trustedMcps: {
+    await seedVaultTrust({
         records: {
           weird: {
             serverName: 'a',
@@ -160,12 +168,10 @@ describe('TrustStore (identity-hash keyed)', () => {
             extensionVersionAtPair: '', // empty — `head` is '' → !head branch → NaN
           },
         },
-      },
-    });
+      });
     expect(await store.get('weird')).toBeNull();
     // Also exercise the "head is a non-numeric token" branch.
-    await cs.set({
-      trustedMcps: {
+    await seedVaultTrust({
         records: {
           weird2: {
             serverName: 'a',
@@ -177,8 +183,7 @@ describe('TrustStore (identity-hash keyed)', () => {
             extensionVersionAtPair: 'next.0.0',
           },
         },
-      },
-    });
+      });
     expect(await store.get('weird2')).toBeNull();
   });
 
@@ -227,9 +232,7 @@ describe('TrustStore (identity-hash keyed)', () => {
 
   it('normalises pre-0.3.0 records to empty scope arrays on read', async () => {
     const store = new TrustStore('0.3.0');
-    const cs = (globalThis as { chrome?: { storage: { local: { set: (kv: Record<string, unknown>) => Promise<void> } } } }).chrome!.storage.local;
-    await cs.set({
-      trustedMcps: {
+    await seedVaultTrust({
         records: {
           legacy2: {
             serverName: 'legacy-mcp',
@@ -242,8 +245,7 @@ describe('TrustStore (identity-hash keyed)', () => {
             // No 0.3.0 scope fields.
           },
         },
-      },
-    });
+      });
     const got = await store.get('legacy2');
     expect(got).not.toBeNull();
     expect(got!.cookieKeys).toEqual([]);
@@ -256,10 +258,8 @@ describe('TrustStore (identity-hash keyed)', () => {
     // Simulate a record stored before 0.2.0 added capabilities by writing
     // directly through the underlying storage layer without the field.
     const store = new TrustStore('0.2.0');
-    // Hack: stash a synthetic legacy record into chrome.storage.local.
-    const cs = (globalThis as { chrome?: { storage: { local: { set: (kv: Record<string, unknown>) => Promise<void> } } } }).chrome!.storage.local;
-    await cs.set({
-      trustedMcps: {
+    // Stash a synthetic legacy-shaped record straight into the vault.
+    await seedVaultTrust({
         records: {
           legacy1: {
             serverName: 'legacy-mcp',
@@ -271,8 +271,7 @@ describe('TrustStore (identity-hash keyed)', () => {
             // No capabilities field — older shape.
           },
         },
-      },
-    });
+      });
     const got = await store.get('legacy1');
     expect(got).not.toBeNull();
     expect(got!.capabilities).toEqual(['fetch']);

@@ -20,7 +20,13 @@ import {
   PROTOCOL_VERSION,
   type RawKeyPair,
 } from '@fetchproxy/protocol';
-import { generateExtensionIdentity } from '../src/identity-keys.js';
+import { loadOrCreateExtensionIdentity } from '../src/extension-identity.js';
+import { freshVault } from './helpers/vault.js';
+import { settle } from './helpers/settle.js';
+
+/** Sleep at least `ms`, then until no socket has sent anything new. */
+const settleFrames = (ms: number): Promise<void> =>
+  settle(() => FakeSocket.opened.map((s) => s.sent.length).join(','), ms);
 
 /**
  * The transport with more than one bridge attached.
@@ -286,13 +292,16 @@ describe('two bridges at once', () => {
   beforeEach(async () => {
     FakeSocket.opened = [];
     storage.clear();
+    freshVault();
     unbindAll();
     links.clear();
     mcpDomains.clear();
     mcpCapabilities.clear();
     state.trust = new TrustStore('2.1.0');
     state.sessions = new SessionKeys();
-    state.extIdentity = await generateExtensionIdentity();
+    // Loaded through the vault, as boot does — which also primes it, so the
+    // first vault access inside a test is not the one-time initialisation.
+    state.extIdentity = await loadOrCreateExtensionIdentity();
 
     reconcileRemoteLinks([REMOTE]);
     localWs = FakeSocket.opened.find((s) => s.url.startsWith('ws://127.0.0.1'))!;
@@ -393,7 +402,7 @@ describe('two bridges at once', () => {
     await vi.waitUntil(() => localWs.frames('ready').length > 0);
 
     remoteWs.message(await helloFrom(mcp, extNonceOf(remoteWs)));
-    await new Promise((r) => setTimeout(r, 20));
+    await settleFrames(20);
 
     // No answer to the impostor, and the binding did not move.
     expect(remoteWs.frames('ready')).toHaveLength(0);
@@ -430,7 +439,7 @@ describe('two bridges at once', () => {
 
     // A well-formed, correctly sealed ping — arriving on the wrong bridge.
     remoteWs.message(await sealInnerFrame(key, mcp.mcpId, 1, { type: 'ping' }, 's2e'));
-    await new Promise((r) => setTimeout(r, 20));
+    await settleFrames(20);
 
     expect(remoteWs.frames('frame')).toHaveLength(0);
     expect(localWs.frames('frame')).toHaveLength(0);
@@ -536,7 +545,7 @@ describe('pair-pending delivery (mcp-host#639)', () => {
 
     const mcp = await scriptedMcp('alltrails-mcp:2.1.3:cccccccccccccccc');
     localWs.message(await helloFrom(mcp, extNonceOf(localWs))); // no trust record → needs-pair
-    await new Promise((r) => setTimeout(r, 30));
+    await settleFrames(30);
 
     const pending = localWs.frames<{ mcpId: string; pairCode: string }>('pair-pending');
     expect(pending).toHaveLength(1);
@@ -572,7 +581,7 @@ describe('pair-pending delivery (mcp-host#639)', () => {
     };
     try {
       localWs.message(await helloFrom(mcp, extNonceOf(localWs)));
-      await new Promise((r) => setTimeout(r, 30));
+      await settleFrames(30);
     } finally {
       (chrome.storage.local as { get: unknown }).get = realGet;
     }
@@ -603,7 +612,7 @@ describe('pair-pending delivery (mcp-host#639)', () => {
     // between the hello and the store write.
     localWs.message(hello);
     localWs.readyState = 3;
-    await new Promise((r) => setTimeout(r, 30));
+    await settleFrames(30);
 
     const said = warn.mock.calls.map((c) => c.join(' ')).join('\n');
     warn.mockRestore();
@@ -634,7 +643,7 @@ describe('telling the server why (#300)', () => {
       accepts: ['hello-rejected'],
       sessionSig: toB64(new Uint8Array(64)),
     });
-    await new Promise((r) => setTimeout(r, 20));
+    await settleFrames(20);
 
     const rejected = localWs.frames<{ mcpId: string; reason: string }>('hello-rejected');
     expect(rejected).toHaveLength(1);
@@ -660,7 +669,7 @@ describe('telling the server why (#300)', () => {
     const mcp = await scriptedMcp('alltrails-mcp:2.1.3:bbbbbbbbbbbbbbbb');
     const hello = await helloFrom(mcp, extNonceOf(localWs)); // no `accepts`
     localWs.message({ ...hello, sessionSig: toB64(new Uint8Array(64)) });
-    await new Promise((r) => setTimeout(r, 20));
+    await settleFrames(20);
 
     expect(localWs.frames('hello-rejected')).toHaveLength(0);
   });
@@ -728,7 +737,7 @@ describe('a v3 MCP meeting a v4 extension (Task 4.1)', () => {
     const trustRead = vi.spyOn(state.trust!, 'get');
     const trustWrite = vi.spyOn(state.trust!, 'put');
     localWs.message(v3Hello(mcpId, { accepts: ['hello-rejected'] }));
-    await new Promise((r) => setTimeout(r, 20));
+    await settleFrames(20);
 
     const rejected = localWs.frames<{ mcpId: string; reason: string }>('hello-rejected');
     expect(rejected).toHaveLength(1);
@@ -762,7 +771,7 @@ describe('a v3 MCP meeting a v4 extension (Task 4.1)', () => {
     remoteWs.open();
 
     remoteWs.message(v3Hello('alltrails-mcp:2.11.3:5555555555555555', { accepts: ['hello-rejected'] }));
-    await new Promise((r) => setTimeout(r, 20));
+    await settleFrames(20);
 
     expect(remoteWs.frames('hello-rejected')).toHaveLength(1);
     expect(localWs.frames('hello-rejected')).toHaveLength(0);
@@ -777,7 +786,7 @@ describe('a v3 MCP meeting a v4 extension (Task 4.1)', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
     localWs.message(v3Hello('alltrails-mcp:2.11.3:6666666666666666')); // no `accepts`
-    await new Promise((r) => setTimeout(r, 20));
+    await settleFrames(20);
 
     expect(localWs.frames('hello-rejected')).toHaveLength(0);
     // Still said out loud on this side — the popup and the console are what
@@ -801,7 +810,7 @@ describe('a v3 MCP meeting a v4 extension (Task 4.1)', () => {
     localWs.message({ ...hello, accepts: ['hello-rejected'] });
     // And a frame that is not a hello at all.
     localWs.message({ type: 'frame', mcpId: 'not a valid id', seq: 0 });
-    await new Promise((r) => setTimeout(r, 20));
+    await settleFrames(20);
 
     expect(localWs.frames('hello-rejected')).toHaveLength(0);
     const said = warn.mock.calls.map((c) => c.join(' ')).join('\n');
@@ -835,7 +844,7 @@ describe('a v3 MCP meeting a v4 extension (Task 4.1)', () => {
       // never fail a refusal — so a previous test's write can still be in
       // flight when the file-level `storage.clear()` runs. Let the chain
       // drain, then clear what it wrote.
-      await new Promise((r) => setTimeout(r, 20));
+      await settleFrames(20);
       storage.delete(VERSION_MISMATCH_KEY);
       runtimeMessages.length = 0;
     });
@@ -964,7 +973,7 @@ describe('a refused hello', () => {
     // Not trusted, and with a broken signature: `handleServerHello` rejects.
     const hello = await helloFrom(mcp, extNonceOf(localWs));
     localWs.message({ ...hello, sessionSig: toB64(new Uint8Array(64)) });
-    await new Promise((r) => setTimeout(r, 20));
+    await settleFrames(20);
 
     // Held until the link dropped, a rejected id would let a hello flood grow
     // the table without bound — and would block a legitimate re-hello of the
@@ -991,7 +1000,7 @@ describe('a refused hello', () => {
     await trustMcp(mcp); // approved for ['alltrails.com'] only
     const hello = await helloFrom(mcp, extNonceOf(localWs));
     localWs.message({ ...hello, domains: ['alltrails.com', 'alltrails.co.uk'] });
-    await new Promise((r) => setTimeout(r, 20));
+    await settleFrames(20);
 
     // Not auto-trusted: the widened set was never approved, so nothing is
     // served for it — the security property the old `reject` was protecting.
@@ -1048,7 +1057,7 @@ describe('a hello that answers a different extension session', () => {
     // so a gate moved below the binding leaves that one passing.
     const trustRead = vi.spyOn(state.trust!, 'get');
     localWs.message({ ...stale, accepts: ['hello-rejected'] });
-    await new Promise((r) => setTimeout(r, 20));
+    await settleFrames(20);
 
     // No session, no binding, no pair prompt — and no trust record read.
     expect(localWs.frames('ready')).toHaveLength(0);
@@ -1078,7 +1087,7 @@ describe('a hello that answers a different extension session', () => {
     await trustMcp(mcp);
 
     localWs.message(await helloFrom(mcp, ANSWERS_NO_EXT_SESSION));
-    await new Promise((r) => setTimeout(r, 20));
+    await settleFrames(20);
 
     expect(localWs.frames('ready')).toHaveLength(0);
     expect(linkForMcp(mcp.mcpId)).toBeNull();
@@ -1255,7 +1264,7 @@ describe('approving a pending pair (v4)', () => {
 
     const identityHash = toHex(await sha256(mcp.x.publicKey));
     await onApproval(pendingRecordFor(mcp, identityHash, undefined));
-    await new Promise((r) => setTimeout(r, 20));
+    await settleFrames(20);
 
     expect(localWs.frames('ready')).toHaveLength(0);
     expect(state.sessions!.get(mcp.mcpId)).toBeNull();
@@ -1306,7 +1315,7 @@ describe('approving a pending pair (v4)', () => {
     await onApproval(
       pendingRecordFor(mcp, identityHash, { [mcp.mcpId]: toB64(mcp.session.publicKey) }),
     );
-    await new Promise((r) => setTimeout(r, 20));
+    await settleFrames(20);
     expect(localWs.frames('ready')).toHaveLength(0);
     expect(warns.mock.calls.flat().join(' ')).toMatch(/no live bridge/);
     warns.mockRestore();

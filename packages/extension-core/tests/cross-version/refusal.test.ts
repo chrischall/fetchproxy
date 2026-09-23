@@ -14,7 +14,8 @@ import {
   type RawKeyPair,
 } from '@fetchproxy/protocol';
 import { v3ServerHello } from '../../../server/tests/cross-version/v3-fixtures.js';
-import { generateExtensionIdentity } from '../../src/identity-keys.js';
+import { loadOrCreateExtensionIdentity } from '../../src/extension-identity.js';
+import { freshVault } from '../helpers/vault.js';
 
 /**
  * Case 2 of the plan's Group 5: a v3 MCP meeting a v4 extension, held to the
@@ -140,13 +141,16 @@ describe('cross-version: the frozen v3 MCP meets a v4 extension', () => {
   beforeEach(async () => {
     FakeSocket.opened = [];
     storage.clear();
+    freshVault();
     unbindAll();
     links.clear();
     mcpDomains.clear();
     mcpCapabilities.clear();
     state.trust = new TrustStore('3.0.0');
     state.sessions = new SessionKeys();
-    state.extIdentity = await generateExtensionIdentity();
+    // Loaded through the vault, as boot does — which also primes it, so the
+    // first vault access inside a test is not the one-time initialisation.
+    state.extIdentity = await loadOrCreateExtensionIdentity();
     connect();
     ws = FakeSocket.opened.find((s) => s.url.startsWith('ws://127.0.0.1'))!;
     ws.open();

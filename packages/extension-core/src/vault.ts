@@ -14,7 +14,15 @@
  * What lives here (keys of the single `kv` object store):
  * - `identity`             — the extension's long-term keypairs, private halves
  *                            as NON-EXTRACTABLE `CryptoKey`s
- *                            (`identity-keys.ts`, fleet-audit #253).
+ *                            (`identity-keys.ts`, fleet-audit #253);
+ * - `trustedMcps`          — the MCP trust records (`trust-store.ts`);
+ * - `remoteBridges`        — configured remote bridge targets;
+ * - `dismissedScopeHashes` — scope-update offers the user said "keep as is" to
+ *                            (`vault-records.ts`; these three are fleet-audit
+ *                            #252 — a content script could forge or revoke
+ *                            them while they lived in `storage.local`);
+ * - `legacyStoresMigrated` — marker: the one-time import of those three out of
+ *                            `storage.local` has happened (`vault-migration.ts`).
  *
  * Every value is stored by structured clone, which is what lets a
  * non-extractable `CryptoKey` persist without its bytes ever being exposed.
@@ -27,7 +35,8 @@ const DB_NAME = 'fetchproxy-vault';
 const DB_VERSION = 1;
 const STORE = 'kv';
 
-export type VaultKey = 'identity';
+export type VaultKey =
+  'identity' | 'trustedMcps' | 'remoteBridges' | 'dismissedScopeHashes' | 'legacyStoresMigrated';
 
 function factory(): IDBFactory {
   const f = (globalThis as { indexedDB?: IDBFactory }).indexedDB;
@@ -130,7 +139,7 @@ export function vaultUpdate<T>(
 
 /**
  * Write every entry in ONE transaction, but only if `sentinel` is still
- * absent when the transaction reads it. Resolves `true` if the entries were
+ * absent (per `isPresent`) when the transaction reads it. Resolves `true` if the entries were
  * written, `false` if another context got there first (in which case nothing
  * was written at all). This is what makes first-run initialisation and the
  * one-time migration safe to race between the popup and the service worker.
@@ -138,11 +147,12 @@ export function vaultUpdate<T>(
 export function vaultInitIfAbsent(
   sentinel: VaultKey,
   entries: Partial<Record<VaultKey, unknown>>,
+  isPresent: (current: unknown) => boolean = (current) => current !== undefined,
 ): Promise<boolean> {
   return transact<boolean>('readwrite', (store, done) => {
     const req = store.get(sentinel);
     req.onsuccess = () => {
-      if (req.result !== undefined) {
+      if (isPresent(req.result)) {
         done(false);
         return;
       }

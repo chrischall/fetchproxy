@@ -56,7 +56,7 @@ When you approve an MCP server at pair time, Transporter stores a trust record c
 - The approved capability set and domain list.
 - A timestamp.
 
-Trust records are stored in `chrome.storage.local`. You can revoke any trust record from the extension popup at any time.
+Trust records are stored in the extension's own IndexedDB, which websites and the extension's content scripts cannot read or change. (Versions up to 3.2.0 kept them in `chrome.storage.local`; the first start after upgrading moves them.) You can revoke any trust record from the extension popup at any time.
 
 ### 3.3 Pending-Pair State
 
@@ -95,7 +95,7 @@ After revocation, the MCP server must complete a new pair flow (including user a
 
 ## 7. Uninstalling
 
-Uninstalling the Transporter extension removes all data stored in `chrome.storage.local`, including the extension's identity keypair and all trust records. Chrome handles this automatically on uninstall.
+Uninstalling the Transporter extension removes all data stored in `chrome.storage.local` and in the extension's IndexedDB, including the extension's identity keypair and all trust records. Chrome handles this automatically on uninstall.
 
 **Note:** MCP-side identity files (stored at `~/.fetchproxy/identity/<server-name>.json` on your computer) are not part of the extension and are not removed when you uninstall. You can delete them manually if desired.
 

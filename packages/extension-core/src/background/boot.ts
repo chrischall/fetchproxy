@@ -37,7 +37,7 @@ import {
   DISMISS_SCOPE_UPDATE_KEY,
   mergePending,
 } from './pending-pair-store.js';
-import { REMOTE_TARGETS_KEY } from '../remote-targets.js';
+import { REMOTE_TARGETS_CHANGED } from '../remote-targets.js';
 import { onApproval, onScopeUpdateDismiss } from './approval.js';
 import { maybeReinjectOnInstalled } from '../reinject-content-scripts.js';
 
@@ -71,7 +71,28 @@ export function maybeBoot(): void {
   }
   // Part 3: respond to popup queries for the connected identity hash set.
   if (typeof chrome.runtime.onMessage?.addListener === 'function') {
-    chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+    chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+      // 2.1.0: the popup changed the configured remote bridge targets — a
+      // target added, removed, disabled or repointed. Reconcile the live links
+      // onto the new set rather than waiting for a restart, and note that a
+      // REMOVED target's sessions go with it: a bridge the user just deleted
+      // must stop being one this browser answers. The targets are re-read
+      // from the vault, never from the message, so a content script sending
+      // this (it can reach onMessage too) can at most cause a no-op reload;
+      // tab senders are ignored anyway. Up to 3.2.0 this listened on
+      // storage.local.onChanged, back when a content script could write the
+      // targets themselves (#252).
+      if (
+        msg !== null &&
+        typeof msg === 'object' &&
+        (msg as { type?: unknown }).type === REMOTE_TARGETS_CHANGED &&
+        (sender as { tab?: unknown } | undefined)?.tab === undefined
+      ) {
+        void loadRemoteLinks().catch((e) =>
+          console.error('[fetchproxy] remote bridge reconcile:', e),
+        );
+        return;
+      }
       if (
         msg !== null &&
         typeof msg === 'object' &&
@@ -135,18 +156,6 @@ export function maybeBoot(): void {
   void chrome.storage.local.remove(PENDING_PAIR_KEY);
   void chrome.storage.local.remove(APPROVED_PAIR_KEY);
   void chrome.storage.local.remove(DISMISS_SCOPE_UPDATE_KEY);
-  chrome.storage.local.onChanged.addListener((changes) => {
-    // 2.1.0: the configured remote bridge targets changed — a target added,
-    // removed, disabled or repointed. Reconcile the live links onto the new
-    // set rather than waiting for a restart, and note that a REMOVED target's
-    // sessions go with it: a bridge the user just deleted must stop being one
-    // this browser answers.
-    if (REMOTE_TARGETS_KEY in changes) {
-      void loadRemoteLinks().catch((e) =>
-        console.error('[fetchproxy] remote bridge reconcile:', e),
-      );
-    }
-  });
   // 0.4.1: register the MV3 keepalive alarm before anything else. Each
   // fire wakes the SW from idle and re-runs connect() — which is a
   // no-op when the WS is open and a reconnect when it isn't. This is

@@ -18,7 +18,13 @@ import {
   type EncryptedFrame,
   type RawKeyPair,
 } from '@fetchproxy/protocol';
-import { generateExtensionIdentity } from '../src/identity-keys.js';
+import { loadOrCreateExtensionIdentity } from '../src/extension-identity.js';
+import { freshVault } from './helpers/vault.js';
+import { settle } from './helpers/settle.js';
+
+/** Sleep at least `ms`, then until no socket has sent anything new. */
+const settleFrames = (ms: number): Promise<void> =>
+  settle(() => FakeSocket.opened.map((s) => s.sent.length).join(','), ms);
 
 /**
  * One seq, one frame — including when the two copies arrive in the SAME read.
@@ -233,13 +239,16 @@ describe('extension: a duplicate frame in one read is handled exactly once', () 
   beforeEach(async () => {
     FakeSocket.opened = [];
     storage.clear();
+    freshVault();
     unbindAll();
     links.clear();
     mcpDomains.clear();
     mcpCapabilities.clear();
     state.trust = new TrustStore('2.1.0');
     state.sessions = new SessionKeys();
-    state.extIdentity = await generateExtensionIdentity();
+    // Loaded through the vault, as boot does — which also primes it, so the
+    // first vault access inside a test is not the one-time initialisation.
+    state.extIdentity = await loadOrCreateExtensionIdentity();
     connect();
     localWs = FakeSocket.opened.find((s) => s.url.startsWith('ws://127.0.0.1'))!;
     localWs.open();
@@ -265,7 +274,7 @@ describe('extension: a duplicate frame in one read is handled exactly once', () 
 
     await vi.waitUntil(() => localWs.frames('frame').length > 0);
     // Room for a second answer to appear, then the assertion that it did not.
-    await new Promise((r) => setTimeout(r, 50));
+    await settleFrames(50);
     expect(localWs.frames('frame')).toHaveLength(1);
     const pong = localWs.frames<EncryptedFrame>('frame')[0]!;
     expect((await openEncryptedFrame(key, pong, 'e2s')).type).toBe('pong');

@@ -40,6 +40,7 @@ import {
 import type { ChromeApi } from '../chrome-api.js';
 import { ensureDomainTab } from '../ensure-domain-tab.js';
 import { signWithExtensionIdentity } from '../extension-identity.js';
+import { loadDismissedScopeHashes } from '../vault-records.js';
 import { scopeHash } from '../lib/scope.js';
 
 import { state } from './state.js';
@@ -53,7 +54,6 @@ import {
 } from './pending-records.js';
 import {
   PENDING_PAIR_KEY,
-  DISMISSED_SCOPE_KEY,
   mergePending,
   pendingArea,
   withPendingPairLock,
@@ -235,8 +235,9 @@ export async function onServerHello(link: Link, hello: HelloFrameFromServer): Pr
       await withPendingPairLock(async () => {
         // Check dismiss suppression: skip queuing if this identity dismissed
         // this exact declared scope hash before.
-        const dismissedGot = await chrome.storage.local.get(DISMISSED_SCOPE_KEY);
-        const dismissed = (dismissedGot[DISMISSED_SCOPE_KEY] ?? {}) as Record<string, string[]>;
+        // Read from the vault — a dismissal planted in storage.local by a
+        // content script must not be able to hide an offer (#252).
+        const dismissed = await loadDismissedScopeHashes();
         const dismissedForIdentity = dismissed[su.identityHash] ?? [];
         if (dismissedForIdentity.includes(declaredHash)) {
           // Suppressed: user dismissed this scope, don't re-queue.

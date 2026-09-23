@@ -965,7 +965,7 @@ than remembered.
 
 ### Trust store (extension)
 
-`chrome.storage.local["trustedMcps"]`:
+The extension's trust store (`trustedMcps` in the extension origin's IndexedDB vault; up to 3.2.0 `chrome.storage.local["trustedMcps"]`, which content scripts could write — see SECURITY.md §Defense 4):
 
 ```json
 {

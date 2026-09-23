@@ -3,14 +3,15 @@
  * queue, plus the read-modify-write lock that serialises access to them.
  * Moved verbatim out of `background.ts`.
  *
- * These five things share a module because they are the one place two
+ * These things share a module because they are the one place two
  * otherwise-separate regions of the service worker meet: the socket region
  * (`onServerHello` queues a pending record) and the approval region
- * (`onApproval` / `onScopeUpdateDismiss` drain it). Today that shows up as a
- * backwards reference — `DISMISSED_SCOPE_KEY` is declared down in the
- * approval region but read up in the socket region. Hoisting the pair into
- * a shared leaf module turns that into a normal downward import and lets
- * both regions be split apart without a cycle.
+ * (`onApproval` / `onScopeUpdateDismiss` drain it). Hoisting them into a
+ * shared leaf module turns what was a backwards reference into a normal
+ * downward import and lets both regions be split apart without a cycle.
+ * (The dismissed-scope-hash set that used to be named here moved into the
+ * vault — `vault-records.ts` — because a content script could write it in
+ * `storage.local`; fleet-audit #252.)
  *
  * `pendingPairLock` in particular MUST have exactly one declaration in the
  * program: two copies would be two independent promise chains, which is
@@ -24,7 +25,6 @@ import type { AnyPendingRecord } from './pending-records.js';
 
 export const PENDING_PAIR_KEY = 'pendingPair';
 export const APPROVED_PAIR_KEY = 'approvedPair';
-export const DISMISSED_SCOPE_KEY = 'dismissedScopeHashes';
 /** The popup's "keep as is" decision on a scope update. */
 export const DISMISS_SCOPE_UPDATE_KEY = 'dismissedScopeUpdate';
 

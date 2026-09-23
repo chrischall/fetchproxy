@@ -7,7 +7,7 @@ Workspace-internal. Not published to npm. The Chrome MV3 build lives in [`packag
 Public surface exported from `src/index.ts`:
 
 - URL matching (`isUrlAllowedForDomain`, `isUrlAllowedForAnyDomain`, `isTabUrlMatch`)
-- `TrustStore` (chrome.storage.local-backed pair record store, keyed by identity-key hash)
+- `TrustStore` (pair record store keyed by identity-key hash, in the extension-origin IndexedDB vault — `vault.ts` — which content scripts cannot reach)
 - `SessionKeys` / `SessionEntry` (per-MCP ECDH+HKDF session-key cache)
 - `ensureDomainTab` helper (proactively opens a tab on the MCP's declared domains after a successful pair)
 - `handleServerHello` (the top-level dispatcher invoked from the background service worker on a server hello)
