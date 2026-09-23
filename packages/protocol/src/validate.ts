@@ -649,6 +649,8 @@ export function validateFrame(raw: unknown): Frame {
   if (t === 'hello-rejected') return validateHelloRejected(raw);
   // 2.5.0: payload-free host→peer notice (see ExtensionDisconnectedFrame).
   if (t === 'extension-disconnected') return { type: 'extension-disconnected' };
+  // B-BUG-9: host → extension notice (see PeerGoneFrame).
+  if (t === 'peer-gone') return validatePeerGone(raw);
   throw new ProtocolError(`unknown frame type: ${String(t)}`);
 }
 
@@ -754,16 +756,7 @@ function validateHello(raw: Record<string, unknown>): HelloFrame {
     // host. Entries are free strings on purpose — a value this validator
     // has never heard of is a newer peer talking to an older host, not an
     // error — so only the shape is checked.
-    if (raw.accepts !== undefined) {
-      if (!Array.isArray(raw.accepts)) {
-        throw new ProtocolError('hello.accepts: expected array');
-      }
-      for (const a of raw.accepts) {
-        if (typeof a !== 'string') {
-          throw new ProtocolError(`hello.accepts: entry must be string, got ${typeof a}`);
-        }
-      }
-    }
+    if (raw.accepts !== undefined) assertAcceptsList(raw.accepts);
     if (raw.graphqlOps !== undefined) {
       assertGraphqlOpsArray(raw.graphqlOps, 'hello.graphqlOps');
     }
@@ -800,6 +793,9 @@ function validateHello(raw: Record<string, unknown>): HelloFrame {
     assertBase64(raw.identityX25519Pub, 'hello.identityX25519Pub');
     assertBase64(raw.identityEd25519Pub, 'hello.identityEd25519Pub');
     assertBase64(raw.sessionNonce, 'hello.sessionNonce');
+    // B-BUG-9: the extension advertises host→extension notices it
+    // understands (today `'peer-gone'`), exactly as a server does.
+    if (raw.accepts !== undefined) assertAcceptsList(raw.accepts);
     return raw as unknown as HelloFrame;
   }
   throw new ProtocolError(`hello.role: must be 'server' or 'extension', got ${String(role)}`);
@@ -901,6 +897,35 @@ function validatePairPending(raw: Record<string, unknown>): import('./frames.js'
     throw new ProtocolError(`pair-pending.pairCode: must match XXXX-XXXX, got ${String(raw.pairCode)}`);
   }
   return { type: 'pair-pending', mcpId: raw.mcpId, pairCode: raw.pairCode };
+}
+
+/**
+ * 2.5.0: an optional list of extra frame types a hello's sender accepts.
+ * Entries are free strings on purpose — a value this validator has never
+ * heard of is a newer sender talking to an older receiver, not an error — so
+ * only the shape is checked.
+ */
+function assertAcceptsList(accepts: unknown): void {
+  if (!Array.isArray(accepts)) {
+    throw new ProtocolError('hello.accepts: expected array');
+  }
+  for (const a of accepts) {
+    if (typeof a !== 'string') {
+      throw new ProtocolError(`hello.accepts: entry must be string, got ${typeof a}`);
+    }
+  }
+}
+
+/** B-BUG-9: host → extension, a peer MCP's socket to the host closed. */
+function validatePeerGone(raw: Record<string, unknown>): import('./frames.js').PeerGoneFrame {
+  assertString(raw.mcpId, 'peer-gone.mcpId');
+  if (!isValidMcpId(raw.mcpId)) throw new ProtocolError('peer-gone.mcpId: invalid format');
+  for (const k of Object.keys(raw)) {
+    if (k !== 'type' && k !== 'mcpId') {
+      throw new ProtocolError(`peer-gone: unexpected field ${JSON.stringify(k)}`);
+    }
+  }
+  return { type: 'peer-gone', mcpId: raw.mcpId };
 }
 
 function validateHelloRejected(

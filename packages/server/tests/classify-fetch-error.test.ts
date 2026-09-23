@@ -62,6 +62,21 @@ describe('classifyFetchError', () => {
       'in-page fetch threw: TypeError: Failed to fetch',
       'tab_fetch_failed',
     ],
+    // The page's own fetch threw — the request WAS attempted in a tab. Text
+    // the page put in that error (a site's own "Could not establish
+    // connection" message, say) must not demote it to
+    // `content_script_unreachable`, which means "never reached a tab" and is
+    // re-sent for every method, including a POST that may already have run.
+    [
+      'content-script fetch threw with Chrome-like text in the page error',
+      'fetch threw: Error: Could not establish connection to payments backend',
+      'tab_fetch_failed',
+    ],
+    [
+      'MAIN-world fetch threw with "Receiving end does not exist" in the page error',
+      'in-page fetch threw: Error: Receiving end does not exist.',
+      'tab_fetch_failed',
+    ],
     [
       'no compass.com tab open',
       'no tab matching https://www.compass.com/',

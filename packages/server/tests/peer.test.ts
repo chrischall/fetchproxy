@@ -165,9 +165,10 @@ describe('peer client', () => {
       domains: ['opentable.com'],
     });
 
-    await expect(peer.sendInner({ type: 'ping' })).rejects.toThrow(
-      /peer WS closed before ready/,
-    );
+    // The frame never left this process, and the error says so — rather than
+    // the handshake's internal "peer WS closed before ready" — so a caller
+    // knows it is safe to retry.
+    await expect(peer.sendInner({ type: 'ping' })).rejects.toThrow(/request not sent/);
   });
 
   it('fires onClose listeners when the host WS closes', async () => {

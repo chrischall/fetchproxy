@@ -15,6 +15,7 @@ import type {
   GraphqlOpDeclaration,
   StoragePointerDecl,
   InnerFrame,
+  InnerRequest,
   FetchInit,
   ReadCookiesInitV3,
   DownloadResult,
@@ -489,6 +490,12 @@ export interface FetchResultError {
    * arm; undefined for other failure kinds.
    */
   elapsedMs?: number;
+  /**
+   * B-BUG-13: when `kind === 'session_not_ready'`, the error the local send
+   * threw (e.g. `FetchproxySessionNotReadyError`, with its `hint` and
+   * `pairCode`). `request()` and the verb shortcuts rethrow it unchanged.
+   */
+  cause?: unknown;
 }
 
 /**
@@ -612,6 +619,16 @@ export interface RequestOpts {
    * which is why nothing downgrades automatically.
    */
   credentials?: 'include' | 'omit';
+  /**
+   * Re-send this request once after a transport TIMEOUT (the MV3
+   * service-worker cold-start retry). A timeout only means the reply has not
+   * arrived — the extension may already have run the request — so by default
+   * only idempotent methods (GET/HEAD/OPTIONS) are re-sent. Set `true` for a
+   * write you know is safe to repeat; set `false` to stop a read from being
+   * retried. A request that never reached a tab (`content_script_unreachable`)
+   * is retried for every method regardless.
+   */
+  retryOnTimeout?: boolean;
 }
 
 /**
@@ -635,6 +652,8 @@ export interface BodylessRequestOpts {
   inPage?: boolean;
   /** Same as `RequestOpts.credentials`. */
   credentials?: 'include' | 'omit';
+  /** Same as `RequestOpts.retryOnTimeout`. */
+  retryOnTimeout?: boolean;
 }
 
 /**
@@ -1061,6 +1080,18 @@ export class FetchproxyTimeoutError extends FetchproxyProtocolError {
    */
   readonly requestedTimeoutMs: number | null;
 
+  /**
+   * B-BUG-1: whether re-sending this request is safe. A timeout only means
+   * the reply did not arrive in time — the extension may already have run the
+   * request in the tab — so this is `false` for a non-idempotent `fetch`
+   * (anything but GET/HEAD/OPTIONS) the caller did not mark `retryOnTimeout`,
+   * for `download` and `writeCookies`, and for `graphqlQuery` unless the
+   * caller marked it `retryOnTimeout` (a declared operation may be a
+   * mutation). `retryOnceOnTimeout` honours it. Defaults to `true` (the read
+   * verbs).
+   */
+  readonly retrySafe: boolean;
+
   constructor(args: {
     url: string;
     timeoutMs: number;
@@ -1069,6 +1100,8 @@ export class FetchproxyTimeoutError extends FetchproxyProtocolError {
     elapsedMs?: number;
     retryAttempted?: boolean;
     requestedTimeoutMs?: number;
+    /** See `retrySafe`. Defaults to `true`. */
+    retrySafe?: boolean;
     /**
      * The reply grace actually applied to this call (`verbDeadlineGraceMs`,
      * defaulting to `VERB_DEADLINE_GRACE_MS`). Passed rather than read off the
@@ -1108,6 +1141,7 @@ export class FetchproxyTimeoutError extends FetchproxyProtocolError {
     this.elapsedMs = args.elapsedMs ?? args.timeoutMs;
     this.retryAttempted = args.retryAttempted ?? false;
     this.requestedTimeoutMs = args.requestedTimeoutMs ?? null;
+    this.retrySafe = args.retrySafe ?? true;
   }
 }
 
@@ -1405,6 +1439,63 @@ interface ResolvedOpts {
 
 const DEFAULT_JSON_OK_STATUSES: readonly number[] = [200, 201, 202, 204];
 
+/**
+ * B-BUG-7: parse a JSON helper's response body, treating a 204 or an empty
+ * body as `null`. `null as T` rather than widening the helpers to `T | null`:
+ * these calls used to THROW on an empty body, so no existing caller can have
+ * relied on a value there, and widening the return type would break every
+ * consumer's typecheck for a case that previously never returned at all.
+ */
+function parseJsonBody<T>(response: { status: number; body: string }): T {
+  if (response.status === 204 || response.body.trim() === '') return null as T;
+  return JSON.parse(response.body) as T;
+}
+
+/**
+ * Per-call options for the low-level `fetch(init, opts)`. Kept off the wire
+ * `FetchInit` on purpose: they steer this server's retry policy and mean
+ * nothing to the extension.
+ */
+export interface FetchCallOpts {
+  /** See `RequestOpts.retryOnTimeout`. */
+  retryOnTimeout?: boolean;
+}
+
+/** HTTP methods that are safe to re-send after an ambiguous timeout. */
+const TIMEOUT_RETRY_SAFE_METHODS: ReadonlySet<string> = new Set(['GET', 'HEAD', 'OPTIONS']);
+
+/**
+ * B-BUG-1: may a request that TIMED OUT be sent again? An explicit per-call
+ * choice wins; otherwise only idempotent, side-effect-free methods.
+ */
+export function isRetrySafeOnTimeout(method: string, retryOnTimeout?: boolean): boolean {
+  if (retryOnTimeout !== undefined) return retryOnTimeout;
+  return TIMEOUT_RETRY_SAFE_METHODS.has(method.toUpperCase());
+}
+
+/**
+ * B-BUG-6: may this request be sent again after the host relaying it exited
+ * mid-flight? The same judgement as the timeout retry: yes for reads and
+ * waits, no for anything with a side effect that may already have happened.
+ * `fetch` is decided by its caller (method + `retryOnTimeout`); this is the
+ * default for everything else.
+ */
+function isResendableRequest(inner: InnerRequest): boolean {
+  switch (inner.op) {
+    case 'fetch':
+      return isRetrySafeOnTimeout(inner.init.method);
+    case 'write_cookies':
+    case 'download':
+    // A declared GraphQL operation may be a mutation; the server holds only
+    // its name, so it cannot tell. `graphqlQuery({ retryOnTimeout: true })`
+    // passes `resendable` explicitly for a known query.
+    case 'graphql_query':
+      return false;
+    default:
+      return true;
+  }
+}
+
 /** Result of a successful `read_cookies` call. */
 export interface ReadCookiesResult {
   /** Discriminator for the union with `ReadCookiesResultError`. */
@@ -1528,6 +1619,13 @@ export class FetchproxyServer {
     number,
     { resolve: (v: unknown) => void; reject: (e: Error) => void }
   >();
+  /**
+   * B-BUG-6: the frames of in-flight requests that are safe to send again
+   * if the host that relayed them exits before replying (see
+   * `recoverFromHostLoss`). Keyed by request id; an entry outlives its
+   * request only until the next prune or response.
+   */
+  private resendable = new Map<number, InnerRequest>();
   private mcpId: string | null = null;
   private identity: Identity | null = null;
   // 0.5.3+: in-flight role-election / handle-start promise. Set the
@@ -1597,7 +1695,7 @@ export class FetchproxyServer {
       for (const c of opts.capabilities) {
         if (!KNOWN_CAPABILITIES.has(c)) {
           throw new Error(
-            `FetchproxyServer: unknown capability ${JSON.stringify(c)} — known values: ["fetch", "read_cookies"]`,
+            `FetchproxyServer: unknown capability ${JSON.stringify(c)} — known values: ${JSON.stringify([...KNOWN_CAPABILITIES])}`,
           );
         }
       }
@@ -1858,6 +1956,13 @@ export class FetchproxyServer {
         this.stopKeepalive();
         this.rejectAllPending();
       });
+      // B-BUG-5: the extension's link to the host dropped. Same as the host
+      // role's onExtensionDisconnect — fail in-flight calls now rather than
+      // letting each wait out fetchTimeoutMs.
+      this.peerHandle.onExtensionDisconnect(() => {
+        this.stopKeepalive();
+        this.rejectAllPending();
+      });
       // 0.5.2+: pair-pending from the extension. Same actionable error
       // treatment as the host path so the chat sees the pair code instead
       // of a generic MCP-level timeout.
@@ -1886,9 +1991,13 @@ export class FetchproxyServer {
       this.peerHandle.onClose(() => {
         if (this.closing || this.peerHandle === null) return;
         this.stopKeepalive();
-        this.rejectAllPending();
         this.peerHandle = null;
         this.role = null;
+        // B-BUG-6: the host is often a short-lived process — a bootstrap
+        // lift or an `fpx` call that won the election — so its exit is
+        // routine, not a fault. Re-elect and re-send what is safe to
+        // repeat instead of failing every in-flight call.
+        void this.recoverFromHostLoss();
       });
     }
   }
@@ -1915,7 +2024,10 @@ export class FetchproxyServer {
    * only when the bridge itself failed (no signed-in tab, extension
    * offline, etc.).
    */
-  async fetch(init: FetchInit): Promise<FetchResult | FetchResultError> {
+  async fetch(
+    init: FetchInit,
+    fetchOpts: FetchCallOpts = {},
+  ): Promise<FetchResult | FetchResultError> {
     // 0.5.3+: connect lazily on first verb call. `listen()` only loads
     // identity now; the bridge port bind / WS dial happens here so a
     // configured-but-unused MCP doesn't tie up resources at boot.
@@ -1933,7 +2045,7 @@ export class FetchproxyServer {
         retryAttempted: false,
       };
     }
-    const first = await this._fetchOnceWithTimeout(init);
+    const first = await this._fetchOnceWithTimeout(init, fetchOpts);
     // 0.8.0+: lazy-revive on SW eviction. One-shot retry after the
     // configured delay; the SW typically wakes on the next inbound
     // WS frame within ~1-2s. The retry context (`retryAttempted`)
@@ -1959,10 +2071,19 @@ export class FetchproxyServer {
     if (isColdStartSymptom) {
       this.lastEvictionDetectedAt = Date.now();
     }
-    if (isColdStartSymptom && reviveMs !== undefined && reviveMs > 0) {
+    // B-BUG-1: a `timeout` does NOT prove the request never ran — the tab may
+    // have sent it and only the reply is late. Re-sending a POST there can
+    // book or pay twice, so a timeout is retried only when the request is
+    // safe to repeat. `content_script_unreachable` provably never reached a
+    // tab and stays retried for every method.
+    const retryable =
+      isColdStartSymptom &&
+      (first.kind === 'content_script_unreachable' ||
+        isRetrySafeOnTimeout(init.method, fetchOpts.retryOnTimeout));
+    if (retryable && reviveMs !== undefined && reviveMs > 0) {
       this.lazyReviveAttempts += 1;
       await new Promise((r) => setTimeout(r, reviveMs));
-      const second = await this._fetchOnceWithTimeout(init);
+      const second = await this._fetchOnceWithTimeout(init, fetchOpts);
       // Record the user-visible outcome (so one tool call only ticks
       // consecutiveFailures by 1 regardless of the internal retry).
       if (second.ok) {
@@ -2137,12 +2258,18 @@ export class FetchproxyServer {
    * one of the op maps — request ids are unique) so it doesn't leak until the
    * server closes, then rethrow.
    */
-  private async sendInnerFrame(inner: InnerFrame): Promise<void> {
+  private async sendInnerFrame(
+    inner: InnerFrame,
+    opts: { resendable?: boolean } = {},
+  ): Promise<void> {
     try {
       if (this.hostHandle) {
         await this.hostHandle.sendOwnInner(inner);
       } else if (this.peerHandle) {
         await this.peerHandle.sendInner(inner);
+      }
+      if (inner.type === 'request' && (opts.resendable ?? isResendableRequest(inner))) {
+        this.noteResendable(inner);
       }
     } catch (err) {
       if ('id' in inner && typeof inner.id === 'number') {
@@ -2169,6 +2296,7 @@ export class FetchproxyServer {
    */
   private async _fetchOnceWithTimeout(
     init: FetchInit,
+    fetchOpts: FetchCallOpts = {},
   ): Promise<FetchResult | FetchResultError> {
     const id = this.nextRequestId++;
     const inner: InnerFrame = { type: 'request', id, op: 'fetch', init };
@@ -2177,7 +2305,22 @@ export class FetchproxyServer {
         this.pending.set(id, resolve);
       }),
     );
-    await this.sendInnerFrame(inner);
+    try {
+      await this.sendInnerFrame(inner, {
+        resendable: isRetrySafeOnTimeout(init.method, fetchOpts.retryOnTimeout),
+      });
+    } catch (err) {
+      // B-BUG-13: the frame never reached the bridge, so nothing ran in a
+      // tab. Honour fetch()'s envelope contract instead of rejecting, and
+      // keep the original error so request() can rethrow it typed.
+      return {
+        ok: false,
+        error: err instanceof Error ? err.message : String(err),
+        kind: 'session_not_ready',
+        retryAttempted: false,
+        cause: err,
+      };
+    }
     const timeoutMs = this.opts.fetchTimeoutMs;
     if (timeoutMs === undefined || timeoutMs <= 0) return pending;
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -2266,6 +2409,14 @@ export class FetchproxyServer {
      * It GOVERNS this call's own deadline (#237) — see `verbDeadlineMs`.
      */
     requestedTimeoutMs?: number,
+    /**
+     * B-BUG-1: stamped on the timeout error so `retryOnceOnTimeout` does not
+     * re-send a verb that may already have acted. A timeout only means the
+     * reply is late. `false` for `download` (a second one saves "file (1)"),
+     * `writeCookies`, and `graphqlQuery` unless the caller opts in — the same
+     * judgement `isResendableRequest` makes for the host-loss resend.
+     */
+    retrySafe = true,
   ): Promise<T> {
     const transportMs = this.opts.fetchTimeoutMs;
     if (transportMs === undefined || transportMs <= 0) return pending;
@@ -2289,6 +2440,7 @@ export class FetchproxyServer {
                 port: this.opts.port,
                 elapsedMs: Date.now() - start,
                 retryAttempted: false,
+                retrySafe,
                 graceMs,
                 ...(requestedTimeoutMs !== undefined ? { requestedTimeoutMs } : {}),
               }),
@@ -2312,6 +2464,7 @@ export class FetchproxyServer {
     url: string,
     op: 'fetch' | 'capture_request_header',
     retryAttempted: boolean,
+    retrySafe = true,
   ): Error {
     if (result.kind === 'timeout') {
       return new FetchproxyTimeoutError({
@@ -2321,6 +2474,7 @@ export class FetchproxyServer {
         port: this.opts.port,
         elapsedMs: result.elapsedMs,
         retryAttempted,
+        retrySafe,
       });
     }
     if (result.kind === 'content_script_unreachable') {
@@ -2419,8 +2573,15 @@ export class FetchproxyServer {
       // every version before this option existed.
       ...(opts.credentials === 'omit' ? { credentials: 'omit' as const } : {}),
     };
-    const result = await this.fetch(init);
+    const result = await this.fetch(
+      init,
+      opts.retryOnTimeout !== undefined ? { retryOnTimeout: opts.retryOnTimeout } : {},
+    );
     if (!result.ok) {
+      // B-BUG-13: a local send failure keeps the typed error it always threw.
+      if (result.kind === 'session_not_ready' && result.cause instanceof Error) {
+        throw result.cause;
+      }
       // retryAttempted rides on the envelope — per-call local context,
       // so it's race-safe across concurrent calls. Test subclasses
       // overriding fetch() may not set the field; default to `false`
@@ -2430,6 +2591,7 @@ export class FetchproxyServer {
         init.url,
         'fetch',
         result.retryAttempted ?? false,
+        isRetrySafeOnTimeout(method, opts.retryOnTimeout),
       );
     }
     const response: HttpResponse = {
@@ -2490,21 +2652,25 @@ export class FetchproxyServer {
    * GET a path and parse the response body as JSON. Throws
    * `FetchproxyHttpError` if the status is outside the default 2xx
    * happy-path set (`[200, 201, 202, 204]`); pass a custom
-   * `expectStatus` to override.
+   * `expectStatus` to override. A 204 or an empty/whitespace body
+   * resolves to `null` (the declared `T` does not say so, to keep
+   * existing call sites compiling — include `| null` in `T` if the
+   * endpoint can answer empty).
    */
   async getJson<T = unknown>(
     path: string,
     opts: BodylessRequestOpts = {},
   ): Promise<T> {
     const response = await this.get(path, this.applyJsonDefaults(opts));
-    return JSON.parse(response.body) as T;
+    return parseJsonBody<T>(response);
   }
 
   /**
    * POST a JSON body and parse the response body as JSON. The body is
    * `JSON.stringify`'d; `Content-Type: application/json` is set unless
    * the caller already provided one. Defaults `expectStatus` to the 2xx
-   * happy-path set.
+   * happy-path set. A 204 or an empty/whitespace body resolves to `null`
+   * rather than throwing after the write already happened (see `getJson`).
    */
   async postJson<T = unknown>(
     path: string,
@@ -2520,7 +2686,7 @@ export class FetchproxyServer {
       headers,
       body: body === undefined ? undefined : JSON.stringify(body),
     });
-    return JSON.parse(response.body) as T;
+    return parseJsonBody<T>(response);
   }
 
   /**
@@ -2560,6 +2726,11 @@ export class FetchproxyServer {
    * Bridge-level failures (no signed-in tab, SW down, timeout) still
    * throw the typed errors via `request()`, exactly like the verb
    * helpers — only successful round-trips (any HTTP status) return.
+   *
+   * `retryOnTimeout` is `RequestOpts.retryOnTimeout`: a timed-out POST is
+   * NOT re-sent unless the caller says it is safe to repeat. A read-only POST
+   * (a search, a GraphQL query) should pass `true` to keep the cold-start
+   * timeout retry (#90).
    */
   async requestJson<T = unknown>(
     method: string,
@@ -2569,6 +2740,8 @@ export class FetchproxyServer {
       domain?: string;
       headers?: Record<string, string>;
       body?: unknown;
+      /** See `RequestOpts.retryOnTimeout`. */
+      retryOnTimeout?: boolean;
     } = {},
   ): Promise<{ data: T | null; result: FetchResult }> {
     const isGet = method.toUpperCase() === 'GET';
@@ -2585,6 +2758,7 @@ export class FetchproxyServer {
       body: sendBody ? JSON.stringify(opts.body) : undefined,
       ...(opts.subdomain !== undefined ? { subdomain: opts.subdomain } : {}),
       ...(opts.domain !== undefined ? { domain: opts.domain } : {}),
+      ...(opts.retryOnTimeout !== undefined ? { retryOnTimeout: opts.retryOnTimeout } : {}),
     });
     // Re-expose the success-arm FetchResult so callers keep their
     // per-site guards. `request()` already threw on any bridge failure,
@@ -2802,7 +2976,15 @@ export class FetchproxyServer {
       }),
     );
     await this.sendInnerFrame(inner);
-    return this._withVerbTimeout(pending, this.pendingWriteCookies, id, `https://${host}`);
+    return this._withVerbTimeout(
+      pending,
+      this.pendingWriteCookies,
+      id,
+      `https://${host}`,
+      undefined,
+      // A write: never re-sent after an ambiguous timeout.
+      false,
+    );
   }
 
   /**
@@ -2985,68 +3167,11 @@ export class FetchproxyServer {
       );
     }
     const callOpts = { ...resolved, ...(opts?.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}) };
-    try {
-      const result = await this._captureRequestHeaderOnce(callOpts);
-      this.recordSuccess();
-      return result;
-    } catch (err) {
-      const swDown =
-        err instanceof FetchproxyProtocolError &&
-        classifyFetchError(err.message) === 'content_script_unreachable';
-      if (!swDown) {
-        this.recordFailure(
-          `capture_request_header: ${(err as Error).message ?? String(err)}`,
-        );
-        throw err;
-      }
-      // 0.10.0+ (#73): mirror fetch()'s eviction-detection stamp — the
-      // SW-eviction symptom counter ticks regardless of the retry knob.
-      this.lastEvictionDetectedAt = Date.now();
-      const reviveMs = this.opts.bridgeReviveDelayMs ?? 0;
-      // 0.8.0+: lazy-revive — give Chrome a moment to wake the SW.
-      if (reviveMs > 0) {
-        this.lazyReviveAttempts += 1;
-        await new Promise((r) => setTimeout(r, reviveMs));
-        try {
-          const result = await this._captureRequestHeaderOnce(callOpts);
-          this.lazyReviveSuccesses += 1;
-          this.recordSuccess();
-          return result;
-        } catch (retryErr) {
-          const stillDown =
-            retryErr instanceof FetchproxyProtocolError &&
-            classifyFetchError(retryErr.message) === 'content_script_unreachable';
-          if (!stillDown) {
-            this.recordFailure(
-              `capture_request_header: ${(retryErr as Error).message ?? String(retryErr)}`,
-            );
-            throw retryErr;
-          }
-          this.recordFailure(
-            `capture_request_header bridge-down: ${(retryErr as Error).message}`,
-          );
-          throw new FetchproxyBridgeDownError({
-            originalError: (retryErr as Error).message,
-            retryAttempted: true,
-            op: 'capture_request_header',
-            url: `https://${resolved.host}${resolved.path ?? '/*'}`,
-            role: this.role,
-            port: this.opts.port,
-          });
-        }
-      }
-      this.recordFailure(
-        `capture_request_header bridge-down: ${(err as Error).message}`,
-      );
-      throw new FetchproxyBridgeDownError({
-        originalError: (err as Error).message,
-        retryAttempted: false,
-        op: 'capture_request_header',
-        url: `https://${resolved.host}${resolved.path ?? '/*'}`,
-        role: this.role,
-        port: this.opts.port,
-      });
-    }
+    return this.withLazyRevive(
+      'capture_request_header',
+      `https://${resolved.host}${resolved.path ?? '/*'}`,
+      () => this._captureRequestHeaderOnce(callOpts),
+    );
   }
 
   private async _captureRequestHeaderOnce(opts: {
@@ -3111,60 +3236,11 @@ export class FetchproxyServer {
     // 0.5.3+: lazy connect — see the doc comment on `ensureConnected`.
     await this.ensureConnected();
     this.throwIfPendingPair();
-    try {
-      const result = await this._captureRedirectOnce(opts);
-      this.recordSuccess();
-      return result;
-    } catch (err) {
-      const swDown =
-        err instanceof FetchproxyProtocolError &&
-        classifyFetchError(err.message) === 'content_script_unreachable';
-      if (!swDown) {
-        this.recordFailure(`capture_redirect: ${(err as Error).message ?? String(err)}`);
-        throw err;
-      }
-      // 0.10.0+ (#73): mirror fetch()'s eviction-detection stamp.
-      this.lastEvictionDetectedAt = Date.now();
-      const reviveMs = this.opts.bridgeReviveDelayMs ?? 0;
-      if (reviveMs > 0) {
-        this.lazyReviveAttempts += 1;
-        await new Promise((r) => setTimeout(r, reviveMs));
-        try {
-          const result = await this._captureRedirectOnce(opts);
-          this.lazyReviveSuccesses += 1;
-          this.recordSuccess();
-          return result;
-        } catch (retryErr) {
-          const stillDown =
-            retryErr instanceof FetchproxyProtocolError &&
-            classifyFetchError(retryErr.message) === 'content_script_unreachable';
-          if (!stillDown) {
-            this.recordFailure(
-              `capture_redirect: ${(retryErr as Error).message ?? String(retryErr)}`,
-            );
-            throw retryErr;
-          }
-          this.recordFailure(`capture_redirect bridge-down: ${(retryErr as Error).message}`);
-          throw new FetchproxyBridgeDownError({
-            originalError: (retryErr as Error).message,
-            retryAttempted: true,
-            op: 'capture_redirect',
-            url: `https://${opts.host}${opts.path ?? '/*'}`,
-            role: this.role,
-            port: this.opts.port,
-          });
-        }
-      }
-      this.recordFailure(`capture_redirect bridge-down: ${(err as Error).message}`);
-      throw new FetchproxyBridgeDownError({
-        originalError: (err as Error).message,
-        retryAttempted: false,
-        op: 'capture_redirect',
-        url: `https://${opts.host}${opts.path ?? '/*'}`,
-        role: this.role,
-        port: this.opts.port,
-      });
-    }
+    return this.withLazyRevive(
+      'capture_redirect',
+      `https://${opts.host}${opts.path ?? '/*'}`,
+      () => this._captureRedirectOnce(opts),
+    );
   }
 
   private async _captureRedirectOnce(opts: {
@@ -3225,57 +3301,66 @@ export class FetchproxyServer {
     assertUrlInDomains('download url', opts.url, this.opts.domains);
     await this.ensureConnected();
     this.throwIfPendingPair();
-    try {
-      const result = await this._downloadOnce(opts);
-      this.recordSuccess();
-      return result;
-    } catch (err) {
-      const swDown =
-        err instanceof FetchproxyProtocolError &&
-        classifyFetchError(err.message) === 'content_script_unreachable';
-      if (!swDown) {
-        this.recordFailure(`download: ${(err as Error).message ?? String(err)}`);
-        throw err;
-      }
-      // Mirror fetch()/capture_redirect's lazy-revive on SW eviction.
-      this.lastEvictionDetectedAt = Date.now();
-      const reviveMs = this.opts.bridgeReviveDelayMs ?? 0;
-      if (reviveMs > 0) {
-        this.lazyReviveAttempts += 1;
-        await new Promise((r) => setTimeout(r, reviveMs));
-        try {
-          const result = await this._downloadOnce(opts);
-          this.lazyReviveSuccesses += 1;
-          this.recordSuccess();
-          return result;
-        } catch (retryErr) {
-          const stillDown =
-            retryErr instanceof FetchproxyProtocolError &&
-            classifyFetchError(retryErr.message) === 'content_script_unreachable';
-          if (!stillDown) {
-            this.recordFailure(`download: ${(retryErr as Error).message ?? String(retryErr)}`);
-            throw retryErr;
-          }
-          this.recordFailure(`download bridge-down: ${(retryErr as Error).message}`);
-          throw new FetchproxyBridgeDownError({
-            originalError: (retryErr as Error).message,
-            retryAttempted: true,
-            op: 'download',
-            url: opts.url,
-            role: this.role,
-            port: this.opts.port,
-          });
-        }
-      }
-      this.recordFailure(`download bridge-down: ${(err as Error).message}`);
-      throw new FetchproxyBridgeDownError({
-        originalError: (err as Error).message,
-        retryAttempted: false,
-        op: 'download',
-        url: opts.url,
+    return this.withLazyRevive('download', opts.url, () => this._downloadOnce(opts));
+  }
+
+  /**
+   * B-QUAL-1: the lazy-revive policy for the throwing verbs
+   * (`capture_request_header`, `capture_redirect`, `download`), in one place.
+   * Runs `once`; on the SW-eviction symptom (`content_script_unreachable` —
+   * the request provably never reached a tab, so re-sending is safe) stamps
+   * the eviction counter, waits `bridgeReviveDelayMs` and retries once, then
+   * surfaces a `FetchproxyBridgeDownError`. Every other error is recorded and
+   * rethrown untouched. `fetch()` keeps its own envelope-shaped variant.
+   */
+  private async withLazyRevive<T>(
+    op: 'capture_request_header' | 'capture_redirect' | 'download',
+    url: string,
+    once: () => Promise<T>,
+  ): Promise<T> {
+    const isSwDown = (e: unknown): boolean =>
+      e instanceof FetchproxyProtocolError &&
+      classifyFetchError(e.message) === 'content_script_unreachable';
+    const bridgeDown = (e: unknown, retryAttempted: boolean): FetchproxyBridgeDownError => {
+      this.recordFailure(`${op} bridge-down: ${(e as Error).message}`);
+      return new FetchproxyBridgeDownError({
+        originalError: (e as Error).message,
+        retryAttempted,
+        op,
+        url,
         role: this.role,
         port: this.opts.port,
       });
+    };
+    try {
+      const result = await once();
+      this.recordSuccess();
+      return result;
+    } catch (err) {
+      if (!isSwDown(err)) {
+        this.recordFailure(`${op}: ${(err as Error).message ?? String(err)}`);
+        throw err;
+      }
+      // 0.10.0+ (#73): the symptom is the eviction signal, whether or not
+      // the retry is enabled.
+      this.lastEvictionDetectedAt = Date.now();
+      const reviveMs = this.opts.bridgeReviveDelayMs ?? 0;
+      if (reviveMs <= 0) throw bridgeDown(err, false);
+      // 0.8.0+: lazy-revive — give Chrome a moment to wake the SW.
+      this.lazyReviveAttempts += 1;
+      await new Promise((r) => setTimeout(r, reviveMs));
+      try {
+        const result = await once();
+        this.lazyReviveSuccesses += 1;
+        this.recordSuccess();
+        return result;
+      } catch (retryErr) {
+        if (!isSwDown(retryErr)) {
+          this.recordFailure(`${op}: ${(retryErr as Error).message ?? String(retryErr)}`);
+          throw retryErr;
+        }
+        throw bridgeDown(retryErr, true);
+      }
     }
   }
 
@@ -3312,6 +3397,8 @@ export class FetchproxyServer {
       // of #279 — "both verbs" was counted off the two call sites in view
       // rather than off the type. Three is still the number.
       opts.timeoutMs,
+      // A second download saves a duplicate "file (1)".
+      false,
     );
   }
 
@@ -3510,6 +3597,13 @@ export class FetchproxyServer {
     name: string;
     variables: Record<string, unknown>;
     tabUrl?: string;
+    /**
+     * Mark this operation safe to send again after a timeout or a host loss.
+     * Default `false`: a declared operation may be a MUTATION, and the server
+     * only holds its name — the document lives in the page — so it cannot
+     * tell. Pass `true` for an operation you know is a read-only query.
+     */
+    retryOnTimeout?: boolean;
   }): Promise<unknown> {
     if (!this.opts.capabilities.includes('graphql')) {
       throw new Error(
@@ -3545,8 +3639,16 @@ export class FetchproxyServer {
         this.pendingGraphql.set(id, { resolve, reject });
       }),
     );
-    await this.sendInnerFrame(inner);
-    return this._withVerbTimeout(pending, this.pendingGraphql, id, opts.name);
+    const retrySafe = opts.retryOnTimeout === true;
+    await this.sendInnerFrame(inner, { resendable: retrySafe });
+    return this._withVerbTimeout(
+      pending,
+      this.pendingGraphql,
+      id,
+      opts.name,
+      undefined,
+      retrySafe,
+    );
   }
 
   private assertScopeSubset(
@@ -3602,6 +3704,7 @@ export class FetchproxyServer {
 
   private onInner(inner: InnerFrame): void {
     if (inner.type !== 'response') return;
+    this.resendable.delete(inner.id);
     // 0.8.0+ (#23 ask 4): every response frame counts as extension
     // liveness, regardless of which awaiter it routes to.
     this.lastExtensionMessageAt = Date.now();
@@ -3818,37 +3921,145 @@ export class FetchproxyServer {
     }
   }
 
-  private rejectAllPending(reason: string = 'extension disconnected'): void {
+  private rejectAllPending(
+    reason: string = 'extension disconnected',
+    keep: ReadonlySet<number> = new Set(),
+  ): void {
+    for (const id of this.allPendingIds()) {
+      if (!keep.has(id)) this.rejectPendingId(id, reason);
+    }
+    if (keep.size === 0) this.resendable.clear();
+  }
+
+  /** Every request id with a live awaiter, across all op maps. */
+  private allPendingIds(): number[] {
+    const ids: number[] = [];
+    for (const map of this.pendingMaps()) for (const id of map.keys()) ids.push(id);
+    return ids;
+  }
+
+  private pendingMaps(): Map<number, unknown>[] {
+    return [
+      this.pending,
+      this.pendingReadCookies,
+      this.pendingStorage,
+      this.pendingWriteCookies,
+      this.pendingCapture,
+      this.pendingRedirect,
+      this.pendingIdb,
+      this.pendingDomList,
+      this.pendingDownload,
+      this.pendingGraphql,
+    ];
+  }
+
+  private isPendingId(id: number): boolean {
+    return this.pendingMaps().some((m) => m.has(id));
+  }
+
+  /** Fail the one awaiter registered under `id`, in its own map's shape. */
+  private rejectPendingId(id: number, reason: string): void {
     const err = new FetchproxyProtocolError(reason);
-    for (const cb of this.pending.values()) {
-      cb({
+    this.resendable.delete(id);
+    const fetchCb = this.pending.get(id);
+    if (fetchCb) {
+      this.pending.delete(id);
+      fetchCb({
         ok: false,
         error: err.message,
         kind: classifyFetchError(err.message),
         retryAttempted: false,
       });
+      return;
     }
-    this.pending.clear();
-    for (const cb of this.pendingReadCookies.values()) {
-      cb({ ok: false, error: err.message });
+    const cookieCb = this.pendingReadCookies.get(id);
+    if (cookieCb) {
+      this.pendingReadCookies.delete(id);
+      cookieCb({ ok: false, error: err.message });
+      return;
     }
-    this.pendingReadCookies.clear();
-    for (const { reject } of this.pendingStorage.values()) reject(err);
-    this.pendingStorage.clear();
-    for (const { reject } of this.pendingWriteCookies.values()) reject(err);
-    this.pendingWriteCookies.clear();
-    for (const { reject } of this.pendingCapture.values()) reject(err);
-    this.pendingCapture.clear();
-    for (const { reject } of this.pendingRedirect.values()) reject(err);
-    this.pendingRedirect.clear();
-    for (const { reject } of this.pendingIdb.values()) reject(err);
-    this.pendingIdb.clear();
-    for (const { reject } of this.pendingDomList.values()) reject(err);
-    this.pendingDomList.clear();
-    for (const { reject } of this.pendingDownload.values()) reject(err);
-    this.pendingDownload.clear();
-    for (const { reject } of this.pendingGraphql.values()) reject(err);
-    this.pendingGraphql.clear();
+    for (const map of [
+      this.pendingStorage,
+      this.pendingWriteCookies,
+      this.pendingCapture,
+      this.pendingRedirect,
+      this.pendingIdb,
+      this.pendingDomList,
+      this.pendingDownload,
+      this.pendingGraphql,
+    ] as Map<number, { reject: (e: Error) => void }>[]) {
+      const entry = map.get(id);
+      if (entry) {
+        map.delete(id);
+        entry.reject(err);
+        return;
+      }
+    }
+  }
+
+  private noteResendable(inner: InnerRequest): void {
+    this.resendable.set(inner.id, inner);
+    // Entries normally leave on their response; a request that timed out
+    // leaves its entry behind, so prune the stale ones now and then.
+    if (this.resendable.size > 256) {
+      for (const id of [...this.resendable.keys()]) {
+        if (!this.isPendingId(id)) this.resendable.delete(id);
+      }
+    }
+  }
+
+  /**
+   * B-BUG-6: the host this peer relayed through has gone — most often a
+   * short-lived process (a bootstrap lift, an `fpx` call) that won the
+   * election and then closed. Fail only the in-flight requests that may
+   * already have run (a non-idempotent fetch, a cookie write, a download);
+   * re-elect and send the rest again. The replies to the originals died with
+   * the old host, and each re-sent request keeps its awaiter and its
+   * original deadline.
+   */
+  private async recoverFromHostLoss(): Promise<void> {
+    const toResend = new Map<number, InnerRequest>();
+    for (const [id, inner] of this.resendable) {
+      if (this.isPendingId(id)) toResend.set(id, inner);
+    }
+    this.resendable.clear();
+    this.rejectAllPending(
+      'fetchproxy: the MCP process holding the bridge port exited while this request was in ' +
+        'flight. It was not re-sent because it may already have run in the browser — check ' +
+        'before retrying.',
+      new Set(toResend.keys()),
+    );
+    if (toResend.size === 0) return;
+    const lost = (id: number, e: unknown): void =>
+      this.rejectPendingId(
+        id,
+        `fetchproxy: the bridge host exited and reconnecting failed: ${
+          e instanceof Error ? e.message : String(e)
+        }`,
+      );
+    try {
+      await this.ensureConnected();
+    } catch (e) {
+      for (const id of toResend.keys()) lost(id, e);
+      return;
+    }
+    for (const [id, inner] of toResend) {
+      // Timed out (or otherwise settled) while we were reconnecting.
+      if (!this.isPendingId(id)) continue;
+      try {
+        await this.resendInnerFrame(inner);
+      } catch (e) {
+        lost(id, e);
+      }
+    }
+  }
+
+  /** Send an already-registered request again, keeping its awaiter on failure. */
+  private async resendInnerFrame(inner: InnerRequest): Promise<void> {
+    if (this.hostHandle) await this.hostHandle.sendOwnInner(inner);
+    else if (this.peerHandle) await this.peerHandle.sendInner(inner);
+    else throw new Error('no bridge handle after re-election');
+    this.noteResendable(inner);
   }
 
   /**

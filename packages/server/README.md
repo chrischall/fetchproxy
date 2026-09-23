@@ -76,7 +76,7 @@ parity with this table. For longer "when to override" guidance, see
 | `onPairCode` | `(code: string) => void` | (off by default) | Invoked once with the joint pair code on extension hello, so an MCP can surface it via stderr / MCP logging. |
 | `fetchTimeoutMs` | `number` | `30_000` | Per-request timeout for `fetch()`. `0` opts back into legacy hang-forever. ([#58](https://github.com/chrischall/fetchproxy/issues/58)) |
 | `verbDeadlineGraceMs` | `number` | `15_000` | How much longer than a verb's OWN `timeoutMs` the server waits for that verb's reply. You should not need it; a hosted bridge with a long round trip is the case it exists for. ([#237](https://github.com/chrischall/mcp-utils/issues/237)) |
-| `bridgeReviveDelayMs` | `number` | `2_000` | Delay before the one-shot retry on the SW-eviction cold-start symptom — `content_script_unreachable`, plus a `fetch()` `timeout` ([#90](https://github.com/chrischall/fetchproxy/issues/90)). Gives Chrome a moment to wake the evicted MV3 SW. `0` disables. ([#58](https://github.com/chrischall/fetchproxy/issues/58)) |
+| `bridgeReviveDelayMs` | `number` | `2_000` | Delay before the one-shot retry on the SW-eviction cold-start symptom — `content_script_unreachable`, plus a `fetch()` `timeout` of an idempotent request ([#90](https://github.com/chrischall/fetchproxy/issues/90); writes are not re-sent after a timeout unless the call passes `retryOnTimeout: true`). Gives Chrome a moment to wake the evicted MV3 SW. `0` disables. ([#58](https://github.com/chrischall/fetchproxy/issues/58)) |
 | `keepAliveIntervalMs` | `number` | `20_000` | Server-initiated ping cadence that keeps the MV3 SW resident across activity bursts. Below Chrome's ~30s eviction threshold with real margin. Pass `0` to disable. Default flipped from `undefined` in 0.10.0 ([#71](https://github.com/chrischall/fetchproxy/issues/71)), tightened from `25_000` → `20_000` in [#90](https://github.com/chrischall/fetchproxy/issues/90) (25s still lost the cold-start race). ([#67](https://github.com/chrischall/fetchproxy/issues/67)) |
 | `keepAliveMaxIdleMs` | `number` | `300_000` (5 min) | How long after the most-recent activity the keep-alive pings keep firing. No-op when `keepAliveIntervalMs` is `0`. ([#67](https://github.com/chrischall/fetchproxy/issues/67)) |
 | `cookieKeys` | `string[]` | `[]` | Declared cookie names for `readCookies({ keys })`. Gates the call site (gate #1) before the extension re-checks (gate #2). |
@@ -125,7 +125,25 @@ row). One variable has no option beside it:
   cold-start symptom: `content_script_unreachable`, plus a `fetch()`
   server-side `timeout` (#90 — a fully-cold worker often surfaces the
   first post-idle `fetch()` as a timeout while Chrome spins the SW up,
-  so a cold-start never surfaces to the caller). Lengthen on slow
+  so a cold-start never surfaces to the caller). **The timeout retry
+  only re-sends idempotent requests (GET/HEAD/OPTIONS).** A timeout
+  means the reply is late, not that the request never ran, so a
+  POST/PUT/PATCH/DELETE is sent exactly once and its
+  `FetchproxyTimeoutError` carries `retrySafe: false` (which
+  `retryOnceOnTimeout` honours). Pass `retryOnTimeout: true` on the
+  call (`request()`/`post()`/`postJson()`/`requestJson()`/… options, or
+  `fetch(init, { retryOnTimeout })`) for a POST that only reads — a
+  search, a GraphQL query sent as a POST — or a write you know is safe
+  to repeat; without it such a POST loses the cold-start retry. Pass
+  `false` to keep a read from being retried. The other verbs follow
+  the same rule through `FetchproxyTimeoutError.retrySafe`, which
+  `retryOnceOnTimeout` honours: a timed-out `download()` (a second one
+  saves a duplicate "file (1)") or `writeCookies()` is marked
+  `retrySafe: false`, and so is a `graphqlQuery()` — a declared
+  operation may be a mutation, and the server holds only its name, not
+  the document, so it cannot tell. Pass `graphqlQuery({ …,
+  retryOnTimeout: true })` for an operation you know is a query. `content_script_unreachable` — the request
+  never reached a tab — is retried for every method. Lengthen on slow
   machines where 2s isn't enough for the SW to wake; shorten if the
   caller is willing to surface the bridge-down error sooner. Pass `0`
   to disable the retry entirely.
@@ -157,6 +175,21 @@ row). One variable has no option beside it:
   extension's connect target is hard-coded to `127.0.0.1:37149`, so
   every MCP that wants to share the concentrator needs to keep the
   defaults. Override only for local development or test isolation.
+- **When the host exits.** Whichever MCP process binds the port first
+  becomes the host, and that is often a short-lived one — a
+  `@fetchproxy/bootstrap` lift (which opens and closes a server per
+  lift) or an `fpx` command. When it exits, every peer re-elects: the
+  in-flight requests that are safe to repeat (reads, header/redirect
+  captures, `fetch`es of GET/HEAD/OPTIONS, and `fetch`es or
+  `graphqlQuery`s with `retryOnTimeout: true`) are sent again through the new bridge under
+  their original deadline; the ones that may already have run in the
+  browser (other `fetch` methods, `writeCookies`, `download`, and a
+  `graphqlQuery` not marked `retryOnTimeout: true`) fail with an error
+  saying so, rather than being repeated. A request that was still
+  waiting in this process — never written to the old host's socket —
+  fails with `request not sent … It is safe to retry` instead, since
+  nothing reached the browser. Before this, every
+  in-flight call on every peer failed with `extension disconnected`.
 
 ## API
 
@@ -294,12 +327,13 @@ Method-generic JSON helper. Sets `Accept: application/json`; adds `Content-Type:
 const { data, result } = await fp.requestJson<MyShape>('POST', '/api/x', {
   body: { q: 'foo' },
   subdomain: 'api',
+  retryOnTimeout: true, // a read-only search: safe to re-send after a timeout
 });
 ```
 
 Its scope is **serialization + header defaults + 204-handling + JSON.parse only**. It deliberately does NOT assert on the HTTP status or detect a sign-in interstitial — those guards differ per site — so it returns BOTH the parsed `data` and the raw `result: FetchResult`, leaving the consumer to run its own `throwIfNotOk` / `throwIfSignInPage` over `result`. Bridge-level failures still throw the typed errors (via `request()`); only successful round-trips return.
 
-`opts` is `{ subdomain?, domain?, headers?, body? }` (same domain/subdomain semantics as the verb shortcuts; `body` is any JSON-serializable value).
+`opts` is `{ subdomain?, domain?, headers?, body?, retryOnTimeout? }` (same domain/subdomain semantics as the verb shortcuts; `body` is any JSON-serializable value). `retryOnTimeout` works as on `request()`: a POST/PUT/PATCH/DELETE that times out is sent once unless it is `true`, so pass `true` for a POST that only reads (a search, a GraphQL query) to keep the cold-start timeout retry.
 
 #### `await fp.runProbe(fetchFn, probePath): Promise<BridgeProbeResult>`
 

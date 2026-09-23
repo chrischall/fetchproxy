@@ -11,7 +11,7 @@ import {
   fromB64,
   toB64,
   hkdfSha256,
-  openEncryptedFrame,
+  openEncryptedFrameDetailed,
   peekHelloVersion,
   sealInnerFrame,
   validateFrame,
@@ -291,6 +291,13 @@ interface PeerSlot {
 }
 
 const enc = new TextEncoder();
+
+/**
+ * How many frames in a row for the host's OWN session may fail authentication
+ * before it re-handshakes that session. One is an expected straggler from a
+ * previous session; a run means the keys have diverged.
+ */
+export const OWN_DECRYPT_FAILURES_BEFORE_REHANDSHAKE = 3;
 
 export async function startHost(opts: HostOpts): Promise<HostHandle> {
   // Read once, at boot: the answer cannot change while the process runs, and
@@ -585,6 +592,58 @@ export async function startHost(opts: HostOpts): Promise<HostHandle> {
       console.error('[fetchproxy] could not derive the pair code:', e);
       return null;
     }
+  };
+
+  /**
+   * Consecutive frames for our OWN session that failed authentication. Reset by
+   * any frame that authenticates, and by every new session.
+   */
+  let ownDecryptFailures = 0;
+
+  /**
+   * B-BUG-4 follow-up: re-handshake our OWN session on the socket we already
+   * have. One undecryptable frame is a straggler from a previous session and
+   * is dropped; a RUN of them means our key and the extension's have diverged,
+   * and before this nothing would ever mend it — every reply for this MCP was
+   * dropped until the process restarted. The old cure, closing the socket, is
+   * not available: that socket is the extension's link for every MCP on this
+   * concentrator.
+   *
+   * So only our half is reset — the session and its ephemeral go, sends wait
+   * on a fresh promise — and a new hello is minted exactly as the extension
+   * hello path does (§1a Rule A, and Rule D's re-check before the commit),
+   * answering the extension session this socket already carries. The
+   * extension treats it like any re-hello for an id this link holds, and its
+   * `ready` lands on the ordinary derivation path. Peers are not involved.
+   */
+  const rehandshakeOwnSession = async (ws: WebSocket): Promise<void> => {
+    const hello = extensionHello;
+    if (extensionWs !== ws || !hello) return;
+    console.warn(
+      `[fetchproxy] ${opts.ownServerName}: ${OWN_DECRYPT_FAILURES_BEFORE_REHANDSHAKE} frames in a ` +
+        `row from the extension failed authentication under this MCP's session key — ` +
+        `re-handshaking this MCP's session (the extension stays connected).`,
+    );
+    ownSession = dropOwnSessionAndEphemeral();
+    resetSessionPromise();
+    const mintedKeypair = await generateSessionKeypair();
+    const mintedHello: HelloFrameFromServer = await buildServerHello({
+      ...ownHelloBase,
+      sessionPub: mintedKeypair.publicKey,
+      answersExtNonce: fromB64(hello.sessionNonce),
+    });
+    // Rule D: the extension may have gone (or been replaced, or a session
+    // derived by some other path) while the crypto ran.
+    if (extensionWs !== ws || extensionHello !== hello || ownSession !== null) {
+      mintedKeypair.privateKey.fill(0);
+      return;
+    }
+    installOwnEphemeral({
+      nonce: fromB64(mintedHello.sessionNonce),
+      pub: mintedKeypair.publicKey,
+      priv: mintedKeypair.privateKey,
+    });
+    ws.send(JSON.stringify(mintedHello));
   };
 
   wss.on('connection', (ws) => {
@@ -1036,6 +1095,7 @@ export async function startHost(opts: HostOpts): Promise<HostHandle> {
             );
             if (extensionWs !== ws) return;
             ownSession = new SessionState(key);
+            ownDecryptFailures = 0;
             // 0.5.2+: receiving a ready means the user has approved (auto-
             // trust path) or just approved (popup path) — the pair-pending
             // hint is no longer actionable, so clear it.
@@ -1077,24 +1137,72 @@ export async function startHost(opts: HostOpts): Promise<HostHandle> {
                 );
               }
               if (claim !== 'ok') return;
-              let inner;
+              let result;
               try {
                 // 'e2s': this socket is the extension's, so a frame the host
                 // itself sealed and had reflected back at it fails the tag
                 // rather than arriving as a well-formed inner frame.
-                inner = await openEncryptedFrame(session.sessionKey, frame, 'e2s');
+                result = await openEncryptedFrameDetailed(session.sessionKey, frame, 'e2s');
               } catch (e) {
-                // A frame that fails GCM authentication never happened: give
-                // the claim back and leave the counter where it was —
-                // otherwise one forged frame with a high seq takes every
-                // genuine frame already in flight behind it down with the
-                // socket it tears up.
+                // Documented never to throw; the claim must not leak if it does.
                 session.releaseInboundSeq(frame.seq);
                 throw e;
               }
-              // Only now is the seq spent.
+              // B-BUG-4: mirror peer.ts. This socket is the EXTENSION's, shared
+              // by every MCP on the concentrator, so one bad frame on the
+              // host's own session must never close it — that used to reject
+              // every MCP's in-flight calls and renegotiate every session.
+              if (result.stage === 'decrypt-failed') {
+                // A frame that fails GCM authentication never happened: give
+                // the claim back and leave the counter where it was —
+                // otherwise one forged frame with a high seq takes every
+                // genuine frame already in flight behind it. Typically a
+                // straggler from a previous session; drop it.
+                session.releaseInboundSeq(frame.seq);
+                console.warn(
+                  `[fetchproxy] ${opts.ownServerName}: dropped an inbound frame (seq ${frame.seq}) ` +
+                    `that failed authentication — most likely a straggler from a previous session.`,
+                );
+                // Counted only against the session that is still live: a
+                // frame opened under a key since replaced says nothing about
+                // the current one.
+                if (session === ownSession) {
+                  ownDecryptFailures += 1;
+                  if (ownDecryptFailures >= OWN_DECRYPT_FAILURES_BEFORE_REHANDSHAKE) {
+                    ownDecryptFailures = 0;
+                    void rehandshakeOwnSession(ws).catch((e: unknown) =>
+                      console.error(`[fetchproxy] ${opts.ownServerName}: re-handshake failed:`, e),
+                    );
+                  }
+                }
+                return;
+              }
+              // It authenticated under the live key, so the seq is spent.
+              if (session === ownSession) ownDecryptFailures = 0;
               session.commitInboundSeq(frame.seq);
-              ownInnerListeners.forEach((cb) => cb(inner));
+              if (result.stage === 'ok') {
+                ownInnerListeners.forEach((cb) => cb(result.inner));
+              } else {
+                // 'validation-failed': a genuine frame from the live
+                // extension with a malformed payload (e.g. version skew in a
+                // response shape). Say so loudly and fail just the call
+                // waiting on it, when its id is recoverable.
+                console.error(
+                  '[fetchproxy] host: received a frame that decrypted OK but failed validation:',
+                  result.error,
+                );
+                const recoveredId = result.recoveredId;
+                if (recoveredId !== undefined) {
+                  ownInnerListeners.forEach((cb) =>
+                    cb({
+                      type: 'response',
+                      id: recoveredId,
+                      ok: false,
+                      error: `malformed response failed protocol validation: ${String(result.error)}`,
+                    }),
+                  );
+                }
+              }
             } else {
               const slot = peers.get(frame.mcpId);
               if (slot) slot.ws.send(JSON.stringify(frame));
@@ -1210,6 +1318,7 @@ export async function startHost(opts: HostOpts): Promise<HostHandle> {
         // name it usefully — so keeping the key would buy nothing and cost
         // the forward secrecy this version exists for.
         ownSession = dropOwnSessionAndEphemeral();
+        ownDecryptFailures = 0;
         // A pair code the user never approved is not actionable once the
         // browser holding the popup is gone — and `bridgeHealth().session`
         // ranks `pair_pending` above "extension not attached", so leaving it
@@ -1235,7 +1344,22 @@ export async function startHost(opts: HostOpts): Promise<HostHandle> {
         // mapped slot is still THIS socket — otherwise a late, stale close
         // would evict the live (re-registered) peer and strand it until its
         // next reconnect.
-        if (peers.get(peerMcpId)?.ws === ws) peers.delete(peerMcpId);
+        if (peers.get(peerMcpId)?.ws === ws) {
+          peers.delete(peerMcpId);
+          // B-BUG-9: the extension keeps a session, scope grants and a link
+          // binding per mcpId, and only a whole-link close used to clear
+          // them — so every peer that came and went (each bootstrap lift,
+          // each `fpx` call) left one behind, shown as connected in the
+          // popup. Tell it, gated on its hello as extension-disconnected is
+          // on a peer's: an older extension refuses the unknown type.
+          if (extensionWs && extensionHello?.accepts?.includes('peer-gone')) {
+            try {
+              extensionWs.send(JSON.stringify({ type: 'peer-gone', mcpId: peerMcpId }));
+            } catch {
+              /* extension already gone; its own close tears everything down */
+            }
+          }
+        }
       }
     });
   });

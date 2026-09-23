@@ -42,9 +42,23 @@ import {
   type ExtensionTrustPort,
 } from './extension-trust.js';
 
+/**
+ * B-BUG-8: how long a peer waits for the host to complete the WebSocket
+ * upgrade before giving up. A listener that accepts TCP but never answers
+ * (a wedged or SIGSTOPped host, or some other process on the port) would
+ * otherwise hang the dial — and every verb sharing its connecting promise —
+ * forever. Loopback upgrades complete in milliseconds.
+ */
+export const PEER_DIAL_TIMEOUT_MS = 5_000;
+
 export interface PeerOpts {
   host: string;
   port: number;
+  /**
+   * Bound on the WebSocket dial to the host, in ms. Defaults to
+   * {@link PEER_DIAL_TIMEOUT_MS}; `0` disables it.
+   */
+  dialTimeoutMs?: number;
   identity: Identity;
   mcpId: string;
   serverName: string;
@@ -162,6 +176,13 @@ export interface PeerHandle {
    * owner decides what a close means.
    */
   onClose: (cb: () => void) => void;
+  /**
+   * B-BUG-5: fires when the host relays `extension-disconnected` — the
+   * extension's own socket to the concentrator closed, so every request this
+   * peer sent under the old session key is unreachable. Mirrors the host's
+   * `onExtensionDisconnect`; the owner fails its in-flight calls at once.
+   */
+  onExtensionDisconnect: (cb: () => void) => void;
   close: () => void;
 }
 
@@ -180,6 +201,18 @@ export interface InternalPeerHandle extends PeerHandle {
 
 const enc = new TextEncoder();
 
+/**
+ * The error for a request that never left this process because the link to
+ * the host closed first. Distinct from the host-loss "may already have run":
+ * nothing reached the browser, so the caller can simply retry.
+ */
+function notSentError(): Error {
+  return new Error(
+    'fetchproxy: request not sent — the connection to the bridge host closed before it went ' +
+      'out, so nothing reached the browser. It is safe to retry.',
+  );
+}
+
 export async function startPeer(opts: PeerOpts): Promise<InternalPeerHandle> {
   // The same cap the host puts on what a peer sends it. Without it host→peer
   // sat at `ws`'s 100 MiB default: that much of this MCP's memory, allocated
@@ -187,11 +220,13 @@ export async function startPeer(opts: PeerOpts): Promise<InternalPeerHandle> {
   const ws = new WebSocket(`ws://${opts.host}:${opts.port}`, {
     maxPayload: opts.maxPayloadBytes ?? MAX_PAYLOAD_BYTES,
   });
+  const dialTimeoutMs = opts.dialTimeoutMs ?? PEER_DIAL_TIMEOUT_MS;
   await new Promise<void>((resolve, reject) => {
     // Both listeners come off once either fires: leaving the handshake's
     // 'error' listener attached would make it the socket's only one for the
     // rest of the connection, swallowing the first later error into a reject
     // of an already-settled promise.
+    let timer: ReturnType<typeof setTimeout> | undefined;
     const onOpen = (): void => {
       cleanup();
       resolve();
@@ -201,11 +236,28 @@ export async function startPeer(opts: PeerOpts): Promise<InternalPeerHandle> {
       reject(e);
     };
     const cleanup = (): void => {
+      if (timer !== undefined) clearTimeout(timer);
       ws.off('open', onOpen);
       ws.off('error', onError);
     };
     ws.once('open', onOpen);
     ws.once('error', onError);
+    if (dialTimeoutMs > 0) {
+      timer = setTimeout(() => {
+        cleanup();
+        // terminate() emits 'error' on a CONNECTING socket; keep a listener so
+        // it cannot surface as an uncaught exception.
+        ws.on('error', () => undefined);
+        ws.terminate();
+        reject(
+          new Error(
+            `fetchproxy: the process holding ${opts.host}:${opts.port} did not answer the ` +
+              `WebSocket upgrade within ${dialTimeoutMs}ms — it may be wedged or not a ` +
+              `fetchproxy host. Restart the MCP that owns the port (or free it) and retry.`,
+          ),
+        );
+      }, dialTimeoutMs);
+    }
   });
 
   // A socket error is an EventEmitter 'error': with no listener it is an
@@ -273,6 +325,7 @@ export async function startPeer(opts: PeerOpts): Promise<InternalPeerHandle> {
   const renegotiateListeners: (() => void)[] = [];
   const pendingPairListeners: ((code: string) => void)[] = [];
   const closeListeners: (() => void)[] = [];
+  const extensionDisconnectListeners: (() => void)[] = [];
   // `session` is the LATEST session derived from a ready frame. Every ready
   // frame for our mcpId replaces it — the extension can renegotiate at any
   // time (most commonly after MV3 service-worker eviction reconnects the
@@ -292,10 +345,7 @@ export async function startPeer(opts: PeerOpts): Promise<InternalPeerHandle> {
    * (Rule D), and the only thing a `ready` may be derived against. `null`
    * between extension sessions.
    *
-   * Zeroing is by EVENT on this path rather than by the statement that clears
-   * `session`: `session` is deliberately never returned to null (see the
-   * `extensionGone` comment below — `sendInner` relies on it never doing so),
-   * so there is no such statement to hang it off. The three events are
+   * Zeroing is by EVENT on this path. The three events are
    * `extension-disconnected`, the next mint's commit point, and this peer's
    * own socket closing. Only the first two end an extension session; the
    * third is a teardown obligation — that socket is this peer's link to the
@@ -341,18 +391,38 @@ export async function startPeer(opts: PeerOpts): Promise<InternalPeerHandle> {
   // place without re-creating the promise.
   let resolveFirstReady!: (s: SessionState) => void;
   let rejectFirstReady!: (e: Error) => void;
-  const sessionPromise = new Promise<SessionState>((resolve, reject) => {
-    resolveFirstReady = resolve;
-    rejectFirstReady = reject;
-  });
+  let sessionPromise!: Promise<SessionState>;
+  // B-BUG-5: whether the CURRENT `sessionPromise` has settled. An
+  // `extension-disconnected` after a session existed replaces the resolved
+  // promise with a fresh one, so `sendInner` waits for the next session
+  // instead of sealing under a key nobody holds any more; one that arrives
+  // while the promise is still pending keeps it, so its waiters are not
+  // stranded on a promise nothing will ever settle.
+  let sessionPromiseSettled = false;
+  function resetSessionPromise(): void {
+    sessionPromiseSettled = false;
+    sessionPromise = new Promise<SessionState>((resolve, reject) => {
+      resolveFirstReady = (st) => {
+        sessionPromiseSettled = true;
+        resolve(st);
+      };
+      rejectFirstReady = (e) => {
+        sessionPromiseSettled = true;
+        reject(e);
+      };
+    });
+    // Swallow unhandled-rejection noise when no caller has subscribed at the
+    // moment we reject. The rejection still reaches any later `await`.
+    sessionPromise.catch(() => { /* noop */ });
+  }
+  resetSessionPromise();
 
   // 1.12.0 (#208): the extension hello, once the host has relayed it. Null
   // means "this host does not relay it" — an older concentrator.
   let extensionHello: HelloFrameFromExtension | null = null;
   // 2.5.0: set when the host relays `extension-disconnected`; cleared by the
-  // next `ready`. `session` itself is left in place — `sendInner` relies on
-  // it never returning to null once set — so this flag is what keeps
-  // `sessionLinked()` honest across an extension flap.
+  // next `ready`. Since B-BUG-5 `session` is dropped on that event too, so
+  // this flag is belt-and-braces for `sessionLinked()`.
   let extensionGone = false;
   // `undefined` = not read yet; `null` = read, nothing pinned. See the note in
   // `authenticateExtension` for why this is cached rather than re-read.
@@ -585,15 +655,24 @@ export async function startPeer(opts: PeerOpts): Promise<InternalPeerHandle> {
         extensionHello = null;
         extensionGone = true;
         // 3.0.0: this ENDS an extension session, so the private half goes
-        // with it. `session` itself is left in place for the reason below,
-        // which is why the zeroing hangs off this event rather than off a
-        // statement that clears it.
+        // with it (and, since B-BUG-5, the session key — below).
         dropSessionEphemeral();
         // Same as the host: a code nobody can approve any more must not
         // outrank "the extension is gone" in the session snapshot. Nothing
         // else has to be forgotten here — clearing the hello above is what
         // retires the derivation with it (M1, `pairCodeFor`).
         pendingPairCode = null;
+        // B-BUG-5: the session this key belonged to is over — the extension
+        // keeps no state for it across a reconnect — so drop it, as the host
+        // drops its own. New calls wait for the next session rather than
+        // being sealed under a dead key and silently dropped, and the owner
+        // fails the calls already in flight instead of letting each burn its
+        // whole timeout (and then fetch()'s retry).
+        if (session !== null) {
+          session = null;
+          if (sessionPromiseSettled) resetSessionPromise();
+        }
+        extensionDisconnectListeners.forEach((cb) => cb());
         return;
       }
       if (frame.type === 'ready' && frame.mcpId === opts.mcpId) {
@@ -918,32 +997,37 @@ export async function startPeer(opts: PeerOpts): Promise<InternalPeerHandle> {
     // pre-ready close still surfaces the original error to in-flight awaiters.
     closeListeners.forEach((cb) => cb());
   });
-  // Swallow unhandled-rejection noise when no caller has subscribed to
-  // sessionPromise at the moment we reject. The rejection is still surfaced
-  // to any later `await sessionPromise`.
-  sessionPromise.catch(() => { /* noop */ });
-
   const handle: InternalPeerHandle = {
     ws,
-    session: sessionPromise,
+    // A getter: `extension-disconnected` replaces the promise (B-BUG-5).
+    get session() {
+      return sessionPromise;
+    },
     sendInner: async (inner: InnerFrame) => {
       // Wait for the FIRST ready; subsequent renegotiations swap `session`
       // in place, so we read it freshly here rather than reusing the
       // promise's resolved value (which is permanently the first session).
       // Bounded so a never-confirmed session surfaces a clear
       // FetchproxySessionNotReadyError instead of hanging indefinitely.
-      await awaitSessionReady(sessionPromise, {
-        mcpId: opts.mcpId,
-        pendingPairCode: () => pendingPairCode,
-      });
-      // Invariant: `session` is non-null once `sessionPromise` has resolved
-      // — the only assignment path is `session = new SessionState(...)` two
-      // statements before `resolveFirstReady(session)`, and there is no
-      // code path that sets `session` back to null. Renegotiation only
-      // ever replaces it with another non-null SessionState. The non-null
-      // assertion is load-bearing for TypeScript's narrowing but does not
-      // encode runtime hope.
-      const s = session!;
+      try {
+        await awaitSessionReady(sessionPromise, {
+          mcpId: opts.mcpId,
+          pendingPairCode: () => pendingPairCode,
+        });
+      } catch (e) {
+        // Queued for a session and the link to the host went first: the
+        // frame never left this process, and the caller must be told THAT
+        // rather than the handshake's internal reason.
+        if (ws.readyState !== WebSocket.OPEN) throw notSentError();
+        throw e;
+      }
+      // `session` is non-null once `sessionPromise` has resolved — it is set
+      // two statements before `resolveFirstReady(session)` — EXCEPT across an
+      // `extension-disconnected` that landed between that resolution and this
+      // line (B-BUG-5 returns it to null). Fail that call plainly rather than
+      // seal it under nothing.
+      const s = session;
+      if (s === null) throw new Error('peer: extension disconnected');
       // Measured before a seq is claimed, so a refused frame spends nothing
       // and leaves no gap: an oversize payload would otherwise meet the host's
       // `maxPayload` as a 1009 CLOSE, taking this peer's only link to the
@@ -956,6 +1040,14 @@ export async function startPeer(opts: PeerOpts): Promise<InternalPeerHandle> {
         plaintext,
         's2e',
       );
+      // The socket can close while the frame is being sealed, and `ws`
+      // DISCARDS a send on a socket that is not open — no throw, no error
+      // event — so this call would resolve as if it had gone out. Checked
+      // here, where nothing can run between the check and the send: a frame
+      // written to an OPEN socket may have reached the browser, one refused
+      // here provably did not, and that is the line the host-loss error
+      // messages are drawn on.
+      if (ws.readyState !== WebSocket.OPEN) throw notSentError();
       ws.send(JSON.stringify(sealed));
     },
     onInner: (cb) => {
@@ -972,6 +1064,9 @@ export async function startPeer(opts: PeerOpts): Promise<InternalPeerHandle> {
     sessionLinked: () => session !== null && !extensionGone,
     onClose: (cb) => {
       closeListeners.push(cb);
+    },
+    onExtensionDisconnect: (cb) => {
+      extensionDisconnectListeners.push(cb);
     },
     close: () => ws.close(),
   };

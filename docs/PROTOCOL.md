@@ -447,6 +447,28 @@ can make a session fail, which a silent peer could do anyway by never
 answering. `reason` is capped at 200 characters because it lands verbatim in
 an error message a caller may log.
 
+#### `peer-gone` (host → extension)
+
+```jsonc
+{ "type": "peer-gone", "mcpId": "resy-mcp:0.13.1:2259288954ecdf3d" }
+```
+
+Sent by the host when a PEER's socket to it closes. The extension drops that
+mcpId's session key, scope grants and link binding — the per-MCP half of what
+a whole-link close already does. Before it, only the link closing cleared
+them, so every short-lived peer (each bootstrap lift and `fpx` call gets a
+fresh mcpId) left a session behind for the life of the loopback link, and the
+popup kept listing exited MCPs as connected.
+
+**Gated on `accepts`.** The extension's own `hello` now carries an optional
+`accepts` list (`["peer-gone"]`), the mirror of a server's; a host sends the
+notice only to an extension that listed it, because an older extension's
+`validateFrame` refuses the unknown type. An older host simply never sends it.
+The extension honours it only for an mcpId bound to the link it arrived on.
+
+**No authority.** It can only END a session, which the host could already do
+by never forwarding that peer's frames.
+
 ### Inner frames (inside ciphertext)
 
 The JSON payload inside `frame.ciphertext` is one of:

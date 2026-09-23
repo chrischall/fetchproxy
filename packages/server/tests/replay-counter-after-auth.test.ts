@@ -77,7 +77,9 @@ describe('replay counter advances only after a frame authenticates', () => {
     // READ, which rejected every one of them before the teardown even ran.
     // Both frames therefore go out in a single TCP write (see the cork
     // below), so the host reads them in one pass of the WS receiver.
-    const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+    // B-BUG-4: the host now drops the forged frame with a warning instead of
+    // tearing the socket down, but the counter ordering is what this pins.
+    const errors = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
     const el = await electRole({ host: '127.0.0.1', port: 0 });
     if (el.role !== 'host') throw new Error('expected host');

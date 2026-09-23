@@ -813,6 +813,13 @@ export interface HelloFrameFromExtension {
    * binds the `ReadyFrame.sessionSig` to this specific handshake.
    */
   sessionNonce: string;
+  /**
+   * B-BUG-9: host→extension frame types this extension understands beyond
+   * the base set — the mirror of `HelloFrameFromServer.accepts`. A host sends
+   * such a frame only to an extension that listed it, so an older extension
+   * (whose validator refuses the type) never sees one. Today: `'peer-gone'`.
+   */
+  accepts?: string[];
 }
 
 export type HelloFrame = HelloFrameFromServer | HelloFrameFromExtension;
@@ -940,13 +947,28 @@ export interface ExtensionDisconnectedFrame {
   type: 'extension-disconnected';
 }
 
+/**
+ * B-BUG-9: host → extension, when a PEER MCP's socket to the host closes.
+ * Sent only to an extension whose hello `accepts` it. The extension drops
+ * that mcpId's session, scope grants and link binding — otherwise every
+ * short-lived peer (a bootstrap lift, an `fpx` call) left a session behind
+ * for as long as the local link stayed up, and the popup kept showing it as
+ * connected. Carries no authority: the host could already starve a peer's
+ * session by never forwarding its frames.
+ */
+export interface PeerGoneFrame {
+  type: 'peer-gone';
+  mcpId: string;
+}
+
 export type Frame =
   | HelloFrame
   | ReadyFrame
   | EncryptedFrame
   | PairPendingFrame
   | HelloRejectedFrame
-  | ExtensionDisconnectedFrame;
+  | ExtensionDisconnectedFrame
+  | PeerGoneFrame;
 
 // --- Inner frames (inside ciphertext) ---
 

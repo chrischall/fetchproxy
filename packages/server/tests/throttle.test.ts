@@ -20,19 +20,30 @@ describe('TokenBucket', () => {
   it('serves the initial burst immediately without waiting', async () => {
     const bucket = new TokenBucket({ ratePerMinute: 60, burst: 3 });
     // Three tokens available at construction → three immediate acquires.
-    await bucket.acquire();
-    await bucket.acquire();
-    await bucket.acquire();
-    // If any of those had blocked, this test would hang past its
-    // timeout — reaching here proves they resolved without timer advance.
-    expect(true).toBe(true);
+    let served = 0;
+    const acquires = [0, 1, 2, 3].map(() => bucket.acquire().then(() => served++));
+    // Flush microtasks WITHOUT advancing the clock: exactly the burst is
+    // served immediately, and the (burst+1)th is still waiting on a refill.
+    await vi.advanceTimersByTimeAsync(0);
+    expect(served).toBe(3);
+    await vi.advanceTimersByTimeAsync(1_000);
+    await Promise.all(acquires);
+    expect(served).toBe(4);
   });
 
   it('defaults burst to one minute worth of tokens', async () => {
     const bucket = new TokenBucket({ ratePerMinute: 5 });
-    // No burst → capacity == ratePerMinute == 5 immediate tokens.
-    for (let i = 0; i < 5; i++) await bucket.acquire();
-    expect(true).toBe(true);
+    // No burst → capacity == ratePerMinute == 5 immediate tokens, and a
+    // 6th waits for a refill (5 rpm == one token per 12s).
+    let served = 0;
+    const acquires = Array.from({ length: 6 }, () => bucket.acquire().then(() => served++));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(served).toBe(5);
+    await vi.advanceTimersByTimeAsync(11_000);
+    expect(served).toBe(5);
+    await vi.advanceTimersByTimeAsync(1_000);
+    await Promise.all(acquires);
+    expect(served).toBe(6);
   });
 
   it('blocks the 4th acquire until a token refills', async () => {
