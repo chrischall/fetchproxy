@@ -52,6 +52,24 @@ export async function handleFetchRequest(
     });
     return;
   }
+  // The relay tab is scoped exactly like the request URL (and like
+  // graphql_query's / legacy read_cookies' tabUrl). Without this, a paired
+  // MCP could name ANY open tab — the user's bank — to perform its request,
+  // and that tab's content script would attach the page's CSRF token. The
+  // `viaTab` guard in @fetchproxy/server runs in the MCP's own process, so
+  // it cannot be the enforcement point. Checking the tab against the
+  // declared domains also keeps CSRF injection declared-domain scoped while
+  // leaving the api.example.com-through-www.example.com pattern intact.
+  if (!isUrlAllowedForAnyDomain(req.init.tabUrl, domains)) {
+    await sendInner(mcpId, {
+      type: 'response',
+      id: req.id,
+      ok: false,
+      op: 'fetch',
+      error: `tabUrl ${req.init.tabUrl} not in domains [${domains.join(', ')}]`,
+    });
+    return;
+  }
   // 0.5.2+: iterate ALL matching tabs instead of `.find()`-ing the first
   // one. Chrome doesn't retroactively inject content scripts into pages
   // that were already loaded when the extension was (re)installed —
