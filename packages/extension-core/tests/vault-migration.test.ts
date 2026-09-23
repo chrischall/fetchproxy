@@ -3,7 +3,7 @@ import { generateEd25519, generateX25519, toB64 } from '@fetchproxy/protocol';
 import { loadOrCreateExtensionIdentity } from '../src/extension-identity.js';
 import {
   armInstallSignal,
-  isLegacyUpgrade,
+  isExtensionUpdate,
   noteInstalled,
   LEGACY_MIGRATION_FLAG,
   __resetInstallSignalForTests,
@@ -15,8 +15,8 @@ import { chromeSession, freshVault, installChromeLocal, type LocalArea } from '.
 
 /**
  * The legacy import out of `chrome.storage.local` is gated on an UNFORGEABLE
- * upgrade signal — `chrome.runtime.onInstalled` with reason `update` from
- * 3.2.0 or earlier — never on the vault merely being empty. An empty vault is
+ * upgrade signal — `chrome.runtime.onInstalled` with reason `update` arriving
+ * while the vault is still empty — never on the vault merely being empty. An empty vault is
  * also what quota eviction, corruption or a wipe of the extension's IndexedDB
  * leaves, and `storage.local` is writable by every site's content script: if
  * emptiness alone authorised the import, a renderer that planted an identity
@@ -41,22 +41,22 @@ async function legacyIdentity(): Promise<{ stored: Record<string, unknown>; edPu
 
 const BRIDGE = { id: 'b1', url: 'wss://relay.example.com/bridge', token: 't', enabled: true };
 
-describe('isLegacyUpgrade — what counts as an upgrade from a storage.local build', () => {
-  it('an update from 3.2.0 or earlier', () => {
-    expect(isLegacyUpgrade({ reason: 'update', previousVersion: '3.2.0' })).toBe(true);
-    expect(isLegacyUpgrade({ reason: 'update', previousVersion: '3.1.9' })).toBe(true);
-    expect(isLegacyUpgrade({ reason: 'update', previousVersion: '2.10.4' })).toBe(true);
-    expect(isLegacyUpgrade({ reason: 'update', previousVersion: '0.4.0' })).toBe(true);
+describe('isExtensionUpdate — what counts as an upgrade signal', () => {
+  it('any update of the extension, whatever version it came from', () => {
+    expect(isExtensionUpdate({ reason: 'update', previousVersion: '3.2.0' })).toBe(true);
+    expect(isExtensionUpdate({ reason: 'update', previousVersion: '0.4.0' })).toBe(true);
+    // Not tied to a version: a release that still kept state in storage.local
+    // can ship after this code was written (3.2.1 did — release PR #394), and
+    // its users must keep their pairings too.
+    expect(isExtensionUpdate({ reason: 'update', previousVersion: '3.2.1' })).toBe(true);
+    expect(isExtensionUpdate({ reason: 'update', previousVersion: '9.9.9' })).toBe(true);
+    expect(isExtensionUpdate({ reason: 'update' })).toBe(true);
   });
 
-  it('NOT an update from a vault build, an install, a Chrome update, or an unknown version', () => {
-    expect(isLegacyUpgrade({ reason: 'update', previousVersion: '3.2.1' })).toBe(false);
-    expect(isLegacyUpgrade({ reason: 'update', previousVersion: '3.3.0' })).toBe(false);
-    expect(isLegacyUpgrade({ reason: 'update', previousVersion: '4.0.0' })).toBe(false);
-    expect(isLegacyUpgrade({ reason: 'install' })).toBe(false);
-    expect(isLegacyUpgrade({ reason: 'chrome_update', previousVersion: '3.2.0' })).toBe(false);
-    expect(isLegacyUpgrade({ reason: 'update' })).toBe(false);
-    expect(isLegacyUpgrade({ reason: 'update', previousVersion: 'garbage' })).toBe(false);
+  it('NOT an install, a Chrome update, or a shared-module update', () => {
+    expect(isExtensionUpdate({ reason: 'install' })).toBe(false);
+    expect(isExtensionUpdate({ reason: 'chrome_update', previousVersion: '3.2.0' })).toBe(false);
+    expect(isExtensionUpdate({ reason: 'shared_module_update' })).toBe(false);
   });
 });
 
@@ -97,12 +97,31 @@ describe('vault loss never re-opens the storage.local import', () => {
     expect(toB64(after.ed25519Pub)).not.toBe(planted.edPub);
   });
 
-  it('an update from a vault build (3.2.1+) does not authorise the import', async () => {
+  it('an update from 3.2.1 (a storage.local build released after 3.2.0) still imports', async () => {
+    // Whichever release first ships the vault, the one before it kept state in
+    // storage.local. Its users must not have to re-pair.
+    const legacy = await legacyIdentity();
+    local.data['extensionIdentity'] = legacy.stored;
+    local.data['remoteBridges'] = [BRIDGE];
+    await noteInstalled({ reason: 'update', previousVersion: '3.2.1' });
+    expect(toB64((await loadOrCreateExtensionIdentity()).ed25519Pub)).toBe(legacy.edPub);
+    expect(await loadRemoteTargets()).toEqual([BRIDGE]);
+  });
+
+  it('an update onto an initialised vault leaves no authorisation behind for a later eviction', async () => {
+    const first = await loadOrCreateExtensionIdentity();
+    // A later release installs; the vault already holds the identity.
+    await noteInstalled({ reason: 'update', previousVersion: '3.3.0' });
+    expect(LEGACY_MIGRATION_FLAG in chromeSession().data).toBe(false);
+
+    // The vault is lost later in the same browser session, with a planted
+    // identity waiting in storage.local.
     const planted = await legacyIdentity();
     local.data['extensionIdentity'] = planted.stored;
-    await noteInstalled({ reason: 'update', previousVersion: '3.3.0' });
-    const id = await loadOrCreateExtensionIdentity();
-    expect(toB64(id.ed25519Pub)).not.toBe(planted.edPub);
+    freshVault();
+    const after = await loadOrCreateExtensionIdentity();
+    expect(toB64(after.ed25519Pub)).not.toBe(planted.edPub);
+    expect(toB64(after.ed25519Pub)).not.toBe(toB64(first.ed25519Pub));
   });
 
   it('a flag a content script could NOT write is what authorises: storage.local cannot', async () => {

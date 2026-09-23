@@ -241,7 +241,7 @@ describe('migration from storage.local keeps existing pairings (one time only)',
     };
     local.data['remoteBridges'] = [BRIDGE];
     local.data['dismissedScopeHashes'] = { [identityHash]: ['s1'] };
-    // Chrome's onInstalled for an update from 3.2.0 — the upgrade signal.
+    // Chrome's onInstalled for an update from a pre-vault build — the upgrade signal.
     await noteInstalled({ reason: 'update', previousVersion: '3.2.0' });
     return { hello, identityHash, extPub: x.publicKey };
   }

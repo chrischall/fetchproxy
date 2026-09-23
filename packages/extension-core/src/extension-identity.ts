@@ -15,8 +15,8 @@
  * deliberately.
  *
  * Persisted in the extension-origin IndexedDB vault (`vault.ts`) with the
- * private halves as NON-EXTRACTABLE `CryptoKey`s (`identity-keys.ts`). Up to
- * 3.2.0 it was raw base64 in `chrome.storage.local["extensionIdentity"]`,
+ * private halves as NON-EXTRACTABLE `CryptoKey`s (`identity-keys.ts`). Before
+ * the vault it was raw base64 in `chrome.storage.local["extensionIdentity"]`,
  * where every site's content script could read it (fleet-audit #253); the
  * first load after upgrading imports those keys, so the identity — and every
  * pairing pinned to it — survives, and deletes them from storage.local.

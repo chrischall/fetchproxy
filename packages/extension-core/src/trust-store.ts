@@ -6,7 +6,7 @@
  * port changes, or identity-key re-issuance is the same trust record.
  *
  * Storage: the extension-origin IndexedDB vault, key "trustedMcps"
- * (`vault.ts`). Up to 3.2.0 this was `chrome.storage.local["trustedMcps"]`,
+ * (`vault.ts`). Before the vault this was `chrome.storage.local["trustedMcps"]`,
  * which every site's content script can WRITE — so a compromised renderer
  * could forge a record for an MCP identity of its choosing (no pair prompt)
  * or revoke a real one (fleet-audit #252). Content scripts cannot open the

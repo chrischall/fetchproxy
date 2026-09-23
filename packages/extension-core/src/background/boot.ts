@@ -66,8 +66,8 @@ export function maybeBoot(): void {
   // Re-inject instead of making them find that out. Guarded like the rest of
   // boot: absent in tests and on older Chrome, where it is simply skipped.
   //
-  // The same event is the ONLY thing that authorises importing a 3.2.0-or-
-  // earlier install's identity and trust out of storage.local
+  // The same event is the ONLY thing that authorises importing a pre-vault
+  // install's identity and trust out of storage.local
   // (`vault-migration.ts`): an empty vault alone is not enough, because a
   // lost vault is empty too and storage.local is content-script writable.
   // Arm the wait first, so the identity load below — which can reach the
@@ -89,7 +89,7 @@ export function maybeBoot(): void {
       // must stop being one this browser answers. The targets are re-read
       // from the vault, never from the message, so a content script sending
       // this (it can reach onMessage too) can at most cause a no-op reload;
-      // tab senders are ignored anyway. Up to 3.2.0 this listened on
+      // tab senders are ignored anyway. Before the vault this listened on
       // storage.local.onChanged, back when a content script could write the
       // targets themselves (#252).
       if (

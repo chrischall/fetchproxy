@@ -46,7 +46,7 @@ All persistent data is stored on your device, in the extension's `chrome.storage
 
 ### 3.1 Extension Identity
 
-Transporter generates a long-term Ed25519 signing keypair and an X25519 key-exchange keypair the first time it starts. These keys are used to authenticate the extension to MCP servers. They are stored in the extension's own IndexedDB, which websites and the extension's content scripts cannot access, and the private keys are held as non-extractable keys: the browser can sign with them, but will not hand their bytes to anyone, including the extension itself. (Versions up to 3.2.0 kept them in `chrome.storage.local`; the first start after upgrading moves them and deletes the old copy.)
+Transporter generates a long-term Ed25519 signing keypair and an X25519 key-exchange keypair the first time it starts. These keys are used to authenticate the extension to MCP servers. They are stored in the extension's own IndexedDB, which websites and the extension's content scripts cannot access, and the private keys are held as non-extractable keys: the browser can sign with them, but will not hand their bytes to anyone, including the extension itself. (Earlier versions kept them in `chrome.storage.local`; the first start after upgrading moves them and deletes the old copy.)
 
 ### 3.2 Trust Records
 
@@ -56,7 +56,7 @@ When you approve an MCP server at pair time, Transporter stores a trust record c
 - The approved capability set and domain list.
 - A timestamp.
 
-Trust records are stored in the extension's own IndexedDB, which websites and the extension's content scripts cannot read or change. (Versions up to 3.2.0 kept them in `chrome.storage.local`; the first start after upgrading moves them.) You can revoke any trust record from the extension popup at any time.
+Trust records are stored in the extension's own IndexedDB, which websites and the extension's content scripts cannot read or change. (Earlier versions kept them in `chrome.storage.local`; the first start after upgrading moves them.) You can revoke any trust record from the extension popup at any time.
 
 ### 3.3 Pending-Pair State
 

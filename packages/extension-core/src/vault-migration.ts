@@ -1,8 +1,8 @@
 /**
  * First-run initialisation of the vault (`vault.ts`), including the ONE-TIME
- * migration out of `chrome.storage.local` for installs from 3.2.0 and earlier.
+ * migration out of `chrome.storage.local` for installs from before the vault.
  *
- * Up to 3.2.0 the extension kept its identity keys (fleet-audit #253) and its
+ * Before the vault the extension kept its identity keys (fleet-audit #253) and its
  * trust records, remote bridge targets and dismissed scope-update hashes
  * (#252) in `storage.local`, which every site's content script can read and
  * write. They now live in the vault; this module moves them there once.
@@ -15,8 +15,15 @@
  *   renderer that had planted an identity (whose private key it knows) and
  *   trust records pinned to it would have both installed the next time the
  *   vault was lost. The signal is `chrome.runtime.onInstalled` with reason
- *   `update` from a version up to {@link LAST_LEGACY_VERSION} — Chrome fires
- *   it, nothing a page does can. `noteInstalled` records it in
+ *   `update` arriving while the vault is still empty — Chrome fires it,
+ *   nothing a page does can. It is deliberately NOT tied to a version number:
+ *   whichever release first ships the vault, the one before it kept state in
+ *   storage.local, and a hardcoded "last legacy version" would silently strand
+ *   every user of a storage.local release cut after it was written (3.2.1 was
+ *   one). What this admits beyond a genuine upgrade is a vault lost at the
+ *   moment of an update — not something an attacker can schedule. An update
+ *   onto a vault that already has an identity authorises nothing, so no
+ *   authorisation lingers for a vault lost later. `noteInstalled` records it in
  *   `chrome.storage.session` (trusted contexts only), so a service worker
  *   killed mid-import retries from there, and the import CONSUMES it. With an
  *   empty vault and no signal, a fresh identity is minted and whatever sits
@@ -67,12 +74,9 @@ const LEGACY_KEYS = [
   LEGACY_DISMISSED_KEY,
 ];
 
-/** The last release that kept secrets and trust in `storage.local`. */
-export const LAST_LEGACY_VERSION = '3.2.0';
-
 /**
- * `chrome.storage.session` key: an upgrade from {@link LAST_LEGACY_VERSION} or
- * earlier happened and its import has not completed yet. `storage.session` is
+ * `chrome.storage.session` key: the extension was updated onto an empty vault
+ * and the import has not completed yet. `storage.session` is
  * restricted to trusted contexts, so a content script cannot set it.
  */
 export const LEGACY_MIGRATION_FLAG = 'legacyVaultMigration';
@@ -97,25 +101,13 @@ function storageArea(name: 'local' | 'session'): Area | null {
   return a && typeof a.get === 'function' && typeof a.remove === 'function' ? a : null;
 }
 
-function parseVersion(v: string): number[] | null {
-  const parts = v.split('.');
-  if (parts.length === 0 || parts.length > 4) return null;
-  const nums = parts.map((p) => (/^\d+$/.test(p) ? Number(p) : NaN));
-  return nums.some((n) => Number.isNaN(n)) ? null : nums;
-}
-
-/** Is this `onInstalled` an update from a build that kept state in storage.local? */
-export function isLegacyUpgrade(details: { reason: string; previousVersion?: string }): boolean {
-  if (details.reason !== 'update' || typeof details.previousVersion !== 'string') return false;
-  const prev = parseVersion(details.previousVersion);
-  const last = parseVersion(LAST_LEGACY_VERSION);
-  if (!prev || !last) return false;
-  for (let i = 0; i < Math.max(prev.length, last.length); i++) {
-    const a = prev[i] ?? 0;
-    const b = last[i] ?? 0;
-    if (a !== b) return a < b;
-  }
-  return true;
+/**
+ * Is this `onInstalled` an update of the extension itself? Any version counts
+ * — see the module comment for why this is not pinned to a "last legacy"
+ * version. Chrome updates and shared-module updates do not.
+ */
+export function isExtensionUpdate(details: { reason: string; previousVersion?: string }): boolean {
+  return details.reason === 'update';
 }
 
 let installSignal: { promise: Promise<boolean>; resolve: (v: boolean) => void } | null = null;
@@ -146,16 +138,19 @@ export function __resetInstallSignalForTests(): void {
 }
 
 /**
- * The `chrome.runtime.onInstalled` listener's half. On an update from
- * {@link LAST_LEGACY_VERSION} or earlier, authorise the one-time import
- * (persisted in `storage.session` so an interrupted worker can finish it);
- * either way, release a vault access waiting on `armInstallSignal`.
+ * The `chrome.runtime.onInstalled` listener's half. On an update onto a vault
+ * that has no identity yet, authorise the one-time import (persisted in
+ * `storage.session` so an interrupted worker can finish it); either way,
+ * release a vault access waiting on `armInstallSignal`.
  */
 export async function noteInstalled(details: {
   reason: string;
   previousVersion?: string;
 }): Promise<void> {
-  const authorised = isLegacyUpgrade(details);
+  // An update onto an initialised vault has nothing to import, and a flag set
+  // now would outlive it and authorise an import for a vault lost later in
+  // the browser session.
+  const authorised = isExtensionUpdate(details) && !(await vaultHasIdentity());
   if (authorised) {
     try {
       await storageArea('session')?.set?.({ [LEGACY_MIGRATION_FLAG]: true });
@@ -164,6 +159,16 @@ export async function noteInstalled(details: {
     }
   }
   installSignal?.resolve(authorised);
+}
+
+async function vaultHasIdentity(): Promise<boolean> {
+  try {
+    return isExtensionIdentity(await vaultGet('identity'));
+  } catch {
+    // Unreadable vault: the import could not land anyway, and ensureVault
+    // retries. Authorise, so a transient failure does not cost the pairings.
+    return false;
+  }
 }
 
 async function sessionFlagSet(): Promise<boolean> {

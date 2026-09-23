@@ -129,7 +129,7 @@ describe('loadOrCreateExtensionIdentity — migration from storage.local (no re-
   beforeEach(async () => {
     freshVault();
     local = installChromeLocal();
-    // What Chrome tells the service worker when 3.2.0 (or earlier) updates to
+    // What Chrome tells the service worker when a pre-vault build updates to
     // this build — the only thing that authorises reading storage.local.
     await noteInstalled({ reason: 'update', previousVersion: '3.2.0' });
   });

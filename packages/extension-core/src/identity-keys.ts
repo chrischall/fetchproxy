@@ -2,7 +2,7 @@
  * The extension's long-term identity keys as NON-EXTRACTABLE WebCrypto keys
  * (fleet-audit #253).
  *
- * Up to 3.2.0 the private halves were raw bytes, base64-encoded in
+ * Before the vault the private halves were raw bytes, base64-encoded in
  * `chrome.storage.local["extensionIdentity"]` — readable by the content
  * script on every site, so one renderer compromise could lift them and pose
  * as this extension to every paired MCP (T-fake-extension). Now:
