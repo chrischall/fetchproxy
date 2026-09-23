@@ -1,5 +1,18 @@
 # Changelog
 
+## [3.2.1](https://github.com/chrischall/fetchproxy/compare/v3.2.0...v3.2.1) (2026-09-23)
+
+
+### Bug Fixes
+
+* **extension:** move identity keys and MCP trust out of content-script-writable storage ([#395](https://github.com/chrischall/fetchproxy/issues/395)) ([ab70804](https://github.com/chrischall/fetchproxy/commit/ab708048f09d2b7e6bc31373203cb6d52c5083b9))
+* **server:** recover from an empty identity file left by a crashed first run ([#393](https://github.com/chrischall/fetchproxy/issues/393)) ([705faf8](https://github.com/chrischall/fetchproxy/commit/705faf82b4a279629a08cb9a50e2f8b6f39282e7))
+
+
+### Refactor
+
+* **extension:** tidy the remote-targets key and cover its message guard ([#397](https://github.com/chrischall/fetchproxy/issues/397)) ([7460f96](https://github.com/chrischall/fetchproxy/commit/7460f969155fac673fce33779028fbf9681cc992))
+
 ## [3.2.0](https://github.com/chrischall/fetchproxy/compare/v3.1.0...v3.2.0) (2026-09-23)
 
 
