@@ -176,6 +176,13 @@ export interface PeerHandle {
    * owner decides what a close means.
    */
   onClose: (cb: () => void) => void;
+  /**
+   * B-BUG-5: fires when the host relays `extension-disconnected` — the
+   * extension's own socket to the concentrator closed, so every request this
+   * peer sent under the old session key is unreachable. Mirrors the host's
+   * `onExtensionDisconnect`; the owner fails its in-flight calls at once.
+   */
+  onExtensionDisconnect: (cb: () => void) => void;
   close: () => void;
 }
 
@@ -306,6 +313,7 @@ export async function startPeer(opts: PeerOpts): Promise<InternalPeerHandle> {
   const renegotiateListeners: (() => void)[] = [];
   const pendingPairListeners: ((code: string) => void)[] = [];
   const closeListeners: (() => void)[] = [];
+  const extensionDisconnectListeners: (() => void)[] = [];
   // `session` is the LATEST session derived from a ready frame. Every ready
   // frame for our mcpId replaces it — the extension can renegotiate at any
   // time (most commonly after MV3 service-worker eviction reconnects the
@@ -325,10 +333,7 @@ export async function startPeer(opts: PeerOpts): Promise<InternalPeerHandle> {
    * (Rule D), and the only thing a `ready` may be derived against. `null`
    * between extension sessions.
    *
-   * Zeroing is by EVENT on this path rather than by the statement that clears
-   * `session`: `session` is deliberately never returned to null (see the
-   * `extensionGone` comment below — `sendInner` relies on it never doing so),
-   * so there is no such statement to hang it off. The three events are
+   * Zeroing is by EVENT on this path. The three events are
    * `extension-disconnected`, the next mint's commit point, and this peer's
    * own socket closing. Only the first two end an extension session; the
    * third is a teardown obligation — that socket is this peer's link to the
@@ -374,18 +379,38 @@ export async function startPeer(opts: PeerOpts): Promise<InternalPeerHandle> {
   // place without re-creating the promise.
   let resolveFirstReady!: (s: SessionState) => void;
   let rejectFirstReady!: (e: Error) => void;
-  const sessionPromise = new Promise<SessionState>((resolve, reject) => {
-    resolveFirstReady = resolve;
-    rejectFirstReady = reject;
-  });
+  let sessionPromise!: Promise<SessionState>;
+  // B-BUG-5: whether the CURRENT `sessionPromise` has settled. An
+  // `extension-disconnected` after a session existed replaces the resolved
+  // promise with a fresh one, so `sendInner` waits for the next session
+  // instead of sealing under a key nobody holds any more; one that arrives
+  // while the promise is still pending keeps it, so its waiters are not
+  // stranded on a promise nothing will ever settle.
+  let sessionPromiseSettled = false;
+  function resetSessionPromise(): void {
+    sessionPromiseSettled = false;
+    sessionPromise = new Promise<SessionState>((resolve, reject) => {
+      resolveFirstReady = (st) => {
+        sessionPromiseSettled = true;
+        resolve(st);
+      };
+      rejectFirstReady = (e) => {
+        sessionPromiseSettled = true;
+        reject(e);
+      };
+    });
+    // Swallow unhandled-rejection noise when no caller has subscribed at the
+    // moment we reject. The rejection still reaches any later `await`.
+    sessionPromise.catch(() => { /* noop */ });
+  }
+  resetSessionPromise();
 
   // 1.12.0 (#208): the extension hello, once the host has relayed it. Null
   // means "this host does not relay it" — an older concentrator.
   let extensionHello: HelloFrameFromExtension | null = null;
   // 2.5.0: set when the host relays `extension-disconnected`; cleared by the
-  // next `ready`. `session` itself is left in place — `sendInner` relies on
-  // it never returning to null once set — so this flag is what keeps
-  // `sessionLinked()` honest across an extension flap.
+  // next `ready`. Since B-BUG-5 `session` is dropped on that event too, so
+  // this flag is belt-and-braces for `sessionLinked()`.
   let extensionGone = false;
   // `undefined` = not read yet; `null` = read, nothing pinned. See the note in
   // `authenticateExtension` for why this is cached rather than re-read.
@@ -618,15 +643,24 @@ export async function startPeer(opts: PeerOpts): Promise<InternalPeerHandle> {
         extensionHello = null;
         extensionGone = true;
         // 3.0.0: this ENDS an extension session, so the private half goes
-        // with it. `session` itself is left in place for the reason below,
-        // which is why the zeroing hangs off this event rather than off a
-        // statement that clears it.
+        // with it (and, since B-BUG-5, the session key — below).
         dropSessionEphemeral();
         // Same as the host: a code nobody can approve any more must not
         // outrank "the extension is gone" in the session snapshot. Nothing
         // else has to be forgotten here — clearing the hello above is what
         // retires the derivation with it (M1, `pairCodeFor`).
         pendingPairCode = null;
+        // B-BUG-5: the session this key belonged to is over — the extension
+        // keeps no state for it across a reconnect — so drop it, as the host
+        // drops its own. New calls wait for the next session rather than
+        // being sealed under a dead key and silently dropped, and the owner
+        // fails the calls already in flight instead of letting each burn its
+        // whole timeout (and then fetch()'s retry).
+        if (session !== null) {
+          session = null;
+          if (sessionPromiseSettled) resetSessionPromise();
+        }
+        extensionDisconnectListeners.forEach((cb) => cb());
         return;
       }
       if (frame.type === 'ready' && frame.mcpId === opts.mcpId) {
@@ -951,14 +985,12 @@ export async function startPeer(opts: PeerOpts): Promise<InternalPeerHandle> {
     // pre-ready close still surfaces the original error to in-flight awaiters.
     closeListeners.forEach((cb) => cb());
   });
-  // Swallow unhandled-rejection noise when no caller has subscribed to
-  // sessionPromise at the moment we reject. The rejection is still surfaced
-  // to any later `await sessionPromise`.
-  sessionPromise.catch(() => { /* noop */ });
-
   const handle: InternalPeerHandle = {
     ws,
-    session: sessionPromise,
+    // A getter: `extension-disconnected` replaces the promise (B-BUG-5).
+    get session() {
+      return sessionPromise;
+    },
     sendInner: async (inner: InnerFrame) => {
       // Wait for the FIRST ready; subsequent renegotiations swap `session`
       // in place, so we read it freshly here rather than reusing the
@@ -969,14 +1001,13 @@ export async function startPeer(opts: PeerOpts): Promise<InternalPeerHandle> {
         mcpId: opts.mcpId,
         pendingPairCode: () => pendingPairCode,
       });
-      // Invariant: `session` is non-null once `sessionPromise` has resolved
-      // — the only assignment path is `session = new SessionState(...)` two
-      // statements before `resolveFirstReady(session)`, and there is no
-      // code path that sets `session` back to null. Renegotiation only
-      // ever replaces it with another non-null SessionState. The non-null
-      // assertion is load-bearing for TypeScript's narrowing but does not
-      // encode runtime hope.
-      const s = session!;
+      // `session` is non-null once `sessionPromise` has resolved — it is set
+      // two statements before `resolveFirstReady(session)` — EXCEPT across an
+      // `extension-disconnected` that landed between that resolution and this
+      // line (B-BUG-5 returns it to null). Fail that call plainly rather than
+      // seal it under nothing.
+      const s = session;
+      if (s === null) throw new Error('peer: extension disconnected');
       // Measured before a seq is claimed, so a refused frame spends nothing
       // and leaves no gap: an oversize payload would otherwise meet the host's
       // `maxPayload` as a 1009 CLOSE, taking this peer's only link to the
@@ -1005,6 +1036,9 @@ export async function startPeer(opts: PeerOpts): Promise<InternalPeerHandle> {
     sessionLinked: () => session !== null && !extensionGone,
     onClose: (cb) => {
       closeListeners.push(cb);
+    },
+    onExtensionDisconnect: (cb) => {
+      extensionDisconnectListeners.push(cb);
     },
     close: () => ws.close(),
   };

@@ -1922,6 +1922,13 @@ export class FetchproxyServer {
         this.stopKeepalive();
         this.rejectAllPending();
       });
+      // B-BUG-5: the extension's link to the host dropped. Same as the host
+      // role's onExtensionDisconnect — fail in-flight calls now rather than
+      // letting each wait out fetchTimeoutMs.
+      this.peerHandle.onExtensionDisconnect(() => {
+        this.stopKeepalive();
+        this.rejectAllPending();
+      });
       // 0.5.2+: pair-pending from the extension. Same actionable error
       // treatment as the host path so the chat sees the pair code instead
       // of a generic MCP-level timeout.
