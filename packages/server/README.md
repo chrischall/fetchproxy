@@ -166,6 +166,17 @@ row). One variable has no option beside it:
   extension's connect target is hard-coded to `127.0.0.1:37149`, so
   every MCP that wants to share the concentrator needs to keep the
   defaults. Override only for local development or test isolation.
+- **When the host exits.** Whichever MCP process binds the port first
+  becomes the host, and that is often a short-lived one — a
+  `@fetchproxy/bootstrap` lift (which opens and closes a server per
+  lift) or an `fpx` command. When it exits, every peer re-elects: the
+  in-flight requests that are safe to repeat (reads, header/redirect
+  captures, and `fetch`es of GET/HEAD/OPTIONS or with
+  `retryOnTimeout: true`) are sent again through the new bridge under
+  their original deadline; the ones that may already have run in the
+  browser (other `fetch` methods, `writeCookies`, `download`) fail with
+  an error saying so, rather than being repeated. Before this, every
+  in-flight call on every peer failed with `extension disconnected`.
 
 ## API
 

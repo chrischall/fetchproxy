@@ -15,6 +15,7 @@ import type {
   GraphqlOpDeclaration,
   StoragePointerDecl,
   InnerFrame,
+  InnerRequest,
   FetchInit,
   ReadCookiesInitV3,
   DownloadResult,
@@ -1469,6 +1470,25 @@ export function isRetrySafeOnTimeout(method: string, retryOnTimeout?: boolean): 
   return TIMEOUT_RETRY_SAFE_METHODS.has(method.toUpperCase());
 }
 
+/**
+ * B-BUG-6: may this request be sent again after the host relaying it exited
+ * mid-flight? The same judgement as the timeout retry: yes for reads and
+ * waits, no for anything with a side effect that may already have happened.
+ * `fetch` is decided by its caller (method + `retryOnTimeout`); this is the
+ * default for everything else.
+ */
+function isResendableRequest(inner: InnerRequest): boolean {
+  switch (inner.op) {
+    case 'fetch':
+      return isRetrySafeOnTimeout(inner.init.method);
+    case 'write_cookies':
+    case 'download':
+      return false;
+    default:
+      return true;
+  }
+}
+
 /** Result of a successful `read_cookies` call. */
 export interface ReadCookiesResult {
   /** Discriminator for the union with `ReadCookiesResultError`. */
@@ -1592,6 +1612,13 @@ export class FetchproxyServer {
     number,
     { resolve: (v: unknown) => void; reject: (e: Error) => void }
   >();
+  /**
+   * B-BUG-6: the frames of in-flight requests that are safe to send again
+   * if the host that relayed them exits before replying (see
+   * `recoverFromHostLoss`). Keyed by request id; an entry outlives its
+   * request only until the next prune or response.
+   */
+  private resendable = new Map<number, InnerRequest>();
   private mcpId: string | null = null;
   private identity: Identity | null = null;
   // 0.5.3+: in-flight role-election / handle-start promise. Set the
@@ -1957,9 +1984,13 @@ export class FetchproxyServer {
       this.peerHandle.onClose(() => {
         if (this.closing || this.peerHandle === null) return;
         this.stopKeepalive();
-        this.rejectAllPending();
         this.peerHandle = null;
         this.role = null;
+        // B-BUG-6: the host is often a short-lived process — a bootstrap
+        // lift or an `fpx` call that won the election — so its exit is
+        // routine, not a fault. Re-elect and re-send what is safe to
+        // repeat instead of failing every in-flight call.
+        void this.recoverFromHostLoss();
       });
     }
   }
@@ -2007,7 +2038,7 @@ export class FetchproxyServer {
         retryAttempted: false,
       };
     }
-    const first = await this._fetchOnceWithTimeout(init);
+    const first = await this._fetchOnceWithTimeout(init, fetchOpts);
     // 0.8.0+: lazy-revive on SW eviction. One-shot retry after the
     // configured delay; the SW typically wakes on the next inbound
     // WS frame within ~1-2s. The retry context (`retryAttempted`)
@@ -2045,7 +2076,7 @@ export class FetchproxyServer {
     if (retryable && reviveMs !== undefined && reviveMs > 0) {
       this.lazyReviveAttempts += 1;
       await new Promise((r) => setTimeout(r, reviveMs));
-      const second = await this._fetchOnceWithTimeout(init);
+      const second = await this._fetchOnceWithTimeout(init, fetchOpts);
       // Record the user-visible outcome (so one tool call only ticks
       // consecutiveFailures by 1 regardless of the internal retry).
       if (second.ok) {
@@ -2220,12 +2251,18 @@ export class FetchproxyServer {
    * one of the op maps — request ids are unique) so it doesn't leak until the
    * server closes, then rethrow.
    */
-  private async sendInnerFrame(inner: InnerFrame): Promise<void> {
+  private async sendInnerFrame(
+    inner: InnerFrame,
+    opts: { resendable?: boolean } = {},
+  ): Promise<void> {
     try {
       if (this.hostHandle) {
         await this.hostHandle.sendOwnInner(inner);
       } else if (this.peerHandle) {
         await this.peerHandle.sendInner(inner);
+      }
+      if (inner.type === 'request' && (opts.resendable ?? isResendableRequest(inner))) {
+        this.noteResendable(inner);
       }
     } catch (err) {
       if ('id' in inner && typeof inner.id === 'number') {
@@ -2252,6 +2289,7 @@ export class FetchproxyServer {
    */
   private async _fetchOnceWithTimeout(
     init: FetchInit,
+    fetchOpts: FetchCallOpts = {},
   ): Promise<FetchResult | FetchResultError> {
     const id = this.nextRequestId++;
     const inner: InnerFrame = { type: 'request', id, op: 'fetch', init };
@@ -2261,7 +2299,9 @@ export class FetchproxyServer {
       }),
     );
     try {
-      await this.sendInnerFrame(inner);
+      await this.sendInnerFrame(inner, {
+        resendable: isRetrySafeOnTimeout(init.method, fetchOpts.retryOnTimeout),
+      });
     } catch (err) {
       // B-BUG-13: the frame never reached the bridge, so nothing ran in a
       // tab. Honour fetch()'s envelope contract instead of rejecting, and
@@ -3614,6 +3654,7 @@ export class FetchproxyServer {
 
   private onInner(inner: InnerFrame): void {
     if (inner.type !== 'response') return;
+    this.resendable.delete(inner.id);
     // 0.8.0+ (#23 ask 4): every response frame counts as extension
     // liveness, regardless of which awaiter it routes to.
     this.lastExtensionMessageAt = Date.now();
@@ -3830,37 +3871,145 @@ export class FetchproxyServer {
     }
   }
 
-  private rejectAllPending(reason: string = 'extension disconnected'): void {
+  private rejectAllPending(
+    reason: string = 'extension disconnected',
+    keep: ReadonlySet<number> = new Set(),
+  ): void {
+    for (const id of this.allPendingIds()) {
+      if (!keep.has(id)) this.rejectPendingId(id, reason);
+    }
+    if (keep.size === 0) this.resendable.clear();
+  }
+
+  /** Every request id with a live awaiter, across all op maps. */
+  private allPendingIds(): number[] {
+    const ids: number[] = [];
+    for (const map of this.pendingMaps()) for (const id of map.keys()) ids.push(id);
+    return ids;
+  }
+
+  private pendingMaps(): Map<number, unknown>[] {
+    return [
+      this.pending,
+      this.pendingReadCookies,
+      this.pendingStorage,
+      this.pendingWriteCookies,
+      this.pendingCapture,
+      this.pendingRedirect,
+      this.pendingIdb,
+      this.pendingDomList,
+      this.pendingDownload,
+      this.pendingGraphql,
+    ];
+  }
+
+  private isPendingId(id: number): boolean {
+    return this.pendingMaps().some((m) => m.has(id));
+  }
+
+  /** Fail the one awaiter registered under `id`, in its own map's shape. */
+  private rejectPendingId(id: number, reason: string): void {
     const err = new FetchproxyProtocolError(reason);
-    for (const cb of this.pending.values()) {
-      cb({
+    this.resendable.delete(id);
+    const fetchCb = this.pending.get(id);
+    if (fetchCb) {
+      this.pending.delete(id);
+      fetchCb({
         ok: false,
         error: err.message,
         kind: classifyFetchError(err.message),
         retryAttempted: false,
       });
+      return;
     }
-    this.pending.clear();
-    for (const cb of this.pendingReadCookies.values()) {
-      cb({ ok: false, error: err.message });
+    const cookieCb = this.pendingReadCookies.get(id);
+    if (cookieCb) {
+      this.pendingReadCookies.delete(id);
+      cookieCb({ ok: false, error: err.message });
+      return;
     }
-    this.pendingReadCookies.clear();
-    for (const { reject } of this.pendingStorage.values()) reject(err);
-    this.pendingStorage.clear();
-    for (const { reject } of this.pendingWriteCookies.values()) reject(err);
-    this.pendingWriteCookies.clear();
-    for (const { reject } of this.pendingCapture.values()) reject(err);
-    this.pendingCapture.clear();
-    for (const { reject } of this.pendingRedirect.values()) reject(err);
-    this.pendingRedirect.clear();
-    for (const { reject } of this.pendingIdb.values()) reject(err);
-    this.pendingIdb.clear();
-    for (const { reject } of this.pendingDomList.values()) reject(err);
-    this.pendingDomList.clear();
-    for (const { reject } of this.pendingDownload.values()) reject(err);
-    this.pendingDownload.clear();
-    for (const { reject } of this.pendingGraphql.values()) reject(err);
-    this.pendingGraphql.clear();
+    for (const map of [
+      this.pendingStorage,
+      this.pendingWriteCookies,
+      this.pendingCapture,
+      this.pendingRedirect,
+      this.pendingIdb,
+      this.pendingDomList,
+      this.pendingDownload,
+      this.pendingGraphql,
+    ] as Map<number, { reject: (e: Error) => void }>[]) {
+      const entry = map.get(id);
+      if (entry) {
+        map.delete(id);
+        entry.reject(err);
+        return;
+      }
+    }
+  }
+
+  private noteResendable(inner: InnerRequest): void {
+    this.resendable.set(inner.id, inner);
+    // Entries normally leave on their response; a request that timed out
+    // leaves its entry behind, so prune the stale ones now and then.
+    if (this.resendable.size > 256) {
+      for (const id of [...this.resendable.keys()]) {
+        if (!this.isPendingId(id)) this.resendable.delete(id);
+      }
+    }
+  }
+
+  /**
+   * B-BUG-6: the host this peer relayed through has gone — most often a
+   * short-lived process (a bootstrap lift, an `fpx` call) that won the
+   * election and then closed. Fail only the in-flight requests that may
+   * already have run (a non-idempotent fetch, a cookie write, a download);
+   * re-elect and send the rest again. The replies to the originals died with
+   * the old host, and each re-sent request keeps its awaiter and its
+   * original deadline.
+   */
+  private async recoverFromHostLoss(): Promise<void> {
+    const toResend = new Map<number, InnerRequest>();
+    for (const [id, inner] of this.resendable) {
+      if (this.isPendingId(id)) toResend.set(id, inner);
+    }
+    this.resendable.clear();
+    this.rejectAllPending(
+      'fetchproxy: the MCP process holding the bridge port exited while this request was in ' +
+        'flight. It was not re-sent because it may already have run in the browser — check ' +
+        'before retrying.',
+      new Set(toResend.keys()),
+    );
+    if (toResend.size === 0) return;
+    const lost = (id: number, e: unknown): void =>
+      this.rejectPendingId(
+        id,
+        `fetchproxy: the bridge host exited and reconnecting failed: ${
+          e instanceof Error ? e.message : String(e)
+        }`,
+      );
+    try {
+      await this.ensureConnected();
+    } catch (e) {
+      for (const id of toResend.keys()) lost(id, e);
+      return;
+    }
+    for (const [id, inner] of toResend) {
+      // Timed out (or otherwise settled) while we were reconnecting.
+      if (!this.isPendingId(id)) continue;
+      try {
+        await this.resendInnerFrame(inner);
+      } catch (e) {
+        lost(id, e);
+      }
+    }
+  }
+
+  /** Send an already-registered request again, keeping its awaiter on failure. */
+  private async resendInnerFrame(inner: InnerRequest): Promise<void> {
+    if (this.hostHandle) await this.hostHandle.sendOwnInner(inner);
+    else if (this.peerHandle) await this.peerHandle.sendInner(inner);
+    else throw new Error('no bridge handle after re-election');
+    this.noteResendable(inner);
   }
 
   /**
