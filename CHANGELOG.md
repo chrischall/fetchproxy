@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.2.2](https://github.com/chrischall/fetchproxy/compare/v3.2.1...v3.2.2) (2026-09-24)
+
+
+### Bug Fixes
+
+* **server:** say a timed-out write may already have run instead of inviting a retry ([#401](https://github.com/chrischall/fetchproxy/issues/401)) ([cd98dfa](https://github.com/chrischall/fetchproxy/commit/cd98dfa72041d9d41053e811bfb9ce14e61a723a))
+
 ## [3.2.1](https://github.com/chrischall/fetchproxy/compare/v3.2.0...v3.2.1) (2026-09-23)
 
 
