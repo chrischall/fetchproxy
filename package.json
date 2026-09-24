@@ -13,9 +13,9 @@
     "typecheck": "tsc -b packages/protocol packages/server packages/bootstrap packages/cli packages/extension-core packages/test-helpers"
   },
   "devDependencies": {
-    "@types/node": "^26.5.1",
+    "@types/node": "^26.6.2",
     "@vitest/coverage-v8": "^5.0.1",
-    "prettier": "^3.9.6",
+    "prettier": "^3.9.8",
     "typescript": "^7.0.2",
     "vitest": "^5.0.0"
   },
