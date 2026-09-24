@@ -13,6 +13,6 @@
   },
   "devDependencies": {
     "esbuild": "^0.28.2",
-    "tsx": "^4.23.13"
+    "tsx": "^4.23.15"
   }
 }
