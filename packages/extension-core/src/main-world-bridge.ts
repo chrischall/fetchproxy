@@ -106,8 +106,12 @@ let queue: Promise<void> = Promise.resolve();
  * `injectIntoOpenTabs` also injects the bridge into tabs already open on a
  * host this call newly covers — a site approved while its tab is open would
  * otherwise have no bridge until reloaded. Tabs covered before this call are
- * left alone: injecting twice would install two listeners answering the same
- * request. Best-effort throughout; a failure is logged, never thrown.
+ * skipped, but that is only a shortcut: a tab left open across a revoke and a
+ * re-approve already has the bridge yet looks newly covered here. The bridge
+ * itself refuses a second install (`installMainWorldBridges`), so a repeat
+ * injection is a no-op rather than a second listener answering — and, for an
+ * in-page POST, re-sending — the same request. Best-effort throughout; a
+ * failure is logged, never thrown.
  */
 export function syncMainWorldBridge(
   domains: Iterable<string>,

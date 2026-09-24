@@ -693,8 +693,37 @@ export function installApolloBridge(win: ApolloBridgeWindow): void {
 // under vitest.
 const underTest = !!(globalThis as any)?.process?.env?.VITEST;
 
+/**
+ * Page-side "already installed" guard. `Symbol.for` because each evaluation of
+ * this file is a separate script: nothing but the window is shared between
+ * them. Set non-enumerable, non-writable and non-configurable so it stays out
+ * of `for…in`/`Object.keys` and can't be cleared to re-arm a second install.
+ */
+const INSTALLED = Symbol.for('fetchproxy.mainWorldBridge');
+
+/**
+ * Install the CSRF, Apollo and in-page fetch bridges on `win` — once. The
+ * file can be evaluated more than once in one page: a tab left open across a
+ * revoke keeps its listeners (a revoke can't reach into a live page), and the
+ * re-approve injects the file into that tab again; an extension update's
+ * re-injection can do the same. A second set of listeners would answer every
+ * request twice, and for `fetch-req` that means sending an in-page POST
+ * twice. Returns whether this call installed.
+ */
+export function installMainWorldBridges(win: object): boolean {
+  if ((win as Record<symbol, unknown>)[INSTALLED]) return false;
+  try {
+    Object.defineProperty(win, INSTALLED, { value: true });
+  } catch {
+    // Non-extensible window: installing without a guard is still better than
+    // no bridge at all.
+  }
+  installCsrfBridge(win as unknown as CsrfBridgeWindow);
+  installApolloBridge(win as unknown as ApolloBridgeWindow);
+  installFetchBridge(win as unknown as FetchBridgeWindow);
+  return true;
+}
+
 if (!underTest && typeof window !== 'undefined') {
-  installCsrfBridge(window as unknown as CsrfBridgeWindow);
-  installApolloBridge(window as unknown as ApolloBridgeWindow);
-  installFetchBridge(window as unknown as FetchBridgeWindow);
+  installMainWorldBridges(window);
 }
