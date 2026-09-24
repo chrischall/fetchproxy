@@ -68,10 +68,11 @@ While a pair confirmation is in progress (the 8-digit code dialog is showing), a
 
 **None.**
 
-Transporter contains no telemetry, no analytics, no crash reporting, no remote configuration, no feature flags, and no A/B testing. It makes no outbound network connections of its own. The only network connections the extension is involved in are:
+Transporter contains no telemetry, no analytics, no crash reporting, no remote configuration, no feature flags, and no A/B testing. It reports nothing to its developer or to any third party. The only network connections the extension is involved in are:
 
-- The local WebSocket server it accepts on `127.0.0.1:37149` (MCP server connections).
+- The local WebSocket connection to `127.0.0.1:37149` (MCP server connections on your own machine).
 - HTTP requests made inside your browser tabs at the explicit direction of an approved MCP server.
+- **Outbound WebSocket connections to remote bridge targets you configure yourself** in the popup (a `wss://` relay that hosts MCP servers somewhere other than your machine). These are off by default: none exist until you add one, and removing or disabling a target closes its connection. The connection carries the access token you entered for that relay (as a WebSocket subprotocol). The contents of every request, response and cookie are end-to-end encrypted between the extension and each MCP server, so the relay cannot read them — but the relay operator can see the handshake metadata around them: the extension's hello (its ID, version and public identity keys), each MCP's hello (server name and version, `mcpId`, declared domains, capabilities and key names), the pair code shown during pairing, and the timing and size of frames. See [SECURITY.md §T-remote-bridge](SECURITY.md#t-remote-bridge--a-configured-remote-bridge-target).
 
 ---
 
