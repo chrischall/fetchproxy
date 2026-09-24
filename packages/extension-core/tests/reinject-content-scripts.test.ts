@@ -161,6 +161,33 @@ describe('maybeReinjectOnInstalled', () => {
     expect(injections.length).toBeGreaterThan(0);
   });
 
+  // Audit #1003: the MAIN-world bridge is no longer in the manifest — it is
+  // registered at runtime for approved hosts — so an update must restore it
+  // from what the caller says it covers now, and only there.
+  it('also restores runtime-registered scripts, only on the hosts they cover', async () => {
+    const { injections } = installFakeChrome({
+      tabs: [{ id: 1, url: 'https://www.a.com/' }, { id: 2, url: 'https://b.test/' }],
+      contentScripts: [{ matches: ['<all_urls>'], js: ['content.js'], world: 'ISOLATED' }],
+    });
+    await maybeReinjectOnInstalled({ reason: 'update' }, async () => [
+      { matches: ['*://*.a.com/*'], js: ['capture-logger.js'], world: 'MAIN', run_at: 'document_start' },
+    ]);
+    const main = injections.filter((i) => i.files[0] === 'capture-logger.js');
+    expect(main).toEqual([{ tabId: 1, files: ['capture-logger.js'], world: 'MAIN' }]);
+    expect(injections.filter((i) => i.files[0] === 'content.js').map((i) => i.tabId)).toEqual([1, 2]);
+  });
+
+  it('still restores the manifest scripts when the runtime list cannot be read', async () => {
+    const { injections } = installFakeChrome({
+      tabs: [{ id: 1, url: 'https://a.test/' }],
+      contentScripts: [{ matches: ['<all_urls>'], js: ['content.js'], world: 'ISOLATED' }],
+    });
+    await maybeReinjectOnInstalled({ reason: 'update' }, async () => {
+      throw new Error('vault unavailable');
+    });
+    expect(injections).toEqual([{ tabId: 1, files: ['content.js'], world: 'ISOLATED' }]);
+  });
+
   it.each(['install', 'chrome_update', 'shared_module_update'])('ignores %s', async (reason) => {
     const { injections } = installFakeChrome({ tabs: [{ id: 1, url: 'https://a.test/' }] });
     await maybeReinjectOnInstalled({ reason });

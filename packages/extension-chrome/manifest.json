@@ -33,16 +33,6 @@
       ],
       "run_at": "document_idle",
       "world": "ISOLATED"
-    },
-    {
-      "matches": [
-        "<all_urls>"
-      ],
-      "js": [
-        "capture-logger.js"
-      ],
-      "run_at": "document_start",
-      "world": "MAIN"
     }
   ],
   "permissions": [

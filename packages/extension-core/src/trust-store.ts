@@ -237,6 +237,20 @@ export class TrustStore {
     });
   }
 
+  /**
+   * Every domain a live record (one `get` would return) approves — where the
+   * MAIN-world page bridge is allowed to run (`main-world-bridge.ts`).
+   */
+  async approvedDomains(): Promise<string[]> {
+    const stored = await this.load();
+    const out = new Set<string>();
+    for (const rec of Object.values(stored.records)) {
+      if (majorOf(rec.extensionVersionAtPair) !== majorOf(this.extensionVersion)) continue;
+      for (const d of Array.isArray(rec.domains) ? rec.domains : []) out.add(d);
+    }
+    return [...out];
+  }
+
   async list(): Promise<Record<string, TrustRecord>> {
     const stored = await this.load();
     return { ...stored.records };

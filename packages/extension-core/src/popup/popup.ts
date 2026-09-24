@@ -29,6 +29,7 @@ import {
   validateRemoteTargetUrl,
   type RemoteTarget,
 } from '../remote-targets.js';
+import { syncMainWorldBridgeFromTrust } from '../main-world-bridge.js';
 
 const HIGH_RISK_KEYWORDS = ['bank', 'gov', 'mil'];
 
@@ -1439,7 +1440,12 @@ async function bootstrap(): Promise<void> {
       renderPopup(root, { mode: 'empty', bridges, mismatches });
     } else {
       const onRevoke = (identityHash: string): void => {
-        void trust2.remove(identityHash).then(() => renderTrustedStatus());
+        void trust2
+          .remove(identityHash)
+          // Audit #1003: stop loading the page bridge on hosts no approved
+          // MCP reaches any more.
+          .then(() => syncMainWorldBridgeFromTrust(trust2))
+          .then(() => renderTrustedStatus());
       };
       renderPopup(root, { mode: 'status', trusted: trustedList, onRevoke, bridges, mismatches });
     }

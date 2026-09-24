@@ -120,6 +120,8 @@ const sessionStorage = new Map<string, unknown>();
  * extension-core suite green.
  */
 const runtimeMessages: unknown[] = [];
+/** Audit #1003: what `chrome.scripting` has registered (the MAIN-world page bridge). */
+const registeredScripts: { id: string; matches?: string[]; world?: string }[] = [];
 
 vi.stubGlobal('WebSocket', FakeSocket);
 vi.stubGlobal('chrome', {
@@ -156,6 +158,21 @@ vi.stubGlobal('chrome', {
     },
   },
   tabs: { query: async () => [], create: async () => ({ id: 1 }) },
+  scripting: {
+    getRegisteredContentScripts: async (f?: { ids?: string[] }) =>
+      registeredScripts.filter((r) => !f?.ids || f.ids.includes(r.id)).map((r) => ({ ...r })),
+    registerContentScripts: async (xs: { id: string; matches?: string[]; world?: string }[]) =>
+      void registeredScripts.push(...xs.map((x) => ({ ...x }))),
+    updateContentScripts: async (xs: { id: string; matches?: string[] }[]) => {
+      for (const x of xs) Object.assign(registeredScripts.find((r) => r.id === x.id)!, x);
+    },
+    unregisterContentScripts: async (f?: { ids?: string[] }) => {
+      for (let i = registeredScripts.length - 1; i >= 0; i--) {
+        if (!f?.ids || f.ids.includes(registeredScripts[i]!.id)) registeredScripts.splice(i, 1);
+      }
+    },
+    executeScript: async () => [],
+  },
 });
 
 // Imported after the globals exist — `socket.ts` reads `WebSocket` at module
@@ -1297,6 +1314,22 @@ describe('approving a pending pair (v4)', () => {
       expect(await state.trust!.get(identityHash)).not.toBeNull();
       expect(sessionStorage.has('pendingPair')).toBe(false);
     });
+  });
+
+  // Audit #1003: the MAIN-world page bridge is not on every site any more —
+  // approving an MCP is what puts it on that MCP's hosts.
+  it('registers the page bridge on the approved hosts', async () => {
+    const localWs = await freshLink();
+    const mcp = await scriptedMcp('alltrails-mcp:2.1.3:3030303030303030');
+    localWs.message(await helloFrom(mcp, extNonceOf(localWs)));
+    await vi.waitUntil(() => localWs.frames('pair-pending').length > 0);
+    const identityHash = toHex(await sha256(mcp.x.publicKey));
+    await onApproval(
+      pendingRecordFor(mcp, identityHash, { [mcp.mcpId]: toB64(mcp.session.publicKey) }),
+    );
+    const bridge = registeredScripts.find((r) => r.id === 'fetchproxy-main-bridge');
+    expect(bridge?.world).toBe('MAIN');
+    expect(bridge?.matches).toContain('*://*.alltrails.com/*');
   });
 
   it('answers nothing for an mcpId whose link has dropped', async () => {
