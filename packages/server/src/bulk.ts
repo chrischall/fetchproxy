@@ -16,6 +16,8 @@
 import {
   FetchproxyTimeoutError,
   FetchproxyBridgeDownError,
+  TIMEOUT_NOT_RESENT_NOTE,
+  withNotResentNote,
 } from './ws-server.js';
 import { classifyBridgeError } from './classify-bridge-error.js';
 
@@ -112,7 +114,10 @@ export async function retryOnceOnTimeout<T>(
  *   * `'timeout'`     → `'bridge timeout after retry: <inner>'`
  *                       (critical that this stays distinguishable from
  *                       "no listing found" in the cohort's summary
- *                       reports — round-3 #78).
+ *                       reports — round-3 #78). A `retrySafe: false`
+ *                       timeout was never retried, so it reads
+ *                       `'bridge timeout (not retried): <inner>'` and
+ *                       warns the request may already have run (#928).
  *   * `'bridge_down'` → `'bridge unreachable: <inner>'`
  *   * `'protocol'`    → bare `FetchproxyProtocolError.message`
  *   * `'other'`       → `Error.message` or `String(err)` for non-Errors
@@ -131,9 +136,20 @@ export function classifyRowError(err: unknown): {
 } {
   const kind = classifyBridgeError(err);
   if (kind === 'timeout') {
+    const timeout = err as FetchproxyTimeoutError;
+    // Audit #928: a `retrySafe: false` timeout was deliberately NOT retried
+    // (it may already have run), so "after retry" would be false — and its
+    // message already carries the may-have-run warning; make sure it does
+    // even for an error built elsewhere.
+    if (timeout.retrySafe === false) {
+      const inner = timeout.message.includes(TIMEOUT_NOT_RESENT_NOTE)
+        ? timeout.message
+        : withNotResentNote(timeout.message);
+      return { kind: 'timeout', message: `bridge timeout (not retried): ${inner}` };
+    }
     return {
       kind: 'timeout',
-      message: `bridge timeout after retry: ${(err as FetchproxyTimeoutError).message}`,
+      message: `bridge timeout after retry: ${timeout.message}`,
     };
   }
   if (kind === 'bridge_down') {

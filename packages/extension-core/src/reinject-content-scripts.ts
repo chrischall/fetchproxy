@@ -28,7 +28,7 @@
  */
 
 /** Scripts are read from the manifest so this cannot drift from what ships. */
-interface ManifestContentScript {
+export interface ManifestContentScript {
   matches?: string[];
   js?: string[];
   world?: 'MAIN' | 'ISOLATED';
@@ -67,9 +67,8 @@ function escapeRegExp(literal: string): string {
  *
  * A content script declares WHERE it belongs, and restoring it anywhere else
  * would make this path mean something different from the manifest it exists to
- * reinstate. Both shipped entries are `<all_urls>` today, so this changes no
- * current behaviour — it stops the day one is narrowed from silently putting
- * that script on every open tab.
+ * reinstate. The MAIN-world bridge is narrowed to approved hosts (audit
+ * #1003), so this is what keeps an update from putting it on every open tab.
  *
  * Deliberately partial: only `http`/`https` are ever injected here (see
  * {@link isInjectableUrl}), so `<all_urls>` is read as "any injectable URL"
@@ -132,13 +131,32 @@ export function isInjectableUrl(url: string | undefined): boolean {
   return !/^https:\/\/(chromewebstore\.google\.com|chrome\.google\.com\/webstore)/i.test(url);
 }
 
+/**
+ * Scripts registered at runtime rather than in the manifest, in the manifest's
+ * shape — today the MAIN-world page bridge on approved hosts
+ * (`main-world-bridge.ts`, audit #1003). Chrome tears those down on update
+ * too, and the manifest cannot say where they belong, so the caller does.
+ */
+export type ExtraContentScripts = () => Promise<ManifestContentScript[]>;
+
 /** Re-inject every declared content script into every injectable open tab. */
-export async function reinjectContentScripts(): Promise<ReinjectResult> {
+export async function reinjectContentScripts(
+  extraScripts?: ExtraContentScripts,
+): Promise<ReinjectResult> {
   // Older Chrome, or a build without the `scripting` permission. Nothing to do
   // and nothing to complain about: the manifest still covers new navigations.
   if (typeof chrome?.scripting?.executeScript !== 'function') return { tabs: 0, failed: 0 };
 
-  const declared = (chrome.runtime.getManifest().content_scripts ?? []).filter(
+  let extra: ManifestContentScript[] = [];
+  if (extraScripts) {
+    try {
+      extra = await extraScripts();
+    } catch (e) {
+      // The manifest scripts are still worth restoring without these.
+      console.error('[fetchproxy] could not list runtime content scripts to restore:', e);
+    }
+  }
+  const declared = [...(chrome.runtime.getManifest().content_scripts ?? []), ...extra].filter(
     (cs): cs is ManifestContentScript & { js: string[] } => Array.isArray(cs.js) && cs.js.length > 0,
   );
   if (declared.length === 0) return { tabs: 0, failed: 0 };
@@ -189,9 +207,12 @@ export async function reinjectContentScripts(): Promise<ReinjectResult> {
  * extension's scripts down — injecting on those would duplicate live listeners
  * in every open tab for no benefit.
  */
-export async function maybeReinjectOnInstalled(details: { reason: string }): Promise<void> {
+export async function maybeReinjectOnInstalled(
+  details: { reason: string },
+  extraScripts?: ExtraContentScripts,
+): Promise<void> {
   if (details.reason !== 'update') return;
-  const { tabs, failed } = await reinjectContentScripts();
+  const { tabs, failed } = await reinjectContentScripts(extraScripts);
   console.warn(
     `[fetchproxy] extension updated — re-injected content scripts into ${tabs} tab(s)` +
       (failed > 0 ? `, ${failed} could not be injected (restricted pages are normal)` : ''),

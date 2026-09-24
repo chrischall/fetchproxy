@@ -40,6 +40,7 @@ import {
 import { REMOTE_TARGETS_CHANGED } from '../remote-targets.js';
 import { onApproval, onScopeUpdateDismiss } from './approval.js';
 import { maybeReinjectOnInstalled } from '../reinject-content-scripts.js';
+import { mainBridgeScriptFor, syncMainWorldBridgeFromTrust } from '../main-world-bridge.js';
 import { armInstallSignal, noteInstalled } from '../vault-migration.js';
 
 // Boot: only run in a real MV3 service worker context. Skipped under vitest
@@ -60,6 +61,12 @@ export function maybeBoot(): void {
   }
   state.trust = new TrustStore(chrome.runtime.getManifest().version);
   state.sessions = new SessionKeys();
+  // Audit #1003: the MAIN-world page bridge runs only on hosts an approved MCP
+  // may reach. Re-assert that registration on every boot (it persists, but an
+  // update or a store changed while no worker ran can leave it stale). No
+  // injection here: open tabs either already have it or get it from the
+  // update re-injection below.
+  void syncMainWorldBridgeFromTrust(state.trust);
   // An extension UPDATE orphans the content script in every already-open tab
   // (Chrome tears the old ones down and injects no new ones), so every MCP
   // reading from a long-lived tab breaks at once until the person reloads it.
@@ -76,7 +83,12 @@ export function maybeBoot(): void {
     armInstallSignal();
     chrome.runtime.onInstalled.addListener((details) => {
       void noteInstalled(details);
-      void maybeReinjectOnInstalled(details);
+      // The MAIN-world page bridge is registered at runtime, not in the
+      // manifest (audit #1003), so the update tells the re-injection where it
+      // belongs: the hosts an approved MCP may reach, and nowhere else.
+      void maybeReinjectOnInstalled(details, async () => [
+        mainBridgeScriptFor(await state.trust!.approvedDomains()),
+      ]);
     });
   }
   // Part 3: respond to popup queries for the connected identity hash set.

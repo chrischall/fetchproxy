@@ -1125,14 +1125,14 @@ export class FetchproxyTimeoutError extends FetchproxyProtocolError {
     const callerChose =
       args.requestedTimeoutMs !== undefined &&
       args.timeoutMs === args.requestedTimeoutMs + graceMs;
-    super(
+    const base =
       `fetchproxy: ${args.url} did not respond within ${args.timeoutMs}ms` +
         (callerChose
           ? ` — the ${args.requestedTimeoutMs}ms this call asked for, plus ${graceMs}ms` +
             " for the reply to reach this server. The extension runs its own timer on the value you passed," +
             ' so a window that is genuinely too short reports what did not happen rather than this.'
-          : ''),
-    );
+          : '');
+    super(args.retrySafe === false ? withNotResentNote(base) : base);
     this.name = 'FetchproxyTimeoutError';
     this.url = args.url;
     this.timeoutMs = args.timeoutMs;
@@ -1143,6 +1143,21 @@ export class FetchproxyTimeoutError extends FetchproxyProtocolError {
     this.requestedTimeoutMs = args.requestedTimeoutMs ?? null;
     this.retrySafe = args.retrySafe ?? true;
   }
+}
+
+/**
+ * Audit #928: appended to every timeout that was deliberately NOT re-sent
+ * (`retrySafe: false`). "did not respond" alone reads as "nothing happened,
+ * try again" to the model reading a tool error, which then re-issues the very
+ * write B-BUG-1 stopped the library from repeating. Same words as the
+ * host-loss rejection in `recoverFromHostLoss`.
+ */
+export const TIMEOUT_NOT_RESENT_NOTE =
+  'It was not re-sent because it may already have run in the browser — check before retrying.';
+
+/** Append {@link TIMEOUT_NOT_RESENT_NOTE} as its own sentence. */
+export function withNotResentNote(message: string): string {
+  return `${message}${message.endsWith('.') ? ' ' : '. '}${TIMEOUT_NOT_RESENT_NOTE}`;
 }
 
 /**
@@ -2334,7 +2349,11 @@ export class FetchproxyServer {
             // become an unhandled promise that crashes the host.
             this.pending.delete(id);
             const elapsedMs = Date.now() - start;
-            const error = `fetchproxy: ${init.url} did not respond within ${timeoutMs}ms`;
+            const base = `fetchproxy: ${init.url} did not respond within ${timeoutMs}ms`;
+            // Audit #928: fetch() will not re-send this one, so say so.
+            const error = isRetrySafeOnTimeout(init.method, fetchOpts.retryOnTimeout)
+              ? base
+              : withNotResentNote(base);
             // retryAttempted is overwritten by the caller (fetch())
             // when it wraps with `...result, retryAttempted: x`. We
             // emit `false` here as the inner default since the timeout
