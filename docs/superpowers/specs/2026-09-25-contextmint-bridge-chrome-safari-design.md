@@ -12,11 +12,15 @@ this spec reverses that; Firefox stays a follow-up.
 
 ## Goal
 
-Ship the fetchproxy browser extension as two listed, signed, auto-updating
-products under one store-facing name, **ContextMint Bridge**:
+Ship the fetchproxy browser extension, under the store-facing name **ContextMint
+Bridge**, to:
 
 1. **Chrome Web Store** — covers Chrome, Edge, Arc and Brave (all install from CWS).
-2. **Mac App Store** — a Safari Web Extension inside a minimal macOS container app.
+2. **Safari, inside the ContextMint app** — a Safari Web Extension embedded in
+   ContextMint's own Apple apps (`nullnet-app/mcp-host-app`, bundle ID
+   `app.nullnet.mcphost`): the **iOS/iPadOS app now**, and the **macOS app** when it
+   ships (owner, 2026-09-25: a Mac app is coming; everything goes under `mcphost`).
+   There is no standalone "ContextMint Bridge" Apple app.
 
 Today the only install path is `git clone` → `npm run build` → Load Unpacked. The
 README already links a CWS listing that was never published
@@ -32,7 +36,7 @@ bridge" (the name the ContextMint UI kit already uses throughout), not a separat
 Mint-family product. It replaces `Transporter` everywhere a user reads it:
 
 - `manifest.json` `name` / `short_name` (`Bridge`) / `description`
-- CWS and App Store listing titles
+- the CWS listing title, and the extension's name in Safari's extension settings
 - popup headings and copy (`extension-core/src/popup/`)
 - **user-facing error strings in published packages** — `server/src/session-ready.ts`
   and `cli/src/bridge-errors.ts`, `cli/src/main.ts` tell people to "open the
@@ -43,11 +47,11 @@ Mint-family product. It replaces `Transporter` everywhere a user reads it:
 **Dev-facing stays `fetchproxy`** — repo, npm scope, `fpx`, the protocol, storage keys,
 alarm names, `mcpId` shapes. One bridge sentence in the README:
 
-> In the Chrome Web Store and Mac App Store it's **ContextMint Bridge**; the protocol
+> In the Chrome Web Store (and in Safari, inside the ContextMint app) it's **ContextMint Bridge**; the protocol
 > and npm packages are **fetchproxy**. It works with ContextMint and with any
 > fetchproxy-based MCP or `fpx` running on your machine.
 
-That last clause also goes in both store descriptions: a user of a standalone
+That last clause also goes in the CWS description: a user of a standalone
 stdio MCP (`opentable-mcp`, `resy-mcp`) is installing a ContextMint-branded
 extension without using ContextMint, and the listing must say that is supported.
 
@@ -57,8 +61,8 @@ the cursor laid flat between them as the link. The design system owns the master
 `system/assets/`: `contextmint-bridge-icon.svg` with the Chrome 16/32/48/128 PNGs,
 `contextmint-bridge-toolbar.svg` (Safari's monochrome toolbar template),
 `contextmint-icon.svg` / `-1024.png` and `contextmint-wordmark.svg`. The extension copies
-the PNGs into `extension-chrome/icons/`; the macOS `AppIcon` set is rendered from the SVG
-when the Safari app is built. Still to make for the CWS listing: the 440×280 promo tile and
+the PNGs into `extension-chrome/icons/`; the Safari extension uses the same PNGs plus the
+toolbar template, and needs no app icon of its own (its container is ContextMint). Still to make for the CWS listing: the 440×280 promo tile and
 screenshots.
 
 ## Repository split
@@ -125,22 +129,34 @@ carries only what is true of this repo.
 packages/
   extension-core/        shared TS (moved; gains a platform seam)
   extension-chrome/      MV3 manifest + esbuild → dist/ → CWS zip (moved)
-  extension-safari/      NEW: manifest overlay + esbuild → Resources/
-    xcode/               xcodegen project.yml → macOS container app + .appex
+  extension-safari/      NEW: manifest overlay + esbuild → safari-resources zip
 ```
 
 - **`extension-safari`** reuses `extension-chrome`'s esbuild entry points against
-  `extension-core`; it owns only its manifest, the platform constant, and the Xcode
-  project. No forked source.
-- **Xcode project is generated** from a checked-in `project.yml` (xcodegen, as
-  `nullnet-app/mcp-host-app/ios` already does), not a committed `.xcodeproj` from
-  `safari-web-extension-packager`. The packager is used once, to learn the shape,
-  then discarded.
-- **Container app** is a single SwiftUI window: what the bridge is, a live
-  "enabled in Safari?" check (`SFSafariExtensionManager.getStateOfSafariExtension`),
-  and a button that opens Safari's extension settings
-  (`SFSafariApplication.showPreferencesForExtension`). No networking, no account,
-  no data.
+  `extension-core`; it owns only its manifest and the platform constant. No forked
+  source, **no Xcode**. Its output — the web-extension resources (manifest, JS,
+  popup, icons) — is attached to each bridge release as
+  `contextmint-bridge-safari-${VERSION}.zip` with its SHA-256, like the Chrome zip.
+- **The Apple side lives in `nullnet-app/mcp-host-app`.** Its xcodegen
+  `project.yml` gains a Safari Web Extension target (`.appex`) embedded in the
+  ContextMint iOS app, and later in the macOS app. The appex's `Resources/` is the
+  safari-resources zip at a **pinned bridge version**, fetched and hash-checked at
+  build time; bumping the pin is an ordinary first-party dependency bump (`feat:`/
+  `fix:`). The extension therefore ships with, and is versioned by, ContextMint app
+  releases.
+- **Pairing hand-off through the app.** Because the extension lives inside
+  ContextMint, the app can give it the gateway bridge target (URL + `mcpb_*`
+  credential) directly: the app writes it to the shared App Group container, the
+  appex's `SafariWebExtensionHandler` reads it, and the extension asks for it with
+  `browser.runtime.sendNativeMessage`. On Apple platforms that replaces pasting a URL
+  and token into the popup, and it is the first concrete piece of the designed
+  "Open it and hit Pair" step. The credential stays in the Keychain/App Group, never
+  in `storage.local` (the extension's own rule).
+- **App surface** in ContextMint: the existing Browser bridge rows (HANDOFF Part 2)
+  gain the Safari state ("enabled in Safari?" via
+  `SFSafariExtensionManager.getStateOfSafariExtension` on macOS; on iOS, which has
+  no such API, a status the extension reports back through the App Group) and a
+  button to Safari's extension settings.
 - **Platform seam.** `background/socket.ts` hardcodes `platform: 'chrome'` in the
   hello. It becomes a build-time define (`__FETCHPROXY_PLATFORM__`) set by each
   target's `build.ts`; the protocol validator already accepts `'safari'`.
@@ -152,6 +168,8 @@ packages/
   question.
 
 ## Safari: what has to be proven first (spike, before any build work)
+
+The spike runs on macOS Safari **and** iOS Safari (iPhone and iPad).
 
 MV3 in Safari is close to Chrome but not equal, and fetchproxy leans on the parts
 most likely to differ. Each row is **unverified** until the spike runs it on the
@@ -168,6 +186,10 @@ current Safari on this Mac:
 | `downloads` | `handlers/download.ts` | likely absent |
 | `tabGroups` | `ensure-domain-tab.ts` | absent in Safari |
 | Per-site permission grants for `<all_urls>` | tab routing | Safari asks the user per site unless they choose "all websites" — onboarding copy must cover it |
+| **iOS: how long the worker and its `wss://` socket survive** — Safari foreground, Safari backgrounded while ContextMint or Claude is in front, screen locked | live relay on iOS | expected: suspended within seconds of Safari leaving the screen, which would make live relay impossible on iPhone |
+| **iOS: iPad Split View / Stage Manager** with Safari visible beside another app | live relay on iPad | may keep the worker alive; unknown |
+| **iOS: session lift** (`read_cookies`, storage reads) triggered by the user in the popup, pushed to the gateway | Pattern-A MCPs (bootstrap) | should work — it needs Safari only for the moment of the lift |
+| **App Group hand-off**: app → App Group → `SafariWebExtensionHandler` → `sendNativeMessage` | pairing | standard on both platforms; confirm on iOS |
 
 **Spike output:** a table of the above marked works / degraded / absent, and a go /
 no-go. Absent APIs feed the capability seam; a failing keepalive is a no-go until
@@ -197,20 +219,30 @@ solved (e.g. reconnect-on-wake semantics) and gets its own design note.
 
 ## Safari: signing, distribution, release
 
-- **Distribution: Mac App Store** (auto-update, no Gatekeeper friction). Developer
-  ID + notarization is the fallback if App Review rejects the permission set.
-- **Team: nullnet.** The shared distribution cert and CI dev cert already exist for
-  nullnet apps, and the org secrets reach `nullnet-app/contextmint-bridge` with no
-  copying. Bundle IDs (approved 2026-09-25): `app.nullnet.contextmint.bridge` (app)
-  and `app.nullnet.contextmint.bridge.extension` (appex).
-- **CI** runs on the shared `[self-hosted, macOS]` runner with the temp-keychain
-  hygiene the other Apple release jobs use. Version: `CFBundleShortVersionString`
-  = the release-please version; build number = `run_number*100+run_attempt`
-  (fleet convention). Upload via `asc`; submission for review stays a human step
-  until the first review passes.
-- **iOS/iPadOS** is out of scope. Note for later: a universal container app could
-  ship the same extension to iOS Safari, where it would be useful **only** with a
-  remote (`wss://`) ContextMint bridge target, since no local MCP runs on a phone.
+- **Distribution: inside ContextMint's App Store listings.** No separate Apple
+  product, so no separate App Store record; the extension reaches users as a
+  ContextMint app update. App Review sees the extension's permissions as part of
+  ContextMint's submission.
+- **Bundle IDs** (owner, 2026-09-25 — everything under `mcphost`): the extension
+  appex is **`app.nullnet.mcphost.bridge`**, inside `app.nullnet.mcphost`. Apple
+  requires an appex ID to be prefixed by its containing app's, which is why the
+  earlier `app.nullnet.contextmint.bridge[.extension]` pair was withdrawn before
+  anything was registered. The macOS app is expected to share `app.nullnet.mcphost`
+  (universal purchase) and embed the same `app.nullnet.mcphost.bridge`; if it ships
+  under its own ID instead, its appex takes that ID as its prefix.
+- **App Group** shared by app and appex: `group.app.nullnet.mcphost`.
+- **Signing and CI** are mcp-host-app's existing ones: nullnet team, the shared
+  distribution cert, the `[self-hosted, macOS]` runner, its versioning
+  (`run_number*100+run_attempt`), TestFlight then review. The bridge repo signs
+  nothing for Apple.
+- **What iOS is for.** No MCP runs on a phone, so iOS uses only the remote
+  (`wss://`) ContextMint gateway target, and iOS suspends Safari's extensions when
+  Safari leaves the screen. Until the spike says otherwise, iOS v1 is scoped to
+  **session lift** — the user opens Safari, taps Sync in the extension, and it
+  pushes the declared session (cookies/tokens) to the gateway so hosted Pattern-A
+  MCPs run server-side — plus **live relay where the spike shows the worker stays
+  alive** (likely iPad Split View). Live relay for bot-walled sites on iPhone is not
+  promised.
 
 ## Migration for existing sideload users
 
@@ -229,7 +261,9 @@ unpacked Transporter, install ContextMint Bridge, re-approve each MCP once".
   the gateway as a remote bridge (URL + `mcpb_*` credential) in the popup's
   Bridges section, as today.
 - Narrowing host permissions; Firefox/AMO; Edge Add-ons store (Edge installs from
-  CWS); iOS Safari; renaming repo, npm packages, or protocol.
+  CWS); renaming repo, npm packages, or protocol.
+- **The ContextMint macOS app itself.** macOS Safari support arrives with it; until
+  then Mac users of ContextMint use Chrome/Edge/Arc/Brave.
 - Designing the ContextMint mark (done in the design system; see Identity → Mark).
 
 ## Testing (TDD throughout)
@@ -245,7 +279,11 @@ unpacked Transporter, install ContextMint Bridge, re-approve each MCP once".
   fetchproxy's `server/src/session-ready.ts` / `cli/src`, contains `Transporter`.
 - Version-message guard (fetchproxy): no server/cli message compares an extension
   version to a package version; mismatch messages name protocol numbers only.
-- `xcodebuild` build of the container app in CI (no signing on PRs).
+- Bridge repo: the safari-resources zip's manifest carries `platform` `'safari'`
+  in its bundle and only the permissions the spike kept.
+- mcp-host-app: `xcodebuild` of the iOS app with the embedded appex in CI (no signing
+  on PRs); a test that the pinned resources zip's SHA-256 matches the release's
+  published digest; App Group hand-off unit-tested on the Swift side.
 - Manual live check per store build: fresh install → pair `opentable-mcp` →
   `opentable_list_reservations` returns data; and one hosted round trip through
   the ContextMint gateway (`alltrails`, per mcp-host's 2026-09-09 check).
@@ -253,8 +291,9 @@ unpacked Transporter, install ContextMint Bridge, re-approve each MCP once".
 
 ## Success criteria
 
-1. ContextMint Bridge is live on the Chrome Web Store and the Mac App Store, and
-   each auto-publishes from a release-please release (Safari: to review).
+1. ContextMint Bridge is live on the Chrome Web Store (auto-published from a
+   release-please release), and the Safari extension ships inside a ContextMint
+   iOS release (macOS: with the Mac app).
 2. Both pass the live local and hosted checks above.
 3. README, `packages/*/README.md`, `docs/PRIVACY.md`, store-assets and user-facing
    error strings say ContextMint Bridge; the README install link is real.
@@ -273,11 +312,16 @@ Each step leaves both repos shippable; the extension is never absent from both.
 3. **Rebrand + platform/capability seams** in the bridge repo; release 1.0.0 as a
    GitHub-release zip.
 4. **Chrome Web Store** listing under the nullnet publisher (icons from the design system; promo tile + screenshots to make).
-5. **Safari spike** → go/no-go.
-6. **Safari build** → Mac App Store.
+5. **Safari spike** (macOS + iOS) → go/no-go, and the iOS scope confirmed.
+6. **`extension-safari`** in the bridge repo → safari-resources zip on each release.
+7. **Appex in `mcp-host-app`** (iOS) with the App Group pairing hand-off → TestFlight
+   → ContextMint release.
+8. **macOS** — the same appex in the ContextMint Mac app when that app exists.
 
 ## Decisions (owner, 2026-09-25)
 
-1. Bundle IDs `app.nullnet.contextmint.bridge[.extension]` — approved.
+1. ~~Bundle IDs `app.nullnet.contextmint.bridge[.extension]`~~ — withdrawn the same
+   day, never registered. Safari ships inside ContextMint on iOS and macOS;
+   appex `app.nullnet.mcphost.bridge`, App Group `group.app.nullnet.mcphost`.
 2. Extension packages **move** to `nullnet-app/contextmint-bridge`.
 3. CWS publisher of record: **nullnet** group publisher.
