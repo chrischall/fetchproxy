@@ -215,11 +215,11 @@ persistent `@fetchproxy/server` host on `127.0.0.1:37149`, profile
 | `fetch` via content script | **200**, 212 ms. | None. |
 | `fetch` with `inPage: true` (MAIN world via `scripting.executeScript`) | **200**, 92 ms — runtime MAIN-world injection works even though the manifest `world` key is unsupported. | `fetch_in_page` / `graphql` viable; keep MAIN-world scripts runtime-registered, not manifest-declared. |
 | `read_cookies`, legacy no-keys shape (`document.cookie`) | Works (returns the page's non-HttpOnly cookie string — by design, as on Chrome). | None. |
-| `read_cookies` with declared keys (`chrome.cookies`, HttpOnly) | *Not yet run* (tab closed before the check). | — |
+| `read_cookies` with declared keys (`chrome.cookies`, HttpOnly) | **Works, scoped**: returned exactly the two declared keys (`GeoIP`, `WMF-Last-Access`) and nothing else; needs no open tab. | None. |
 | `read_local_storage` | Answered (`{}` — the declared key does not exist on Wikipedia, so this proves the path, not the content). | — |
 | `downloads` | **Absent** (`chrome.downloads` undefined). | Capability seam: refuse `download` at pair time on Safari. |
 | `tabGroups` | Absent (packager); relay tab grouping is already `?.`-guarded. | None. |
-| `webRequest` header capture | *Not yet run.* | — |
+| `webRequest` header capture | **Inconclusive**: timed out after 20 s because no tab was open to make the request it listens for — not evidence either way about Safari's `webRequest`. | Re-run with a live tab; until then treat `capture_request_header` / `capture_redirect` as unproven on Safari. |
 | Popup | Renders once the background runs; it was stuck on "Loading…" only because `get-connected-identities` had no live background to answer. | None. |
 
 **Go** for macOS, with the three required changes: event-page background as a classic
