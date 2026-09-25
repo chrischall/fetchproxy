@@ -6,7 +6,7 @@
 [![npm](https://img.shields.io/npm/v/@fetchproxy/server)](https://www.npmjs.com/package/@fetchproxy/server)
 [![license](https://img.shields.io/npm/l/@fetchproxy/server)](LICENSE)
 
-A Node library and a browser extension. MCP servers (`opentable-mcp`, `resy-mcp`, anything similar) embed the library, and the `fpx` CLI wraps it for skills and shell scripts that just need a one-shot authenticated fetch; the user installs the extension once. Together they route HTTP requests through a real, signed-in browser tab — so Akamai, Cloudflare Bot Management, and similar bot walls see a real browser, not a Node process.
+A Node library and a browser extension. MCP servers (`opentable-mcp`, `resy-mcp`, anything similar) embed the library, and the `fpx` CLI wraps it for skills and shell scripts that just need a one-shot authenticated fetch; the user installs the extension ([ContextMint Bridge](https://github.com/nullnet-app/contextmint-bridge)) once. Together they route HTTP requests through a real, signed-in browser tab — so Akamai, Cloudflare Bot Management, and similar bot walls see a real browser, not a Node process.
 
 Tiny on purpose. The protocol exposes two verbs (`fetch`, opt-in `read_cookies`) and a handful of lifecycle frames. No DOM automation, no `eval_js`, no general storage exfiltration — that's outside scope and outside the security budget.
 
@@ -43,7 +43,7 @@ Every MCP races `bind(127.0.0.1:37149)` on startup. The first one wins (`role: '
 
 When the extension first sees a new identity it triggers a pair flow: the MCP prints an 8-digit SAS code to stderr and the extension popup shows the same code. The user clicks Approve. Subsequent connections from the same identity skip the prompt. The code commits to that pairing attempt — both identities, both hello nonces and the MCP's session ephemeral — so it is a different number every time.
 
-Three pieces, one repo:
+The pieces (the extension in its own repo):
 
 | Package | What | Lives in |
 |---|---|---|
@@ -51,27 +51,38 @@ Three pieces, one repo:
 | [`@fetchproxy/protocol`](packages/protocol) | Wire types, validators, crypto wrappers. Shared between server and extension. | `packages/protocol/` |
 | [`@fetchproxy/test-helpers`](packages/test-helpers) | Vitest mocks for downstream MCP test suites — drop-in `FetchproxyServer` replacement that captures constructor opts and exposes spy-able verbs. | `packages/test-helpers/` |
 | [`@fetchproxy/cli`](packages/cli) | `fpx` — one-shot CLI for the bridge: per-service profiles, authenticated fetch/read/session verbs for skills and shell scripts. | `packages/cli/` |
-| `fetchproxy-extension` | Browser extension. Connects to the WS, runs `fetch(url, { credentials: 'include' })` in the page MAIN world of a matching tab, returns the response. | `packages/extension-core/` + `packages/extension-chrome/` |
+| ContextMint Bridge | Browser extension. Connects to the WS, runs `fetch(url, { credentials: 'include' })` in the page MAIN world of a matching tab, returns the response. | [nullnet-app/contextmint-bridge](https://github.com/nullnet-app/contextmint-bridge) |
 
-`extension-core/` holds the shared TypeScript; `extension-chrome/` is the per-browser MV3 manifest + esbuild bundle. Safari/Firefox targets can slot in alongside without forking the core.
+The extension is its own repo and release line; it depends on `@fetchproxy/protocol` from npm, and the protocol number is the contract between the two halves.
 
 ## Install
 
 ### Extension
 
-Install **Transporter** from the [Chrome Web Store](https://chromewebstore.google.com/detail/transporter/EXTENSION_ID_PLACEHOLDER). One click, auto-updates.
+The browser half of the bridge is **ContextMint Bridge**, which lives in its own
+repo: [nullnet-app/contextmint-bridge](https://github.com/nullnet-app/contextmint-bridge).
+Download it from that repo's
+[releases](https://github.com/nullnet-app/contextmint-bridge/releases) (store
+listings are coming), or build it from source — the bridge repo's README has
+the sideload steps.
 
-> In the Chrome Web Store it's listed as **Transporter**; the protocol and npm packages are **fetchproxy**.
+> In the Chrome Web Store (and in Safari, inside the ContextMint app) it's **ContextMint Bridge**; the protocol
+> and npm packages are **fetchproxy**. It works with ContextMint and with any
+> fetchproxy-based MCP or `fpx` running on your machine.
 
-**Which extension pairs with which packages.** The extension and the npm
-packages are one cohort released together, and their majors pair one to one:
+If you sideloaded the old unpacked **Transporter** build from this repo: remove
+it, install ContextMint Bridge, and re-approve each MCP once — the new install
+is a new extension identity, so every MCP asks to pair again.
 
-| Extension | `@fetchproxy/server` | Protocol |
+**Which extension pairs with which packages.** The extension versions on its
+own release line; what the two halves must agree on is the **protocol number**:
+
+| `@fetchproxy/server` | Protocol | ContextMint Bridge |
 |---|---|---|
-| **3.x** (3.0.0+) | **3.x** (3.0.0+) | **4** |
-| 2.x | 2.x | 3 |
+| **3.x** (3.0.0+) | **4** | any release that speaks protocol 4 |
+| 2.x | 3 | — (the old Transporter 2.x sideload) |
 
-There is no cross-major pairing and nothing negotiates down. A protocol 3 end
+There is no cross-protocol pairing and nothing negotiates down. A protocol 3 end
 meeting a protocol 4 end is refused at the handshake, in either direction, with
 both numbers named. A v4 MCP that finds a v3 extension attached closes the
 socket `1002` with
@@ -81,37 +92,21 @@ protocol version mismatch: this MCP speaks 4, the extension speaks 3
 ```
 
 and fails the call in progress with the same fact and the remedy —
-`update Transporter (the fetchproxy extension) to 3.0.0 or later`. The other
-way round, a v4 extension answers a v3 MCP `upgrade @fetchproxy/server to >= 3.0.0`
+`update ContextMint Bridge to a release that speaks fetchproxy protocol 4`. The
+other way round, a v4 extension answers a v3 MCP `upgrade @fetchproxy/server to >= 3.0.0`
 and names it in the popup. A refusal rather than a downgrade is deliberate: a
 relay that can rewrite frames can rewrite the version it advertises, so a
 negotiated fallback would be the attacker's to pick. See
 [`docs/PROTOCOL.md`](docs/PROTOCOL.md) §Versioning for the table of what each
 protocol number changed, and §"A refusal, never a negotiation" for the
-argument. Upgrade both halves together.
+argument.
 
-<details>
-<summary>Manual / sideload install</summary>
-
-```sh
-git clone https://github.com/chrischall/fetchproxy
-cd fetchproxy
-npm ci
-npm --workspace=@fetchproxy/extension-chrome run build
-```
-
-Then in Chrome: `chrome://extensions` → toggle "Developer mode" → "Load unpacked" → pick `packages/extension-chrome/dist/`.
-
-**Rebuild and reload after every pull. This is a requirement, not hygiene.**
+**Reload the extension after updating it. This is a requirement, not hygiene.**
 Chrome keeps running the bundle it loaded until you press **Reload** on
-`chrome://extensions`, so a `git pull` that crosses a protocol major leaves a
+`chrome://extensions`, so an update that crosses a protocol number leaves a
 stale extension speaking the old protocol to MCPs you have just upgraded — and
 that pair does not degrade, it stops: every call through the bridge fails at
 once with `protocol version mismatch`, and no amount of retrying changes it.
-Nothing warns you at pull time, because at pull time nothing has connected yet.
-So: `npm --workspace=@fetchproxy/extension-chrome run build`, then Reload,
-before the next call.
-</details>
 
 ### Node library
 
@@ -303,15 +298,15 @@ Loopback is not configurable — no target can remove or repoint it — and each
 packages/
   protocol/          @fetchproxy/protocol         (npm, public)
   server/            @fetchproxy/server           (npm, public)
+  bootstrap/         @fetchproxy/bootstrap        (npm, public)
+  cli/               @fetchproxy/cli              (npm, public)
   test-helpers/      @fetchproxy/test-helpers     (npm, public)
-  extension-core/    shared TS for the extension  (workspace internal)
-  extension-chrome/  Chrome MV3 build target      (workspace internal)
 docs/
   PROTOCOL.md        wire-format reference
   SECURITY.md        threat model
 ```
 
-`npm test` runs the full vitest suite across all workspaces. `npm run typecheck` runs tsc-build on all TS workspaces (extension-chrome is bundled, not typechecked separately).
+`npm test` runs the full vitest suite across all workspaces. `npm run typecheck` runs tsc-build on all TS workspaces. The browser extension lives in [nullnet-app/contextmint-bridge](https://github.com/nullnet-app/contextmint-bridge).
 
 ## License
 

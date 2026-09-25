@@ -1126,12 +1126,16 @@ in a tool result:
 
 ```
 protocol version mismatch: this MCP speaks fetchproxy protocol 4, the attached
-browser extension speaks 3 — update Transporter (the fetchproxy extension) to
-3.0.0 or later
+browser extension speaks 3 — update ContextMint Bridge to a release that speaks
+fetchproxy protocol 4
 ```
 
 It names the extension by its **user-facing** name, because the person reading
-that in a claude.ai tool error has a browser, not a package. The far end gets the
+that in a claude.ai tool error has a browser, not a package. It names the
+**protocol** the extension must speak rather than a version to update to: the
+extension versions on its own release line
+([nullnet-app/contextmint-bridge](https://github.com/nullnet-app/contextmint-bridge)),
+so no `@fetchproxy/server` version describes it. The far end gets the
 same fact cut to fit a close frame, since RFC 6455 caps a close reason at 123
 bytes:
 
@@ -1151,8 +1155,11 @@ malformed-frame flood is not a send amplifier.
 - `@fetchproxy/bootstrap` — the repeatable session lift over `FetchproxyServer`.
 - `@fetchproxy/cli` — `fpx`, including the bridge-error remedies.
 - `@fetchproxy/test-helpers` — the published `FetchproxyServer` mock for consumers.
-- `@fetchproxy/extension-core` + `@fetchproxy/extension-chrome` (private) — the WS client + content script + popup.
 
-All of them share **one version**, released together. Major version bumps
+All of them share **one version**, released together. The browser extension —
+the WS client, content script and popup — is ContextMint Bridge, in its own repo
+([nullnet-app/contextmint-bridge](https://github.com/nullnet-app/contextmint-bridge))
+on its own release line; the protocol number, not a package version, is the
+contract between it and these packages. Major version bumps
 indicate wire-incompatible changes; patch/minor bumps add features additively or
 fix bugs.

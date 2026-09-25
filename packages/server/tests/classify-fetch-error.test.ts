@@ -5,8 +5,9 @@
 //
 // The classifier sees the raw `error` string the extension put on the
 // wire. Every kind in this file corresponds to a literal error template
-// emitted somewhere in `extension-core/src/background.ts` or
-// `extension-core/src/content.ts`. New kinds get added as new failure
+// emitted somewhere in nullnet-app/contextmint-bridge's
+// `packages/extension-core/src/background.ts` or
+// `packages/extension-core/src/content.ts`. New kinds get added as new failure
 // modes are surfaced; the catch-all `'other'` makes the field forward-
 // compatible without breaking downstream code that switch()es on it.
 import { describe, it, expect } from 'vitest';

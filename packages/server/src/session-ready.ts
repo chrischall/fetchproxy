@@ -25,7 +25,7 @@ export class FetchproxySessionNotReadyError extends Error {
   constructor(info: { mcpId: string; pairCode: string | null }) {
     const pairing = info.pairCode !== null && info.pairCode !== '';
     const hint = pairing
-      ? `Open the Transporter extension popup and approve pair code ${info.pairCode} for "${info.mcpId}", then retry.`
+      ? `Open the ContextMint Bridge extension popup and approve pair code ${info.pairCode} for "${info.mcpId}", then retry.`
       : `The extension is connected but hasn't confirmed a session for "${info.mcpId}" — sign in to the target site in that browser (and approve the requested scope if it changed), then retry.`;
     super(
       `fetchproxy: ${pairing ? 'pairing not yet approved' : 'no confirmed browser session'} for "${info.mcpId}". ${hint}`,
@@ -65,18 +65,17 @@ export class FetchproxyHelloRejectedError extends Error {
 }
 
 /**
- * The release at which protocol 4 lands, on both sides of the bridge — the
- * npm version of `@fetchproxy/server` and the version of the browser
- * extension, which move together by construction (every package in this
- * monorepo shares one version, and the extension is built from it).
+ * The `@fetchproxy/server` release at which protocol 4 lands. Printed ONLY
+ * when the far end is another MCP — that peer is this same package, so its
+ * version is the thing to upgrade.
  *
- * Literals rather than derived values: what a refusal must print is a fact
- * about the COHORT release, not about the build doing the printing, and the
- * MCP cannot read the extension's version off a hello it has just refused.
- * The extension's mirror of this constant is `MIN_SERVER_VERSION` in
- * `extension-core/src/background/socket.ts`.
+ * It is never printed for the extension. The extension moved to
+ * nullnet-app/contextmint-bridge and versions on its own release line
+ * (starting at 1.0.0), so "update the extension to 3.0.0" would name a release
+ * that will never exist. The contract between the two halves is the protocol
+ * number, and that is what an extension-side refusal names.
  */
-const MIN_VERSION = '3.0.0';
+const MIN_SERVER_VERSION = '3.0.0';
 
 /** Which end of the bridge spoke the other version. */
 export type ProtocolVersionPeer = 'extension' | 'mcp';
@@ -107,10 +106,10 @@ export class FetchproxyProtocolVersionError extends Error {
   constructor(info: { ourVersion: number; theirVersion: number; peer: ProtocolVersionPeer }) {
     const far =
       info.peer === 'extension'
-        ? `the attached browser extension speaks ${info.theirVersion} — update Transporter ` +
-          `(the fetchproxy extension) to ${MIN_VERSION} or later`
+        ? `the attached browser extension speaks ${info.theirVersion} — update ContextMint ` +
+          `Bridge to a release that speaks fetchproxy protocol ${info.ourVersion}`
         : `the MCP holding the bridge port speaks ${info.theirVersion} — upgrade ` +
-          `@fetchproxy/server to ${MIN_VERSION} or later in that MCP`;
+          `@fetchproxy/server to ${MIN_SERVER_VERSION} or later in that MCP`;
     super(
       `protocol version mismatch: this MCP speaks fetchproxy protocol ${info.ourVersion}, ${far}`,
     );

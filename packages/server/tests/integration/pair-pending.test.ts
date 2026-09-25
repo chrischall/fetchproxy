@@ -283,7 +283,7 @@ describe('pair-pending surfaces the pair code to MCP-side callers', () => {
     if (!result.ok) {
       expect(result.error).toContain('Tell the user');
       expect(result.error).toContain('display this code');
-      expect(result.error).toContain('Transporter');
+      expect(result.error).toContain('ContextMint Bridge');
       expect(result.error).toContain(ext.codeFor('test-mcp'));
     }
   }, 15_000);

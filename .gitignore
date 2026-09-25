@@ -7,7 +7,6 @@ build/
 
 # Per-browser build outputs
 packages/*/dist/
-packages/extension-chrome/build/
 *.xcuserstate
 *.xcworkspace/xcuserdata/
 

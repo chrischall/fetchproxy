@@ -4,9 +4,10 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 /**
- * The security model and the extension README are read by people deciding
- * whether to install the extension, so a page-visible surface they leave
- * out is a claim the code contradicts.
+ * The security model is read by people deciding whether to install the
+ * extension, so a page-visible surface it leaves out is a claim the code
+ * contradicts. (The extension's own README is guarded in
+ * nullnet-app/contextmint-bridge, where it now lives.)
  *
  * - fleet-audit #1003: SECURITY.md described fingerprinting as history, while
  *   the MAIN-world bridge answered a same-window probe on every site. The
@@ -29,13 +30,5 @@ describe('SECURITY.md describes where the MAIN-world bridge runs', () => {
   it('no longer says the bridges install on every page', () => {
     expect(sec).not.toMatch(/on \*\*every\*\* page the content script runs in/);
     expect(sec).not.toMatch(/wraps `client\.link\.request` on \*\*every\*\* page/);
-  });
-});
-
-describe('extension-chrome README', () => {
-  it('does not describe capture-logger.js as a manifest content script on <all_urls>', () => {
-    const readme = read('packages/extension-chrome/README.md');
-    expect(readme).not.toMatch(/registers `capture-logger\.js` as a `world: MAIN`, `document_start` script on `<all_urls>`/);
-    expect(readme).not.toMatch(/MAIN-world capture helper \(`capture-logger\.js`\) at `<all_urls>`/);
   });
 });

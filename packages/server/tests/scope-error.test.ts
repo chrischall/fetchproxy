@@ -41,7 +41,7 @@ describe('protocolErrorFrom — gate-#2 scope rejections', () => {
   it('carries actionable re-pair guidance on .hint', () => {
     const err = protocolErrorFrom('cookie keys not in declared set: refreshToken') as FetchproxyScopeError;
     expect(err.hint).toMatch(/revoke/i);
-    expect(err.hint).toMatch(/Transporter/);
+    expect(err.hint).toMatch(/ContextMint Bridge/);
     // The thing that made this worth typing: it must NOT read as a version
     // problem, which is where the old CLI copy sent people.
     expect(err.hint).not.toMatch(/version mismatch/i);

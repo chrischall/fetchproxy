@@ -35,7 +35,7 @@ describe('mapBridgeError — scope-diff errors are not version mismatches', () =
   it('names the profile flag so the user knows what to revoke', () => {
     const io = memIo();
     mapBridgeError(protocolErrorFrom('cookie keys not in declared set: a, b'), io);
-    expect(io.errs.join('\n')).toMatch(/Transporter/);
+    expect(io.errs.join('\n')).toMatch(/ContextMint Bridge/);
   });
 
   // Gate #2 rejects a widened scope in EIGHT different wordings, one per
@@ -59,7 +59,7 @@ describe('mapBridgeError — scope-diff errors are not version mismatches', () =
     const out = io.errs.join('\n');
     expect(out).not.toMatch(/version mismatch/i);
     expect(out).toMatch(/re-approve|revoke/i);
-    expect(out).toMatch(/Transporter/);
+    expect(out).toMatch(/ContextMint Bridge/);
   });
 
   it('still reports a genuine protocol error as a version mismatch', () => {
@@ -188,8 +188,15 @@ describe('a protocol version mismatch names the remedy, not a bucket', () => {
   it('sends the user to the extension when the EXTENSION is behind', () => {
     const io = memIo();
     const out = (mapBridgeError(mismatch('extension'), io), io.errs.join('\n'));
-    expect(out).toMatch(/Transporter/);
-    expect(out).toMatch(/chrome:\/\/extensions/);
+    expect(out).toMatch(/ContextMint Bridge/);
+    // The extension versions on its own release line now, so the remedy is
+    // where to get it and which protocol it must speak — never "both halves
+    // ship as one release", which stopped being true at the repo split.
+    expect(out).not.toMatch(/one release/i);
+    expect(out).toMatch(/nullnet-app\/contextmint-bridge\/releases/);
+    expect(out).toMatch(/store/i);
+    expect(out).toMatch(/fetchproxy protocol 4/);
+    expect(out).toMatch(/reload/i);
     // The remedy is not this profile and not a sign-in: saying so is the point
     // of the task, because a thirty-second hang is what used to send people
     // there.

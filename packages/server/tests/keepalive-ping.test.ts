@@ -3,7 +3,7 @@ import { FetchproxyServer } from '../src/index.js';
 import type { InnerFrame, InnerRequest } from '@fetchproxy/protocol';
 
 // Issue #67 — server-side proactive keepalive ping. The 0.8.0
-// alarms-based keepalive in extension-core fires only when the SW is
+// alarms-based keepalive in the extension fires only when the SW is
 // already alive; under real usage the SW still gets evicted mid-MCP-
 // session. A server-initiated ping while the MCP is active is the
 // belt-and-braces fix.

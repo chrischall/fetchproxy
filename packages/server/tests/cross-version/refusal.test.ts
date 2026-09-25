@@ -37,12 +37,12 @@ import { v3ExtensionHello, v3Frame } from './v3-fixtures.js';
  * are the ones that keep meaning something after the next wire break.
  *
  * The four cases are the plan's Group 5. Case 2 — a v3 MCP meeting a v4
- * EXTENSION — is in `packages/extension-core/tests/cross-version/refusal.test.ts`
- * against the same frozen corpus: its harness is the extension's service
- * worker with `chrome.*` and a fake `WebSocket`, and the alternative was a
- * server-package test reaching into another workspace's private source to
- * drive it. The corpus stays single-sourced, which is the part that matters —
- * both ends are refusing the same bytes.
+ * EXTENSION — is in nullnet-app/contextmint-bridge's
+ * `packages/extension-core/tests/cross-version/refusal.test.ts`
+ * against a copy of the same frozen corpus: its harness is the extension's
+ * service worker with `chrome.*` and a fake `WebSocket`, which lives with the
+ * extension. The bytes are the part that matters — both ends are refusing the
+ * same captured v3 frames, and neither copy is ever regenerated.
  *
  * Every case asserts a CLEAN outcome and none asserts a wall-clock threshold:
  * the whole failure this group exists to bound is a hang, and a test that
@@ -175,8 +175,8 @@ describe('cross-version: a v3 peer meets a v4 host', () => {
       expect((err as Error).name).toBe('FetchproxyProtocolVersionError');
       expect((err as Error).message).toBe(
         'protocol version mismatch: this MCP speaks fetchproxy protocol 4, the attached ' +
-          'browser extension speaks 3 — update Transporter (the fetchproxy extension) to ' +
-          '3.0.0 or later',
+          'browser extension speaks 3 — update ContextMint Bridge to a release that speaks ' +
+          'fetchproxy protocol 4',
       );
 
       const { code, reason } = await settleOrFail(closed, 'the socket close');

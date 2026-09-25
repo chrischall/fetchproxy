@@ -1,6 +1,6 @@
 # @fetchproxy/server
 
-> Node library MCP servers depend on to relay HTTP through the user's signed-in browser via the [fetchproxy extension](https://github.com/chrischall/fetchproxy).
+> Node library MCP servers depend on to relay HTTP through the user's signed-in browser via the fetchproxy browser extension, [ContextMint Bridge](https://github.com/nullnet-app/contextmint-bridge).
 
 ```
                  ┌────────────────────┐
@@ -26,7 +26,7 @@ See the [top-level README](https://github.com/chrischall/fetchproxy#readme) for 
 npm install @fetchproxy/server
 ```
 
-The user also needs the fetchproxy browser extension installed. See the [top-level README](https://github.com/chrischall/fetchproxy#install) for instructions.
+The user also needs the fetchproxy browser extension, **ContextMint Bridge**, installed — download it from the [contextmint-bridge releases](https://github.com/nullnet-app/contextmint-bridge/releases); see the [top-level README](https://github.com/chrischall/fetchproxy#install).
 
 ## Quickstart
 

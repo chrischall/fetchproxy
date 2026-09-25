@@ -16,7 +16,7 @@ Or run it without installing:
 npx @fetchproxy/cli profile list
 ```
 
-Either way, the user also needs the fetchproxy browser extension (**Transporter**) installed — see the [top-level README](https://github.com/chrischall/fetchproxy#install).
+Either way, the user also needs the fetchproxy browser extension, **ContextMint Bridge**, installed — download it from the [contextmint-bridge releases](https://github.com/nullnet-app/contextmint-bridge/releases); see the [top-level README](https://github.com/chrischall/fetchproxy#install).
 
 ## The profile model
 
@@ -38,10 +38,10 @@ The first time any verb connects under a given profile, the extension doesn't au
 
 ```
 $ fpx health -p opentable
-fetchproxy pair code: 4829-1374 — approve in the Transporter extension popup
+fetchproxy pair code: 4829-1374 — approve in the ContextMint Bridge extension popup
 ```
 
-Open the Transporter popup, confirm the code matches, click Approve. Every subsequent command against that profile — from any verb — reuses the same trust record and skips the prompt.
+Open the ContextMint Bridge popup, confirm the code matches, click Approve. Every subsequent command against that profile — from any verb — reuses the same trust record and skips the prompt.
 
 ### Re-pair on scope change
 
@@ -60,10 +60,10 @@ The next command against `opentable` prints a fresh pair code even though the id
 
 ```sh
 fpx profile remove opentable
-# profile "opentable" removed — also revoke fpx-opentable in the Transporter extension popup
+# profile "opentable" removed — also revoke fpx-opentable in the ContextMint Bridge extension popup
 ```
 
-That only cleans up the CLI's side. The extension still holds a trust row for `fpx-opentable` until the user opens the Transporter popup and revokes it there — removing the profile does not reach into the browser.
+That only cleans up the CLI's side. The extension still holds a trust row for `fpx-opentable` until the user opens the ContextMint Bridge popup and revokes it there — removing the profile does not reach into the browser.
 
 ## Verbs
 

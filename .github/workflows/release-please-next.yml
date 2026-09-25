@@ -113,9 +113,8 @@ jobs:
       # transitive dependency's lifecycle script would run beside it.
       - run: npm ci --ignore-scripts
 
-      # Rewrite every workspace's package.json `version` field, plus
-      # the Chrome extension manifest's `version`, plus every
-      # cross-package `@fetchproxy/*` caret range. Mirrors the
+      # Rewrite every RC-published workspace's package.json `version`
+      # field, plus every cross-package `@fetchproxy/*` caret range. Mirrors the
       # `extra-files` set in release-please-config.json — keep them
       # in sync if either list changes.
       - name: Rewrite versions to RC
@@ -123,11 +122,9 @@ jobs:
           RC_VERSION: ${{ steps.rc.outputs.RC_VERSION }}
         run: |
           set -euo pipefail
-          # Chrome extension manifest.version is NOT SemVer-aware and
-          # rejects pre-release suffixes (`0.9.0-rc.1` is invalid).
-          # We only publish npm packages from this workflow; the
-          # extension zip is NOT cut here. Skip the manifest entirely.
-          for pkg in packages/bootstrap packages/extension-chrome packages/extension-core packages/protocol packages/server; do
+          # The browser extension is released from
+          # nullnet-app/contextmint-bridge, not from here.
+          for pkg in packages/bootstrap packages/protocol packages/server; do
             node -e "
               const fs = require('fs');
               const file = '${pkg}/package.json';
@@ -166,17 +163,9 @@ jobs:
           # tree but no `git push`.
           npm install --package-lock-only --ignore-scripts
 
-      # Same dependency order — and same workspace set — as
-      # release-please.yml's publish job. extension-core is
-      # `"private": true` and not a transitive dep of the two
-      # published packages (server, bootstrap), so it's not strictly
-      # required to gate the publish. Kept here for symmetry with
-      # release-please.yml and as a compile gate: if extension-core
-      # stops building against a shared protocol/server change, we'd
-      # rather catch it in the RC flow than discover it on the next
-      # stable release.
+      # The three packages this flow publishes, in dependency order.
       - name: Build packages
-        run: npm run build --workspace=@fetchproxy/protocol --workspace=@fetchproxy/server --workspace=@fetchproxy/bootstrap --workspace=@fetchproxy/extension-core
+        run: npm run build --workspace=@fetchproxy/protocol --workspace=@fetchproxy/server --workspace=@fetchproxy/bootstrap
 
       # Publish each non-private package under the `next` dist-tag.
       # Idempotent: if a previous run already pushed the same rc

@@ -5,9 +5,10 @@
  * strings — every change to extension-emitted error templates needs
  * to be reflected here in one place.
  *
- * The kinds correspond 1:1 with concrete error templates in
- * `extension-core/src/background.ts` and
- * `extension-core/src/content.ts`. Adding a new kind is additive: old
+ * The kinds correspond 1:1 with concrete error templates in the
+ * extension (nullnet-app/contextmint-bridge):
+ * `packages/extension-core/src/background.ts` and
+ * `packages/extension-core/src/content.ts`. Adding a new kind is additive: old
  * downstream code that only inspects `error` keeps working; code that
  * switch()es on `kind` gets a new case to handle.
  *

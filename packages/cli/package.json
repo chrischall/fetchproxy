@@ -35,6 +35,7 @@
     "@fetchproxy/server": "^3.2.2"
   },
   "devDependencies": {
-    "@fetchproxy/test-helpers": "^3.2.2"
+    "@fetchproxy/test-helpers": "^3.2.2",
+    "tsx": "^4.23.15"
   }
 }

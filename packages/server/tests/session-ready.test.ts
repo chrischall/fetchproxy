@@ -3,6 +3,7 @@ import type { SessionState } from '../src/session.js';
 import {
   awaitSessionReady,
   FetchproxyHelloRejectedError,
+  FetchproxyProtocolVersionError,
   FetchproxySessionNotReadyError,
 } from '../src/session-ready.js';
 
@@ -99,5 +100,39 @@ describe('FetchproxyHelloRejectedError', () => {
     // people to check a sign-in and a scope that were both already fine.
     expect(e.message).not.toContain('sign in to the target site');
     expect(e.message).toContain('not a timeout');
+  });
+});
+
+/**
+ * The extension left this repo (nullnet-app/contextmint-bridge) and versions on
+ * its own release line, starting at 1.0.0. Until then every package shared one
+ * version, so "update the extension to 3.0.0" was a fact; now it would send the
+ * reader hunting for an extension release that will never exist. The contract
+ * between the two halves is the PROTOCOL number, so that is what an
+ * extension-side refusal names.
+ */
+describe('FetchproxyProtocolVersionError', () => {
+  it('tells the user to update ContextMint Bridge to the protocol this MCP speaks', () => {
+    const err = new FetchproxyProtocolVersionError({ ourVersion: 4, theirVersion: 3, peer: 'extension' });
+    expect(err.message).toBe(
+      'protocol version mismatch: this MCP speaks fetchproxy protocol 4, the attached ' +
+        'browser extension speaks 3 — update ContextMint Bridge to a release that speaks ' +
+        'fetchproxy protocol 4',
+    );
+  });
+
+  it('never names a package version as the extension\'s target', () => {
+    const err = new FetchproxyProtocolVersionError({ ourVersion: 4, theirVersion: 3, peer: 'extension' });
+    expect(err.message).not.toMatch(/\d+\.\d+\.\d+/);
+    expect(err.message).not.toMatch(/@fetchproxy\/server/);
+    expect(err.message).not.toMatch(/Transporter/);
+  });
+
+  it('still names the @fetchproxy/server version when another MCP is behind', () => {
+    const err = new FetchproxyProtocolVersionError({ ourVersion: 4, theirVersion: 3, peer: 'mcp' });
+    expect(err.message).toBe(
+      'protocol version mismatch: this MCP speaks fetchproxy protocol 4, the MCP holding ' +
+        'the bridge port speaks 3 — upgrade @fetchproxy/server to 3.0.0 or later in that MCP',
+    );
   });
 });

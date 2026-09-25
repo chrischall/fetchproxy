@@ -148,7 +148,7 @@ export async function runCli(argv: string[], io: Io, deps: CliDeps = {}): Promis
         // …and the pin beside it, or a profile re-created under this name
         // inherits a browser identity it never paired with (#208).
         rmSync(extensionPinPath(cmd.name, deps.trustDir ?? deps.identityDir), { force: true });
-        io.err(`profile "${cmd.name}" removed — also revoke fpx-${cmd.name} in the Transporter extension popup`);
+        io.err(`profile "${cmd.name}" removed — also revoke fpx-${cmd.name} in the ContextMint Bridge extension popup`);
         return EXIT.OK;
       }
       case 'fetch':
