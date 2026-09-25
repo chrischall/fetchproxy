@@ -1,7 +1,7 @@
 # ContextMint Bridge — store-ready Chrome + Safari extensions (design)
 
 **Date:** 2026-09-25
-**Status:** Draft, awaiting owner review
+**Status:** Approved by owner 2026-09-25 (decisions at the end); ready for an implementation plan
 **Supersedes:** the *Identity* section of
 [`2026-05-21-transporter-cws-launch-design.md`](./2026-05-21-transporter-cws-launch-design.md).
 That spec's permission, privacy and release-artifact reasoning still holds; its
@@ -58,12 +58,70 @@ and screenshots. **This is a dependency, not part of this spec** — it comes fr
 `nullnet-design-system`, and the packaging work below uses placeholders until it
 lands. Store submission is blocked on it.
 
-## Architecture
+## Repository split
+
+The extension leaves `chrischall/fetchproxy` for a new **`nullnet-app/contextmint-bridge`**
+repo (owner decision, 2026-09-25). It is a product with a store listing, a signing
+team and a release cadence of its own; fetchproxy stays the library, CLI and protocol.
+
+**Why the split is clean.** `extension-core` and `extension-chrome` import exactly one
+fetchproxy package — `@fetchproxy/protocol`, already on npm — and nothing in
+fetchproxy imports them. The remaining coupling is prose: comments that cite
+`extension-core/src/...` paths, three root doc-guard tests that read extension READMEs
+or source (`install-walkthroughs-name-the-cohort`, `security-docs-match-the-main-world-bridge`,
+`published-packages-ship-no-tests`), and the two release workflows that build and zip
+the extension.
+
+**What moves** (with history — `git filter-repo --path packages/extension-core
+--path packages/extension-chrome` plus the docs below — so blame and the long
+rationale comments survive):
+
+- `packages/extension-core`, `packages/extension-chrome`, and the extension half of
+  the cross-version refusal tests (`extension-core/tests/cross-version/`)
+- `docs/PRIVACY.md` (it is the extension's privacy policy; store listings link it)
+  and `docs/store-assets/`
+- the extension build/zip steps of `release-please.yml` / `release-please-next.yml`
+
+**What stays in fetchproxy:** protocol, server, bootstrap, cli, test-helpers,
+`docs/PROTOCOL.md`, `docs/SECURITY.md` (the threat model spans both halves; its
+extension sections point at the new repo's paths), `docs/REACHING-AN-API.md`.
+
+**Versioning decouples, and the protocol number becomes the contract.** Today every
+package, the extension included, shares one lockstep version, and user-facing
+messages lean on that: `server/src/session-ready.ts` says "update Transporter to
+`${MIN_VERSION}`" (a *server* package version), `cli/src/bridge-errors.ts` says "both
+halves of the bridge ship as one release", and `extension-core/src/lib/version-mismatch.ts`
+pins `MIN_SERVER_VERSION = '3.0.0'`. After the split the extension has its own
+release-please line starting at **1.0.0** (a first store release is a fresh product,
+not fetchproxy 3.x), so every one of these messages must speak in **protocol
+numbers** ("needs a ContextMint Bridge that speaks fetchproxy protocol 4 — update it
+from the Chrome Web Store / App Store") and never compare an extension version to a
+server version. That is a `fix:` release of `@fetchproxy/server` and `@fetchproxy/cli`,
+shipped together with the rename.
+
+**Dev loop across two repos.** A protocol change now lands in fetchproxy first and
+reaches the extension as a dependency bump (a first-party bump, so `feat:`/`fix:`, never
+`chore(deps)`). fetchproxy's existing `next` prerelease channel
+(`release-please-next.yml`) is how an unreleased protocol change is tried in the
+extension: the bridge repo's CI runs its suite against both `@fetchproxy/protocol@latest`
+and `@next`, so a breaking protocol change shows up red in the bridge before it ships.
+Local iteration across both uses `npm link`.
+
+**Visibility: public.** The extension's security claim — the relay cannot read your
+traffic; the extension only touches declared domains — is checkable only if the code
+that ships to the stores is readable, and the GitHub-release zip exists for exactly
+that reproducibility audit. The nullnet default is private; this repo is the exception.
+
+**Fleet wiring** as for any nullnet repo: `chrischall/workflows` reusable CI,
+auto-review, release-please with `NULLNET_RELEASE_PAT`, fleet labels. Its CLAUDE.md
+carries only what is true of this repo.
+
+## Architecture (in `nullnet-app/contextmint-bridge`)
 
 ```
 packages/
-  extension-core/        shared TS (unchanged role; gains a platform seam)
-  extension-chrome/      MV3 manifest + esbuild → dist/ → CWS zip
+  extension-core/        shared TS (moved; gains a platform seam)
+  extension-chrome/      MV3 manifest + esbuild → dist/ → CWS zip (moved)
   extension-safari/      NEW: manifest overlay + esbuild → Resources/
     xcode/               xcodegen project.yml → macOS container app + .appex
 ```
@@ -114,8 +172,9 @@ solved (e.g. reconnect-on-wake semantics) and gets its own design note.
 
 ## Chrome: what changes
 
-- Manifest rename + description (≤132 chars); `version` still driven by
-  release-please (`extra-files` already covers `extension-chrome/manifest.json`).
+- Manifest rename + description (≤132 chars); `version` driven by the bridge
+  repo's release-please (`extra-files` on `extension-chrome/manifest.json`, as
+  fetchproxy's config does today).
 - **Permissions stay as they are for first submission** (`storage`, `tabs`,
   `scripting`, `cookies`, `webRequest`, `alarms`, `downloads`, `tabGroups`,
   `<all_urls>`). `docs/store-assets/permission-justifications.md` gains the two it
@@ -124,7 +183,9 @@ solved (e.g. reconnect-on-wake semantics) and gets its own design note.
   (the pair flow already knows the declared domains) but is a follow-up — it is a
   behaviour change with its own security review, and CWS accepts the broad set
   with justification.
-- **First upload is manual** (it mints the extension ID). Then
+- **Publisher: a nullnet group publisher** on the Chrome Web Store (approved
+  2026-09-25), so the listing belongs to the org, not a personal account.
+- **First upload is manual** (it mints the extension ID). Then the bridge repo's
   `release-please.yml` gains a CWS publish job (Chrome Web Store API, OAuth
   client + refresh token as repo secrets), gated on the release, idempotent, and
   followed by a check that the listed version matches the tag — the "green tag is
@@ -136,15 +197,9 @@ solved (e.g. reconnect-on-wake semantics) and gets its own design note.
 - **Distribution: Mac App Store** (auto-update, no Gatekeeper friction). Developer
   ID + notarization is the fallback if App Review rejects the permission set.
 - **Team: nullnet.** The shared distribution cert and CI dev cert already exist for
-  nullnet apps; the bundle ID is `app.nullnet.contextmint.bridge` (app) and
-  `app.nullnet.contextmint.bridge.extension` (appex). **Bundle IDs are permanent —
-  confirm before the first ASC record is created.**
-- **Secrets gap.** nullnet's signing secrets are org secrets on `nullnet-app`;
-  `chrischall/fetchproxy` cannot see them. Plan: add repo-level copies to
-  fetchproxy (same values). Moving the extension packages to a nullnet repo was
-  considered and rejected: `extension-core` is private and unpublished, and
-  splitting it from the protocol it must stay in lockstep with reintroduces the
-  version-skew problem the monorepo exists to prevent.
+  nullnet apps, and the org secrets reach `nullnet-app/contextmint-bridge` with no
+  copying. Bundle IDs (approved 2026-09-25): `app.nullnet.contextmint.bridge` (app)
+  and `app.nullnet.contextmint.bridge.extension` (appex).
 - **CI** runs on the shared `[self-hosted, macOS]` runner with the temp-keychain
   hygiene the other Apple release jobs use. Version: `CFBundleShortVersionString`
   = the release-please version; build number = `run_number*100+run_attempt`
@@ -183,13 +238,15 @@ unpacked Transporter, install ContextMint Bridge, re-approve each MCP once".
 - Capability seam: with `chrome.downloads` / `tabGroups` / `webRequest` undefined,
   the extension does not advertise them, and a request for one yields the typed
   refusal.
-- Brand guard: no user-facing string in `extension-core/src/popup`,
-  `server/src/session-ready.ts`, or `cli/src` contains `Transporter`.
+- Brand guard, one per repo: no user-facing string in the bridge's popup, or in
+  fetchproxy's `server/src/session-ready.ts` / `cli/src`, contains `Transporter`.
+- Version-message guard (fetchproxy): no server/cli message compares an extension
+  version to a package version; mismatch messages name protocol numbers only.
 - `xcodebuild` build of the container app in CI (no signing on PRs).
 - Manual live check per store build: fresh install → pair `opentable-mcp` →
   `opentable_list_reservations` returns data; and one hosted round trip through
   the ContextMint gateway (`alltrails`, per mcp-host's 2026-09-09 check).
-- `npm test` **and** `npm run typecheck` green.
+- `npm test` **and** `npm run typecheck` green in both repos.
 
 ## Success criteria
 
@@ -200,10 +257,24 @@ unpacked Transporter, install ContextMint Bridge, re-approve each MCP once".
    error strings say ContextMint Bridge; the README install link is real.
 4. The cohort-MCP README sweep (separate follow-up) points at the two listings.
 
-## Open decisions for the owner
+## Sequencing
 
-1. Bundle IDs `app.nullnet.contextmint.bridge[.extension]` — permanent once created.
-2. Repo-level copies of nullnet signing secrets in `chrischall/fetchproxy` (vs.
-   moving the packages to nullnet).
-3. Publisher of record on CWS: personal developer account or a nullnet group
-   publisher. (Transferring a CWS item later is possible but slow.)
+Each step leaves both repos shippable; the extension is never absent from both.
+
+1. **Create `nullnet-app/contextmint-bridge`** from a history-preserving filter of
+   fetchproxy; `@fetchproxy/protocol` from npm; CI green against `latest` and `next`.
+2. **Remove the extension from fetchproxy**: delete the packages, re-aim the doc-guard
+   tests and release workflows, repoint README install steps. Same PR ships the
+   protocol-number messaging and the ContextMint Bridge wording in server/cli
+   (`fix:`).
+3. **Rebrand + platform/capability seams** in the bridge repo; release 1.0.0 as a
+   GitHub-release zip.
+4. **Chrome Web Store** listing under the nullnet publisher (blocked on the mark).
+5. **Safari spike** → go/no-go.
+6. **Safari build** → Mac App Store.
+
+## Decisions (owner, 2026-09-25)
+
+1. Bundle IDs `app.nullnet.contextmint.bridge[.extension]` — approved.
+2. Extension packages **move** to `nullnet-app/contextmint-bridge`.
+3. CWS publisher of record: **nullnet** group publisher.
