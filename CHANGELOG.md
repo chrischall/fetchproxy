@@ -1,5 +1,22 @@
 # Changelog
 
+## [3.2.3](https://github.com/chrischall/fetchproxy/compare/v3.2.2...v3.2.3) (2026-09-25)
+
+
+### Bug Fixes
+
+* **cli:** name ContextMint Bridge and the protocol number in the fallback protocol hint ([#413](https://github.com/chrischall/fetchproxy/issues/413)) ([b42a661](https://github.com/chrischall/fetchproxy/commit/b42a661e3cf3d5674f0484bd2fd3718b056d9edc))
+* **server,cli:** point bridge errors at ContextMint Bridge and name protocol versions ([#411](https://github.com/chrischall/fetchproxy/issues/411)) ([9e775ec](https://github.com/chrischall/fetchproxy/commit/9e775ec052ff12d5f97290fc48f4419416133680))
+
+
+### Documentation
+
+* ContextMint Bridge — Chrome + Safari store spec and repo-split plan ([#404](https://github.com/chrischall/fetchproxy/issues/404)) ([d474085](https://github.com/chrischall/fetchproxy/commit/d4740853b026a519dd4eccc51d757f486d7f2b75))
+* **spec:** record the Cursor C as the ContextMint Bridge mark ([#407](https://github.com/chrischall/fetchproxy/issues/407)) ([06530d1](https://github.com/chrischall/fetchproxy/commit/06530d1806db53a8e9394b1733a9f719481e38b5))
+* **spec:** record the macOS Safari spike results ([#414](https://github.com/chrischall/fetchproxy/issues/414)) ([02d279c](https://github.com/chrischall/fetchproxy/commit/02d279c58fc86780c2fbb30c0d3cc2a2bfe2b2ed))
+* **spec:** scope in ContextMint for Mac v0 as the Safari extension's container ([#410](https://github.com/chrischall/fetchproxy/issues/410)) ([0fcc32c](https://github.com/chrischall/fetchproxy/commit/0fcc32c99bf96a8734e11cc0ba2b29b07899de27))
+* **spec:** ship the Safari extension inside ContextMint on iOS and macOS ([#408](https://github.com/chrischall/fetchproxy/issues/408)) ([a8a1ec8](https://github.com/chrischall/fetchproxy/commit/a8a1ec8b9718c9501012b64ff9d9712acf3d2206))
+
 ## [3.2.2](https://github.com/chrischall/fetchproxy/compare/v3.2.1...v3.2.2) (2026-09-24)
 
 
