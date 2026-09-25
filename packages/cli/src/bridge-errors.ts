@@ -16,8 +16,8 @@ export function mapBridgeError(err: unknown, io: Io): number {
     const code = (err as { pairCode?: string | null }).pairCode;
     io.err(
       code
-        ? `bridge not ready — pairing pending. Approve pair code ${code} in the Transporter extension popup and retry.`
-        : 'bridge not ready — is Chrome running with the Transporter extension installed and connected?',
+        ? `bridge not ready — pairing pending. Approve pair code ${code} in the ContextMint Bridge extension popup and retry.`
+        : 'bridge not ready — is your browser running with the ContextMint Bridge extension installed and connected?',
     );
     return EXIT.BRIDGE;
   }
@@ -39,10 +39,11 @@ export function mapBridgeError(err: unknown, io: Io): number {
     io.err(`bridge refused: ${err.message}.`);
     io.err(
       err.peer === 'extension'
-        ? 'Both halves of the bridge ship as one release: install the Transporter build ' +
-            'from that release, reload it at chrome://extensions, and retry. Nothing is ' +
-            'wrong with this profile or your sign-in, and no flag here can bridge the ' +
-            'two versions.'
+        ? `Update ContextMint Bridge to a release that speaks fetchproxy protocol ` +
+            `${err.ourVersion} — from its store listing, or from ` +
+            'https://github.com/nullnet-app/contextmint-bridge/releases — then reload it ' +
+            "in your browser's extensions page and retry. Nothing is wrong with this " +
+            'profile or your sign-in, and no flag here can bridge the two versions.'
         : 'That MCP holds the fetchproxy bridge port on this machine, so every MCP here — ' +
             'fpx included — dials into it as a peer: upgrade @fetchproxy/server there and ' +
             'restart that process. fpx cannot route around it, and neither the profile nor ' +
@@ -78,7 +79,7 @@ export function mapBridgeError(err: unknown, io: Io): number {
     return EXIT.BRIDGE;
   }
   const hints: Record<string, string> = {
-    bridge_down: 'is Chrome running with the Transporter extension installed?',
+    bridge_down: 'is your browser running with the ContextMint Bridge extension installed?',
     timeout: 'is a tab open on the declared domain and signed in?',
     protocol: 'extension/server version mismatch — update both.',
     http: '',

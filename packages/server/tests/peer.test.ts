@@ -899,8 +899,8 @@ describe('peer: a bootstrap keypair and a session ephemeral (v4)', () => {
     expect(err.name).toBe('FetchproxyProtocolVersionError');
     expect(err.message).toBe(
       'protocol version mismatch: this MCP speaks fetchproxy protocol 4, the attached ' +
-        'browser extension speaks 3 — update Transporter (the fetchproxy extension) to ' +
-        '3.0.0 or later',
+        'browser extension speaks 3 — update ContextMint Bridge to a release that speaks ' +
+        'fetchproxy protocol 4',
     );
     expect(p.sessionLinked()).toBe(false);
     // The link is left up on purpose: closing it is wired to re-election, and

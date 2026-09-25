@@ -793,7 +793,7 @@ export class FetchproxyScopeError extends FetchproxyHintedError {
     super(
       originalError,
       'the declared scope changed since you paired, so the extension is ' +
-        'refusing the request. Revoke this MCP in the Transporter extension ' +
+        'refusing the request. Revoke this MCP in the ContextMint Bridge extension ' +
         'popup, then re-run — you will be asked to approve the new scope. ' +
         'This is not a version problem and does not need an update.',
     );
@@ -2020,7 +2020,7 @@ export class FetchproxyServer {
   private pairingErrorMessage(code: string): string {
     return (
       `fetchproxy transport error: pairing required for ${this.opts.serverName}. ` +
-      `Tell the user to open the Transporter browser extension popup and approve the pair request. ` +
+      `Tell the user to open the ContextMint Bridge browser extension popup and approve the pair request. ` +
       `The pair code is: ${code} — display this code to the user so they can verify it matches.`
     );
   }

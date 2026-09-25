@@ -175,8 +175,8 @@ describe('cross-version: a v3 peer meets a v4 host', () => {
       expect((err as Error).name).toBe('FetchproxyProtocolVersionError');
       expect((err as Error).message).toBe(
         'protocol version mismatch: this MCP speaks fetchproxy protocol 4, the attached ' +
-          'browser extension speaks 3 — update Transporter (the fetchproxy extension) to ' +
-          '3.0.0 or later',
+          'browser extension speaks 3 — update ContextMint Bridge to a release that speaks ' +
+          'fetchproxy protocol 4',
       );
 
       const { code, reason } = await settleOrFail(closed, 'the socket close');

@@ -1283,8 +1283,8 @@ describe('host: a v3 extension is refused at the hello, naming both versions (v4
     expect(err.name).toBe('FetchproxyProtocolVersionError');
     expect(err.message).toBe(
       'protocol version mismatch: this MCP speaks fetchproxy protocol 4, the attached ' +
-        'browser extension speaks 3 — update Transporter (the fetchproxy extension) to ' +
-        '3.0.0 or later',
+        'browser extension speaks 3 — update ContextMint Bridge to a release that speaks ' +
+        'fetchproxy protocol 4',
     );
     ws.close();
   }, 20_000);
@@ -1332,7 +1332,7 @@ describe('host: a v3 extension is refused at the hello, naming both versions (v4
     // the bridge looks healthy while every call fails with a version sentence
     // about a version nothing attached speaks.
     //
-    // Reachability is the rollout itself, not an adversary: an old Transporter
+    // Reachability is the rollout itself, not an adversary: an old extension
     // in a second Chrome profile dials the same localhost port and reconnects
     // on its backoff every few seconds.
     const port = await startTestHost();

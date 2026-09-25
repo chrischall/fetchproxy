@@ -65,7 +65,7 @@ export const defaultServerFactory: VerbServerFactory = (opts) =>
 
 export function pairCodePrinter(io: Io): (code: string) => void {
   return (code) =>
-    io.err(`fetchproxy pair code: ${code} — approve in the Transporter extension popup`);
+    io.err(`fetchproxy pair code: ${code} — approve in the ContextMint Bridge extension popup`);
 }
 
 /**

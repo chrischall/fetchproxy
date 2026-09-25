@@ -481,7 +481,7 @@ export async function startHost(opts: HostOpts): Promise<HostHandle> {
    * and `extensionConnected()` both keep reporting true, so the bridge looks
    * healthy while every call fails with a version sentence about a version
    * nothing attached speaks. The reachable form of that is the rollout this
-   * whole group exists for, not an adversary: an old Transporter in a second
+   * whole group exists for, not an adversary: an old extension in a second
    * browser profile dials the same port and reconnects on its backoff every
    * few seconds. The close below is unconditional — the stranger is refused
    * out loud either way; what is conditional is whether OUR session hears
