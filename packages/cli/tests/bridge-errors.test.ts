@@ -4,6 +4,7 @@ import {
   FetchproxyProtocolVersionError,
   protocolErrorFrom,
 } from '@fetchproxy/server';
+import { PROTOCOL_VERSION } from '@fetchproxy/protocol';
 import { mapBridgeError } from '../src/bridge-errors.js';
 import { EXIT, type Io } from '../src/output.js';
 
@@ -66,6 +67,20 @@ describe('mapBridgeError — scope-diff errors are not version mismatches', () =
     const io = memIo();
     mapBridgeError(new FetchproxyProtocolError('unknown frame type "wat"'), io);
     expect(io.errs.join('\n')).toMatch(/version mismatch/i);
+  });
+
+  // #412: the fallback hint used to say "extension/server version mismatch —
+  // update both", naming neither half by the name a user would search for nor
+  // the protocol either half must speak. It now matches the
+  // FetchproxyProtocolVersionError branch: ContextMint Bridge by name, and
+  // the fetchproxy protocol number this process speaks.
+  it('names ContextMint Bridge and the fetchproxy protocol number in the fallback hint', () => {
+    const io = memIo();
+    mapBridgeError(new FetchproxyProtocolError('unknown frame type "wat"'), io);
+    const out = io.errs.join('\n');
+    expect(out).toMatch(/ContextMint Bridge/);
+    expect(out).toMatch(new RegExp(`fetchproxy protocol ${PROTOCOL_VERSION}\\b`));
+    expect(out).not.toMatch(/extension\/server version mismatch|update both/);
   });
 });
 
@@ -234,7 +249,8 @@ describe('a protocol version mismatch names the remedy, not a bucket', () => {
     const io = memIo();
     mapBridgeError(new FetchproxyProtocolError('protocol version mismatch in frame "wat"'), io);
     const out = io.errs.join('\n');
-    expect(out).toMatch(/update both/);
+    expect(out).toMatch(/^bridge error \(protocol\): /);
+    expect(out).not.toMatch(/bridge refused/);
     expect(out).not.toMatch(/chrome:\/\/extensions/);
   });
 });
