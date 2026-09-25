@@ -18,8 +18,9 @@ Bridge**, to:
 1. **Chrome Web Store** — covers Chrome, Edge, Arc and Brave (all install from CWS).
 2. **Safari, inside the ContextMint app** — a Safari Web Extension embedded in
    ContextMint's own Apple apps (`nullnet-app/mcp-host-app`, bundle ID
-   `app.nullnet.mcphost`): the **iOS/iPadOS app now**, and the **macOS app** when it
-   ships (owner, 2026-09-25: a Mac app is coming; everything goes under `mcphost`).
+   `app.nullnet.mcphost`): a **ContextMint for Mac v0** built for it (scoped in by the
+   owner, 2026-09-25, so the Safari extension can be tested on this Mac), then the
+   **iOS/iPadOS app**. Everything goes under `mcphost`.
    There is no standalone "ContextMint Bridge" Apple app.
 
 Today the only install path is `git clone` → `npm run build` → Load Unpacked. The
@@ -139,7 +140,7 @@ packages/
   `contextmint-bridge-safari-${VERSION}.zip` with its SHA-256, like the Chrome zip.
 - **The Apple side lives in `nullnet-app/mcp-host-app`.** Its xcodegen
   `project.yml` gains a Safari Web Extension target (`.appex`) embedded in the
-  ContextMint iOS app, and later in the macOS app. The appex's `Resources/` is the
+  ContextMint macOS app (first) and the iOS app. The appex's `Resources/` is the
   safari-resources zip at a **pinned bridge version**, fetched and hash-checked at
   build time; bumping the pin is an ordinary first-party dependency bump (`feat:`/
   `fix:`). The extension therefore ships with, and is versioned by, ContextMint app
@@ -217,6 +218,34 @@ solved (e.g. reconnect-on-wake semantics) and gets its own design note.
   not a green publish" rule applied to CWS.
 - The GitHub-release `.zip` stays (sideload, audit, future Firefox).
 
+## ContextMint for Mac — v0
+
+Scoped in 2026-09-25 as the Safari extension's macOS container and the first
+ContextMint desktop surface. `mcp-host/docs/MOBILE_APPS.md` never considered a Mac
+app; it gets a paragraph recording this.
+
+- **Native macOS SwiftUI**, a second application target in `mcp-host-app`'s xcodegen
+  `project.yml`, macOS 27, Apple silicon. **Not Mac Catalyst**: `:shared` is
+  Kotlin/Native, which has no Catalyst target, so the iOS app's framework cannot link
+  into a Catalyst build. **Not "Designed for iPad"** on Apple-silicon Macs: that runs
+  the iOS binary, and a Safari extension embedded in it is not expected to load in
+  macOS Safari (the spike confirms). So `:shared` gains `macosArm64()` beside its two
+  iOS targets, and generated client, view models and contract pin are reused as-is.
+- **v0 screens, and only these:** sign in (the existing auth callback flow), the
+  **Browser bridge** screen from HANDOFF Part 2 (status; "enabled in Safari?" via
+  `SFSafariExtensionManager.getStateOfSafariExtension`; "Open Safari settings" via
+  `SFSafariApplication.showPreferencesForExtension`; the App Group hand-off of the
+  gateway bridge target), and Settings/sign-out. Menu-bar presence is a candidate for
+  v1, not v0.
+- **Shared SwiftUI where it compiles.** 8 of the iOS app's 53 Swift files touch
+  UIKit; those are the port surface for parity later. Views that build unchanged on
+  both platforms join both targets from the start rather than being copied.
+- **Look:** the base look from the design system, the Cursor C app icon
+  (`contextmint-icon.svg`), dark pinned as on iOS.
+- **Distribution:** TestFlight for macOS from mcp-host-app's existing release job on
+  the `[self-hosted, macOS]` runner; App Store later, as a platform of the same
+  record.
+
 ## Safari: signing, distribution, release
 
 - **Distribution: inside ContextMint's App Store listings.** No separate Apple
@@ -227,9 +256,9 @@ solved (e.g. reconnect-on-wake semantics) and gets its own design note.
   appex is **`app.nullnet.mcphost.bridge`**, inside `app.nullnet.mcphost`. Apple
   requires an appex ID to be prefixed by its containing app's, which is why the
   earlier `app.nullnet.contextmint.bridge[.extension]` pair was withdrawn before
-  anything was registered. The macOS app is expected to share `app.nullnet.mcphost`
-  (universal purchase) and embed the same `app.nullnet.mcphost.bridge`; if it ships
-  under its own ID instead, its appex takes that ID as its prefix.
+  anything was registered. The macOS app shares `app.nullnet.mcphost` (universal
+  purchase: one App Store Connect record gains a macOS platform) and embeds the same
+  `app.nullnet.mcphost.bridge`.
 - **App Group** shared by app and appex: `group.app.nullnet.mcphost`.
 - **Signing and CI** are mcp-host-app's existing ones: nullnet team, the shared
   distribution cert, the `[self-hosted, macOS]` runner, its versioning
@@ -262,8 +291,9 @@ unpacked Transporter, install ContextMint Bridge, re-approve each MCP once".
   Bridges section, as today.
 - Narrowing host permissions; Firefox/AMO; Edge Add-ons store (Edge installs from
   CWS); renaming repo, npm packages, or protocol.
-- **The ContextMint macOS app itself.** macOS Safari support arrives with it; until
-  then Mac users of ContextMint use Chrome/Edge/Arc/Brave.
+- **ContextMint for Mac beyond v0** — the context list, the add flow, Discover and
+  Admin on the Mac. v0 is the Safari container plus what the bridge needs; parity with
+  iOS is its own spec in `mcp-host-app`.
 - Designing the ContextMint mark (done in the design system; see Identity → Mark).
 
 ## Testing (TDD throughout)
@@ -292,8 +322,8 @@ unpacked Transporter, install ContextMint Bridge, re-approve each MCP once".
 ## Success criteria
 
 1. ContextMint Bridge is live on the Chrome Web Store (auto-published from a
-   release-please release), and the Safari extension ships inside a ContextMint
-   iOS release (macOS: with the Mac app).
+   release-please release), and the Safari extension ships inside ContextMint for
+   Mac (TestFlight first) and a ContextMint iOS release.
 2. Both pass the live local and hosted checks above.
 3. README, `packages/*/README.md`, `docs/PRIVACY.md`, store-assets and user-facing
    error strings say ContextMint Bridge; the README install link is real.
@@ -314,9 +344,14 @@ Each step leaves both repos shippable; the extension is never absent from both.
 4. **Chrome Web Store** listing under the nullnet publisher (icons from the design system; promo tile + screenshots to make).
 5. **Safari spike** (macOS + iOS) → go/no-go, and the iOS scope confirmed.
 6. **`extension-safari`** in the bridge repo → safari-resources zip on each release.
-7. **Appex in `mcp-host-app`** (iOS) with the App Group pairing hand-off → TestFlight
-   → ContextMint release.
-8. **macOS** — the same appex in the ContextMint Mac app when that app exists.
+7. **ContextMint for Mac v0 + the appex** in `mcp-host-app`, with the App Group
+   pairing hand-off → local builds on this Mac → TestFlight for macOS.
+8. **The same appex in the iOS app** → TestFlight → ContextMint iOS release.
+
+The spike (5) does **not** wait for the Mac app: it runs against a throwaway container
+from `xcrun safari-web-extension-packager` and Safari's *Allow unsigned extensions*,
+which is enough to answer every row of its table. The Mac app is what the real,
+signed extension and the pairing hand-off need.
 
 ## Decisions (owner, 2026-09-25)
 
