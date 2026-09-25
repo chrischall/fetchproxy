@@ -970,7 +970,8 @@ export async function startHost(opts: HostOpts): Promise<HostHandle> {
           // hang, never a stale ephemeral forwarded). If a second
           // implementation with its own encoder ever appears, the repair is to
           // compare `fromB64(...)` bytes at BOTH readers of this field — here
-          // and `extension-core/src/background/server-hello.ts`'s Rule C
+          // and the extension's (nullnet-app/contextmint-bridge)
+          // `packages/extension-core/src/background/server-hello.ts` Rule C
           // refusal — which is why they are named together.
           if (
             extensionWs &&

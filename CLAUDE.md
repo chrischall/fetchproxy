@@ -36,24 +36,23 @@ says why. All packages stay in lockstep on one version (see root
 | `@fetchproxy/server` | `request()` accepts `viaTab` to name the tab that relays a call — needed for API-only hosts (`api.example.com` serves no page, so its implied tab can never exist; route through the signed-in `www` tab instead). Guarded against the declared domains: it widens which tab performs the fetch, never which origins are reachable. Throws `FetchproxyScopeError` (with `.hint`) for gate-#2 scope rejections, so consumers that re-wrap bridge errors can still surface the re-pair remedy — build extension errors with `protocolErrorFrom()`, never `new FetchproxyProtocolError()` directly. MCP-side WebSocket bridge. `FetchproxyServer` class with `listen()`, `request()`, `fetch()`, `readCookies()`, `readLocalStorage()`, `readSessionStorage()`, `captureRequestHeader()`, `readIndexedDb()`, `graphqlQuery()`, `writeCookies()` (1.12+, the only write verb — see `docs/SECURITY.md` §T-cookie-write). Handles concentrator role-election (host vs peer), identity loading, session-key derivation. Persists per-MCP identity to `~/.fetchproxy/identity/<server-name>.json`. |
 | `@fetchproxy/bootstrap` | `createSessionLifter(opts)` returns a **repeatable** lift (declare scope → spin up `FetchproxyServer` → read everything → close, per call) — use it whenever the session can expire, wiring it straight into a session manager's `login`. `bootstrap(opts)` is one invocation of that lifter, kept for genuinely one-shot callers (a user-invoked `capture_session` tool that persists the token). Used by Pattern A MCPs (HoneyBook, OFW, Resy auth-refresh path) that just need a session blob then operate from Node. `storageDomain` selector for multi-domain MCPs. Returns `missing.{cookies,localStorage,sessionStorage}` — declared keys the browser did not return, so a **partial** lift can't masquerade as a clean one (reading the apex when the cookies live on `www` is the classic way to get a half-populated session that fails later somewhere unrelated). |
 | `@fetchproxy/cli` | `fpx` — a one-shot CLI over the same bridge: authenticated fetches and session reads through the user's signed-in browser tab, scoped by per-service **profiles** (each profile connects as `fpx-<name>` with its own identity, so ten services look like ten MCPs to the extension). Published, and it ships v4 changes like any other consumer — `src/bridge-errors.ts` is what names which half of the bridge is behind on a version mismatch. It is also how an operator debugs a straggler during a protocol rollout, without standing an MCP up. |
-| `@fetchproxy/extension-core` | Pure-ish business logic of the browser extension: `handleServerHello` (security-critical pair/auto-trust decision), trust-store, session-keys, popup rendering, badge logic. Designed to be testable under vitest with mocked `chrome.*` globals. `private` (not published). |
-| `@fetchproxy/extension-chrome` | Thin Chrome-MV3 wrapper around extension-core. Just bundling, manifest, icons. Produces `packages/extension-chrome/dist/` for unpacked sideload + GitHub-release `.zip`. `private` (not published). |
 | `@fetchproxy/test-helpers` | Published vitest mock helpers for consumers of `@fetchproxy/server` — a drop-in `FetchproxyServer` mock that captures constructor opts and exposes spy-able `request`/`fetch`/`captureRequestHeader`/`bridgeHealth`. Lets cohort MCPs unit-test their fetchproxy usage without a live bridge. |
 
-`extension-core` and `extension-chrome` are `private: true` (bundled into
-the extension, never published to npm); the other five publish to npm.
-Seven workspaces, and `ls packages` is the authority — this table has run
-behind it before.
+All five publish to npm. Five workspaces, and `ls packages` is the
+authority — this table has run behind it before. The browser extension
+(ContextMint Bridge) lives in
+[`nullnet-app/contextmint-bridge`](https://github.com/nullnet-app/contextmint-bridge),
+on its own release line; it depends on `@fetchproxy/protocol` from npm, and
+the protocol number — not a shared version — is the contract between it and
+these packages.
 
 ## Commands
 
 | | |
 |---|---|
 | `npm test` | `vitest run` across the whole monorepo, all mocked, no network. (No test count here on purpose — a hard-coded one drifted; the run prints the current figure.) Must stay green. `vitest.config.ts` excludes `**/.claude/**` and `**/dist/**` so stale agent worktrees don't poison discovery. |
-| `npm run build` | `npm run build --workspaces --if-present` — all **seven**: a `tsc -b` for protocol, server, bootstrap, cli, extension-core and test-helpers, plus extension-chrome's esbuild bundle (`tsx build.ts`). npm runs them in workspace order, which is alphabetical (`bootstrap` first, `protocol` fifth), so the build order is NOT the dependency order; what makes that safe is each package's `tsc -b` following its own `references`, so `protocol/dist` is built before anything that imports it via its `exports`→`dist/`. Don't demote a package to a bare `tsc` — that is the thing the references are carrying. |
-| `npm run typecheck` | `tsc -b` over protocol, server, bootstrap, **cli**, extension-core, test-helpers — the script's own project list, cli included. extension-chrome is typechecked by its esbuild build instead. |
-| `npm run build --workspace=@fetchproxy/extension-chrome` | Rebuild just the unpacked extension after a source edit. Drop into `chrome://extensions/` → fetchproxy → reload. **No sourcemaps** — this is the command the release workflow zips, so release is the default. |
-| `npm run build:dev --workspace=@fetchproxy/extension-chrome` | Same, with inline sourcemaps, for debugging the extension in DevTools. Never what ships. |
+| `npm run build` | `npm run build --workspaces --if-present` — all **five**: a `tsc -b` for protocol, server, bootstrap, cli and test-helpers. npm runs them in workspace order, which is alphabetical (`bootstrap` first, `protocol` third), so the build order is NOT the dependency order; what makes that safe is each package's `tsc -b` following its own `references`, so `protocol/dist` is built before anything that imports it via its `exports`→`dist/`. Don't demote a package to a bare `tsc` — that is the thing the references are carrying. |
+| `npm run typecheck` | `tsc -b` over protocol, server, bootstrap, **cli**, test-helpers — the script's own project list, cli included. |
 | `npm test --workspace=@fetchproxy/<pkg>` | Run just one package's tests when iterating. |
 
 No top-level `npm run dev`; for a watch loop use `npm run test:watch` (root `vitest`) or vitest `--watch` per workspace.
@@ -174,8 +173,8 @@ All packages share **one version** kept in lockstep by **release-please**
 (`.github/workflows/release-please.yml`, config `release-please-config.json`,
 state `.release-please-manifest.json`). The umbrella `version` lives in the
 root `package.json`; each sub-package's `version` is propagated via the
-config's `extra-files` list (which also includes
-`packages/extension-chrome/manifest.json`).
+config's `extra-files` list. The browser extension is NOT in this lockstep:
+it releases from `nullnet-app/contextmint-bridge` on its own line.
 
 The end-to-end release cycle (canonical release-please monorepo shape):
 release-please-action runs on every push to `main`, accumulating
@@ -197,8 +196,7 @@ each `version` through `extra-files` but never the cross-dep ranges. Publish
 is gated on the reusable workflow's `publish` output, NOT on
 `release_created`, because the latter is false on a republish, which is the
 one run that exists to publish; it checks out the resolved tag, publishes the
-non-private packages to npm, builds the Chrome-extension `.zip`, and attaches
-it to the GitHub Release.
+packages to npm.
 
 **Do not bump versions or create tags manually unless explicitly asked.**
 release-please owns the lockstep arithmetic; manual edits to a `version`
@@ -265,37 +263,25 @@ Label conventions for release notes (`.github/release.yml`) — apply one per PR
 ## Testing
 
 Tests live next to source in `packages/<pkg>/tests/`. Always mocked:
-the WS is in-memory, `chrome.*` is stubbed, `node:fs` paths use
+the WS is in-memory, `node:fs` paths use
 overrides. No live network calls anywhere in vitest.
 
 Live testing happens out of band — the cohort MCPs (opentable-mcp,
 honeybook-mcp, resy-mcp, …) exercise fetchproxy against real sites,
-and the unpacked extension's `chrome://extensions` reload + a manual
-MCP tool call is the integration test.
+and a manual MCP tool call through an installed ContextMint Bridge is the
+integration test.
 
 ## Hot spots / gotchas
 
-- **MV3 service-worker eviction.** Chrome kills idle SWs after ~30s.
-  `keepalive.ts` registers `chrome.alarms` firing every 24s; each
-  alarm wakes the SW and re-runs `connect()` (idempotent). Without
-  this, the bridge silently dies between bursts of MCP traffic. PR #2
-  added the alarm; reload the extension after pulling.
-- **Reloading the extension after a pull is a REQUIREMENT across a
-  protocol major, not the hygiene the line above makes it sound.**
-  Chrome keeps running the bundle "Load unpacked" loaded, so a pull that
-  crosses 2.x → 3.x leaves a protocol-3 extension talking to the
-  protocol-4 packages the same pull installed — and that pair is refused
-  at the hello rather than degraded: every call fails at once with
-  `protocol version mismatch`, in both directions, naming both versions.
-  Rebuild `dist/`, then Reload. Both READMEs carry this as the
-  requirement it is (`README.md` §Install and
-  `packages/extension-chrome/README.md` §Install (developer / sideload)),
-  and `tests/install-walkthroughs-name-the-cohort.test.ts` holds the
-  numbers they print to the ones the refusal actually uses.
+- **Extension-side gotchas live in the bridge repo.** MV3 service-worker
+  eviction, reloading after a pull, `chrome.action.openPopup()`, tab
+  matching, CSRF relay-tab selection and per-domain tab opening are in
+  [`nullnet-app/contextmint-bridge`](https://github.com/nullnet-app/contextmint-bridge)'s
+  CLAUDE.md now.
 - **Re-publishing a tag after a failed publish.** The publish job only
   fires when the reusable release workflow says there is something to
   publish, and on the ordinary path that means release-please just cut a
-  release. If the tag was cut but the npm/zip publish failed (e.g. wrong
+  release. If the tag was cut but the npm publish failed (e.g. wrong
   Node version) — or release-please lost its own `release_created` output
   after tagging, which is the failure chrischall/workflows#283 was opened
   for and which no amount of re-running fixes — fire `release-please.yml`
@@ -306,10 +292,6 @@ MCP tool call is the integration test.
   the tag is confirmed to exist before anything publishes. No new release
   PR, no version bump. Idempotency makes a re-run SAFE; it does not make
   it RUN — dispatch instead.
-- **`chrome.action.openPopup()` is restricted.** Chrome 127+ allows
-  it from background in some contexts; older Chromes throw sync or
-  async. `background.ts` wraps it in try/catch; the **badge** is the
-  reliable surface.
 - **Trusted-publisher OIDC + `setup-node`.** See "npm publish"
   above. If a publish fails with `ENEEDAUTH`, do NOT add an
   `_authToken` strip — that breaks OIDC. The likely culprits are
@@ -322,59 +304,16 @@ MCP tool call is the integration test.
   must specify which declared domain to read from, or
   `FetchproxyServer.resolveBaseDomain` throws. Bootstrap helper
   threads `storageDomain` / `storageSubdomain` for this.
-- **Tab match for storage reads = host-or-subdomain, not strict
-  prefix.** Vendor-specific subdomains (HoneyBook's `*.hbportal.co`,
-  Canvas's `*.instructure.com`) require the extension to accept any
-  tab on the declared apex. `isTabUrlOnOrigin()` (added in PR #4)
-  is the right helper.
-- **Writes prefer a relay tab that can inject `x-csrf-token`** (#286).
-  The content script injects the header with `window.__CSRF_TOKEN__`,
-  asked of the MAIN-world logger on demand for each approved fetch
-  (`readPageCsrfToken` ⇄ `installCsrfBridge`; the token is never written
-  to the DOM — it used to sit in `data-fetchproxy-csrf` on every site) — and
-  only a site's *app* pages define that global (OpenTable's homepage
-  doesn't; its `/r/`, `/booking/`, `/user/` pages do). Because the
-  relay walk takes tabs in `chrome.tabs.query` order, a homepage tab
-  opened first used to 403 every write while a usable tab sat open.
-  `handleFetchRequest` now sends non-GETs with `requireCsrf` first;
-  a token-less tab answers the typed soft miss (`lib/csrf-soft-miss.ts`)
-  and the walk continues; only if EVERY tab misses does a second pass
-  re-send without the marker. GETs never walk. If a site 403s writes
-  through the bridge, check which tab relayed them before suspecting
-  the isolated world — that was the #267 misdiagnosis.
-- **Multi-domain tab opening — every declared domain, one tab each.**
-  `background/server-hello.ts` and `background/approval.ts` both loop over
-  `result.domains` calling `ensureDomainTab(d)` fire-and-forget, so a
-  two-domain profile like HoneyBook gets a tab per domain. (This entry
-  used to say `ensureDomainTab(domains[0])` opened only the FIRST — that
-  was true of an older `background.ts` and has not been for some time.)
-  The fan-out is why the cold-open registry is keyed by HOST rather than
-  by "something is opening": one domain loading must not make a request
-  for a different one wait, or be told a tab is arriving for it (#293).
 
 ## What to *not* do
 
 - Don't bump a workspace's version directly. release-please handles all
   bumps; manual edits create lockstep drift its diff then fights.
-- Don't introduce new `chrome.*` API usage without adding the
-  permission to `packages/extension-chrome/manifest.json` AND
-  documenting it in `packages/extension-chrome/README.md`'s manifest
-  highlights.
 - Don't add direct dependencies between workspaces using literal
   versions (`"1.3.3"`) — always caret (`"^1.3.3"`). The release publish
   job rewrites caret ranges to the new cohort version; literals get
   left behind.
 - Don't add `NPM_TOKEN` as a secret. The publish pipeline is OIDC.
-- Don't put anything security-relevant in `chrome.storage.local` —
-  every site's content script can read AND write it. Keys, trust
-  records, remote bridge targets and dismissed scope hashes live in the
-  extension-origin IndexedDB vault (`extension-core/src/vault.ts`,
-  reached through `TrustStore` / `vault-records.ts` /
-  `loadOrCreateExtensionIdentity`); the pairing queue lives in
-  `storage.session`. `vault-migration.ts` is the only reader of the
-  legacy `storage.local` keys, and only once.
-- Don't make the `handleServerHello` function impure. It's the
-  security-critical decision point and stays under unit-test discipline.
 - Don't merge feature work that adds protocol fields without updating
   `packages/protocol/src/validate.ts` validators (every inbound
   frame is validated before dispatch).

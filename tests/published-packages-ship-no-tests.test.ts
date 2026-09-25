@@ -36,9 +36,7 @@ function publishedWorkspaces(): { name: string; tsconfig: string }[] {
       name: string;
       private?: boolean;
     };
-    // A private workspace is never published, so nothing of it ships. The two
-    // here (extension-core, extension-chrome) reach a user only as esbuild
-    // output bundled from named entry points, which a test file is not.
+    // A private workspace is never published, so nothing of it ships.
     if (manifest.private) continue;
     const tsconfig = join(dir, 'tsconfig.json');
     if (!existsSync(tsconfig)) continue;

@@ -9,8 +9,8 @@ name: CI
 # (b) dependabot-triggered runs are read-only unless permissions are explicit.
 #
 # build-command is the ROOT `npm run build` (`--workspaces --if-present`), which
-# builds every workspace — protocol, server, bootstrap, cli, extension-core,
-# extension-chrome, test-helpers — so no hand-maintained build list can go stale
+# builds every workspace — protocol, server, bootstrap, cli, test-helpers —
+# so no hand-maintained build list can go stale
 # and leave a package's dist/ unbuilt for the vitest run.
 
 on:
