@@ -4,6 +4,7 @@ import {
   FetchproxyProtocolVersionError,
   FetchproxySessionNotReadyError,
 } from '@fetchproxy/server';
+import { PROTOCOL_VERSION } from '@fetchproxy/protocol';
 import { EXIT, UsageError, type Io } from './output.js';
 
 /**
@@ -65,7 +66,7 @@ export function mapBridgeError(err: unknown, io: Io): number {
   }
   // Some rejections know their own remedy — a widened scope needs a re-pair,
   // a missing tab needs a tab. Both arrive as `protocol` errors, so without
-  // this they inherit the blanket "version mismatch — update both" hint below
+  // this they inherit the blanket version-mismatch hint below
   // and send people chasing a version problem that does not exist.
   //
   // The wording knowledge lives on the error itself (server 1.10+) rather than
@@ -81,7 +82,12 @@ export function mapBridgeError(err: unknown, io: Io): number {
   const hints: Record<string, string> = {
     bridge_down: 'is your browser running with the ContextMint Bridge extension installed?',
     timeout: 'is a tab open on the declared domain and signed in?',
-    protocol: 'extension/server version mismatch — update both.',
+    // Same vocabulary as the FetchproxyProtocolVersionError branch above: the
+    // extension by its user-facing name and the protocol number this process
+    // speaks, so the reader knows what "matching" means (#412).
+    protocol:
+      `possible ContextMint Bridge / @fetchproxy/server version mismatch — this ` +
+      `fpx speaks fetchproxy protocol ${PROTOCOL_VERSION}; update each to a release that speaks it.`,
     http: '',
     other: '',
   };

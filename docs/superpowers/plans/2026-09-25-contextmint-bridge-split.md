@@ -223,9 +223,26 @@ Label `bug`.
    - `CLAUDE.md`: workspace table and counts ("seven" → five), commands, the
      release-flow paragraphs that mention the zip, and the extension-only gotchas
      (now in the bridge repo's CLAUDE.md — replace with one line pointing there).
+   - `docs/PROTOCOL.md` and `.gitignore`: drop or re-point extension paths.
+   - Server source comments and tests that cite extension files
+     (`server/src/error-kind.ts`, `server/src/host.ts`,
+     `server/tests/classify-fetch-error.test.ts`,
+     `server/tests/cross-version/refusal.test.ts`): name
+     `nullnet-app/contextmint-bridge` beside each path so it is not read as local.
+   - Regenerate `package-lock.json` (`npm install` after the deletes) so the two
+     workspaces drop out of it; commit the lockfile.
 4. `npm ci && npm run build && npm test && npm run typecheck` green; the npm publish
    job still publishes protocol, server, bootstrap, test-helpers, cli.
 
-**Done when:** all green, no reference to a deleted path remains (`grep -rn
-"extension-core\|extension-chrome" --exclude-dir=node_modules . | grep -v CHANGELOG`
-returns only historical docs under `docs/superpowers/` and `docs/plans/`), PR open.
+**Done when:** all green, PR open, and:
+
+- `packages/extension-core` and `packages/extension-chrome` no longer exist;
+- `git grep -n "packages/extension-" -- package.json package-lock.json
+  release-please-config.json .release-please-manifest.json .github .gitignore
+  'tsconfig*.json'` returns nothing (build, release and lockfile wiring is gone);
+- every other hit of `git grep -n "extension-core\|extension-chrome" -- .
+  ':!docs/superpowers' ':!docs/plans' ':!*CHANGELOG*'` is a reference into
+  `nullnet-app/contextmint-bridge` — checked by reading each hit, not by a grep
+  filter, since `docs/SECURITY.md`'s rewritten links and the server comments
+  legitimately keep the `packages/extension-core/...` path and a line-based filter
+  cannot see a repo name on the line above.

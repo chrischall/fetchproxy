@@ -275,12 +275,28 @@ app; it gets a paragraph recording this.
 
 ## Migration for existing sideload users
 
-A store install is a new extension ID with an empty `chrome.storage` — new
-extension identity, no trust records. Every paired MCP pins the old extension
-identity, so each will see a different extension and prompt to re-pair. The plan
-must verify that path is a clean re-pair prompt, not a hard refusal, for both
-local MCPs and mcp-host's hosted rows, and README/PRIVACY must say "remove the
-unpacked Transporter, install ContextMint Bridge, re-approve each MCP once".
+A store install is a new extension ID with an empty extension-origin IndexedDB
+vault — the extension's identity keys and its trust records (`trustedMcps`,
+`remoteBridges`, `dismissedScopeHashes`) live there, not in `chrome.storage` (see
+`docs/SECURITY.md` Defense 4). So it mints a new extension identity and has no
+trust records. Every paired MCP pins the old extension identity, and the MCP side
+does **not** offer a re-pair for a different one: `decideExtensionTrust`
+(`packages/server/src/extension-trust.ts`) returns `refused` unless the pin is
+cleared or the MCP runs once with `FETCHPROXY_TRUST_NEW_EXTENSION=1`. That refusal
+is deliberate (a different identity may be something else answering as the
+browser), so the migration steps must include clearing the pin rather than expect
+a prompt:
+
+1. Remove the unpacked Transporter; install ContextMint Bridge from the store.
+2. For each local MCP, clear its extension pin — `fpx trust clear <server-name>`
+   (or `fpx trust clear --all`) — or start it once with
+   `FETCHPROXY_TRUST_NEW_EXTENSION=1`.
+3. Re-approve each MCP's pair code in the ContextMint Bridge popup once.
+
+README/PRIVACY must carry those three steps. The plan must also verify what
+mcp-host's hosted rows do when the extension identity changes (whether its pin
+refuses the same way and how a user clears it) and document that path next to the
+local one.
 
 ## Out of scope
 
@@ -327,7 +343,8 @@ unpacked Transporter, install ContextMint Bridge, re-approve each MCP once".
 2. Both pass the live local and hosted checks above.
 3. README, `packages/*/README.md`, `docs/PRIVACY.md`, store-assets and user-facing
    error strings say ContextMint Bridge; the README install link is real.
-4. The cohort-MCP README sweep (separate follow-up) points at the two listings.
+4. The cohort-MCP README sweep (separate follow-up) points at the Chrome Web Store
+   listing and at ContextMint (iOS and Mac) for Safari.
 
 ## Sequencing
 
