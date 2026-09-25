@@ -196,6 +196,50 @@ current Safari on this Mac:
 no-go. Absent APIs feed the capability seam; a failing keepalive is a no-go until
 solved (e.g. reconnect-on-wake semantics) and gets its own design note.
 
+### Spike results — macOS (2026-09-25, Safari 27 / Xcode 27, fetchproxy 3.2.2 bundle)
+
+Run live on the owner's Mac: container from `safari-web-extension-packager`, a
+persistent `@fetchproxy/server` host on `127.0.0.1:37149`, profile
+`fpx-safari-spike` on `wikipedia.org`, a signed-in `en.wikipedia.org` tab.
+
+| Concern | Result | Consequence for `extension-safari` |
+|---|---|---|
+| Code signing | **Ad-hoc signing does not run.** The toolbar icon appears but neither popup nor background ever executes — same for a hello-world extension. An Apple Development identity (team `5A673K24X6`) makes both run. | Local dev builds must be Apple-Development-signed; the Mac app plan already signs. Unsigned mode is not a usable dev loop on Safari 27. |
+| MV3 service worker (`background.service_worker`, module **or** classic) | **Did not run**, in our bundle and in a hello-world. | Ship the background as an **event page**: `"background": {"scripts": ["background.js"], "persistent": false}`. |
+| ES-module background (`"type": "module"`) | Unsupported (packager warns; confirmed). | Bundle `background.js` as a **classic script** (esbuild `format: 'iife'`, no trailing `export {}` — today's Chrome bundle only exports for tests). |
+| Event-page lifetime with an open loopback socket | **Stayed connected 10/10** — one fetch a minute for 10 minutes, 84–403 ms each, Safari open but idle. The first connect dropped once after ~18 s during pairing and reconnected on the next keepalive. | Keepalive design holds on macOS; no go-blocker. Behaviour with Safari quit / Mac asleep not measured. |
+| `ws://127.0.0.1:37149` from the extension; `safari-web-extension://` origin | **Works**; the concentrator's origin gate admits it. | None. |
+| Pairing + protocol-4 session (X25519 ECDH, Ed25519 signatures, AES-GCM) | **Works** once identity storage is fixed (next row). | None. |
+| Identity in the IndexedDB vault | **Broken: WebKit IndexedDB silently stores an X25519 `CryptoKey` as `null`** — and nulls any object containing one. No error on `put`. Ed25519 `CryptoKey`s and `Uint8Array`s round-trip fine. Result: `loadOrCreateExtensionIdentity` throws "extension identity missing from the vault", the extension never connects. | Safari-safe identity storage is required (design note below). The spike stored the X25519 private key as PKCS#8 bytes and re-imported it non-extractable on load — proven to work, but it leaves the key extractable at rest, so it is not the shipping design. |
+| Detached API call (`const q = api().tabs.query; q({})`) | Returns `undefined` in Safari. | Fixed for all targets in contextmint-bridge #7. |
+| `fetch` via content script | **200**, 212 ms. | None. |
+| `fetch` with `inPage: true` (MAIN world via `scripting.executeScript`) | **200**, 92 ms — runtime MAIN-world injection works even though the manifest `world` key is unsupported. | `fetch_in_page` / `graphql` viable; keep MAIN-world scripts runtime-registered, not manifest-declared. |
+| `read_cookies`, legacy no-keys shape (`document.cookie`) | Works (returns the page's non-HttpOnly cookie string — by design, as on Chrome). | None. |
+| `read_cookies` with declared keys (`chrome.cookies`, HttpOnly) | **Works, scoped**: returned exactly the two declared keys (`GeoIP`, `WMF-Last-Access`) and nothing else; needs no open tab. | None. |
+| `read_local_storage` | Answered (`{}` — the declared key does not exist on Wikipedia, so this proves the path, not the content). | — |
+| `downloads` | **Absent** (`chrome.downloads` undefined). | Capability seam: refuse `download` at pair time on Safari. |
+| `tabGroups` | Absent (packager); relay tab grouping is already `?.`-guarded. | None. |
+| `webRequest` header capture | **Inconclusive**: timed out after 20 s because no tab was open to make the request it listens for — not evidence either way about Safari's `webRequest`. | Re-run with a live tab; until then treat `capture_request_header` / `capture_redirect` as unproven on Safari. |
+| Popup | Renders once the background runs; it was stuck on "Loading…" only because `get-connected-identities` had no live background to answer. | None. |
+
+**Go** for macOS, with the three required changes: event-page background as a classic
+script, Apple Development signing for dev builds, Safari-safe X25519 storage. iOS rows
+remain open.
+
+### Design note — Safari-safe X25519 identity storage
+
+The vault's promise is that the private keys are non-extractable `CryptoKey`s at rest.
+WebKit breaks that for X25519 only. Preferred fix, pending one more Safari check: a
+non-extractable **AES-GCM wrapping key** generated once and stored in the vault (if
+AES `CryptoKey`s round-trip in Safari's IndexedDB, as Ed25519 ones do), and the X25519
+private key stored as `wrapKey('pkcs8', …)` output, unwrapped to a non-extractable key
+on load. The raw key material then exists only transiently in memory — the same exposure
+Chrome has during generation. Fallback if AES keys also null out: keep the PKCS#8 bytes
+as the spike did and document the at-rest weakening in `docs/SECURITY.md` for the
+Safari build only. Either way the vault stays one code path with a feature check
+(round-trip a throwaway X25519 key once, pick the storage form), never a user-agent
+sniff.
+
 ## Chrome: what changes
 
 - Manifest rename + description (≤132 chars); `version` driven by the bridge
