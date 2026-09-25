@@ -51,12 +51,15 @@ That last clause also goes in both store descriptions: a user of a standalone
 stdio MCP (`opentable-mcp`, `resy-mcp`) is installing a ContextMint-branded
 extension without using ContextMint, and the listing must say that is supported.
 
-**Mark.** The design system records that no ContextMint mark exists yet (flat
-`--accent`). Store icons need one: 16/32/48/128 px for Chrome, a full macOS
-`AppIcon` set plus a toolbar template image for Safari, a 440×280 CWS promo tile
-and screenshots. **This is a dependency, not part of this spec** — it comes from
-`nullnet-design-system`, and the packaging work below uses placeholders until it
-lands. Store submission is blocked on it.
+**Mark: the Cursor C** (chosen 2026-09-25, chrischall/nullnet-design-system#21). The
+nullnet cursor parked in the mouth of a C; the Bridge's own icon is two Cs facing with
+the cursor laid flat between them as the link. The design system owns the masters in
+`system/assets/`: `contextmint-bridge-icon.svg` with the Chrome 16/32/48/128 PNGs,
+`contextmint-bridge-toolbar.svg` (Safari's monochrome toolbar template),
+`contextmint-icon.svg` / `-1024.png` and `contextmint-wordmark.svg`. The extension copies
+the PNGs into `extension-chrome/icons/`; the macOS `AppIcon` set is rendered from the SVG
+when the Safari app is built. Still to make for the CWS listing: the 440×280 promo tile and
+screenshots.
 
 ## Repository split
 
@@ -227,7 +230,7 @@ unpacked Transporter, install ContextMint Bridge, re-approve each MCP once".
   Bridges section, as today.
 - Narrowing host permissions; Firefox/AMO; Edge Add-ons store (Edge installs from
   CWS); iOS Safari; renaming repo, npm packages, or protocol.
-- The ContextMint mark itself (dependency above).
+- Designing the ContextMint mark (done in the design system; see Identity → Mark).
 
 ## Testing (TDD throughout)
 
@@ -269,7 +272,7 @@ Each step leaves both repos shippable; the extension is never absent from both.
    (`fix:`).
 3. **Rebrand + platform/capability seams** in the bridge repo; release 1.0.0 as a
    GitHub-release zip.
-4. **Chrome Web Store** listing under the nullnet publisher (blocked on the mark).
+4. **Chrome Web Store** listing under the nullnet publisher (icons from the design system; promo tile + screenshots to make).
 5. **Safari spike** → go/no-go.
 6. **Safari build** → Mac App Store.
 
