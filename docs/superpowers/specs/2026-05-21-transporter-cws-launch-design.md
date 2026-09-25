@@ -1,7 +1,7 @@
 # Transporter — Chrome Web Store launch (design)
 
 **Date:** 2026-05-21
-**Status:** Approved, ready for implementation plan
+**Status:** Approved, ready for implementation plan. **Store name superseded** — see [`2026-09-25-contextmint-bridge-chrome-safari-design.md`](./2026-09-25-contextmint-bridge-chrome-safari-design.md).
 **Scope:** Chrome Web Store only. Firefox (AMO) and Safari (Mac App Store) are sequential follow-ups, each with their own spec.
 
 ---
