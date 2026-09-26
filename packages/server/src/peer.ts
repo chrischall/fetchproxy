@@ -36,6 +36,7 @@ import {
   FetchproxyProtocolVersionError,
 } from './session-ready.js';
 import type { Identity } from './identity.js';
+import { sessionInfoFromHello, type ExtensionSessionInfo } from './session-info.js';
 import {
   decideExtensionTrust,
   type ExtensionPin,
@@ -53,6 +54,12 @@ export const PEER_DIAL_TIMEOUT_MS = 5_000;
 
 export interface PeerOpts {
   host: string;
+  /**
+   * #418: see `HostOpts.refuseOutbound` — called with each outbound inner
+   * frame once the session is ready and before a seq is claimed; throwing
+   * refuses it locally.
+   */
+  refuseOutbound?: (inner: InnerFrame, info: ExtensionSessionInfo | null) => void;
   port: number;
   /**
    * Bound on the WebSocket dial to the host, in ms. Defaults to
@@ -167,6 +174,11 @@ export interface PeerHandle {
   extensionConnected: () => boolean;
   /** 2.5.0: whether a session key exists — the first ready landed. */
   sessionLinked: () => boolean;
+  /**
+   * #418: the browser behind the current session, from the relayed extension
+   * hello the accepted `ready` was verified against. `null` while unlinked.
+   */
+  sessionInfo: () => ExtensionSessionInfo | null;
   /**
    * 0.13.0+: fires when the WebSocket to the host closes — most importantly
    * when the host process dies, stranding this peer. The owning
@@ -339,6 +351,9 @@ export async function startPeer(opts: PeerOpts): Promise<InternalPeerHandle> {
   // still there. `sendInner` reads `session` at call time, not at handshake
   // time, so sealing always uses the current key.
   let session: SessionState | null = null;
+  // #418: set beside `session` from the hello `authenticateExtension` verified
+  // the ready against — not from whichever relayed hello arrived last.
+  let sessionInfo: ExtensionSessionInfo | null = null;
   /**
    * The SESSION ephemeral — minted when a relayed extension hello arrives
    * (§1a Rule A), committed only while that hello is still the current one
@@ -668,6 +683,7 @@ export async function startPeer(opts: PeerOpts): Promise<InternalPeerHandle> {
         // being sealed under a dead key and silently dropped, and the owner
         // fails the calls already in flight instead of letting each burn its
         // whole timeout (and then fetch()'s retry).
+        sessionInfo = null;
         if (session !== null) {
           session = null;
           if (sessionPromiseSettled) resetSessionPromise();
@@ -779,6 +795,7 @@ export async function startPeer(opts: PeerOpts): Promise<InternalPeerHandle> {
         }
         const isRenegotiation = session !== null;
         session = new SessionState(sessionKey);
+        sessionInfo = sessionInfoFromHello(authenticated);
         extensionGone = false;
         // 0.5.2+: ready means the user approved; the pair-pending hint is
         // no longer actionable. Clear so subsequent `pendingPairCode()`
@@ -804,7 +821,11 @@ export async function startPeer(opts: PeerOpts): Promise<InternalPeerHandle> {
       // fail this peer's wait now, with the extension's own reason.
       if (frame.type === 'hello-rejected' && frame.mcpId === opts.mcpId) {
         rejectFirstReady(
-          new FetchproxyHelloRejectedError({ mcpId: frame.mcpId, reason: frame.reason }),
+          new FetchproxyHelloRejectedError({
+            mcpId: frame.mcpId,
+            reason: frame.reason,
+            platform: extensionHello?.platform ?? null,
+          }),
         );
       }
 
@@ -1028,6 +1049,8 @@ export async function startPeer(opts: PeerOpts): Promise<InternalPeerHandle> {
       // seal it under nothing.
       const s = session;
       if (s === null) throw new Error('peer: extension disconnected');
+      // #418: refuse a verb this browser cannot serve before a seq is claimed.
+      opts.refuseOutbound?.(inner, sessionInfo);
       // Measured before a seq is claimed, so a refused frame spends nothing
       // and leaves no gap: an oversize payload would otherwise meet the host's
       // `maxPayload` as a 1009 CLOSE, taking this peer's only link to the
@@ -1062,6 +1085,7 @@ export async function startPeer(opts: PeerOpts): Promise<InternalPeerHandle> {
     pendingPairCode: () => pendingPairCode,
     extensionConnected: () => extensionHello !== null,
     sessionLinked: () => session !== null && !extensionGone,
+    sessionInfo: () => (session !== null && !extensionGone ? sessionInfo : null),
     onClose: (cb) => {
       closeListeners.push(cb);
     },

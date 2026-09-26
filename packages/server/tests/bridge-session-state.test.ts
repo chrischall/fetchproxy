@@ -51,6 +51,8 @@ describe('bridgeHealth().session', () => {
       state: 'not_listening',
       pairCode: null,
       extensionConnected: false,
+      unavailableCapabilities: [],
+      platform: null,
     });
   });
 
@@ -61,6 +63,8 @@ describe('bridgeHealth().session', () => {
       state: 'extension_disconnected',
       pairCode: null,
       extensionConnected: false,
+      unavailableCapabilities: [],
+      platform: null,
     });
   });
 
@@ -73,6 +77,8 @@ describe('bridgeHealth().session', () => {
       state: 'no_session',
       pairCode: null,
       extensionConnected: true,
+      unavailableCapabilities: [],
+      platform: null,
     });
   });
 
@@ -83,6 +89,8 @@ describe('bridgeHealth().session', () => {
       state: 'pair_pending',
       pairCode: '4570-3512',
       extensionConnected: true,
+      unavailableCapabilities: [],
+      platform: null,
     });
   });
 
@@ -109,6 +117,8 @@ describe('bridgeHealth().session', () => {
       state: 'linked',
       pairCode: null,
       extensionConnected: true,
+      unavailableCapabilities: [],
+      platform: null,
     });
   });
 });

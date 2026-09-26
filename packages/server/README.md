@@ -218,12 +218,27 @@ session-ready timeout: `'not_listening'` (no `listen()`), `'linked'`
 extension attached), or `'no_session'` (extension attached, hello sent,
 nothing came back — the hello was dropped somewhere).
 
+As of 3.3.0 ([#418](https://github.com/chrischall/fetchproxy/issues/418))
+`h.session` also names the browser behind the current session
+(`platform`) and the capabilities it said it **cannot serve**
+(`unavailableCapabilities` — Safari has no `chrome.downloads`, so
+`download` is the usual one). The extension grants an MCP the servable
+subset instead of refusing it outright, and a verb that needs one of these
+is refused locally, with no round trip, as
+`FetchproxyCapabilityUnavailableError`. The list is taken from the
+extension hello the accepted `ready` was verified against and cleared on
+disconnect; it is empty while unlinked or when the extension predates the
+field. It is unsigned and advisory — see `docs/SECURITY.md`
+§T-unavailable-caps.
+
 ```ts
 const h = fp.bridgeHealth();
 // h.session: {
 //   state: 'not_listening' | 'linked' | 'pair_pending' | 'extension_disconnected' | 'no_session';
 //   pairCode: string | null;       // set while state === 'pair_pending'
 //   extensionConnected: boolean;   // a peer learns arrivals from the host's relayed hello (1.12.0+) and departures from its extension-disconnected notice (2.5.0+)
+//   unavailableCapabilities: Capability[]; // 3.3.0+: known names this browser cannot serve, sorted; [] when unknown
+//   platform: Platform | null;             // 3.3.0+: 'chrome' | 'safari' | …; null while unlinked
 // };
 // h.fetchTimeoutMs: number;       // resolved (30_000 default, or override; 0 = disabled)
 // h.bridgeReviveDelayMs: number;  // resolved (2_000 default, or override; 0 = disabled)
@@ -298,6 +313,7 @@ interface HttpResponse {
 | HTTP status outside `expectStatus` (when set) | Throws `FetchproxyHttpError` with the full `HttpResponse` attached. |
 | Any successful HTTP exchange when no `expectStatus` is set | Resolves; the caller inspects `response.status` themselves. |
 | Programmer error (bad subdomain, undeclared domain, missing capability) | Throws a plain `Error` synchronously at the call site. |
+| This browser cannot serve the verb's capability (3.3.0+, #418) | Throws `FetchproxyCapabilityUnavailableError` (a hinted `FetchproxyProtocolError`) — locally when the session listed it, or from the extension's `capability_unavailable` reply. `fetch()` returns `{ ok: false, kind: 'capability_unavailable' }` instead. |
 
 ### `await fp.fetch(init): Promise<FetchResult | FetchResultError>`
 
@@ -341,14 +357,15 @@ Runs one healthcheck probe through the caller's `fetchFn`, measures elapsed ms, 
 
 ```ts
 const probe = await fp.runProbe((path) => client.fetchHtml(path), '/robots.txt');
-// { ok, elapsed_ms, bridge: { role, port, server_version, ..., session_state, pending_pair_code, extension_connected, last_extension_message_at }, error?: { kind, message } }
+// { ok, elapsed_ms, bridge: { role, port, server_version, ..., session_state, pending_pair_code, extension_connected, last_extension_message_at, unavailable_capabilities, platform }, error?: { kind, message } }
 ```
 
 As of 2.5.0 the `bridge` projection carries `session_state`,
 `pending_pair_code` and `extension_connected` (from `bridgeHealth().session`)
 and `last_extension_message_at`, and `error.kind` can be
 `'session_not_ready'` — `FetchproxySessionNotReadyError`, which used to
-fall through to `'other'`.
+fall through to `'other'`. As of 3.3.0 it also carries
+`unavailable_capabilities` and `platform` (#418).
 
 `runProbe` only does probe execution + classification + the bridge projection. The healthcheck **tool registration and the site-specific hint text stay in the consumer**, which wraps this result with its own plain-English next-step guidance.
 
@@ -383,6 +400,8 @@ Closes the WS / extension connection. Safe to call before `listen()` (no-op) and
 |---|---|
 | `FetchproxyProtocolError` | Bridge-side failure (no signed-in tab, extension offline, transport error, capability not granted at the extension layer). |
 | `FetchproxyHttpError` | Upstream HTTP status was outside `expectStatus`. Carries the full `HttpResponse`. |
+| `FetchproxyCapabilityUnavailableError` | 3.3.0+ (#418): THIS BROWSER cannot serve the capability (`.capability`, `.platform`; `.hint` blames the browser, not the MCP). `classifyFetchError` returns `'capability_unavailable'`, distinct from `'capability_denied'`; `classifyBridgeError` buckets it `'protocol'`. |
+| `FetchproxyHelloRejectedError` | The extension refused the hello. When the reason starts `unsupported-capability:` (every declared capability is unavailable in this browser), `.unavailableCapabilities` lists them and `.hint` names the browser (3.3.0+). |
 
 ## Resilience helpers
 

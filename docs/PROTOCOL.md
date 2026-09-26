@@ -277,9 +277,17 @@ is also what every server hello is minted in answer to.
   "version": "3.0.0",
   "identityX25519Pub": "<base64 raw 32B>",   // 0.4.0+: long-term
   "identityEd25519Pub": "<base64 raw 32B>",  // 0.4.0+: signs the ready
-  "sessionNonce": "<base64 raw 32B, fresh per connection>"
+  "sessionNonce": "<base64 raw 32B, fresh per connection>",
+  "unavailableCapabilities": ["download"]    // #418, optional — see below
 }
 ```
+
+`unavailableCapabilities` (#418, optional) lists the capabilities **this
+browser** cannot serve, found by runtime API detection — Safari has no
+`chrome.downloads`, for one. It is sent only when non-empty, sorted and
+de-duplicated, so a browser missing nothing puts the same bytes on the wire as
+before. It is unsigned and advisory; the full rules are in
+[§Capabilities this browser cannot serve](#capabilities-this-browser-cannot-serve-418).
 
 (0.4.0 gave the extension a long-term identity of its own; before that its
 identity was "the only WS client allowed to connect".) The `sessionNonce` is 32
@@ -446,6 +454,23 @@ one is the extension's own answer and will be identical on retry.
 can make a session fail, which a silent peer could do anyway by never
 answering. `reason` is capped at 200 characters because it lands verbatim in
 an error message a caller may log.
+
+**`unsupported-capability:` is a documented reason prefix (#418).** When
+*every* capability an MCP declared is one this browser cannot serve, the
+extension refuses with exactly
+
+```
+unsupported-capability: <cap>, <cap> (not available in this browser)
+```
+
+— the capabilities sorted and joined by `", "`. It is a contract rather than a
+new field because every published validator rebuilds this frame as
+`{type, mcpId, reason}` and drops anything else. `@fetchproxy/server` 3.3.0+
+parses it (`parseUnsupportedCapabilityReason`) onto
+`FetchproxyHelloRejectedError.unavailableCapabilities`, with a `.hint` that
+names the browser (the platform of the extension hello this bridge holds). When
+only *some* capabilities are unavailable the extension no longer refuses — see
+[§Capabilities this browser cannot serve](#capabilities-this-browser-cannot-serve-418).
 
 #### `peer-gone` (host → extension)
 
@@ -625,6 +650,91 @@ Successful responses carry an `op` discriminator that matches the request. Exist
 ```
 
 `ok: false` is reserved for protocol-level failures. HTTP-level errors (404, 500, 403) come back as `ok: true, op: "fetch"` with the relevant `status`. Callers handle non-2xx themselves.
+
+An `ok: false` response may carry an optional machine-readable **`code`**
+(#418). One value is defined:
+
+```jsonc
+{
+  "type": "response",
+  "id": 4,
+  "ok": false,
+  "op": "download",
+  "code": "capability_unavailable",
+  "error": "capability \"download\" is not available in this browser (safari)"
+}
+```
+
+The `error` text for this case is **fixed**:
+`capability "<cap>" is not available in this browser (<platform>)`
+(`capabilityUnavailableMessage()` in `@fetchproxy/protocol`). It must never
+contain `not granted`, because every published server classifies
+`/^capability .+ not granted/` as `capability_denied` — the MCP's programmer
+error — and this is the browser's. Unknown codes are admitted by the validator;
+a receiver that does not recognise one falls back to `error`.
+
+## Capabilities this browser cannot serve (#418)
+
+A browser can lack the API a capability needs — Safari 27 has no
+`chrome.downloads`, so `download` cannot work there. Before #418 the extension's
+only move was to refuse the whole hello. It now grants the **servable subset**
+and tells the MCP what is missing. Everything below is additive inside
+protocol 4: no `PROTOCOL_VERSION` bump, and nothing any signature covers changes
+(`readySignaturePayload`, `helloSignaturePayload`, `pairTranscript`,
+`ReadyFrame` and `HelloRejectedFrame` are untouched).
+
+**The extension** (ContextMint Bridge):
+
+1. puts `unavailableCapabilities` on its hello when the list is non-empty
+   (`unavailableCapabilitiesHelloField()`), before any MCP hello arrives;
+2. computes `servable = declared − unavailable` for each MCP hello. It refuses
+   with the `unsupported-capability:` reason **only when `servable` is empty**.
+   Otherwise the pair prompt offers `servable` (unavailable ones are shown
+   greyed out as "not available in this browser" and can never be granted),
+   auto-trust builds the declared scope from `servable`, and a trust record
+   stores only `servable`;
+3. answers a request for an unavailable capability with
+   `code: "capability_unavailable"` and the fixed wording — checked **before**
+   the "not granted" gate, since a capability left out of the grant because the
+   browser cannot serve it would otherwise be blamed on the MCP.
+
+**The MCP** (`@fetchproxy/server` 3.3.0+):
+
+- keeps the known names from the list of the extension hello whose
+  `sessionNonce` the accepted `ready` was verified against — not whichever hello
+  arrived last — and clears it with the session. Unknown names are dropped.
+- exposes it as `bridgeHealth().session.unavailableCapabilities` and
+  `.platform` (and `unavailable_capabilities` / `platform` in `runProbe()`'s
+  projection);
+- refuses a verb whose capability is on the list **locally, with no round
+  trip** (`graphql_query` needs `graphql`; a fetch with `inPage: true` also
+  needs `fetch_in_page`), throwing `FetchproxyCapabilityUnavailableError`
+  (`.capability`, `.platform`, `.hint` blaming the browser). `fetch()` returns
+  the envelope `{ ok: false, kind: 'capability_unavailable' }` instead;
+- builds the same error from the wire when a response carries the code or the
+  fixed wording (`protocolErrorFrom`), and `classifyFetchError` returns
+  `'capability_unavailable'`, distinct from `capability_denied`.
+  `classifyBridgeError` is unchanged, so it lands in `'protocol'` like the
+  scope and no-tab errors.
+
+**Validator.** Shape only: an array of at most 32 strings, each 1–64
+characters. A name this build does not know is **admitted**, so a newer
+extension can never get its hello refused by an older MCP.
+
+### Compatibility
+
+| MCP | Extension | What happens |
+|---|---|---|
+| < 3.3.0 | new | Every published validator ends the extension hello with `return raw`, so the extra field is ignored — which is why the extension can send it unconditionally, before any MCP hello arrives. The hello is no longer refused, so every servable verb works. An unavailable verb fails with the fixed wording, which the old classifier calls `'other'` — the message names the browser. Leftover: an old `fpx` bolts its blanket version-mismatch hint onto that error; the message itself is right. |
+| 3.3.0+ | old (no field) | Absence means an empty list: nothing is refused locally, behaviour is as before. The old extension still refuses a hello declaring an unavailable capability outright, and the new server's `FetchproxyHelloRejectedError` now names the browser in its hint. |
+| new peer | old host | An old host relays the extension hello as the parsed object (`JSON.stringify(frame)`), so the field reaches the peer intact. |
+| any | any | `InnerResponseError` is also returned as `raw` by every published validator, so an extra `code` survives an old receiver. |
+
+**Unsigned, and why that is acceptable.** The extension hello carries no
+signature, and covering this field would change a signed payload — a wire
+break. So the list is advisory: it can only make an MCP believe *fewer*
+capabilities are available, never gain one. The analysis, and the optional
+tamper-evident follow-up, are in `docs/SECURITY.md` §T-unavailable-caps.
 
 ## The ephemeral's lifetime
 

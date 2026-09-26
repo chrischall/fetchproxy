@@ -1,4 +1,5 @@
 export * from './frames.js';
+export * from './capability-availability.js';
 export {
   assertCookiePath,
   validateFrame,

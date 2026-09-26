@@ -27,6 +27,19 @@ export function subdomainHintApplies(message: string): boolean {
   if (/content script loaded/.test(message)) return false;
   return true;
 }
+/**
+ * #418: `unavailable in this browser (safari): download, graphql`, or `null`
+ * when the session reports nothing missing (or predates the field).
+ */
+export function unavailableLine(health: unknown): string | null {
+  const session = (health as { session?: { unavailableCapabilities?: unknown; platform?: unknown } })
+    ?.session;
+  const list = session?.unavailableCapabilities;
+  if (!Array.isArray(list) || list.length === 0) return null;
+  const platform = typeof session?.platform === 'string' ? session.platform : 'unknown';
+  return `unavailable in this browser (${platform}): ${list.join(', ')}`;
+}
+
 export async function runHealth(
   cmd: Extract<Command, { kind: 'health' }>,
   profile: Profile,
@@ -39,7 +52,12 @@ export async function runHealth(
   });
   try {
     await server.listen();
-    printJson(io, server.bridgeHealth());
+    const health = server.bridgeHealth();
+    printJson(io, health);
+    // #418: say out loud which verbs this browser cannot serve, on stderr so
+    // the JSON on stdout stays machine-readable.
+    const line = unavailableLine(health);
+    if (line !== null) io.err(line);
     return EXIT.OK;
   } catch (err) {
     return mapBridgeError(err, io);

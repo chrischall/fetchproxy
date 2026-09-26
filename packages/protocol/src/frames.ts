@@ -820,6 +820,34 @@ export interface HelloFrameFromExtension {
    * (whose validator refuses the type) never sees one. Today: `'peer-gone'`.
    */
   accepts?: string[];
+  /**
+   * #418: declared-or-not, the capabilities THIS browser cannot serve, found by
+   * runtime API detection (Safari has no `chrome.downloads`, for one). Sent
+   * only when non-empty, sorted and de-duplicated — build it with
+   * `unavailableCapabilitiesHelloField()` — so a browser missing nothing puts
+   * the same bytes on the wire as before.
+   *
+   * Additive inside protocol 4. Every published validator ends the extension
+   * hello with `return raw`, and the host relays the extension hello to peers
+   * as that same object, so an older MCP ignores the field and an older host
+   * forwards it intact. Absent means "nothing known to be missing" — behave as
+   * before.
+   *
+   * The validator checks shape only (≤ 32 strings of 1–64 characters): a name
+   * this build does not know is ADMITTED, so a newer extension can never get a
+   * hello refused by it, and a receiver keeps only the names it knows. The
+   * element type is `Capability` because that is what a conforming extension
+   * sends; a receiver must still filter.
+   *
+   * UNSIGNED and advisory. The extension hello carries no signature and
+   * covering this field would change a signed payload, which is a wire break.
+   * A relay can add or strip entries; adding only makes the MCP refuse a verb
+   * locally (a relay can already drop frames), stripping only sends a request
+   * the extension then refuses itself. It must never feed trust, pinning, the
+   * pair code, key derivation or a grant. docs/SECURITY.md
+   * §T-unavailable-caps.
+   */
+  unavailableCapabilities?: Capability[];
 }
 
 export type HelloFrame = HelloFrameFromServer | HelloFrameFromExtension;
@@ -1543,6 +1571,17 @@ export interface InnerResponseError {
    */
   op?: Capability | 'graphql_query';
   error: string;
+  /**
+   * #418: an optional machine-readable reason. Today one value is defined,
+   * `'capability_unavailable'` — this browser cannot serve the op's capability
+   * — and it rides with the fixed wording
+   * `capability "<cap>" is not available in this browser (<platform>)`
+   * (`capabilityUnavailableMessage()`), which never contains "not granted", so
+   * a server that predates the code classifies it `'other'` rather than
+   * `capability_denied`. Unknown codes are admitted; a receiver that does not
+   * recognise one falls back to `error`.
+   */
+  code?: 'capability_unavailable' | (string & {});
 }
 export type InnerFrame =
   | InnerPing

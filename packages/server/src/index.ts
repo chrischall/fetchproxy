@@ -22,6 +22,7 @@ export {
   FetchproxyNoTabError,
   FetchproxyTabOpeningError,
   FetchproxyWaitedError,
+  FetchproxyCapabilityUnavailableError,
   protocolErrorFrom,
   FetchproxyTimeoutError,
   isRetrySafeOnTimeout,
@@ -73,7 +74,7 @@ export {
 } from './parse-html.js';
 // Batch-paging primitives that pair with the fan-out kit above.
 export { chunk, sleep } from './batch.js';
-export type { Capability, FetchInit } from '@fetchproxy/protocol';
+export type { Capability, FetchInit, Platform } from '@fetchproxy/protocol';
 // #208: the pin an MCP holds on the extension's identity. Exported so a tool
 // (fpx, an MCP's own healthcheck) can show what is pinned and drop one on
 // purpose — a refusal the user cannot inspect or undo is a refusal they will
