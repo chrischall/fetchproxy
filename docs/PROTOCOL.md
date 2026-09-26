@@ -881,10 +881,13 @@ more, so an identity holder with a recording of the frames has nothing left to
 derive with.
 
 (0.4.0 gave the extension a long-term identity of its own; it authenticates
-the `ready` and is never an ECDH input. Its private halves are now
-non-extractable WebCrypto keys in the extension origin's IndexedDB — earlier
-versions (3.2.x) kept them as raw bytes in `chrome.storage.local`, where content scripts could read
-them. See SECURITY.md §T-fake-extension.)
+the `ready` and is never an ECDH input. Since `nullnet-app/contextmint-bridge` #21
+the bridge keeps no X25519 private key at all, on any browser: the identity is
+the X25519 public key, kept as a handle, plus the Ed25519 signing key, whose
+private half — the only one it holds — is a non-extractable WebCrypto key in the
+extension origin's IndexedDB. Earlier versions (3.2.x) kept both private keys as
+raw bytes in `chrome.storage.local`, where content scripts could read them. See
+SECURITY.md §T-fake-extension.)
 
 ### Pair code (SAS)
 
