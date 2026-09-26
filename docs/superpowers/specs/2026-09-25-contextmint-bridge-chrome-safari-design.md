@@ -146,17 +146,21 @@ packages/
   `fix:`). The extension therefore ships with, and is versioned by, ContextMint app
   releases.
 - **Pairing hand-off through the app.** Because the extension lives inside
-  ContextMint, the app can give it the gateway bridge target (URL + `mcpb_*`
-  credential) directly: the app writes it to the shared App Group container, the
-  appex's `SafariWebExtensionHandler` reads it, and the extension asks for it with
-  `browser.runtime.sendNativeMessage`. On Apple platforms that replaces pasting a URL
-  and token into the popup, and it is the first concrete piece of the designed
-  "Open it and hit Pair" step. The credential stays in the Keychain/App Group, never
-  in `storage.local` (the extension's own rule).
+  ContextMint, the app can give it the gateway bridge target directly, split by
+  sensitivity (owner, 2026-09-25): the **`mcpb_*` token** goes in a **keychain access
+  group shared by app and appex** (never plaintext on disk); the **gateway URL** and
+  the **extension-reported status** live in the App Group container
+  `group.app.nullnet.mcphost`. The appex's `SafariWebExtensionHandler` reads both, and
+  the extension asks for them with `browser.runtime.sendNativeMessage`. On Apple
+  platforms that replaces pasting a URL and token into the popup, and it is the first
+  concrete piece of the designed "Open it and hit Pair" step. The token stays in the
+  Keychain, never in the App Group container or `storage.local` (the extension's own
+  rule).
 - **App surface** in ContextMint: the existing Browser bridge rows (HANDOFF Part 2)
   gain the Safari state ("enabled in Safari?" via
   `SFSafariExtensionManager.getStateOfSafariExtension` on macOS; on iOS, which has
-  no such API, a status the extension reports back through the App Group) and a
+  no such API, the extension writes its own enabled/connected status to the App
+  Group container) and a
   button to Safari's extension settings.
 - **Platform seam.** `background/socket.ts` hardcodes `platform: 'chrome'` in the
   hello. It becomes a build-time define (`__FETCHPROXY_PLATFORM__`) set by each
@@ -190,7 +194,7 @@ current Safari on this Mac:
 | **iOS: how long the worker and its `wss://` socket survive** — Safari foreground, Safari backgrounded while ContextMint or Claude is in front, screen locked | live relay on iOS | expected: suspended within seconds of Safari leaving the screen, which would make live relay impossible on iPhone |
 | **iOS: iPad Split View / Stage Manager** with Safari visible beside another app | live relay on iPad | may keep the worker alive; unknown |
 | **iOS: session lift** (`read_cookies`, storage reads) triggered by the user in the popup, pushed to the gateway | Pattern-A MCPs (bootstrap) | should work — it needs Safari only for the moment of the lift |
-| **App Group hand-off**: app → App Group → `SafariWebExtensionHandler` → `sendNativeMessage` | pairing | standard on both platforms; confirm on iOS |
+| **Keychain + App Group hand-off**: app → shared keychain group (token) + App Group (URL) → `SafariWebExtensionHandler` → `sendNativeMessage` | pairing | standard on both platforms; confirm on iOS |
 
 **Spike output:** a table of the above marked works / degraded / absent, and a go /
 no-go. Absent APIs feed the capability seam; a failing keepalive is a no-go until
@@ -278,14 +282,16 @@ app; it gets a paragraph recording this.
 - **v0 screens, and only these:** sign in (the existing auth callback flow), the
   **Browser bridge** screen from HANDOFF Part 2 (status; "enabled in Safari?" via
   `SFSafariExtensionManager.getStateOfSafariExtension`; "Open Safari settings" via
-  `SFSafariApplication.showPreferencesForExtension`; the App Group hand-off of the
-  gateway bridge target), and Settings/sign-out. Menu-bar presence is a candidate for
+  `SFSafariApplication.showPreferencesForExtension`; the keychain + App Group hand-off
+  of the gateway bridge target), and Settings/sign-out. Menu-bar presence is a candidate for
   v1, not v0.
 - **Shared SwiftUI where it compiles.** 8 of the iOS app's 53 Swift files touch
   UIKit; those are the port surface for parity later. Views that build unchanged on
   both platforms join both targets from the start rather than being copied.
 - **Look:** the base look from the design system, the Cursor C app icon
-  (`contextmint-icon.svg`), dark pinned as on iOS.
+  (`contextmint-icon.svg`, pinned via `brand/PIN.json`; decision 5), dark pinned as
+  on iOS.
+- **Category:** `LSApplicationCategoryType` = `public.app-category.productivity`.
 - **Distribution:** TestFlight for macOS from mcp-host-app's existing release job on
   the `[self-hosted, macOS]` runner; App Store later, as a platform of the same
   record.
@@ -303,7 +309,9 @@ app; it gets a paragraph recording this.
   anything was registered. The macOS app shares `app.nullnet.mcphost` (universal
   purchase: one App Store Connect record gains a macOS platform) and embeds the same
   `app.nullnet.mcphost.bridge`.
-- **App Group** shared by app and appex: `group.app.nullnet.mcphost`.
+- **App Group** shared by app and appex: `group.app.nullnet.mcphost` (gateway URL,
+  extension status). **Keychain access group** shared by app and appex: the
+  `mcpb_*` token.
 - **Signing and CI** are mcp-host-app's existing ones: nullnet team, the shared
   distribution cert, the `[self-hosted, macOS]` runner, its versioning
   (`run_number*100+run_attempt`), TestFlight then review. The bridge repo signs
@@ -373,7 +381,7 @@ local one.
   in its bundle and only the permissions the spike kept.
 - mcp-host-app: `xcodebuild` of the iOS app with the embedded appex in CI (no signing
   on PRs); a test that the pinned resources zip's SHA-256 matches the release's
-  published digest; App Group hand-off unit-tested on the Swift side.
+  published digest; keychain + App Group hand-off unit-tested on the Swift side.
 - Manual live check per store build: fresh install → pair `opentable-mcp` →
   `opentable_list_reservations` returns data; and one hosted round trip through
   the ContextMint gateway (`alltrails`, per mcp-host's 2026-09-09 check).
@@ -405,8 +413,8 @@ Each step leaves both repos shippable; the extension is never absent from both.
 4. **Chrome Web Store** listing under the nullnet publisher (icons from the design system; promo tile + screenshots to make).
 5. **Safari spike** (macOS + iOS) → go/no-go, and the iOS scope confirmed.
 6. **`extension-safari`** in the bridge repo → safari-resources zip on each release.
-7. **ContextMint for Mac v0 + the appex** in `mcp-host-app`, with the App Group
-   pairing hand-off → local builds on this Mac → TestFlight for macOS.
+7. **ContextMint for Mac v0 + the appex** in `mcp-host-app`, with the keychain +
+   App Group pairing hand-off → local builds on this Mac → TestFlight for macOS.
 8. **The same appex in the iOS app** → TestFlight → ContextMint iOS release.
 
 The spike (5) does **not** wait for the Mac app: it runs against a throwaway container
@@ -421,3 +429,12 @@ signed extension and the pairing hand-off need.
    appex `app.nullnet.mcphost.bridge`, App Group `group.app.nullnet.mcphost`.
 2. Extension packages **move** to `nullnet-app/contextmint-bridge`.
 3. CWS publisher of record: **nullnet** group publisher.
+4. **Pairing hand-off is hybrid:** the `mcpb_*` token in a keychain access group
+   shared by app and appex (never plaintext on disk); gateway URL and the
+   extension's self-reported enabled/connected status (iOS has no
+   `getStateOfSafariExtension`) in the App Group container `group.app.nullnet.mcphost`.
+5. **App icon:** iOS and Mac both use the ContextMint Cursor C icon from
+   nullnet-design-system `v1.6.0` (`system/assets/contextmint-icon.svg`,
+   `contextmint-icon-1024.png`), pinned through mcp-host-app's `brand/PIN.json`; it
+   replaces the iOS app's procedurally drawn hub icon.
+6. **Mac App Store category:** Productivity (`public.app-category.productivity`).
