@@ -886,7 +886,8 @@ the bridge keeps no X25519 private key at all, on any browser: the identity is
 the X25519 public key, kept as a handle, plus the Ed25519 signing key, whose
 private half — the only one it holds — is a non-extractable WebCrypto key in the
 extension origin's IndexedDB. Earlier versions (3.2.x) kept both private keys as
-raw bytes in `chrome.storage.local`, where content scripts could read them. See
+base64 strings in `chrome.storage.local["extensionIdentity"]`, where content
+scripts could read them. See
 SECURITY.md §T-fake-extension.)
 
 ### Pair code (SAS)
