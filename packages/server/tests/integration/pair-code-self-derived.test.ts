@@ -565,6 +565,8 @@ describe('a peer judging a pair code it did not receive from our own host (M1)',
       state: 'extension_disconnected',
       pairCode: null,
       extensionConnected: false,
+      unavailableCapabilities: [],
+      platform: null,
     });
 
     // And the socket is still up: refusing a bridge over a hint it merely

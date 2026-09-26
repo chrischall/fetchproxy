@@ -1,3 +1,4 @@
+import { parseUnsupportedCapabilityReason } from '@fetchproxy/protocol';
 import type { SessionState } from './session.js';
 
 /**
@@ -50,16 +51,45 @@ export class FetchproxySessionNotReadyError extends Error {
 export class FetchproxyHelloRejectedError extends Error {
   readonly mcpId: string;
   readonly reason: string;
+  /**
+   * #418: when the reason is `unsupported-capability: a, b (not available in
+   * this browser)` — every capability this MCP declared is one the browser
+   * cannot serve — those capabilities, parsed out of it. Empty otherwise.
+   */
+  readonly unavailableCapabilities: string[];
+  /** #418: the refusing browser's platform, when this bridge knew it. */
+  readonly platform: string | null;
+  /**
+   * #418: the remedy, when the reason is one this package knows how to
+   * explain — today only `unsupported-capability`, which blames the browser
+   * rather than the MCP. `null` otherwise.
+   */
+  readonly hint: string | null;
 
-  constructor(info: { mcpId: string; reason: string }) {
+  constructor(info: { mcpId: string; reason: string; platform?: string | null }) {
+    const unavailable = parseUnsupportedCapabilityReason(info.reason);
+    const platform = info.platform ?? null;
+    const hint =
+      unavailable !== null
+        ? `${platform ? `this browser (${platform})` : 'this browser'} cannot serve any of the ` +
+          `capabilities this MCP needs (${unavailable.join(', ')}) — ContextMint Bridge checked ` +
+          `for the browser APIs and they are missing. Nothing is wrong with the MCP or your ` +
+          `pairing, and updating will not change it: use this MCP from a browser that provides ` +
+          `them (for example Chrome).`
+        : null;
     super(
       `fetchproxy: the extension refused the connection for "${info.mcpId}": ${info.reason}. ` +
-        `This is the extension's own reason — it is not a timeout, and retrying ` +
-        `unchanged will be refused the same way.`,
+        (hint !== null
+          ? hint
+          : `This is the extension's own reason — it is not a timeout, and retrying ` +
+            `unchanged will be refused the same way.`),
     );
     this.name = 'FetchproxyHelloRejectedError';
     this.mcpId = info.mcpId;
     this.reason = info.reason;
+    this.unavailableCapabilities = unavailable ?? [];
+    this.platform = platform;
+    this.hint = hint;
     Object.setPrototypeOf(this, new.target.prototype);
   }
 }

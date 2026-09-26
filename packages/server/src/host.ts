@@ -42,6 +42,7 @@ import {
 } from './session-ready.js';
 import type { Identity } from './identity.js';
 import { decideExtensionTrust, type ExtensionTrustPort } from './extension-trust.js';
+import { sessionInfoFromHello, type ExtensionSessionInfo } from './session-info.js';
 
 // Reject WS upgrades from browsing contexts (drive-by webpage defense).
 // Browsers send Origin: <scheme>://<host>[:<port>] on WS upgrades from
@@ -201,6 +202,14 @@ export const MAX_PAYLOAD_BYTES = MAX_FRAME_BYTES;
 
 export interface HostOpts {
   httpServer: HttpServer;
+  /**
+   * #418: called with each of this MCP's own outbound inner frames once the
+   * session is ready and before a seq is claimed, with what the session knows
+   * about the browser. Throwing refuses the frame locally — nothing is sealed
+   * or sent. `FetchproxyServer` uses it to refuse a verb for a capability the
+   * extension said this browser cannot serve.
+   */
+  refuseOutbound?: (inner: InnerFrame, info: ExtensionSessionInfo | null) => void;
   ownIdentity: Identity;
   ownMcpId: string;
   ownServerName: string;
@@ -283,6 +292,13 @@ export interface HostHandle {
   extensionConnected: () => boolean;
   /** 2.5.0: whether a session key exists — the extension's ready landed and verified. */
   sessionLinked: () => boolean;
+  /**
+   * #418: the browser behind the current session — its platform and the
+   * capabilities it said it cannot serve — taken from the extension hello the
+   * accepted `ready` was verified against. `null` while no session is linked.
+   * Optional so test doubles that predate it still type-check.
+   */
+  sessionInfo?: () => ExtensionSessionInfo | null;
 }
 
 interface PeerSlot {
@@ -542,6 +558,10 @@ export async function startHost(opts: HostOpts): Promise<HostHandle> {
   // signature against the claimed Ed25519 identity. One extension per
   // host instance; cleared on disconnect.
   let extensionHello: HelloFrameFromExtension | null = null;
+  // #418: what the extension hello behind the CURRENT own session said about
+  // the browser. Set beside `ownSession` from the hello the ready was verified
+  // against, and cleared with it.
+  let ownSessionInfo: ExtensionSessionInfo | null = null;
   // 1.12.0 (#208): the socket that has claimed the extension slot but has not
   // finished being vetted. Held from the synchronous moment its hello arrives
   // until it either becomes `extensionWs` or is refused, so the check-and-set
@@ -625,6 +645,7 @@ export async function startHost(opts: HostOpts): Promise<HostHandle> {
         `re-handshaking this MCP's session (the extension stays connected).`,
     );
     ownSession = dropOwnSessionAndEphemeral();
+    ownSessionInfo = null;
     resetSessionPromise();
     const mintedKeypair = await generateSessionKeypair();
     const mintedHello: HelloFrameFromServer = await buildServerHello({
@@ -1032,8 +1053,12 @@ export async function startHost(opts: HostOpts): Promise<HostHandle> {
               );
               return;
             }
-            const extEdPub = fromB64(extensionHello.identityEd25519Pub);
-            const extNonce = fromB64(extensionHello.sessionNonce);
+            // #418: the hello this ready is verified against, captured in the
+            // same synchronous breath as its nonce — the session's browser
+            // info comes from THIS hello, not whichever arrives next.
+            const verifiedHello = extensionHello;
+            const extEdPub = fromB64(verifiedHello.identityEd25519Pub);
+            const extNonce = fromB64(verifiedHello.sessionNonce);
             const msg = readySignaturePayload(
               held.nonce,
               extNonce,
@@ -1096,6 +1121,7 @@ export async function startHost(opts: HostOpts): Promise<HostHandle> {
             );
             if (extensionWs !== ws) return;
             ownSession = new SessionState(key);
+            ownSessionInfo = sessionInfoFromHello(verifiedHello);
             ownDecryptFailures = 0;
             // 0.5.2+: receiving a ready means the user has approved (auto-
             // trust path) or just approved (popup path) — the pair-pending
@@ -1226,7 +1252,11 @@ export async function startHost(opts: HostOpts): Promise<HostHandle> {
             // `awaitSessionReady` time out and report a guess. A rejection of
             // this promise propagates through it unchanged.
             rejectOwnSession(
-              new FetchproxyHelloRejectedError({ mcpId: frame.mcpId, reason: frame.reason }),
+              new FetchproxyHelloRejectedError({
+                mcpId: frame.mcpId,
+                reason: frame.reason,
+                platform: extensionHello?.platform ?? null,
+              }),
             );
           } else {
             // Gated exactly like `extension-disconnected` above, and for the
@@ -1319,6 +1349,7 @@ export async function startHost(opts: HostOpts): Promise<HostHandle> {
         // name it usefully — so keeping the key would buy nothing and cost
         // the forward secrecy this version exists for.
         ownSession = dropOwnSessionAndEphemeral();
+        ownSessionInfo = null;
         ownDecryptFailures = 0;
         // A pair code the user never approved is not actionable once the
         // browser holding the popup is gone — and `bridgeHealth().session`
@@ -1398,6 +1429,9 @@ export async function startHost(opts: HostOpts): Promise<HostHandle> {
         pendingPairCode: () => ownPendingPairCode,
       });
       if (!extensionWs) throw new Error('host: no extension connected');
+      // #418: a verb this browser cannot serve is refused here, before a seq
+      // is claimed, so the refusal spends nothing.
+      opts.refuseOutbound?.(inner, ownSessionInfo);
       // Measured before a seq is claimed, so a refused frame spends nothing
       // and leaves no gap. The socket this would go out on is the ONE the
       // extension holds for every MCP on this concentrator, so meeting its
@@ -1419,5 +1453,6 @@ export async function startHost(opts: HostOpts): Promise<HostHandle> {
     pendingPairCode: () => ownPendingPairCode,
     extensionConnected: () => extensionWs !== null,
     sessionLinked: () => ownSession !== null,
+    sessionInfo: () => (ownSession !== null ? ownSessionInfo : null),
   };
 }

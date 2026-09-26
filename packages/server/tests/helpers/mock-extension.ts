@@ -92,6 +92,8 @@ export interface MockExtension {
 export async function connectMockExtension(
   port: number,
   identity?: { x25519: CryptoKeyPairRaw; ed25519: CryptoKeyPairRaw },
+  /** Extra or overriding hello fields — e.g. `platform`, `unavailableCapabilities` (#418). */
+  helloExtra: Partial<HelloFrameFromExtension> = {},
 ): Promise<MockExtension> {
   const x = identity?.x25519 ?? (await generateX25519());
   const ed = identity?.ed25519 ?? (await generateEd25519());
@@ -108,6 +110,7 @@ export async function connectMockExtension(
     identityX25519Pub: b64(x.publicKey),
     identityEd25519Pub: b64(ed.publicKey),
     sessionNonce: b64(sessionNonce),
+    ...helloExtra,
   };
 
   const ws = new WebSocket(`ws://127.0.0.1:${port}`);

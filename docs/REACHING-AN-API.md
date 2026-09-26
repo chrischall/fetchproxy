@@ -136,6 +136,28 @@ createFetchproxyTransport({
 });
 ```
 
+### `capability "…" is not available in this browser (safari)`
+
+The capability is declared and would be granted, but **this browser cannot
+serve it** — ContextMint Bridge checked for the API it needs at runtime and it
+is missing (Safari has no `chrome.downloads`, so `download` is the usual one).
+It is not the MCP's code, not the pairing and not a version: no declaration,
+re-approval or update changes it. Use that tool from a browser that provides the
+API (for example Chrome); every other verb of the MCP keeps working here.
+
+`@fetchproxy/server` 3.3.0+ throws `FetchproxyCapabilityUnavailableError`
+(`.capability`, `.platform`, `.hint`) and `classifyFetchError` returns
+`'capability_unavailable'`. When the extension reported the gap at connect time
+(`bridgeHealth().session.unavailableCapabilities`, or the
+`unavailable in this browser (…)` line from `fpx health`) the verb is refused
+locally without a round trip. An older server shows the same message classified
+as `'other'`, and an older `fpx` adds its generic version-mismatch hint — ignore
+that; the message is the diagnosis.
+
+If **every** capability the MCP declared is unavailable, the connection itself
+is refused with `unsupported-capability: … (not available in this browser)`
+(`FetchproxyHelloRejectedError.unavailableCapabilities`).
+
 ## Prefer capture over a request, where the choice exists
 
 An MCP that needs a bearer token usually does not need to *perform* an

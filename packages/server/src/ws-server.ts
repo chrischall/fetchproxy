@@ -5,6 +5,9 @@ import {
   undeclaredKeys,
   validateCaptureHeaderDecls,
   assertCookiePath,
+  capabilityUnavailableMessage,
+  parseCapabilityUnavailable,
+  CAPABILITY_UNAVAILABLE_CODE,
 } from '@fetchproxy/protocol';
 import type {
   Capability,
@@ -19,7 +22,9 @@ import type {
   FetchInit,
   ReadCookiesInitV3,
   DownloadResult,
+  Platform,
 } from '@fetchproxy/protocol';
+import { unavailableCapabilityFor, type ExtensionSessionInfo } from './session-info.js';
 import { electRole } from './election.js';
 import { startHost, type HostHandle } from './host.js';
 import { startPeer, type PeerHandle } from './peer.js';
@@ -494,6 +499,8 @@ export interface FetchResultError {
    * B-BUG-13: when `kind === 'session_not_ready'`, the error the local send
    * threw (e.g. `FetchproxySessionNotReadyError`, with its `hint` and
    * `pairCode`). `request()` and the verb shortcuts rethrow it unchanged.
+   * #418: also set when `kind === 'capability_unavailable'` was decided
+   * locally — the `FetchproxyCapabilityUnavailableError` it threw.
    */
   cause?: unknown;
 }
@@ -884,6 +891,46 @@ export class FetchproxyWaitedError extends FetchproxyHintedError {
   }
 }
 
+/**
+ * #418: THIS BROWSER cannot serve the capability a verb needs.
+ *
+ * The extension found, by runtime API detection, that the capability is
+ * missing here (Safari has no `chrome.downloads`, for one) and granted the MCP
+ * the rest. Thrown two ways, with the same fields:
+ *
+ * - locally, with no round trip, when the verb's capability is on the
+ *   session's `unavailableCapabilities` (`bridgeHealth().session`);
+ * - from the wire, by {@link protocolErrorFrom}, when the extension answers
+ *   with `code: 'capability_unavailable'` or the fixed wording
+ *   `capability "<cap>" is not available in this browser (<platform>)`.
+ *
+ * Hinted for the reason every sibling is: untyped, it lands in the `protocol`
+ * bucket and inherits the CLI's blanket "version mismatch" remedy. And kept
+ * apart from `capability_denied`, whose remedy — declare the capability —
+ * blames the MCP's code for something no code change can fix.
+ */
+export class FetchproxyCapabilityUnavailableError extends FetchproxyHintedError {
+  /** The capability the browser cannot serve (`graphql` for a `graphql_query`). */
+  readonly capability: string;
+  /** The browser, when known (`'safari'`); `null` when the extension did not say. */
+  readonly platform: string | null;
+
+  constructor(originalError: string, info: { capability: string; platform: string | null }) {
+    const where = info.platform ? `this browser (${info.platform})` : 'this browser';
+    super(
+      originalError,
+      `${where} cannot serve the "${info.capability}" capability — ContextMint Bridge ` +
+        `checked for the browser API it needs and it is missing. The rest of this MCP ` +
+        `still works here. Nothing is wrong with the MCP's code or your pairing, and ` +
+        `neither updating nor re-approving will change it: use this tool from a browser ` +
+        `that provides the API (for example Chrome).`,
+    );
+    this.name = 'FetchproxyCapabilityUnavailableError';
+    this.capability = info.capability;
+    this.platform = info.platform;
+  }
+}
+
 /** Which wait timed out, so the hint can name what would have ended it. */
 export type WaitedOp = 'capture' | 'capture_redirect' | 'download';
 
@@ -957,7 +1004,23 @@ export function protocolErrorFrom(
    * it.
    */
   op?: WaitedOp,
+  /**
+   * #418: the rest of the `ok:false` response, when the caller has it — its
+   * machine-readable `code` and op echo. Omitted by every older call site.
+   */
+  response?: { code?: string; op?: string },
 ): FetchproxyProtocolError {
+  // #418: first, because it is the most specific thing the extension can say
+  // and neither its code nor its fixed wording overlaps the patterns below.
+  const unavailable = parseCapabilityUnavailable(error);
+  if (unavailable !== null || response?.code === CAPABILITY_UNAVAILABLE_CODE) {
+    const fromOp =
+      response?.op === 'graphql_query' ? 'graphql' : (response?.op ?? 'unknown');
+    return new FetchproxyCapabilityUnavailableError(error, {
+      capability: unavailable?.capability ?? fromOp,
+      platform: unavailable?.platform ?? null,
+    });
+  }
   // Exact, not a substring: 'timeout' is the extension's whole rejection for a
   // closed window. A message that merely CONTAINS the word is some other
   // failure describing itself, and stealing it would be the mis-hint this
@@ -1189,6 +1252,17 @@ export interface BridgeSessionState {
   pairCode: string | null;
   /** Whether an extension is known to be attached (see `state` for the peer caveat). */
   extensionConnected: boolean;
+  /**
+   * #418: capabilities the browser behind the CURRENT session said it cannot
+   * serve — known names only, sorted. Empty when nothing is linked, when the
+   * extension predates #418, or when nothing is missing. A verb needing one of
+   * these is refused locally with `FetchproxyCapabilityUnavailableError`.
+   * Advisory: the extension hello is unsigned (docs/SECURITY.md
+   * §T-unavailable-caps).
+   */
+  unavailableCapabilities: Capability[];
+  /** #418: the browser behind the current session (`'chrome'`, `'safari'`, …), or `null` when unlinked. */
+  platform: Platform | null;
 }
 
 export interface BridgeHealth {
@@ -1337,6 +1411,10 @@ export interface BridgeProbeResult {
     extension_connected: boolean;
     /** 2.5.0: `BridgeHealth.lastExtensionMessageAt` (epoch ms), projected here so consumers stop lifting it separately. */
     last_extension_message_at: number | null;
+    /** #418: `BridgeHealth.session.unavailableCapabilities`. */
+    unavailable_capabilities: Capability[];
+    /** #418: `BridgeHealth.session.platform`. */
+    platform: Platform | null;
   };
   /**
    * Present only when `ok` is false. `kind` is `classifyBridgeError`'s
@@ -1901,6 +1979,7 @@ export class FetchproxyServer {
       this.role = 'host';
       this.hostHandle = await startHost({
         httpServer: el.server,
+        refuseOutbound: (inner, info) => this.refuseIfUnavailable(inner, info),
         ownIdentity: identity,
         ownMcpId: mcpId,
         ownServerName: this.opts.serverName,
@@ -1941,6 +2020,7 @@ export class FetchproxyServer {
     } else {
       this.role = 'peer';
       this.peerHandle = await startPeer({
+        refuseOutbound: (inner, info) => this.refuseIfUnavailable(inner, info),
         host: this.opts.host,
         port: this.opts.port,
         identity,
@@ -2325,6 +2405,17 @@ export class FetchproxyServer {
         resendable: isRetrySafeOnTimeout(init.method, fetchOpts.retryOnTimeout),
       });
     } catch (err) {
+      // #418: refused locally because this browser cannot serve the
+      // capability. Nothing was sent; the envelope names the real kind.
+      if (err instanceof FetchproxyCapabilityUnavailableError) {
+        return {
+          ok: false,
+          error: err.originalError,
+          kind: 'capability_unavailable',
+          retryAttempted: false,
+          cause: err,
+        };
+      }
       // B-BUG-13: the frame never reached the bridge, so nothing ran in a
       // tab. Honour fetch()'s envelope contract instead of rejecting, and
       // keep the original error so request() can rethrow it typed.
@@ -2506,6 +2597,9 @@ export class FetchproxyServer {
         port: this.opts.port,
       });
     }
+    if (result.kind === 'capability_unavailable') {
+      return protocolErrorFrom(result.error, undefined, { code: CAPABILITY_UNAVAILABLE_CODE, op });
+    }
     return protocolErrorFrom(result.error);
   }
 
@@ -2599,6 +2693,13 @@ export class FetchproxyServer {
     if (!result.ok) {
       // B-BUG-13: a local send failure keeps the typed error it always threw.
       if (result.kind === 'session_not_ready' && result.cause instanceof Error) {
+        throw result.cause;
+      }
+      // #418: a local capability refusal keeps its typed error too.
+      if (
+        result.kind === 'capability_unavailable' &&
+        result.cause instanceof FetchproxyCapabilityUnavailableError
+      ) {
         throw result.cause;
       }
       // retryAttempted rides on the envelope — per-call local context,
@@ -2853,6 +2954,8 @@ export class FetchproxyServer {
         pending_pair_code: health.session.pairCode,
         extension_connected: health.session.extensionConnected,
         last_extension_message_at: health.lastExtensionMessageAt,
+        unavailable_capabilities: health.session.unavailableCapabilities,
+        platform: health.session.platform,
       },
       ...(error ? { error } : {}),
     };
@@ -3762,7 +3865,7 @@ export class FetchproxyServer {
         fetchCb({
           ok: false,
           error: inner.error,
-          kind: classifyFetchError(inner.error),
+          kind: classifyFetchError(inner.error, inner.code),
           retryAttempted: false,
         });
       }
@@ -3787,7 +3890,7 @@ export class FetchproxyServer {
           );
         }
       } else {
-        storageCb.reject(protocolErrorFrom(inner.error));
+        storageCb.reject(protocolErrorFrom(inner.error, undefined, inner));
       }
       return;
     }
@@ -3805,7 +3908,7 @@ export class FetchproxyServer {
           );
         }
       } else {
-        captureCb.reject(protocolErrorFrom(inner.error, 'capture'));
+        captureCb.reject(protocolErrorFrom(inner.error, 'capture', inner));
       }
       return;
     }
@@ -3823,7 +3926,7 @@ export class FetchproxyServer {
           );
         }
       } else {
-        redirectCb.reject(protocolErrorFrom(inner.error, 'capture_redirect'));
+        redirectCb.reject(protocolErrorFrom(inner.error, 'capture_redirect', inner));
       }
       return;
     }
@@ -3841,7 +3944,7 @@ export class FetchproxyServer {
           );
         }
       } else {
-        idbCb.reject(protocolErrorFrom(inner.error));
+        idbCb.reject(protocolErrorFrom(inner.error, undefined, inner));
       }
       return;
     }
@@ -3859,7 +3962,7 @@ export class FetchproxyServer {
           );
         }
       } else {
-        domListCb.reject(protocolErrorFrom(inner.error));
+        domListCb.reject(protocolErrorFrom(inner.error, undefined, inner));
       }
       return;
     }
@@ -3877,7 +3980,7 @@ export class FetchproxyServer {
           );
         }
       } else {
-        downloadCb.reject(protocolErrorFrom(inner.error, 'download'));
+        downloadCb.reject(protocolErrorFrom(inner.error, 'download', inner));
       }
       return;
     }
@@ -3895,7 +3998,7 @@ export class FetchproxyServer {
           );
         }
       } else {
-        graphqlCb.reject(protocolErrorFrom(inner.error));
+        graphqlCb.reject(protocolErrorFrom(inner.error, undefined, inner));
       }
       return;
     }
@@ -3906,7 +4009,9 @@ export class FetchproxyServer {
         writeCookiesCb.resolve([...inner.written]);
       } else {
         writeCookiesCb.reject(
-          protocolErrorFrom(inner.ok ? 'write_cookies response had the wrong op' : inner.error),
+          inner.ok
+            ? protocolErrorFrom('write_cookies response had the wrong op')
+            : protocolErrorFrom(inner.error, undefined, inner),
         );
       }
       return;
@@ -4116,8 +4221,15 @@ export class FetchproxyServer {
     const handle = this.hostHandle ?? this.peerHandle;
     const pairCode = this.currentPendingPairCode();
     if (!handle || this.role === null) {
-      return { state: 'not_listening', pairCode, extensionConnected: false };
+      return {
+        state: 'not_listening',
+        pairCode,
+        extensionConnected: false,
+        unavailableCapabilities: [],
+        platform: null,
+      };
     }
+    const info = handle.sessionInfo?.() ?? null;
     const extensionConnected = handle.extensionConnected();
     const state: BridgeSessionState['state'] = handle.sessionLinked()
       ? 'linked'
@@ -4126,7 +4238,30 @@ export class FetchproxyServer {
         : !extensionConnected
           ? 'extension_disconnected'
           : 'no_session';
-    return { state, pairCode, extensionConnected };
+    return {
+      state,
+      pairCode,
+      extensionConnected,
+      unavailableCapabilities: info ? [...info.unavailableCapabilities] : [],
+      platform: info?.platform ?? null,
+    };
+  }
+
+  /**
+   * #418: refuse, before a seq is claimed, a request whose capability the
+   * extension said this browser cannot serve. Called by the host / peer
+   * handle once the session is ready, so it judges against the list from the
+   * hello that session was verified against. Advisory: the list is unsigned,
+   * so it may only ever make this MCP refuse MORE — the extension still
+   * enforces from its own runtime check for anything that gets through.
+   */
+  private refuseIfUnavailable(inner: InnerFrame, info: ExtensionSessionInfo | null): void {
+    const cap = unavailableCapabilityFor(inner, info);
+    if (cap === null || info === null) return;
+    throw new FetchproxyCapabilityUnavailableError(
+      capabilityUnavailableMessage(cap, info.platform),
+      { capability: cap, platform: info.platform },
+    );
   }
 
   /**

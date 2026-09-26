@@ -408,6 +408,20 @@ The extension is distributed via the Chrome Web Store (eventually) and built-fro
 
 Extension major-version bumps invalidate the trust store (force re-pair on every MCP); patch and minor bumps carry trust forward. The trust record schema is versioned on read; pre-capability records (no `capabilities` field) are normalised to `["fetch"]` for back-compat.
 
+### T-unavailable-caps — Tampering with "this browser cannot serve X" (#418)
+
+Since #418 the extension hello may carry `unavailableCapabilities` — the capabilities this browser cannot serve — so the extension can grant an MCP the servable subset instead of refusing it whole ([PROTOCOL.md §Capabilities this browser cannot serve](PROTOCOL.md#capabilities-this-browser-cannot-serve-418)). **The field is unsigned.** The extension hello has never carried a signature (the extension's proof of possession is the `ready`'s, over `readySignaturePayload`), and putting the list inside a signed payload would change what an existing signature covers — a wire break. So it is advisory, and anything that relays frames between the extension and an MCP — a remote bridge, or the host itself for its peers ([§T-host-MITM](#t-host-mitm--host-mcp-reading-peer-traffic)) — can add entries or strip them. The same was already true of `platform`, which this change now also surfaces in `bridgeHealth()` and in error hints.
+
+**What tampering can do, checked against the code:**
+
+- **Add entries.** The MCP refuses those verbs locally (`refuseIfUnavailable` in `ws-server.ts`) with `FetchproxyCapabilityUnavailableError`, whose hint blames the browser — wrongly, in this case. That is a denial of service, and a party relaying frames can already deny service by dropping them; the only new effect is the misleading message.
+- **Strip entries, or the whole field.** The MCP sends the request over the encrypted session. The extension decides from its **own** runtime API check, not from anything on the wire, and answers with `code: "capability_unavailable"` inside an authenticated frame — the same typed error, now tamper-proof.
+- **Gain a capability.** Not possible. The field flows only extension → MCP; the extension never reads it off any frame, and what it grants is `declared − (its own probe)`. On the MCP it feeds exactly two things: the local refusal above and the health report. It must never feed trust, pinning, the pair code, key derivation or any grant — the rule for any future reader of it.
+
+Names the MCP does not know are dropped, and the validator bounds the list (≤ 32 entries of 1–64 characters), so an injected list cannot grow memory or smuggle a name into anything that switches on it.
+
+**Residual risk:** a party already positioned to relay the extension's frames can make an MCP believe *fewer* capabilities are available than really are, and make its error text blame the browser for it. That is a downgrade to refusal, never an escalation. If the list ever needs to be tamper-evident, the additive fix is an encrypted `session-info` frame (extension → MCP, inside the session, sent only to servers that list it in `accepts`) carrying the same list; this change does not add it.
+
 ## What protocol 4 does not fix
 
 3.0.0 is the largest change to this document's crypto since 0.2.0, which makes it exactly the version whose residuals are worth writing down before somebody infers them away. v4 gives forward secrecy for past sessions and binds every frame to its `mcpId`, its ordinal and its direction. That is all it gives. Each of the following is true the day it ships:

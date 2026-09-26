@@ -1,3 +1,5 @@
+import { CAPABILITY_UNAVAILABLE_CODE, parseCapabilityUnavailable } from '@fetchproxy/protocol';
+
 /**
  * Classifies the raw `error` string the extension puts on the wire
  * into a small discriminated set. Downstream MCPs (compass-mcp,
@@ -38,6 +40,16 @@ export type FetchErrorKind =
    * `read_cookies` without listing it in `capabilities`). Programmer
    * error in the MCP code. */
   | 'capability_denied'
+  /** #418: the MCP declared and was granted this capability, but THIS
+   * BROWSER cannot serve it (Safari has no `chrome.downloads`, for one).
+   * Not a programmer error and not fixed by re-pairing or updating — the
+   * verb needs a different browser. Recognised from the wire code
+   * `'capability_unavailable'` or the fixed wording
+   * `capability "<cap>" is not available in this browser (<platform>)`;
+   * also emitted directly when the server refuses such a verb locally from
+   * the session's `unavailableCapabilities`. Distinct from
+   * `capability_denied`, which blames the MCP. */
+  | 'capability_unavailable'
   /** Request or response body exceeded the bridge's size cap. The MCP
    * is moving too much data through the per-request frame; consider
    * a different endpoint or paginating. */
@@ -73,7 +85,16 @@ export type FetchErrorKind =
  * matches against substrings (the extension wraps its inner errors,
  * so we can't anchor on prefixes alone).
  */
-export function classifyFetchError(error: string): FetchErrorKind {
+export function classifyFetchError(
+  error: string,
+  /**
+   * #418: the response's optional machine-readable `code`, when the caller
+   * has the inner frame. Checked first — it is what a later extension may
+   * rely on after rewording its message.
+   */
+  code?: string,
+): FetchErrorKind {
+  if (code === CAPABILITY_UNAVAILABLE_CODE) return 'capability_unavailable';
   // Checked FIRST: `fetch threw:` means the page's own `fetch()` ran and
   // threw, so the request was attempted in a tab. Its message is whatever the
   // page's error said, and a page error that happens to contain Chrome's
@@ -112,6 +133,12 @@ export function classifyFetchError(error: string): FetchErrorKind {
   }
   if (/not in domains \[/.test(error)) {
     return 'domain_denied';
+  }
+  // #418: before the "not granted" test for symmetry, though the fixed wording
+  // never contains "not granted" — that is what keeps an OLD server from
+  // reading a browser gap as the MCP's programmer error.
+  if (parseCapabilityUnavailable(error) !== null) {
+    return 'capability_unavailable';
   }
   if (/^capability .+ not granted/.test(error)) {
     return 'capability_denied';

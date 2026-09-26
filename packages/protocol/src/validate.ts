@@ -1,5 +1,9 @@
 import type { Capability, Frame, HelloFrame, ReadyFrame, EncryptedFrame, InnerFrame } from './frames.js';
 import { KNOWN_CAPABILITIES, PROTOCOL_VERSION } from './frames.js';
+import {
+  MAX_CAPABILITY_NAME_LENGTH,
+  MAX_UNAVAILABLE_CAPABILITIES,
+} from './capability-availability.js';
 import { isValidMcpId } from './mcp-id.js';
 import { isValidJsonPointer } from './json-pointer.js';
 import { isPublicSuffix } from './public-suffix.js';
@@ -796,6 +800,12 @@ function validateHello(raw: Record<string, unknown>): HelloFrame {
     // B-BUG-9: the extension advertises host→extension notices it
     // understands (today `'peer-gone'`), exactly as a server does.
     if (raw.accepts !== undefined) assertAcceptsList(raw.accepts);
+    // #418: capabilities this browser cannot serve. Shape only — a name this
+    // build does not know is ADMITTED, so a newer extension can never get its
+    // hello refused here; the receiver keeps the names it knows.
+    if (raw.unavailableCapabilities !== undefined) {
+      assertUnavailableCapabilities(raw.unavailableCapabilities);
+    }
     return raw as unknown as HelloFrame;
   }
   throw new ProtocolError(`hello.role: must be 'server' or 'extension', got ${String(role)}`);
@@ -912,6 +922,26 @@ function assertAcceptsList(accepts: unknown): void {
   for (const a of accepts) {
     if (typeof a !== 'string') {
       throw new ProtocolError(`hello.accepts: entry must be string, got ${typeof a}`);
+    }
+  }
+}
+
+function assertUnavailableCapabilities(list: unknown): void {
+  const label = 'hello.unavailableCapabilities';
+  if (!Array.isArray(list)) throw new ProtocolError(`${label}: expected array`);
+  if (list.length > MAX_UNAVAILABLE_CAPABILITIES) {
+    throw new ProtocolError(
+      `${label}: at most ${MAX_UNAVAILABLE_CAPABILITIES} entries, got ${list.length}`,
+    );
+  }
+  for (const c of list) {
+    if (typeof c !== 'string') {
+      throw new ProtocolError(`${label}: entry must be string, got ${typeof c}`);
+    }
+    if (c.length < 1 || c.length > MAX_CAPABILITY_NAME_LENGTH) {
+      throw new ProtocolError(
+        `${label}: entry must be 1-${MAX_CAPABILITY_NAME_LENGTH} characters, got ${c.length}`,
+      );
     }
   }
 }
@@ -1518,6 +1548,9 @@ function validateInnerResponse(raw: Record<string, unknown>): InnerFrame {
   }
   if (raw.ok === false) {
     assertString(raw.error, 'inner.error');
+    // #418: optional machine-readable reason (`'capability_unavailable'`).
+    // Any string is admitted so a later code does not break this receiver.
+    if (raw.code !== undefined) assertString(raw.code, 'inner.code');
     if (raw.op !== undefined) {
       if (typeof raw.op !== 'string' || !KNOWN_RESPONSE_OPS.has(raw.op)) {
         throw new ProtocolError(
