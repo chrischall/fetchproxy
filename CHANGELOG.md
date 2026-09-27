@@ -1,5 +1,21 @@
 # Changelog
 
+## [3.3.0](https://github.com/chrischall/fetchproxy/compare/v3.2.3...v3.3.0) (2026-09-26)
+
+
+### Features
+
+* **protocol:** let the extension say which capabilities this browser can't serve ([#423](https://github.com/chrischall/fetchproxy/issues/423)) ([c922f2b](https://github.com/chrischall/fetchproxy/commit/c922f2b209b41e4aff5636b42d3dca2065fd4dc5))
+
+
+### Documentation
+
+* **protocol:** say how 3.2.x stored the extension keys ([#422](https://github.com/chrischall/fetchproxy/issues/422)) ([1642a4e](https://github.com/chrischall/fetchproxy/commit/1642a4e8dc654663c22509497aaa92242ffdaa8f))
+* **security:** PROTOCOL.md no longer says the extension keeps private halves ([#421](https://github.com/chrischall/fetchproxy/issues/421)) ([b27e70f](https://github.com/chrischall/fetchproxy/commit/b27e70f999ec9d883a9bb66c57ae5a5a095242b6))
+* **security:** say how the Safari bridge stores its identity keys ([#415](https://github.com/chrischall/fetchproxy/issues/415)) ([d861698](https://github.com/chrischall/fetchproxy/commit/d8616982143eb54c371a7ec5f23ea54ffa37e6d4))
+* **security:** the Safari bridge no longer keeps an X25519 private key ([#419](https://github.com/chrischall/fetchproxy/issues/419)) ([5d1b25a](https://github.com/chrischall/fetchproxy/commit/5d1b25a725853dc193290c84b2b6c792d760d70e))
+* **spec:** record the hybrid keychain + App Group hand-off ([#417](https://github.com/chrischall/fetchproxy/issues/417)) ([273762a](https://github.com/chrischall/fetchproxy/commit/273762a78d4d65d6fa2ea294fed1ddcbf03ba9e3))
+
 ## [3.2.3](https://github.com/chrischall/fetchproxy/compare/v3.2.2...v3.2.3) (2026-09-25)
 
 
