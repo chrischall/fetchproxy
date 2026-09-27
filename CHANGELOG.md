@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.3.1](https://github.com/chrischall/fetchproxy/compare/v3.3.0...v3.3.1) (2026-09-27)
+
+
+### Bug Fixes
+
+* **cli:** don't blame a version mismatch when pairing is only waiting for approval ([#424](https://github.com/chrischall/fetchproxy/issues/424)) ([4bfe296](https://github.com/chrischall/fetchproxy/commit/4bfe296141ab4ee0cca7d651c15e8a7fa95188fb))
+
 ## [3.3.0](https://github.com/chrischall/fetchproxy/compare/v3.2.3...v3.3.0) (2026-09-26)
 
 
