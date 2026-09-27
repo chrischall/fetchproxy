@@ -33,6 +33,11 @@ import { readFile, writeFile, rename, unlink, mkdir, chmod, rm } from 'node:fs/p
 import { randomBytes } from 'node:crypto';
 import { isAbsolute, join } from 'node:path';
 import { defaultIdentityDir, safeIdentityFileBase } from './identity.js';
+import {
+  extensionPinsPath,
+  readExtensionPinsAt,
+  type ManagedExtensionPinsPort,
+} from './extension-pins.js';
 
 /**
  * Where the pin lives, when it must not live beside the identity.
@@ -125,6 +130,13 @@ export interface ExtensionTrustPort {
    * the one blocking them.
    */
   location?: string;
+  /**
+   * A3: the host-managed pin set. When present the MCP is in MANAGED mode and
+   * the host and peer paths decide from this alone — `read`, `write` and
+   * `allowNew` above are the first-use pin's and are never consulted. See
+   * `extension-pins.ts`.
+   */
+  managed?: ManagedExtensionPinsPort;
 }
 
 /**
@@ -141,8 +153,34 @@ export function fileExtensionTrust(args: {
   dir?: string;
   trustDir?: string;
   allowNew: boolean;
+  /**
+   * A3: `'managed'` reads the host's pin set from
+   * `<trustDir>/<serverName>.extension-pins.json` on every handshake instead
+   * of pinning on first use. The caller resolves the environment
+   * (`resolveExtensionPinsMode`); this function does not read it.
+   */
+  extensionPins?: 'managed';
 }): ExtensionTrustPort {
   const dir = resolveTrustDir(args.trustDir, args.dir);
+  if (args.extensionPins === 'managed') {
+    const location = extensionPinsPath(args.serverName, dir);
+    return {
+      // Managed mode has no first-use pin: nothing to read, nothing to write,
+      // and no operator override. `write` REJECTS rather than no-ops, so a
+      // path that ever reached it would log the attempt instead of silently
+      // pretending to have pinned.
+      allowNew: false,
+      location,
+      read: async () => null,
+      write: async () => {
+        throw new Error(
+          `refusing to write an extension pin: ${location} is host-managed and this MCP never ` +
+            `pins on first use`,
+        );
+      },
+      managed: { location, read: () => readExtensionPinsAt(location) },
+    };
+  }
   return {
     allowNew: args.allowNew,
     location: extensionTrustPath(args.serverName, dir),
