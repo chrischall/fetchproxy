@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.4.0](https://github.com/chrischall/fetchproxy/compare/v3.3.1...v3.4.0) (2026-09-27)
+
+
+### Features
+
+* **server:** host-managed extension pin set ([#426](https://github.com/chrischall/fetchproxy/issues/426)) ([3a133ee](https://github.com/chrischall/fetchproxy/commit/3a133ee89913b1082a1c72a2d9bb37b92215ceaf))
+
 ## [3.3.1](https://github.com/chrischall/fetchproxy/compare/v3.3.0...v3.3.1) (2026-09-27)
 
 
