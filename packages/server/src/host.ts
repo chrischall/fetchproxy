@@ -41,7 +41,12 @@ import {
   protocolVersionCloseReason,
 } from './session-ready.js';
 import type { Identity } from './identity.js';
-import { decideExtensionTrust, type ExtensionTrustPort } from './extension-trust.js';
+import {
+  decideExtensionTrust,
+  type ExtensionTrustPort,
+  type TrustOutcome,
+} from './extension-trust.js';
+import { evaluateManagedExtensionTrust } from './extension-pins.js';
 import { sessionInfoFromHello, type ExtensionSessionInfo } from './session-info.js';
 
 // Reject WS upgrades from browsing contexts (drive-by webpage defense).
@@ -749,28 +754,52 @@ export async function startHost(opts: HostOpts): Promise<HostHandle> {
           // reaches the session machinery at all. The pin is only WRITTEN
           // later, once the ready signature has proved the key — claiming an
           // identity must not be enough to become the pinned one.
-          let pin: Awaited<ReturnType<ExtensionTrustPort['read']>>;
-          try {
-            pin = await opts.extensionTrust.read();
-          } catch (e) {
-            // An unreadable pin is the one state where carrying on would
-            // quietly mean "trust anybody".
-            console.error(`[fetchproxy] ${String(e)}`);
-            if (extensionClaim === ws) extensionClaim = null;
-            ws.close(1008, 'extension pin unreadable');
-            return;
+          //
+          // A3: under a host-managed pin set the question is "is it in the
+          // set the host wrote", asked of a FRESH read on every handshake —
+          // never cached, never answered by first use. `pinned` is the only
+          // accepting answer it has, so `pinOnReady` below stays false and
+          // nothing is ever written.
+          const managed = opts.extensionTrust.managed;
+          let outcome: TrustOutcome;
+          let refusalReason = 'extension identity is not the pinned one';
+          if (managed) {
+            const decided = await evaluateManagedExtensionTrust(
+              managed,
+              frame,
+              opts.ownServerName,
+            );
+            outcome = decided;
+            if (decided.decision === 'refused') {
+              refusalReason =
+                decided.code === 'EXTENSION_NOT_PINNED'
+                  ? 'extension identity is not in the managed pin set'
+                  : 'extension pin set unavailable';
+            }
+          } else {
+            let pin: Awaited<ReturnType<ExtensionTrustPort['read']>>;
+            try {
+              pin = await opts.extensionTrust.read();
+            } catch (e) {
+              // An unreadable pin is the one state where carrying on would
+              // quietly mean "trust anybody".
+              console.error(`[fetchproxy] ${String(e)}`);
+              if (extensionClaim === ws) extensionClaim = null;
+              ws.close(1008, 'extension pin unreadable');
+              return;
+            }
+            outcome = decideExtensionTrust({
+              pin,
+              hello: frame,
+              allowNew: opts.extensionTrust.allowNew,
+              serverName: opts.ownServerName,
+              location: opts.extensionTrust.location,
+            });
           }
-          const outcome = decideExtensionTrust({
-            pin,
-            hello: frame,
-            allowNew: opts.extensionTrust.allowNew,
-            serverName: opts.ownServerName,
-            location: opts.extensionTrust.location,
-          });
           if (outcome.decision === 'refused') {
             console.warn(outcome.message);
             if (extensionClaim === ws) extensionClaim = null;
-            ws.close(1008, 'extension identity is not the pinned one');
+            ws.close(1008, refusalReason);
             return;
           }
           if (outcome.decision === 'replace') console.warn(outcome.message);

@@ -32,8 +32,10 @@ import { loadOrCreateIdentity, type Identity } from './identity.js';
 import {
   allowNewExtensionIdentity,
   fileExtensionTrust,
+  TRUST_NEW_EXTENSION_ENV,
   type ExtensionTrustPort,
 } from './extension-trust.js';
+import { EXTENSION_PINS_ENV, resolveExtensionPinsMode } from './extension-pins.js';
 import { classifyFetchError, type FetchErrorKind } from './error-kind.js';
 import { classifyBridgeError, type BridgeError } from './classify-bridge-error.js';
 import { isIP } from 'node:net';
@@ -297,6 +299,25 @@ export interface FetchproxyServerOpts {
    * @default false (or the environment variable, when unset)
    */
   allowNewExtensionIdentity?: boolean;
+  /**
+   * A3: `'managed'` — accept only the extensions a HOST lists in
+   * `<trustDir>/<serverName>.extension-pins.json`, read on every handshake,
+   * instead of pinning the first extension to complete one.
+   *
+   * For a hosting provider that knows which browsers belong to an account:
+   * no child ever trusts on first use, and a second confirmed browser works
+   * without an operator. In managed mode nothing is ever written, a missing
+   * or malformed file refuses every extension, and
+   * `allowNewExtensionIdentity` / `FETCHPROXY_TRUST_NEW_EXTENSION` are
+   * ignored. The file format is `parseExtensionPins`'s.
+   *
+   * Leave it undefined and `FETCHPROXY_EXTENSION_PINS=managed` answers
+   * instead. Either one saying managed is enough; neither can turn the other
+   * off.
+   *
+   * @default first-use (or the environment variable, when set)
+   */
+  extensionPins?: 'managed';
   /**
    * 1.12.0+ (#208): when this MCP is a PEER rather than the concentrator,
    * refuse to open a session unless the concentrator forwards the extension's
@@ -1526,6 +1547,7 @@ interface ResolvedOpts {
   identityDir?: string;
   trustDir?: string;
   allowNewExtensionIdentity?: boolean;
+  extensionPins?: 'managed';
   requireExtensionIdentity?: boolean;
   onPairCode?: (code: string) => void;
 }
@@ -1880,6 +1902,7 @@ export class FetchproxyServer {
       identityDir: opts.identityDir,
       trustDir: opts.trustDir,
       allowNewExtensionIdentity: opts.allowNewExtensionIdentity,
+      extensionPins: opts.extensionPins,
       requireExtensionIdentity: opts.requireExtensionIdentity,
       onPairCode: opts.onPairCode,
     };
@@ -2275,13 +2298,37 @@ export class FetchproxyServer {
    * every one of them.
    */
   private extensionTrust(): ExtensionTrustPort {
+    const allowNew = allowNewExtensionIdentity(this.opts.allowNewExtensionIdentity);
+    if (resolveExtensionPinsMode(this.opts.extensionPins) === 'managed') {
+      // A3: the host owns the pin set, so the operator's "accept a new
+      // browser" lever has nothing to act on — and honouring it would be
+      // exactly the first-use fallback managed mode exists to remove. Said
+      // once per server rather than once per election.
+      if (allowNew && !this.warnedAllowNewIgnored) {
+        this.warnedAllowNewIgnored = true;
+        console.warn(
+          `[fetchproxy] ${this.opts.serverName}: ignoring ${TRUST_NEW_EXTENSION_ENV} / ` +
+            `allowNewExtensionIdentity — this MCP's extension pins are host-managed ` +
+            `(${EXTENSION_PINS_ENV}=managed), so only the host's pin set decides which ` +
+            `browsers it accepts.`,
+        );
+      }
+      return fileExtensionTrust({
+        serverName: this.opts.serverName,
+        dir: this.opts.identityDir,
+        trustDir: this.opts.trustDir,
+        allowNew: false,
+        extensionPins: 'managed',
+      });
+    }
     return fileExtensionTrust({
       serverName: this.opts.serverName,
       dir: this.opts.identityDir,
       trustDir: this.opts.trustDir,
-      allowNew: allowNewExtensionIdentity(this.opts.allowNewExtensionIdentity),
+      allowNew,
     });
   }
+  private warnedAllowNewIgnored = false;
 
   private noteActivityForKeepalive(): void {
     // Match the gate `startKeepaliveIfIdle` uses (<= 0 disables) so a

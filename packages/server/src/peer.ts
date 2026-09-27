@@ -42,6 +42,7 @@ import {
   type ExtensionPin,
   type ExtensionTrustPort,
 } from './extension-trust.js';
+import { evaluateManagedExtensionTrust } from './extension-pins.js';
 
 /**
  * B-BUG-8: how long a peer waits for the host to complete the WebSocket
@@ -560,6 +561,21 @@ export async function startPeer(opts: PeerOpts): Promise<InternalPeerHandle> {
           `(the concentrator may be answering in the browser's place)`,
       );
       return null;
+    }
+
+    // A3: a host-managed pin set is read on EVERY ready, deliberately unlike
+    // the first-use pin below. The set is how the host revokes a browser; a
+    // copy cached for the life of this peer would keep admitting a revoked
+    // one until the child restarts. It is never written, and it answers only
+    // `pinned` or `refused` — there is no first use to fall back to.
+    const managed = opts.extensionTrust.managed;
+    if (managed) {
+      const decided = await evaluateManagedExtensionTrust(managed, hello, opts.serverName);
+      if (decided.decision === 'refused') {
+        console.warn(decided.message);
+        return null;
+      }
+      return hello;
     }
 
     // Read the pin ONCE per peer, not once per ready. The extension

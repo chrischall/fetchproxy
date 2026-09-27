@@ -1,6 +1,12 @@
 import { readdir, readFile, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
-import { clearExtensionPin, defaultTrustDir, safeIdentityFileBase } from '@fetchproxy/server';
+import {
+  clearExtensionPin,
+  defaultTrustDir,
+  parseExtensionPins,
+  safeIdentityFileBase,
+  type ManagedExtensionPin,
+} from '@fetchproxy/server';
 import type { Command } from '../args.js';
 import { EXIT, printJson, UsageError, type Io } from '../output.js';
 
@@ -24,6 +30,77 @@ import { EXIT, printJson, UsageError, type Io } from '../output.js';
  */
 
 const SUFFIX = '.extension-trust.json';
+
+/**
+ * A3: a HOST-MANAGED pin set — the file a hosting provider writes so that a
+ * child accepts exactly the browsers it lists and never pins on first use.
+ * It belongs to that host, which rewrites it whenever the account's browsers
+ * change, so this command shows it and never edits it: a `clear` here would
+ * be undone at the next forwarded request, and until then would leave the
+ * child refusing every browser.
+ */
+const MANAGED_SUFFIX = '.extension-pins.json';
+
+interface ManagedEntry {
+  serverName: string;
+  pinFile: string;
+  managed: true;
+  readOnly: true;
+  /** Who manages it, when the file says. */
+  managedBy?: string;
+  extensions: ManagedExtensionPin[] | '(unreadable)';
+  file: string;
+}
+
+async function listManaged(dir: string): Promise<ManagedEntry[]> {
+  let names: string[];
+  try {
+    names = await readdir(dir);
+  } catch {
+    return [];
+  }
+  const entries: ManagedEntry[] = [];
+  for (const name of names.filter((n) => n.endsWith(MANAGED_SUFFIX)).sort()) {
+    const stem = name.slice(0, -MANAGED_SUFFIX.length);
+    const file = join(dir, name);
+    const base = {
+      serverName: serverNameFromPinFile(stem),
+      pinFile: stem,
+      managed: true as const,
+      readOnly: true as const,
+      file,
+    };
+    try {
+      // The child's own parser, so a set this shows as readable is one the
+      // child accepts, and one it shows as unreadable is one refusing everyone.
+      const set = parseExtensionPins(await readFile(file, 'utf8'));
+      entries.push({
+        ...base,
+        ...(set.managedBy !== undefined ? { managedBy: set.managedBy } : {}),
+        extensions: set.extensions,
+      });
+    } catch {
+      entries.push({ ...base, extensions: '(unreadable)' });
+    }
+  }
+  return entries;
+}
+
+function managerOf(entry: ManagedEntry): string {
+  return entry.managedBy ?? 'the host that runs it';
+}
+
+/** The managed set for a server name, or the stem the listing printed. */
+async function managedFor(nameOrStem: string, dir: string): Promise<ManagedEntry | undefined> {
+  const managed = await listManaged(dir);
+  let stem: string | undefined;
+  try {
+    stem = safeIdentityFileBase(nameOrStem);
+  } catch {
+    stem = undefined;
+  }
+  return managed.find((m) => m.pinFile === nameOrStem || m.pinFile === stem);
+}
 
 /**
  * Best-effort inverse of the identity-file naming: a scoped package's `/` is
@@ -140,12 +217,13 @@ export async function runTrust(
 ): Promise<number> {
   if (cmd.action === 'list') {
     const pins = await listPins(trustDir);
-    if (pins.length === 0) {
+    const managed = await listManaged(trustDir);
+    if (pins.length === 0 && managed.length === 0) {
       io.out(`no extension pins in ${trustDir}`);
       return EXIT.OK;
     }
     if (cmd.json) {
-      printJson(io, pins);
+      printJson(io, [...pins, ...managed]);
       return EXIT.OK;
     }
     // Default to something readable. Someone running this is usually staring
@@ -154,11 +232,35 @@ export async function runTrust(
     for (const pin of pins) {
       io.out(`${pin.serverName}  pinned ${pin.pinnedAt}  x25519=${pin.identityX25519Pub}`);
     }
+    for (const m of managed) {
+      if (m.extensions === '(unreadable)') {
+        io.out(
+          `${m.serverName}  managed (read-only)  unreadable — this MCP refuses every browser ` +
+            `until its host rewrites ${m.file}`,
+        );
+        continue;
+      }
+      io.out(
+        `${m.serverName}  managed by ${managerOf(m)} (read-only)  ` +
+          `${m.extensions.length} browser(s)`,
+      );
+      for (const e of m.extensions) {
+        io.out(`    x25519=${e.x25519Pub}${e.label !== undefined ? `  ${e.label}` : ''}`);
+      }
+    }
     return EXIT.OK;
   }
 
   if (cmd.all) {
     const pins = await listPins(trustDir);
+    const managed = await listManaged(trustDir);
+    if (managed.length > 0) {
+      io.err(
+        `left ${managed.length} host-managed pin set(s) untouched: ` +
+          `${managed.map((m) => `${m.serverName} (managed by ${managerOf(m)})`).join(', ')} — ` +
+          `change which browsers they accept through that host`,
+      );
+    }
     if (pins.length === 0) {
       io.err(`nothing pinned in ${trustDir}`);
       return EXIT.OK;
@@ -191,6 +293,14 @@ export async function runTrust(
     return EXIT.OK;
   }
 
+  const managed = await managedFor(cmd.serverName!, trustDir);
+  if (managed) {
+    throw new UsageError(
+      `${cmd.serverName}'s extension pins are managed by ${managerOf(managed)} — fpx trust ` +
+        `clear does not change them`,
+      `confirm or revoke the browser through ${managerOf(managed)}; it rewrites ${managed.file}`,
+    );
+  }
   const had = await clearPin(cmd.serverName!, trustDir);
   if (had) {
     io.err(

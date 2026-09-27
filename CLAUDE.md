@@ -152,6 +152,14 @@ the bind fails with `EADDRINUSE`, the MCP dials the existing host as a
    working key was itself the proof of possession. Wire break,
    PROTOCOL_VERSION 3 → 4, v3 refused AT THE HELLO in both directions
    with a reason naming both versions rather than left to time out.
+   **Managed pin sets** replace first use for a host that knows the
+   account's browsers: `FETCHPROXY_EXTENSION_PINS=managed` (or
+   `extensionPins: 'managed'`) accepts only an extension matching BOTH
+   keys of one entry in `<trustDir>/<server-name>.extension-pins.json`,
+   re-read every handshake (host AND peer — the peer's once-per-process
+   first-use pin cache must never apply to it), never written, and a
+   missing/malformed file refuses everyone. `src/extension-pins.ts`;
+   `parseExtensionPins` is the exported contract a host validates with.
 4. **Capabilities** declared in hello frame, approved at pair time,
    stored in the trust record. Tightening (or widening) the
    capability set forces a re-pair with diff UI. `graphql` is one

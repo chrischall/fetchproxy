@@ -92,6 +92,28 @@ export {
   TRUST_NEW_EXTENSION_ENV,
 } from './extension-trust.js';
 export type { ExtensionPin, ExtensionTrustPort, TrustOutcome } from './extension-trust.js';
+// A3: the host-managed pin set. `parseExtensionPins` is exported so a host
+// validates the file it writes with the very function the child reads it with;
+// `EXTENSION_PINS_FILE_VERSION` is the `v` it must write.
+export {
+  EXTENSION_PINS_ENV,
+  EXTENSION_PINS_FILE_VERSION,
+  ExtensionPinsError,
+  decideManagedExtensionTrust,
+  evaluateManagedExtensionTrust,
+  extensionPinsPath,
+  parseExtensionPins,
+  readExtensionPins,
+  resolveExtensionPinsMode,
+} from './extension-pins.js';
+export type {
+  ExtensionPinSet,
+  ExtensionPinsErrorCode,
+  ExtensionPinsMode,
+  ManagedExtensionPin,
+  ManagedExtensionPinsPort,
+  ManagedTrustOutcome,
+} from './extension-pins.js';
 // The on-disk identity format, exported as a CONTRACT rather than as an
 // implementation detail (#319): a host that runs one child per caller has to
 // provision the identity so every child of one registration presents the same

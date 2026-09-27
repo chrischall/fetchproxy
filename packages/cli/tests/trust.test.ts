@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { chmod, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parseCliArgs } from '../src/args.js';
@@ -258,5 +259,83 @@ describe('fpx trust', () => {
     await runTrust({ kind: 'trust', action: 'list', json: false }, ioAdapter(rec), dir);
     expect(rec.out.join('\n')).toContain('resy-mcp');
     expect(rec.out.join('\n')).not.toContain('opentable-mcp');
+  });
+
+  describe('a host-managed pin set (A3)', () => {
+    const X = Buffer.from(new Uint8Array(32).fill(1)).toString('base64');
+    const E = Buffer.from(new Uint8Array(32).fill(2)).toString('base64');
+    const SET = JSON.stringify({
+      v: 1,
+      managed: true,
+      managedBy: 'mcp-host (hosted.example)',
+      extensions: [{ x25519Pub: X, ed25519Pub: E, label: 'Chrome on laptop' }],
+    });
+
+    it('lists the managed set as read-only, naming who manages it', async () => {
+      await writeFile(join(dir, 'opentable-mcp.extension-pins.json'), SET);
+      const rec = io();
+      await runTrust({ kind: 'trust', action: 'list', json: false }, ioAdapter(rec), dir);
+      const out = rec.out.join('\n');
+      expect(out).toContain('opentable-mcp');
+      expect(out).toMatch(/managed/);
+      expect(out).toMatch(/read-only/);
+      expect(out).toContain('mcp-host (hosted.example)');
+      expect(out).toContain('Chrome on laptop');
+      expect(out).toContain(X);
+    });
+
+    it('lists it in --json with the extensions and a read-only flag', async () => {
+      await writeFile(join(dir, 'opentable-mcp.extension-pins.json'), SET);
+      const rec = io();
+      await runTrust({ kind: 'trust', action: 'list', json: true }, ioAdapter(rec), dir);
+      const parsed = JSON.parse(rec.out.join('\n')) as Record<string, unknown>[];
+      expect(parsed).toEqual([
+        expect.objectContaining({
+          serverName: 'opentable-mcp',
+          managed: true,
+          readOnly: true,
+          managedBy: 'mcp-host (hosted.example)',
+          extensions: [{ x25519Pub: X, ed25519Pub: E, label: 'Chrome on laptop' }],
+        }),
+      ]);
+    });
+
+    it('shows a malformed managed set rather than skipping it', async () => {
+      await writeFile(join(dir, 'opentable-mcp.extension-pins.json'), '{nope');
+      const rec = io();
+      await runTrust({ kind: 'trust', action: 'list', json: false }, ioAdapter(rec), dir);
+      expect(rec.out.join('\n')).toMatch(/opentable-mcp.*managed.*unreadable/);
+    });
+
+    it('refuses to clear a managed set, naming the managing host, and leaves it in place', async () => {
+      await writeFile(join(dir, 'opentable-mcp.extension-pins.json'), SET);
+      const rec = io();
+      await expect(
+        runTrust({ kind: 'trust', action: 'clear', serverName: 'opentable-mcp' }, ioAdapter(rec), dir),
+      ).rejects.toThrow(/mcp-host \(hosted\.example\)/);
+      expect(existsSync(join(dir, 'opentable-mcp.extension-pins.json'))).toBe(true);
+    });
+
+    it('names "the host that runs it" when the set does not say who manages it', async () => {
+      await writeFile(
+        join(dir, 'opentable-mcp.extension-pins.json'),
+        JSON.stringify({ v: 1, managed: true, extensions: [] }),
+      );
+      await expect(
+        runTrust({ kind: 'trust', action: 'clear', serverName: 'opentable-mcp' }, ioAdapter(io()), dir),
+      ).rejects.toThrow(/host/);
+      expect(existsSync(join(dir, 'opentable-mcp.extension-pins.json'))).toBe(true);
+    });
+
+    it('leaves managed sets alone under --all, and says which it skipped', async () => {
+      await writeFile(join(dir, 'opentable-mcp.extension-pins.json'), SET);
+      await writeFile(join(dir, 'resy-mcp.extension-trust.json'), PIN);
+      const rec = io();
+      await runTrust({ kind: 'trust', action: 'clear', all: true }, ioAdapter(rec), dir);
+      expect(existsSync(join(dir, 'opentable-mcp.extension-pins.json'))).toBe(true);
+      expect(existsSync(join(dir, 'resy-mcp.extension-trust.json'))).toBe(false);
+      expect(rec.err.join('\n')).toMatch(/opentable-mcp/);
+      expect(rec.err.join('\n')).toMatch(/managed/);
+    });
   });
 });
