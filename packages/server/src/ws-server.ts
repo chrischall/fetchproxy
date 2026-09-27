@@ -745,7 +745,7 @@ export class FetchproxyBridgeDownError extends FetchproxyProtocolError {
       ? `Server already burned a one-shot lazy-revive retry; SW is still down. `
       : `Server lazy-revive retry was disabled (bridgeReviveDelayMs unset/0). `;
     const hint =
-      `the fetchproxy extension's service worker is not responding ` +
+      `ContextMint Bridge's service worker is not responding ` +
       `("${args.originalError}"). Chrome evicts extension service ` +
       `workers after ~30s idle by default. ${retryClause}` +
       // #90 (P1-1): the real fix per the error's own diagnostic
