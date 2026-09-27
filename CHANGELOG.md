@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.4.1](https://github.com/chrischall/fetchproxy/compare/v3.4.0...v3.4.1) (2026-09-27)
+
+
+### Bug Fixes
+
+* **server:** name ContextMint Bridge in the bridge-down hint ([#428](https://github.com/chrischall/fetchproxy/issues/428)) ([1d9a1d7](https://github.com/chrischall/fetchproxy/commit/1d9a1d78bf24dd1431190104ccca0a8321536c78))
+
 ## [3.4.0](https://github.com/chrischall/fetchproxy/compare/v3.3.1...v3.4.0) (2026-09-27)
 
 
