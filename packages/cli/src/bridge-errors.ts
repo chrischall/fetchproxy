@@ -17,8 +17,26 @@ export function mapBridgeError(err: unknown, io: Io): number {
     const code = (err as { pairCode?: string | null }).pairCode;
     io.err(
       code
-        ? `bridge not ready — pairing pending. Approve pair code ${code} in the ContextMint Bridge extension popup and retry.`
+        ? pairingPendingLine(code)
         : 'bridge not ready — is your browser running with the ContextMint Bridge extension installed and connected?',
+    );
+    return EXIT.BRIDGE;
+  }
+  // The same situation, arriving by the other road. While the extension holds
+  // this MCP's pair request unapproved, the server fails calls with its
+  // "pairing required for <name> … pair code is: NNNN-NNNN" transport error —
+  // a plain FetchproxyProtocolError (or just its message, on the ok:false
+  // result paths) rather than the typed session-not-ready error. Left to the
+  // classifier it buckets `protocol` and inherits the version-mismatch hint
+  // below, which is how a `fpx pair` that merely timed out waiting for the
+  // user to click Approve told them to go update their software. The remedy
+  // is the approve-the-code line above, so it is answered with that line.
+  const pairing = pendingPairFrom(err);
+  if (pairing !== null) {
+    io.err(
+      pairing.code
+        ? pairingPendingLine(pairing.code)
+        : 'bridge not ready — pairing pending. Approve the pair request in the ContextMint Bridge extension popup and retry.',
     );
     return EXIT.BRIDGE;
   }
@@ -93,4 +111,20 @@ export function mapBridgeError(err: unknown, io: Io): number {
   };
   io.err(`bridge error (${kind}): ${msg}${hints[kind] ? ` — ${hints[kind]}` : ''}`);
   return EXIT.BRIDGE;
+}
+
+function pairingPendingLine(code: string): string {
+  return `bridge not ready — pairing pending. Approve pair code ${code} in the ContextMint Bridge extension popup and retry.`;
+}
+
+/**
+ * Recognise the server's pairing-required transport error (see
+ * `pairingErrorMessage` in `@fetchproxy/server`'s ws-server) and pull out its
+ * pair code. `null` when the error is anything else.
+ */
+function pendingPairFrom(err: unknown): { code: string | null } | null {
+  const msg = err instanceof Error ? err.message : typeof err === 'string' ? err : '';
+  if (!/\bpairing required for\b/.test(msg)) return null;
+  const m = /pair code is:\s*([0-9]{4}-[0-9]{4})/.exec(msg);
+  return { code: m ? m[1]! : null };
 }
