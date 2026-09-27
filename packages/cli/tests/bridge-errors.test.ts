@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   FetchproxyProtocolError,
   FetchproxyProtocolVersionError,
+  FetchproxySessionNotReadyError,
   protocolErrorFrom,
 } from '@fetchproxy/server';
 import { PROTOCOL_VERSION } from '@fetchproxy/protocol';
@@ -252,5 +253,58 @@ describe('a protocol version mismatch names the remedy, not a bucket', () => {
     expect(out).toMatch(/^bridge error \(protocol\): /);
     expect(out).not.toMatch(/bridge refused/);
     expect(out).not.toMatch(/chrome:\/\/extensions/);
+  });
+});
+
+describe('mapBridgeError — a pairing that is only awaiting approval is not a version mismatch', () => {
+  // Observed with fpx 3.3.0: `fpx pair` timed out while the pair request sat
+  // unapproved in the extension popup, and printed
+  //   bridge error (protocol): fetchproxy transport error: pairing required for
+  //   fpx-safari-dl. … — possible ContextMint Bridge / @fetchproxy/server
+  //   version mismatch — …
+  // Nothing was mismatched; the user simply had not approved the code yet. The
+  // remedy is the same one the session-not-ready branch already gives.
+  const observed =
+    'fetchproxy transport error: pairing required for fpx-safari-dl. ' +
+    'Tell the user to open the ContextMint Bridge browser extension popup and approve the pair request. ' +
+    'The pair code is: 0594-4009 — display this code to the user so they can verify it matches.';
+
+  it.each([
+    ['a FetchproxyProtocolError', () => new FetchproxyProtocolError(observed)],
+    ['a protocolErrorFrom() error', () => protocolErrorFrom(observed)],
+    ['a plain Error', () => new Error(observed)],
+  ])('tells the user to approve the pair code, not to update, for %s', (_label, make) => {
+    const io = memIo();
+    const code = mapBridgeError(make(), io);
+    expect(code).toBe(EXIT.BRIDGE);
+    const out = io.errs.join('\n');
+    expect(out).not.toMatch(/version mismatch/i);
+    expect(out).not.toMatch(/bridge error \(protocol\)/);
+    expect(out).toBe(
+      'bridge not ready — pairing pending. Approve pair code 0594-4009 in the ContextMint Bridge extension popup and retry.',
+    );
+  });
+
+  it('matches the session-not-ready pairing-pending line exactly', () => {
+    const a = memIo();
+    const b = memIo();
+    mapBridgeError(new FetchproxyProtocolError(observed), a);
+    mapBridgeError(
+      new FetchproxySessionNotReadyError({ mcpId: 'fpx-safari-dl', pairCode: '0594-4009' }),
+      b,
+    );
+    expect(a.errs).toEqual(b.errs);
+  });
+
+  it('falls back to the generic pairing-pending line when no code is present', () => {
+    const io = memIo();
+    mapBridgeError(
+      new FetchproxyProtocolError('fetchproxy transport error: pairing required for fpx-x.'),
+      io,
+    );
+    const out = io.errs.join('\n');
+    expect(out).not.toMatch(/version mismatch/i);
+    expect(out).toMatch(/pairing pending/);
+    expect(out).toMatch(/ContextMint Bridge extension popup/);
   });
 });
