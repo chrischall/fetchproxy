@@ -1,5 +1,13 @@
 # Changelog
 
+## [3.5.0](https://github.com/chrischall/fetchproxy/compare/v3.4.1...v3.5.0) (2026-09-28)
+
+
+### Features
+
+* **protocol:** relay-minted account-key and account-attest frames ([#430](https://github.com/chrischall/fetchproxy/issues/430)) ([b6691b9](https://github.com/chrischall/fetchproxy/commit/b6691b949e8e0bb4dfaeb11035ba2c872d37acdb))
+* **server:** retryable awaiting-approval hello rejection ([#432](https://github.com/chrischall/fetchproxy/issues/432)) ([70aee23](https://github.com/chrischall/fetchproxy/commit/70aee23add8f98a845f96de98a7f75790999ea01))
+
 ## [3.4.1](https://github.com/chrischall/fetchproxy/compare/v3.4.0...v3.4.1) (2026-09-27)
 
 
