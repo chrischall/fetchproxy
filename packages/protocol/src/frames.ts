@@ -817,7 +817,9 @@ export interface HelloFrameFromExtension {
    * B-BUG-9: host→extension frame types this extension understands beyond
    * the base set — the mirror of `HelloFrameFromServer.accepts`. A host sends
    * such a frame only to an extension that listed it, so an older extension
-   * (whose validator refuses the type) never sees one. Today: `'peer-gone'`.
+   * (whose validator refuses the type) never sees one. Today: `'peer-gone'`,
+   * and, from a hosted relay only, {@link ACCOUNT_KEY_FRAME} and
+   * {@link ACCOUNT_ATTEST_FRAME}.
    */
   accepts?: string[];
   /**
@@ -989,6 +991,106 @@ export interface PeerGoneFrame {
   mcpId: string;
 }
 
+/**
+ * Frame type of {@link AccountKeyFrame}. Also the string an extension lists in
+ * its hello's `accepts` to receive one — a relay sends neither account frame
+ * to an extension that did not list it, so an older extension (whose
+ * validator refuses the type and closes 1002) never sees one.
+ */
+export const ACCOUNT_KEY_FRAME = 'account-key' as const;
+
+/** Frame type of {@link AccountAttestFrame}, and its `accepts` entry. */
+export const ACCOUNT_ATTEST_FRAME = 'account-attest' as const;
+
+/**
+ * The consent mode an account attestation carries (mcp-host spec §4.6.1).
+ * `silent`: the account owner approved exactly this scope and the extension
+ * may attach without a card when the declared scope digests to
+ * `scopeDigest`. `confirm`: a one-tap card, remembered. `confirm-each`: a
+ * one-tap card every link session.
+ */
+export type AccountAttestConsent = 'silent' | 'confirm' | 'confirm-each';
+
+/**
+ * Additive within protocol 4 (mcp-host spec D15): relay → extension, once per
+ * link session, the account's Ed25519 public key. Minted by a hosted relay
+ * (mcp-host's `BridgeRoom`) and never by an MCP; sent only to an extension
+ * whose hello `accepts` {@link ACCOUNT_KEY_FRAME}, and only for a CONFIRMED
+ * bridge token.
+ *
+ * It carries no authority on arrival. The extension stores it as account
+ * trust only after the person approves the account card (spec §4.8.1), keyed
+ * by (link origin, `accountId`) and consulted only on that remote link with
+ * the same `tokenId` — the loopback link drops it outright. `generation` below
+ * the extension's high-water mark for the account is refused (I-12).
+ *
+ * `displayName` and `confirmedBy` are display strings for that card:
+ * bounded, no control or bidi-override characters, never parsed.
+ */
+export interface AccountKeyFrame {
+  type: typeof ACCOUNT_KEY_FRAME;
+  accountId: string;
+  /** The ACCOUNT's slug, e.g. `chris`. */
+  slug: string;
+  displayName: string;
+  /** The token creator who confirmed this browser, masked (`c•••@gmail.com`). */
+  confirmedBy: string;
+  /** The bridge token this link authenticated with (`brt_…`). */
+  tokenId: string;
+  /**
+   * `hex(sha256(publicKey))[0:16]` — see `accountKeyId`. Selects, never
+   * proves. The validator checks its shape only (it is synchronous); a
+   * receiver MUST recompute it from `publicKey` and refuse a mismatch.
+   */
+  kid: string;
+  /** Account Ed25519 public key, base64 raw 32B. */
+  publicKey: string;
+  /** Positive integer; only ever increases for an account. */
+  generation: number;
+  /** How many registrations the account bridges — shown on the card. */
+  bridgedRegistrations: number;
+}
+
+/**
+ * Additive within protocol 4 (mcp-host spec D15): relay → extension,
+ * immediately BEFORE the server hello it describes, on the same socket. A
+ * signature by the account key over `accountAttestPayload(...)` vouching that
+ * the hello's identity keys belong to `registrationId` in `accountId`, with a
+ * consent mode and approved-scope digest. Sent only to an extension whose
+ * hello `accepts` {@link ACCOUNT_ATTEST_FRAME}.
+ *
+ * The link's origin and both nonces are deliberately NOT carried: the
+ * extension supplies them from its own link and from the hello, which is what
+ * binds the attestation to both. `kid` sits outside the signature and only
+ * selects a key — the extension verifies against its STORED key.
+ *
+ * Useless without the identity's private key: the payload binds both identity
+ * public keys, and the hello's own `sessionSig` still has to verify under
+ * them. docs/SECURITY.md §T-account-attest.
+ */
+export interface AccountAttestFrame {
+  type: typeof ACCOUNT_ATTEST_FRAME;
+  mcpId: string;
+  accountId: string;
+  generation: number;
+  tokenId: string;
+  kid: string;
+  registrationId: string;
+  /** The REGISTRATION's slug, e.g. `zillow`. Signed so a relabel cannot pass. */
+  slug: string;
+  /** `hex(sha256(identityX25519Pub))`, lowercase, 64 chars. */
+  identityHash: string;
+  /** base64 raw 32B. */
+  identityEd25519Pub: string;
+  /** Lowercase hex sha256 of `canonicalScope(...)`, or `NO_SCOPE_DIGEST`. */
+  scopeDigest: string;
+  consent: AccountAttestConsent;
+  /** Unix seconds. An upper bound only — freshness comes from the nonces. */
+  notAfter: number;
+  /** base64 raw 64B — `Ed25519Sign(accountKey, accountAttestPayload(...))`. */
+  sig: string;
+}
+
 export type Frame =
   | HelloFrame
   | ReadyFrame
@@ -996,7 +1098,9 @@ export type Frame =
   | PairPendingFrame
   | HelloRejectedFrame
   | ExtensionDisconnectedFrame
-  | PeerGoneFrame;
+  | PeerGoneFrame
+  | AccountKeyFrame
+  | AccountAttestFrame;
 
 // --- Inner frames (inside ciphertext) ---
 
