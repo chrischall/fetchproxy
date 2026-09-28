@@ -415,7 +415,15 @@ export async function startPeer(opts: PeerOpts): Promise<InternalPeerHandle> {
   // while the promise is still pending keeps it, so its waiters are not
   // stranded on a promise nothing will ever settle.
   let sessionPromiseSettled = false;
+  // D12: set when the CURRENT `sessionPromise` was settled by a RETRYABLE
+  // refusal (`awaiting-approval:`). It stands — a call made before the person
+  // approves fails fast with the same "approve it in your browser" — but it is
+  // not the extension's final answer: the `ready` the extension sends once the
+  // person approves, or the next relayed extension hello, starts afresh.
+  // Every other refusal is final and stays latched. Cleared by every reset.
+  let retryableRefusal = false;
   function resetSessionPromise(): void {
+    retryableRefusal = false;
     sessionPromiseSettled = false;
     sessionPromise = new Promise<SessionState>((resolve, reject) => {
       resolveFirstReady = (st) => {
@@ -633,6 +641,9 @@ export async function startPeer(opts: PeerOpts): Promise<InternalPeerHandle> {
       // authenticate the far end of its own session. Before 1.12.0 no host
       // sent this, which is why its absence is handled rather than assumed.
       if (frame.type === 'hello' && frame.role === 'extension') {
+        // D12: a new extension session hellos afresh. A retryable refusal
+        // belonged to the one before, so calls from here wait for this one.
+        if (retryableRefusal) resetSessionPromise();
         // M1 (bridge review 2026-09-10): this is also the whole of what makes
         // a pair code derivable here — `pairCodeFor` reads it back off this
         // hello. Assigned synchronously, so a `pair-pending` delivered in the
@@ -703,6 +714,10 @@ export async function startPeer(opts: PeerOpts): Promise<InternalPeerHandle> {
         if (session !== null) {
           session = null;
           if (sessionPromiseSettled) resetSessionPromise();
+        } else if (retryableRefusal) {
+          // D12: the browser holding the approval card has gone; calls wait
+          // for the next extension session instead of repeating its refusal.
+          resetSessionPromise();
         }
         extensionDisconnectListeners.forEach((cb) => cb());
         return;
@@ -825,6 +840,11 @@ export async function startPeer(opts: PeerOpts): Promise<InternalPeerHandle> {
           // than hanging until the MCP-level timeout.
           renegotiateListeners.forEach((cb) => cb());
         } else {
+          // D12: the person approved and the extension completed the hello
+          // it was holding. The retryable refusal left the promise settled,
+          // so resolving it would be a no-op and every call would keep
+          // failing with "approve it in your browser".
+          if (retryableRefusal) resetSessionPromise();
           resolveFirstReady(session);
         }
         return;
@@ -836,13 +856,19 @@ export async function startPeer(opts: PeerOpts): Promise<InternalPeerHandle> {
       // 2.6.0: a refusal relayed by the host. Same reasoning as on the host:
       // fail this peer's wait now, with the extension's own reason.
       if (frame.type === 'hello-rejected' && frame.mcpId === opts.mcpId) {
-        rejectFirstReady(
-          new FetchproxyHelloRejectedError({
-            mcpId: frame.mcpId,
-            reason: frame.reason,
-            platform: extensionHello?.platform ?? null,
-          }),
-        );
+        const refusal = new FetchproxyHelloRejectedError({
+          mcpId: frame.mcpId,
+          reason: frame.reason,
+          platform: extensionHello?.platform ?? null,
+        });
+        // D12, as on the host: a standing retryable refusal is superseded by
+        // whatever the extension says next, and only a refusal that settles a
+        // PENDING promise may mark it retryable — one arriving after a final
+        // refusal must not let a later `ready` undo that answer.
+        if (retryableRefusal) resetSessionPromise();
+        const settlesPending = !sessionPromiseSettled;
+        rejectFirstReady(refusal);
+        if (refusal.retryable && settlesPending) retryableRefusal = true;
       }
 
       if (frame.type === 'pair-pending' && frame.mcpId === opts.mcpId) {

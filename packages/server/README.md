@@ -401,7 +401,7 @@ Closes the WS / extension connection. Safe to call before `listen()` (no-op) and
 | `FetchproxyProtocolError` | Bridge-side failure (no signed-in tab, extension offline, transport error, capability not granted at the extension layer). |
 | `FetchproxyHttpError` | Upstream HTTP status was outside `expectStatus`. Carries the full `HttpResponse`. |
 | `FetchproxyCapabilityUnavailableError` | 3.3.0+ (#418): THIS BROWSER cannot serve the capability (`.capability`, `.platform`; `.hint` blames the browser, not the MCP). `classifyFetchError` returns `'capability_unavailable'`, distinct from `'capability_denied'`; `classifyBridgeError` buckets it `'protocol'`. |
-| `FetchproxyHelloRejectedError` | The extension refused the hello. When the reason starts `unsupported-capability:` (every declared capability is unavailable in this browser), `.unavailableCapabilities` lists them and `.hint` names the browser (3.3.0+). |
+| `FetchproxyHelloRejectedError` | The extension refused the hello. When the reason starts `unsupported-capability:` (every declared capability is unavailable in this browser), `.unavailableCapabilities` lists them and `.hint` names the browser (3.3.0+). When it starts `awaiting-approval:` (an approval card is waiting in the browser), `.retryable` is `true`, `classifyBridgeError` returns `'awaiting_approval'`, `.hint` says to approve it there, and the session opens once the person does. `.retryable` is `false` for every other reason. |
 
 ## Resilience helpers
 

@@ -449,10 +449,32 @@ export async function startHost(opts: HostOpts): Promise<HostHandle> {
   let rejectOwnSession!: (e: Error) => void;
   let ownSessionReady!: Promise<SessionState>;
 
+  // D12: set when the promise below was rejected by a RETRYABLE refusal
+  // (`awaiting-approval:`). Such a refusal stands — a call made before the
+  // person approves fails fast with the same "approve it in your browser" —
+  // but it is not the extension's final answer, so a `ready` that arrives
+  // afterwards (the extension completing the hello it held once the person
+  // approved) must open the session rather than resolve a promise that is
+  // already settled. Cleared by every reset, since a fresh promise has
+  // nothing standing on it.
+  let ownRetryableRefusal = false;
+  // Whether the CURRENT `ownSessionReady` has settled, so a retryable refusal
+  // only ever marks a promise IT settled — never one an earlier, final
+  // refusal (or a live session) already had.
+  let ownSessionSettled = false;
+
   function resetSessionPromise(): void {
+    ownRetryableRefusal = false;
+    ownSessionSettled = false;
     ownSessionReady = new Promise<SessionState>((resolve, reject) => {
-      resolveOwnSession = resolve;
-      rejectOwnSession = reject;
+      resolveOwnSession = (st) => {
+        ownSessionSettled = true;
+        resolve(st);
+      };
+      rejectOwnSession = (e) => {
+        ownSessionSettled = true;
+        reject(e);
+      };
     });
     ownSessionReady.catch(() => { /* noop */ });
   }
@@ -1156,6 +1178,11 @@ export async function startHost(opts: HostOpts): Promise<HostHandle> {
             // trust path) or just approved (popup path) — the pair-pending
             // hint is no longer actionable, so clear it.
             ownPendingPairCode = null;
+            // D12: a retryable refusal left the promise rejected; resolving it
+            // would be a no-op and every call would keep failing with
+            // "approve it in your browser" after the person had. Every other
+            // refusal is final and stays latched until this socket closes.
+            if (ownRetryableRefusal) resetSessionPromise();
             resolveOwnSession(ownSession);
           } else {
             const slot = peers.get(frame.mcpId);
@@ -1280,13 +1307,23 @@ export async function startHost(opts: HostOpts): Promise<HostHandle> {
             // Fail FAST with the real reason rather than letting
             // `awaitSessionReady` time out and report a guess. A rejection of
             // this promise propagates through it unchanged.
-            rejectOwnSession(
-              new FetchproxyHelloRejectedError({
-                mcpId: frame.mcpId,
-                reason: frame.reason,
-                platform: extensionHello?.platform ?? null,
-              }),
-            );
+            const refusal = new FetchproxyHelloRejectedError({
+              mcpId: frame.mcpId,
+              reason: frame.reason,
+              platform: extensionHello?.platform ?? null,
+            });
+            // D12: a standing retryable refusal is superseded by whatever the
+            // extension says next — another one, or a final answer, which
+            // must then latch with its own reason rather than leave a ready
+            // able to open the session.
+            if (ownRetryableRefusal) resetSessionPromise();
+            // Only a refusal that settles a PENDING promise may mark it
+            // retryable. One arriving after a final refusal (or after a
+            // session opened) settles nothing, and marking the promise would
+            // let a later `ready` undo that final answer.
+            const settlesPending = !ownSessionSettled;
+            rejectOwnSession(refusal);
+            if (refusal.retryable && settlesPending) ownRetryableRefusal = true;
           } else {
             // Gated exactly like `extension-disconnected` above, and for the
             // same reason: a peer older than 2.6.0 refuses the type in its
