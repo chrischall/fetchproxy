@@ -1,10 +1,30 @@
-import type { Capability, Frame, HelloFrame, ReadyFrame, EncryptedFrame, InnerFrame } from './frames.js';
-import { KNOWN_CAPABILITIES, PROTOCOL_VERSION } from './frames.js';
+import type {
+  AccountAttestFrame,
+  AccountKeyFrame,
+  Capability,
+  Frame,
+  HelloFrame,
+  ReadyFrame,
+  EncryptedFrame,
+  InnerFrame,
+} from './frames.js';
+import {
+  ACCOUNT_ATTEST_FRAME,
+  ACCOUNT_KEY_FRAME,
+  KNOWN_CAPABILITIES,
+  PROTOCOL_VERSION,
+} from './frames.js';
 import {
   MAX_CAPABILITY_NAME_LENGTH,
   MAX_UNAVAILABLE_CAPABILITIES,
 } from './capability-availability.js';
 import { isValidMcpId } from './mcp-id.js';
+import {
+  ACCOUNT_ATTEST_CONSENTS,
+  ACCOUNT_ID_RE,
+  ACCOUNT_KID_RE,
+  HEX64_RE,
+} from './account-attest.js';
 import { isValidJsonPointer } from './json-pointer.js';
 import { isPublicSuffix } from './public-suffix.js';
 
@@ -655,6 +675,12 @@ export function validateFrame(raw: unknown): Frame {
   if (t === 'extension-disconnected') return { type: 'extension-disconnected' };
   // B-BUG-9: host → extension notice (see PeerGoneFrame).
   if (t === 'peer-gone') return validatePeerGone(raw);
+  // Account trust (mcp-host spec 2026-09-27, D15): relay → extension only,
+  // gated on the extension hello's `accepts`. Accepting the TYPE here grants
+  // nothing: a server's dispatch has no branch for either and drops them, and
+  // the extension honours them only on a remote link (never loopback).
+  if (t === ACCOUNT_KEY_FRAME) return validateAccountKey(raw);
+  if (t === ACCOUNT_ATTEST_FRAME) return validateAccountAttest(raw);
   throw new ProtocolError(`unknown frame type: ${String(t)}`);
 }
 
@@ -971,6 +997,159 @@ function validateHelloRejected(
     throw new ProtocolError('hello-rejected.reason: must be at most 200 characters');
   }
   return { type: 'hello-rejected', mcpId: raw.mcpId, reason: raw.reason };
+}
+
+/**
+ * C0 and C1 controls, DEL, and the Unicode bidi embedding / override /
+ * isolate marks. Refused in the display strings of an `account-key` frame:
+ * they are shown on the account card, which is the card a phishing relay
+ * would most like to dress up (spec §4.8.1), and a right-to-left override
+ * can make `evil.example` read as something else.
+ */
+// eslint-disable-next-line no-control-regex
+const DISPLAY_FORBIDDEN_RE = /[\u0000-\u001f\u007f-\u009f\u200e\u200f\u202a-\u202e\u2066-\u2069]/;
+
+function assertExactFields(
+  raw: Record<string, unknown>,
+  allowed: readonly string[],
+  label: string,
+): void {
+  for (const k of Object.keys(raw)) {
+    if (!allowed.includes(k)) {
+      throw new ProtocolError(`${label}: unexpected field ${JSON.stringify(k)}`);
+    }
+  }
+}
+
+function assertMatch(x: unknown, re: RegExp, label: string, what: string): asserts x is string {
+  assertString(x, label);
+  if (!re.test(x)) throw new ProtocolError(`${label}: must be ${what}`);
+}
+
+function assertPositiveSafeInt(x: unknown, label: string): asserts x is number {
+  if (typeof x !== 'number' || !Number.isSafeInteger(x) || x <= 0) {
+    throw new ProtocolError(`${label}: expected positive safe integer`);
+  }
+}
+
+function assertDisplayString(x: unknown, label: string, min: number, max: number): asserts x is string {
+  assertString(x, label);
+  if (x.length < min || x.length > max) {
+    throw new ProtocolError(`${label}: must be ${min}-${max} characters`);
+  }
+  if (DISPLAY_FORBIDDEN_RE.test(x)) {
+    throw new ProtocolError(`${label}: control or bidi-override character`);
+  }
+}
+
+const ACCOUNT_KEY_FIELDS = [
+  'type',
+  'accountId',
+  'slug',
+  'displayName',
+  'confirmedBy',
+  'tokenId',
+  'kid',
+  'publicKey',
+  'generation',
+  'bridgedRegistrations',
+] as const;
+
+/**
+ * Relay → extension: the account's public key (mcp-host spec §4.6). Rebuilt
+ * member by member, so nothing the relay adds rides along into storage.
+ */
+function validateAccountKey(raw: Record<string, unknown>): AccountKeyFrame {
+  const L = 'account-key';
+  assertMatch(raw.accountId, ACCOUNT_ID_RE, `${L}.accountId`, 'an account id');
+  assertMatch(raw.slug, ACCOUNT_ID_RE, `${L}.slug`, 'a slug');
+  assertDisplayString(raw.displayName, `${L}.displayName`, 0, 128);
+  assertDisplayString(raw.confirmedBy, `${L}.confirmedBy`, 1, 256);
+  assertMatch(raw.tokenId, ACCOUNT_ID_RE, `${L}.tokenId`, 'a token id');
+  assertMatch(raw.kid, ACCOUNT_KID_RE, `${L}.kid`, '16 lowercase hex');
+  assertBase64Bytes(raw.publicKey, `${L}.publicKey`, 32);
+  assertPositiveSafeInt(raw.generation, `${L}.generation`);
+  const n = raw.bridgedRegistrations;
+  if (typeof n !== 'number' || !Number.isSafeInteger(n) || n < 0) {
+    throw new ProtocolError(`${L}.bridgedRegistrations: expected non-negative safe integer`);
+  }
+  assertExactFields(raw, ACCOUNT_KEY_FIELDS, L);
+  return {
+    type: ACCOUNT_KEY_FRAME,
+    accountId: raw.accountId,
+    slug: raw.slug,
+    displayName: raw.displayName,
+    confirmedBy: raw.confirmedBy,
+    tokenId: raw.tokenId,
+    kid: raw.kid,
+    publicKey: raw.publicKey,
+    generation: raw.generation,
+    bridgedRegistrations: n,
+  };
+}
+
+const ACCOUNT_ATTEST_FIELDS = [
+  'type',
+  'mcpId',
+  'accountId',
+  'generation',
+  'tokenId',
+  'kid',
+  'registrationId',
+  'slug',
+  'identityHash',
+  'identityEd25519Pub',
+  'scopeDigest',
+  'consent',
+  'notAfter',
+  'sig',
+] as const;
+
+/**
+ * Relay → extension: an attestation for the server hello that follows it
+ * (mcp-host spec §4.6). Shape only — whether it VERIFIES is the extension's
+ * decision, against its stored account key and with the link origin and both
+ * nonces it supplies itself (which is why none of those three is a field).
+ * Every string this admits is one `accountAttestPayload` accepts.
+ */
+function validateAccountAttest(raw: Record<string, unknown>): AccountAttestFrame {
+  const L = 'account-attest';
+  // `isValidMcpId` is a type guard that checks `typeof` itself.
+  if (!isValidMcpId(raw.mcpId)) throw new ProtocolError(`${L}.mcpId: invalid format`);
+  assertMatch(raw.accountId, ACCOUNT_ID_RE, `${L}.accountId`, 'an account id');
+  assertPositiveSafeInt(raw.generation, `${L}.generation`);
+  assertMatch(raw.tokenId, ACCOUNT_ID_RE, `${L}.tokenId`, 'a token id');
+  assertMatch(raw.kid, ACCOUNT_KID_RE, `${L}.kid`, '16 lowercase hex');
+  assertMatch(raw.registrationId, ACCOUNT_ID_RE, `${L}.registrationId`, 'a registration id');
+  assertMatch(raw.slug, ACCOUNT_ID_RE, `${L}.slug`, 'a slug');
+  assertMatch(raw.identityHash, HEX64_RE, `${L}.identityHash`, '64 lowercase hex');
+  assertBase64Bytes(raw.identityEd25519Pub, `${L}.identityEd25519Pub`, 32);
+  assertMatch(raw.scopeDigest, HEX64_RE, `${L}.scopeDigest`, '64 lowercase hex');
+  assertString(raw.consent, `${L}.consent`);
+  const consent = raw.consent;
+  const known = ACCOUNT_ATTEST_CONSENTS.find((c) => c === consent);
+  if (known === undefined) {
+    throw new ProtocolError(`${L}.consent: must be one of ${ACCOUNT_ATTEST_CONSENTS.join(', ')}`);
+  }
+  assertPositiveSafeInt(raw.notAfter, `${L}.notAfter`);
+  assertBase64Bytes(raw.sig, `${L}.sig`, 64);
+  assertExactFields(raw, ACCOUNT_ATTEST_FIELDS, L);
+  return {
+    type: ACCOUNT_ATTEST_FRAME,
+    mcpId: raw.mcpId,
+    accountId: raw.accountId,
+    generation: raw.generation,
+    tokenId: raw.tokenId,
+    kid: raw.kid,
+    registrationId: raw.registrationId,
+    slug: raw.slug,
+    identityHash: raw.identityHash,
+    identityEd25519Pub: raw.identityEd25519Pub,
+    scopeDigest: raw.scopeDigest,
+    consent: known,
+    notAfter: raw.notAfter,
+    sig: raw.sig,
+  };
 }
 
 /**

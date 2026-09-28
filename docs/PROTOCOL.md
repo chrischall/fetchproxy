@@ -106,6 +106,7 @@ All frames are JSON objects with a `type` discriminator. Unknown `type` closes t
 - A server hello with no `sessionPub`, or one that is not exactly 32 raw bytes (the key the ECDH runs on — length-checked where the identity pubs are not)
 - A server hello with no `answersExtNonce`, or one that is not exactly 32 raw bytes. The **value** 32 zero bytes is accepted here: it means "this hello answers no extension session", and refusing a hello for that is a gate's job, not the validator's
 - A `ready` with no `mcpSessionPub`, or one that is not exactly 32 raw bytes
+- An `account-key` or `account-attest` with a missing, malformed or unexpected field (see [§`account-key`](#account-key-relay--extension) and [§`account-attest`](#account-attest-relay--extension)), including a display string carrying a control or bidi-override character
 
 ### Top-level frames (in plaintext on the wire)
 
@@ -493,6 +494,117 @@ The extension honours it only for an mcpId bound to the link it arrived on.
 
 **No authority.** It can only END a session, which the host could already do
 by never forwarding that peer's frames.
+
+#### `account-key` (relay → extension)
+
+Additive within protocol 4. Minted by a **hosted relay** (mcp-host's
+`BridgeRoom`) and by nothing else: an MCP never sends one, and the loopback
+concentrator never mints or relays one in either direction. Sent once per link
+session, after the extension hello, and only for a bridge token the account's
+owner has **confirmed** for this browser.
+
+```jsonc
+{ "type": "account-key",
+  "accountId": "acc_f05c0ebf831e35df687660d1", "slug": "chris", "displayName": "Chris Hall",
+  "confirmedBy": "c•••@gmail.com",            // the token creator, masked
+  "tokenId": "brt_…",                         // the credential this link authenticated with
+  "kid": "9f2c41ab7de05613",                  // hex(sha256(publicKey))[0:16] — accountKeyId()
+  "publicKey": "<base64 raw 32B>",            // the account's Ed25519 key
+  "generation": 3,                            // positive; only ever increases
+  "bridgedRegistrations": 19 }
+```
+
+**It carries no authority on arrival.** The extension records it as account
+trust only after the person approves the account card — keyed by (link origin,
+`accountId`), consulted only on that remote link with the same `tokenId`, and
+refused below the extension's per-account generation high-water mark. A key or
+generation change shows the card again. The **loopback link drops it
+outright.**
+
+The validator admits ids and slugs of `[A-Za-z0-9_.-]{1,128}`, a `kid` of 16
+lowercase hex, a `publicKey` of exactly 32 bytes, and `displayName` (0–128) and
+`confirmedBy` (1–256) with no control or bidi-override characters, since both
+are rendered on the card a phishing relay would most like to dress up. A relay
+must not send a frame this refuses: the extension closes the link `1002` on
+it.
+
+#### `account-attest` (relay → extension)
+
+Additive within protocol 4, minted only by a hosted relay, and sent
+**immediately before** the server hello it describes, on the same socket. It
+vouches that the hello's identity keys belong to a registration in the relay's
+account, and carries the consent mode and approved-scope digest the account
+owner set.
+
+```jsonc
+{ "type": "account-attest", "mcpId": "zillow-mcp:0.12.0:770a8e083b612779",
+  "accountId": "acc_…", "generation": 3, "tokenId": "brt_…", "kid": "9f2c41ab7de05613",
+  "registrationId": "reg_…", "slug": "zillow",
+  "identityHash": "<64 lowercase hex>",       // hex(sha256(hello.identityX25519Pub))
+  "identityEd25519Pub": "<base64 raw 32B>",   // == hello.identityEd25519Pub
+  "scopeDigest": "<64 lowercase hex>",        // scopeDigest(declared), or 64×"0": no approved scope
+  "consent": "silent" | "confirm" | "confirm-each",
+  "notAfter": 1788063212,                     // unix seconds; an upper bound only
+  "sig": "<base64 raw 64B>" }
+```
+
+`sig` is `Ed25519(accountKey, accountAttestPayload(…))`, over exactly these
+bytes (`accountAttestPayload()` in `@fetchproxy/protocol`, one implementation):
+
+```
+utf8("fetchproxy/4/account-attest") ‖ NUL
+‖ gatewayOrigin ‖ NUL ‖ accountId ‖ NUL ‖ decimal(generation) ‖ NUL
+‖ tokenId ‖ NUL ‖ registrationId ‖ NUL ‖ slug ‖ NUL
+‖ identityHash ‖ NUL ‖ b64(identityEd25519Pub) ‖ NUL
+‖ scopeDigest ‖ NUL ‖ consent ‖ NUL ‖ mcpId ‖ NUL
+‖ b64(mcpHelloNonce) ‖ NUL ‖ b64(answersExtNonce) ‖ NUL ‖ decimal(notAfter)
+```
+
+- **Three signed values are not on the wire.** `gatewayOrigin` is the link's
+  target origin, `mcpHelloNonce` is the following hello's `sessionNonce`, and
+  `answersExtNonce` is the link's own extension-hello `sessionNonce`. The
+  extension supplies all three itself, which is what binds one attestation to
+  one hello on one link session: it cannot be replayed onto another link, a
+  later session or a second hello. `kid` is outside the signature and only
+  selects a key; the extension verifies against the key it **stored**.
+- **The encoding is unambiguous** because no field can contain NUL and the
+  field count is fixed. `accountAttestPayload()` throws rather than encode a
+  NUL, an empty field, a consent outside the enum, a nonce or key that is not
+  32 bytes, a hex field that is not 64 lowercase characters, a number that is
+  not a positive safe integer, or a `gatewayOrigin` that is not a canonical
+  `scheme://host[:port]`. Byte fields are encoded with padded base64 there and
+  nowhere else, so a verifier cannot re-encode them differently.
+- **`scopeDigest`** is `hex(sha256(utf8(canonicalScope(declared))))` over the
+  hello's twelve scope fields **as declared** (before a browser's unavailable
+  capabilities are subtracted): sorted keys, every array sorted as a set by its
+  elements' canonical JSON (and `indexedDbScopes[].keys`,
+  `domListSelectors[].fields` likewise), `domains` lowercased, absent arrays
+  `[]`, absent `capabilities` `["fetch"]`. Nothing else is normalised: the
+  form is injective over what the extension grants, so two scopes it would
+  grant differently never share a digest. A compile-time check fails the build
+  when a field is added to the server hello without being classified as scope
+  or not.
+- **Freshness comes from the nonces, not the clock.** `notAfter` is a sanity
+  bound; the extension rejects one more than 24 h in its own past and never
+  one in the future.
+- **What verifying it buys, and what it never does**, is in
+  `docs/SECURITY.md` §T-account-attest. It never writes `trustedMcps`, never
+  widens an existing trust record, and never changes request enforcement.
+
+Test vectors — payload bytes, a signature under a fixed seed, `kid`, and
+canonical scopes with their digests — are in
+`packages/protocol/tests/vectors/account-attest.json`, generated from this
+text by `account-attest.gen.mjs` beside it rather than from the
+implementation. Every transcription of these functions (mcp-host's room) is
+tested against that file.
+
+**Gating, for both frames.** A relay sends either one only to an extension
+whose own hello listed it in `accepts` (`"account-key"`, `"account-attest"` —
+`ACCOUNT_KEY_FRAME` / `ACCOUNT_ATTEST_FRAME`), exactly as `peer-gone` and
+`hello-rejected` are gated, because an older extension's `validateFrame`
+refuses the types and closes the link `1002`. An MCP's `validateFrame`
+accepts both types, and neither the host nor a peer has a branch for them, so
+one arriving at an MCP is dropped rather than closing its socket.
 
 ### Inner frames (inside ciphertext)
 
@@ -1095,7 +1207,7 @@ The extension's trust store (`trustedMcps` in the extension origin's IndexedDB v
 }
 ```
 
-Keyed by identity hash, not port. Trust survives port changes, restarts, and MCP package renames as long as the identity key on disk doesn't change. The `domains` AND `capabilities` sets are compared as sets (order-insensitive); if the MCP at re-connect time declares a different set than the user originally approved (e.g. adds `"read_cookies"`), the extension treats the record as missing and falls back to a re-pair prompt. **Since 3.0.0 the stored `identityEd25519Pub` is compared too**, and an absent stored value mismatches rather than being normalised to the hello's — see [§The verification rule](#the-verification-rule-both-keys-or-neither) for why omitting it was harmless under v3 and is impersonation under v4. Records persisted before 0.2.0 added the `capabilities` field are normalised to `["fetch"]` on read.
+Keyed by identity hash, not port. Trust survives port changes, restarts, and MCP package renames as long as the identity key on disk doesn't change. **What forces a re-pair** is a change to `serverName`, to the `domains` set (compared as a set, case-insensitively), to the stored `identityEd25519Pub`, or to the extension's own identity: the extension treats the record as missing and falls back to a re-pair prompt. **Capability and key-scope changes do not.** When the MCP declares more than the record approved (e.g. adds `"read_cookies"`), the extension grants `approved ∩ declared` so the MCP keeps working and queues a non-blocking scope-update offer the person can grant later; a narrower declaration is simply served as declared (contextmint-bridge `extension-core/src/background/hello.ts`). Nothing beyond the approved scope is served before the person approves it. (Earlier versions of this section said any capability change forced a re-pair; that stopped being true when scope growth became an offer.) **Since 3.0.0 the stored `identityEd25519Pub` is compared too**, and an absent stored value mismatches rather than being normalised to the hello's — see [§The verification rule](#the-verification-rule-both-keys-or-neither) for why omitting it was harmless under v3 and is impersonation under v4. Records persisted before 0.2.0 added the `capabilities` field are normalised to `["fetch"]` on read.
 
 Major-version bumps of the extension invalidate trust (force re-pair); patch and minor bumps carry trust forward. The 0.1.x → 0.2.0 jump is a major-equivalent: 0.1.x trust records would deserialise into an object with no `domains` field and fail the set comparison, so users see a one-time re-pair prompt after upgrading.
 
@@ -1134,7 +1246,7 @@ A relay must accept the connection with `fetchproxy.bridge.v1` selected. Subprot
 
 1. **Forward `hello` verbatim in BOTH directions.** `ready.sessionSig` covers `(mcpHelloNonce || extHelloNonce || extensionSessionPub || mcpSessionPub)` and the MCP verifies it against the extension hello *it was handed*, so a relay that mints a hello of its own is closed by the MCP as a MITM — correctly. The extension's hello has to reach every MCP unmodified, and each MCP's hello has to reach the extension unmodified. Since protocol 4 the server hello's own `sessionSig` covers `sessionPub` and `answersExtNonce` too, so a relay cannot substitute an ephemeral it holds the private half of, and cannot re-point a hello at an extension session it was not minted for.
 2. **Route on its OWN bookkeeping, never on what a frame asserts.** `mcpId` is `<serverName>:<version>:<16-hex>`, minted by the MCP. A relay serving more than one user must resolve the destination from the socket a hello arrived on and refuse any frame carrying an `mcpId` it did not itself bind to that user. The extension does the same in the other direction: an `mcpId` belongs to the link it said hello on, and a frame arriving on any other link is dropped.
-3. **Mint nothing else either.** `frame` payloads are AES-256-GCM under a key derived from the MCP's identity, so a relay cannot read or forge one — but `pair-pending` and `ready` are cleartext, so pass them through unmodified. What keeps the pair code meaningful is no longer the relay's good behaviour: an MCP shows only the code it derived itself from the pair transcript, and a `pair-pending` carrying any other number closes the connection with a logged alarm. A relay that rewrites one breaks the link it is relaying rather than choosing what the user compares.
+3. **Mint nothing else, except `account-key` and `account-attest`, and only to an extension that listed them in `accepts`.** Those two are relay-minted by design ([§`account-key`](#account-key-relay--extension), [§`account-attest`](#account-attest-relay--extension)); a relay drops either one arriving from an MCP, which would be an MCP vouching for itself, and never forwards one to an MCP. `frame` payloads are AES-256-GCM under a key derived from the MCP's identity, so a relay cannot read or forge one — but `pair-pending` and `ready` are cleartext, so pass them through unmodified. What keeps the pair code meaningful is no longer the relay's good behaviour: an MCP shows only the code it derived itself from the pair transcript, and a `pair-pending` carrying any other number closes the connection with a logged alarm. A relay that rewrites one breaks the link it is relaying rather than choosing what the user compares.
 4. **Expect a reconnect to invalidate everything derived from the old hello, and never replay a cached one.** The extension's nonce is per connection, so when the browser leg drops, every MCP link built on that hello has to be re-established. Since protocol 4 a cached *server* hello is worse than useless: the `sessionPub` it names has had its private half zeroed, so the extension would derive a key nobody holds. A relay re-sends nothing and lets each MCP hello afresh — [§The ephemeral's lifetime](#the-ephemerals-lifetime).
 
 **`download` is local-only.** It answers with a filesystem path on the browser's machine, so the extension refuses it on a remote link (`ok: false`, with a reason naming why) rather than returning a path that cannot resolve — and rather than letting a remote MCP write files onto somebody's machine. Every other verb crosses unchanged.

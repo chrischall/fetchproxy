@@ -1,0 +1,163 @@
+{
+  "description": "fetchproxy protocol 4 account-attest test vectors. Generated from the spec (mcp-host docs/superpowers/specs/2026-09-27-account-level-bridge-pairing-design.md §4.2, §4.6), independently of the implementation. Byte fields are standard padded base64; hashes are lowercase hex. Every transcription (mcp-host) is tested against this file (I-19).",
+  "accountKey": {
+    "seedHex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+    "publicKeyB64": "A6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg=",
+    "kid": "56475aa75463474c"
+  },
+  "attest": {
+    "identityX25519PubB64": "ERERERERERERERERERERERERERERERERERERERERERE=",
+    "fields": {
+      "gatewayOrigin": "https://mcp.nullnet.app",
+      "accountId": "acc_f05c0ebf831e35df687660d1",
+      "generation": 3,
+      "tokenId": "brt_0123456789abcdef01234567",
+      "registrationId": "reg_89abcdef0123456789abcdef",
+      "slug": "zillow",
+      "identityHash": "02d449a31fbb267c8f352e9968a79e3e5fc95c1bbeaa502fd6454ebde5a4bedc",
+      "identityEd25519Pub": "IiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiI=",
+      "scopeDigest": "93f1806da44943252ad23994def0993eae87a5f976b094abd902f2110a249ea5",
+      "consent": "silent",
+      "mcpId": "zillow-mcp:0.12.0:770a8e083b612779",
+      "mcpHelloNonce": "MzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzM=",
+      "answersExtNonce": "REREREREREREREREREREREREREREREREREREREREREQ=",
+      "notAfter": 1788063212
+    },
+    "fieldOrder": [
+      "gatewayOrigin",
+      "accountId",
+      "generation",
+      "tokenId",
+      "registrationId",
+      "slug",
+      "identityHash",
+      "identityEd25519Pub",
+      "scopeDigest",
+      "consent",
+      "mcpId",
+      "mcpHelloNonce",
+      "answersExtNonce",
+      "notAfter"
+    ],
+    "payloadHex": "666574636870726f78792f342f6163636f756e742d6174746573740068747470733a2f2f6d63702e6e756c6c6e65742e617070006163635f6630356330656266383331653335646636383736363064310033006272745f303132333435363738396162636465663031323334353637007265675f383961626364656630313233343536373839616263646566007a696c6c6f77003032643434396133316662623236376338663335326539393638613739653365356663393563316262656161353032666436343534656264653561346265646300496949694969496949694969496949694969496949694969496949694969496949694969496949694969493d00393366313830366461343439343332353261643233393934646566303939336561653837613566393736623039346162643930326632313130613234396561350073696c656e74007a696c6c6f772d6d63703a302e31322e303a37373061386530383362363132373739004d7a4d7a4d7a4d7a4d7a4d7a4d7a4d7a4d7a4d7a4d7a4d7a4d7a4d7a4d7a4d7a4d7a4d7a4d7a4d7a4d7a4d3d00524552455245524552455245524552455245524552455245524552455245524552455245524552455245513d0031373838303633323132",
+    "sigB64": "6B07wsRVgGz4BxASvw873elXKOa7DQyDT6KxYY1rJr8CyJRUvp7791ffR73zyq5y/MmtnrtcghLQxIhCQs9IBg=="
+  },
+  "scopes": [
+    {
+      "name": "absent everything: capabilities defaults to fetch, every array is []",
+      "input": {},
+      "canonical": "{\"capabilities\":[\"fetch\"],\"captureHeaders\":[],\"cookieKeys\":[],\"domListSelectors\":[],\"domSelectors\":[],\"domains\":[],\"graphqlOps\":[],\"indexedDbScopes\":[],\"localStorageKeys\":[],\"localStoragePointers\":[],\"sessionStorageKeys\":[],\"sessionStoragePointers\":[]}",
+      "digest": "c191adca604644e86409170a1bed053f1efc10004e01e411d7dbd9b904252807"
+    },
+    {
+      "name": "minimal fetch-only hello",
+      "input": {
+        "domains": [
+          "zillow.com"
+        ]
+      },
+      "canonical": "{\"capabilities\":[\"fetch\"],\"captureHeaders\":[],\"cookieKeys\":[],\"domListSelectors\":[],\"domSelectors\":[],\"domains\":[\"zillow.com\"],\"graphqlOps\":[],\"indexedDbScopes\":[],\"localStorageKeys\":[],\"localStoragePointers\":[],\"sessionStorageKeys\":[],\"sessionStoragePointers\":[]}",
+      "digest": "ef62c3dd599fe178cb0485e15a87ae9be579c3a5b285062b7b4f4a4911d97534"
+    },
+    {
+      "name": "every scope field, shuffled order, mixed-case domains",
+      "input": {
+        "domains": [
+          "WWW.Zillow.com",
+          "zillow.com"
+        ],
+        "capabilities": [
+          "read_session_storage",
+          "read_cookies",
+          "fetch",
+          "read_indexed_db",
+          "capture_request_header",
+          "read_dom_list",
+          "read_dom",
+          "graphql",
+          "read_local_storage"
+        ],
+        "cookieKeys": [
+          "zguid",
+          "JSESSIONID"
+        ],
+        "localStorageKeys": [
+          "b",
+          "a"
+        ],
+        "sessionStorageKeys": [
+          "s2",
+          "s1"
+        ],
+        "captureHeaders": [
+          {
+            "host": "api.zillow.com",
+            "path": "/v2/*",
+            "headerName": "X-Token"
+          },
+          {
+            "headerName": "Authorization",
+            "host": "www.zillow.com"
+          }
+        ],
+        "indexedDbScopes": [
+          {
+            "store": "st",
+            "origin": "https://www.zillow.com",
+            "keys": [
+              "k2",
+              "k1"
+            ],
+            "database": "db"
+          }
+        ],
+        "domSelectors": [
+          {
+            "selector": "h1",
+            "name": "title"
+          },
+          {
+            "name": "price",
+            "selector": ".price",
+            "attribute": "data-v"
+          }
+        ],
+        "domListSelectors": [
+          {
+            "name": "rows",
+            "itemSelector": "li.row",
+            "maxItems": 50,
+            "fields": [
+              {
+                "selector": ".z",
+                "name": "z"
+              },
+              {
+                "name": "a"
+              }
+            ]
+          }
+        ],
+        "graphqlOps": [
+          {
+            "operationName": "SearchQuery",
+            "name": "search"
+          }
+        ],
+        "localStoragePointers": [
+          {
+            "key": "b",
+            "jsonPointer": "/x/y"
+          },
+          {
+            "jsonPointer": "/t",
+            "key": "a"
+          }
+        ],
+        "sessionStoragePointers": []
+      },
+      "canonical": "{\"capabilities\":[\"capture_request_header\",\"fetch\",\"graphql\",\"read_cookies\",\"read_dom\",\"read_dom_list\",\"read_indexed_db\",\"read_local_storage\",\"read_session_storage\"],\"captureHeaders\":[{\"headerName\":\"Authorization\",\"host\":\"www.zillow.com\"},{\"headerName\":\"X-Token\",\"host\":\"api.zillow.com\",\"path\":\"/v2/*\"}],\"cookieKeys\":[\"JSESSIONID\",\"zguid\"],\"domListSelectors\":[{\"fields\":[{\"name\":\"a\"},{\"name\":\"z\",\"selector\":\".z\"}],\"itemSelector\":\"li.row\",\"maxItems\":50,\"name\":\"rows\"}],\"domSelectors\":[{\"attribute\":\"data-v\",\"name\":\"price\",\"selector\":\".price\"},{\"name\":\"title\",\"selector\":\"h1\"}],\"domains\":[\"www.zillow.com\",\"zillow.com\"],\"graphqlOps\":[{\"name\":\"search\",\"operationName\":\"SearchQuery\"}],\"indexedDbScopes\":[{\"database\":\"db\",\"keys\":[\"k1\",\"k2\"],\"origin\":\"https://www.zillow.com\",\"store\":\"st\"}],\"localStorageKeys\":[\"a\",\"b\"],\"localStoragePointers\":[{\"jsonPointer\":\"/t\",\"key\":\"a\"},{\"jsonPointer\":\"/x/y\",\"key\":\"b\"}],\"sessionStorageKeys\":[\"s1\",\"s2\"],\"sessionStoragePointers\":[]}",
+      "digest": "93f1806da44943252ad23994def0993eae87a5f976b094abd902f2110a249ea5"
+    }
+  ]
+}
