@@ -1,5 +1,6 @@
 export * from './frames.js';
 export * from './account-attest.js';
+export * from './awaiting-approval.js';
 export * from './capability-availability.js';
 export {
   assertCookiePath,

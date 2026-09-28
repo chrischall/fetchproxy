@@ -27,6 +27,12 @@ import {
  *                        and retrying unchanged will be refused identically —
  *                        so a caller should surface `.reason` rather than
  *                        advise waiting or re-checking a sign-in.
+ * - `'awaiting_approval'` — D12: a `FetchproxyHelloRejectedError` whose reason
+ *                        starts `awaiting-approval:` — the extension queued an
+ *                        approval card and nobody is at the browser. The one
+ *                        RETRYABLE refusal (`.retryable === true`): surface
+ *                        `.hint` ("approve it in your browser") and retry once
+ *                        the person has; the session is not latched as refused.
  * - `'timeout'`        — a wait ran out, from EITHER side of the bridge, so the
  *                        bucket is not one class: `FetchproxyTimeoutError` when
  *                        this server's own `fetchTimeoutMs` fired, and
@@ -68,6 +74,7 @@ import {
 export type BridgeError =
   | 'session_not_ready'
   | 'hello_rejected'
+  | 'awaiting_approval'
   | 'timeout'
   | 'bridge_down'
   | 'http'
@@ -75,7 +82,9 @@ export type BridgeError =
   | 'other';
 
 export function classifyBridgeError(err: unknown): BridgeError {
-  if (err instanceof FetchproxyHelloRejectedError) return 'hello_rejected';
+  if (err instanceof FetchproxyHelloRejectedError) {
+    return err.retryable ? 'awaiting_approval' : 'hello_rejected';
+  }
   if (err instanceof FetchproxySessionNotReadyError) return 'session_not_ready';
   if (err instanceof FetchproxyTimeoutError) return 'timeout';
   // A window the EXTENSION closed with nothing matched is a timeout too, even

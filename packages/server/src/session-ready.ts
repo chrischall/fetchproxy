@@ -1,4 +1,7 @@
-import { parseUnsupportedCapabilityReason } from '@fetchproxy/protocol';
+import {
+  parseAwaitingApprovalReason,
+  parseUnsupportedCapabilityReason,
+} from '@fetchproxy/protocol';
 import type { SessionState } from './session.js';
 
 /**
@@ -61,22 +64,36 @@ export class FetchproxyHelloRejectedError extends Error {
   readonly platform: string | null;
   /**
    * #418: the remedy, when the reason is one this package knows how to
-   * explain — today only `unsupported-capability`, which blames the browser
-   * rather than the MCP. `null` otherwise.
+   * explain — `unsupported-capability`, which blames the browser rather than
+   * the MCP, and (D12) `awaiting-approval`, which says to approve in the
+   * browser. `null` otherwise.
    */
   readonly hint: string | null;
+  /**
+   * D12: `true` only for an `awaiting-approval:` refusal — the extension has
+   * queued an approval card and nobody is at the browser yet, so the same call
+   * succeeds once the person approves. Every other refusal is the extension's
+   * final answer, and retrying unchanged is refused the same way.
+   */
+  readonly retryable: boolean;
 
   constructor(info: { mcpId: string; reason: string; platform?: string | null }) {
     const unavailable = parseUnsupportedCapabilityReason(info.reason);
+    const awaiting = parseAwaitingApprovalReason(info.reason);
     const platform = info.platform ?? null;
     const hint =
-      unavailable !== null
-        ? `${platform ? `this browser (${platform})` : 'this browser'} cannot serve any of the ` +
-          `capabilities this MCP needs (${unavailable.join(', ')}) — ContextMint Bridge checked ` +
-          `for the browser APIs and they are missing. Nothing is wrong with the MCP or your ` +
-          `pairing, and updating will not change it: use this MCP from a browser that provides ` +
-          `them (for example Chrome).`
-        : null;
+      awaiting !== null
+        ? `The extension is waiting for you to approve this MCP` +
+          (awaiting !== '' ? ` (${awaiting})` : '') +
+          ` — open ContextMint Bridge in your browser, approve it there, then retry. ` +
+          `Nothing is wrong with the MCP or your sign-in.`
+        : unavailable !== null
+          ? `${platform ? `this browser (${platform})` : 'this browser'} cannot serve any of the ` +
+            `capabilities this MCP needs (${unavailable.join(', ')}) — ContextMint Bridge checked ` +
+            `for the browser APIs and they are missing. Nothing is wrong with the MCP or your ` +
+            `pairing, and updating will not change it: use this MCP from a browser that provides ` +
+            `them (for example Chrome).`
+          : null;
     super(
       `fetchproxy: the extension refused the connection for "${info.mcpId}": ${info.reason}. ` +
         (hint !== null
@@ -90,6 +107,7 @@ export class FetchproxyHelloRejectedError extends Error {
     this.unavailableCapabilities = unavailable ?? [];
     this.platform = platform;
     this.hint = hint;
+    this.retryable = awaiting !== null;
     Object.setPrototypeOf(this, new.target.prototype);
   }
 }

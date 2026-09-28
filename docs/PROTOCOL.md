@@ -449,7 +449,9 @@ times out.
 
 **Classified.** `classifyBridgeError` returns `'hello_rejected'`, distinct
 from `'session_not_ready'`: the latter is a timeout that can only guess, this
-one is the extension's own answer and will be identical on retry.
+one is the extension's own answer and will be identical on retry — with the
+one exception of `awaiting-approval:` below, which classifies as
+`'awaiting_approval'`.
 
 **Diagnostic only.** It carries no authority and grants nothing; a forged one
 can make a session fail, which a silent peer could do anyway by never
@@ -472,6 +474,47 @@ parses it (`parseUnsupportedCapabilityReason`) onto
 names the browser (the platform of the extension hello this bridge holds). When
 only *some* capabilities are unavailable the extension no longer refuses — see
 [§Capabilities this browser cannot serve](#capabilities-this-browser-cannot-serve-418).
+
+**`awaiting-approval:` is a documented reason prefix, and the one retryable
+refusal (D12, account-level bridge pairing).** When the extension has queued an
+approval card for this MCP on a **remote** link — a pair request, or an account
+confirmation — and nobody is at the browser to answer it, it refuses the hello
+with
+
+```
+awaiting-approval: <detail>
+```
+
+where `<detail>` is free text for the person (for example
+`approve zillow in Chrome`), within the 200-character cap. The prefix is
+matched exactly: case-sensitive, at position 0. `@fetchproxy/protocol` exports
+`AWAITING_APPROVAL_REASON_PREFIX` and `parseAwaitingApprovalReason` (the
+trimmed detail, or `null` for any other reason). Without it the call waits out
+`SESSION_READY_TIMEOUT_MS` and reports `not-ready`; with it the call fails at
+once and says to approve in the browser.
+
+Every other refusal is the extension's final answer. This one is not, and
+`@fetchproxy/server` treats it differently in three ways:
+
+- `classifyBridgeError` returns `'awaiting_approval'`, and
+  `FetchproxyHelloRejectedError.retryable` is `true` for it and for nothing
+  else. `.hint` says to approve the MCP in ContextMint Bridge and retry.
+- **The session does not latch as refused.** A call made before the person
+  approves fails at once with the same error. After that, whichever comes first
+  opens the session: the `ready` the extension sends for the hello it was
+  holding once the person approves, or a new extension session's hello, which
+  is answered afresh. Calls made after that hello, or after the refusing
+  browser disconnects, wait for the new session rather than repeating the old
+  refusal.
+- **It never undoes a final refusal.** It marks the session retryable only when
+  it is the refusal that settles a pending session. One that arrives after a
+  final refusal, or while a session is open, changes nothing. A final refusal
+  that arrives after it supersedes it and latches with its own reason.
+
+It is diagnostic like every `hello-rejected`: it grants nothing, and a `ready`
+after it is authenticated exactly as any other `ready` is. A forged one can
+make a pending call fail early, which a silent peer could already do by never
+answering.
 
 #### `peer-gone` (host → extension)
 
