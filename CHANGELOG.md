@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.5.1](https://github.com/chrischall/fetchproxy/compare/v3.5.0...v3.5.1) (2026-10-01)
+
+
+### Bug Fixes
+
+* **deps:** bump ws from 8.21.3 to 8.22.0 in the production-dependencies group ([#435](https://github.com/chrischall/fetchproxy/issues/435)) ([d8f31a3](https://github.com/chrischall/fetchproxy/commit/d8f31a3a10c9fb2fc7988bc7d06a3617ab398121))
+
 ## [3.5.0](https://github.com/chrischall/fetchproxy/compare/v3.4.1...v3.5.0) (2026-09-28)
 
 
