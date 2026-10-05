@@ -29,6 +29,7 @@ This document tracks **3.0.0 (protocol 4)**. Two structural changes vs. 0.0.x / 
 | Something else answering as your browser | The MCP pins the extension's identity on first pair and refuses a different one — the mirror of `trustedMcps`. See [§T-fake-extension](#t-fake-extension--something-else-answering-as-the-browser). 1.12.0+. |
 | A remote bridge the user configured turning into a way in | The target is `wss://` (or loopback), the credential is a separate field, no configuration removes or repoints the loopback link, and every MCP the relay carries still pairs, pins and encrypts exactly as it does on a laptop. See [§T-remote-bridge](#t-remote-bridge--a-configured-remote-bridge-target). 2.1.0+. |
 | A hosted relay vouching for an MCP (account attestation) | The vouch binds the hello's identity keys, the link and one hello, so it is useless without that identity's private key, and it is honoured only on the remote link of an account the person approved in the browser. Loopback never honours it. See [§T-account-attest](#t-account-attest--a-hosted-relay-vouching-for-an-mcp). |
+| A hosted relay telling a browser it serves, or is standby (room frames) | Display only. `bridge-role` grants the extension nothing and changes nothing it enforces; a lying relay could already route anywhere it likes. Every room frame is gated on the extension's `accepts` and never crosses loopback. See [§T-room-frames](#t-room-frames--a-hosted-relay-saying-which-browser-serves). |
 | Multi-user machine sniffing | Out of scope. Localhost binding only. |
 
 ## Local trust boundary
@@ -355,6 +356,20 @@ On loopback that asymmetry is the [local trust boundary](#local-trust-boundary) 
 
 - **the relay is trusted for the facts it signs.** The extension cannot check that the owner really approved scope *D* or chose consent *C*; it checks that the account key said so. The relay's own controls (fact MACs, a separate root secret) are mcp-host's to state, and are;
 - **metadata.** The frames add the account id, slug, display name, a masked email and registration ids to what a relay already sees by construction (§T-remote-bridge).
+
+### T-room-frames — A hosted relay saying which browser serves
+
+**Additive within protocol 4.** A hosted relay whose account room admits several browsers, one serving at a time, can exchange four frames with an extension that asked for them in `accepts` ([PROTOCOL.md §Room frames](PROTOCOL.md#room-frames-bridge-role-bridge-serve-room-ping-room-pong)): `bridge-role` (relay → extension: "you serve" or "you are standby, *label* serves"), `bridge-serve` (extension → relay: "serve from this browser"), and the `room-ping` / `room-pong` heartbeat.
+
+**A relay that sends `bridge-role` can lie about the role, and gains nothing by it.** The frame is display only: the extension shows it in the popup and keeps it in the link's session state, and nothing it enforces — trust records, account trust, scope grants, request enforcement, which MCPs may reach it — reads it. Saying "standby" to the browser that is actually serving, or "serving" to one that is not, misleads the person about where calls go; it does not change where they go, and the relay already decides where it routes every MCP's frames (§T-remote-bridge). Every MCP behind it still pairs, pins and encrypts end to end with whichever browser it reaches.
+
+**`label` is display text from the relay.** It is bounded at 64 characters and refuses control and bidi-override characters, for the same reason as `account-key`'s display strings: a right-to-left override can make one browser's name read as another's. The extension renders it as text, never HTML. It is the serving credential's display name and nothing else; a relay must not put a token id or an account id in it, and `roomFrameText()` refuses an extra member such as one.
+
+**`bridge-serve` asks; it does not take.** The relay decides whether the browser is eligible (a confirmed browser of the account), rate-limits switches and logs them. A confirmed browser is already trusted by every MCP of the account, so letting it ask to serve adds no reach. An extension that never listed `bridge-serve` has its request dropped.
+
+**The heartbeat carries nothing.** `room-ping` and `room-pong` are fixed texts; they tell the relay a browser is still answering and tell the extension nothing it acts on. A forged or withheld pong can only make a relay judge a browser live or stale, which the relay controls anyway.
+
+**Gating, and loopback.** Each frame crosses only when the extension's own hello listed its `accepts` entry (`room-pong` rides on `room-ping`'s), because an older extension refuses the types and closes the link `1002`. The loopback concentrator has no branch for any of the four: it neither answers a `room-ping` nor relays any room frame between a peer and the extension (`packages/server/tests/host-room-frames.test.ts`). A relay drops any of them arriving from an MCP.
 
 ### T4 — User installs unknown MCP via Claude Code or similar
 
