@@ -1,6 +1,9 @@
 import type {
   AccountAttestFrame,
   AccountKeyFrame,
+  BridgeRoleFrame,
+  RoomPingFrame,
+  RoomPongFrame,
   Capability,
   Frame,
   HelloFrame,
@@ -11,7 +14,14 @@ import type {
 import {
   ACCOUNT_ATTEST_FRAME,
   ACCOUNT_KEY_FRAME,
+  BRIDGE_ROLE_FRAME,
+  BRIDGE_ROLE_LABEL_MAX,
+  BRIDGE_SERVE_FRAME,
   KNOWN_CAPABILITIES,
+  ROOM_PING_FRAME,
+  ROOM_PING_TEXT,
+  ROOM_PONG_FRAME,
+  ROOM_PONG_TEXT,
   PROTOCOL_VERSION,
 } from './frames.js';
 import {
@@ -681,6 +691,15 @@ export function validateFrame(raw: unknown): Frame {
   // the extension honours them only on a remote link (never loopback).
   if (t === ACCOUNT_KEY_FRAME) return validateAccountKey(raw);
   if (t === ACCOUNT_ATTEST_FRAME) return validateAccountAttest(raw);
+  // Room ↔ extension frames (mcp-host 2026-10-05 multi-browser spec §5.8),
+  // gated on the extension hello's `accepts` like the account frames above.
+  // Accepting the TYPE grants nothing: an MCP's dispatch has no branch for any
+  // of them and drops them, and `bridge-role` is display only.
+  if (t === BRIDGE_ROLE_FRAME) return validateBridgeRole(raw);
+  if (t === BRIDGE_SERVE_FRAME || t === ROOM_PING_FRAME || t === ROOM_PONG_FRAME) {
+    assertExactFields(raw, TYPE_ONLY_FIELDS, t);
+    return { type: t };
+  }
   throw new ProtocolError(`unknown frame type: ${String(t)}`);
 }
 
@@ -1150,6 +1169,64 @@ function validateAccountAttest(raw: Record<string, unknown>): AccountAttestFrame
     notAfter: raw.notAfter,
     sig: raw.sig,
   };
+}
+
+const TYPE_ONLY_FIELDS = ['type'] as const;
+const BRIDGE_ROLE_FIELDS = ['type', 'role', 'canServe', 'serving'] as const;
+const BRIDGE_ROLE_SERVING_FIELDS = ['label', 'since'] as const;
+
+/**
+ * Relay → extension: this browser's role in the account room. Rebuilt member
+ * by member (and `serving` with it), so nothing the relay adds rides along
+ * into the extension's link state. `serving` is required on a standby and
+ * refused on a serving browser, so the two shapes cannot blur.
+ */
+function validateBridgeRole(raw: Record<string, unknown>): BridgeRoleFrame {
+  const L = BRIDGE_ROLE_FRAME;
+  const role = raw.role;
+  if (role !== 'serving' && role !== 'standby') {
+    throw new ProtocolError(`${L}.role: must be one of serving, standby`);
+  }
+  assertBoolean(raw.canServe, `${L}.canServe`);
+  assertExactFields(raw, BRIDGE_ROLE_FIELDS, L);
+  if (role === 'serving') {
+    if (raw.serving !== undefined) {
+      throw new ProtocolError(`${L}.serving: must be absent when role is serving`);
+    }
+    return { type: BRIDGE_ROLE_FRAME, role, canServe: raw.canServe };
+  }
+  const serving = raw.serving;
+  if (serving === undefined) {
+    throw new ProtocolError(`${L}.serving: required when role is standby`);
+  }
+  assertObject(serving, `${L}.serving`);
+  assertDisplayString(serving.label, `${L}.serving.label`, 1, BRIDGE_ROLE_LABEL_MAX);
+  const since = serving.since;
+  if (typeof since !== 'number' || !Number.isSafeInteger(since) || since < 0) {
+    throw new ProtocolError(`${L}.serving.since: expected non-negative safe integer (Unix ms)`);
+  }
+  assertExactFields(serving, BRIDGE_ROLE_SERVING_FIELDS, `${L}.serving`);
+  return {
+    type: BRIDGE_ROLE_FRAME,
+    role,
+    canServe: raw.canServe,
+    serving: { label: serving.label, since },
+  };
+}
+
+/**
+ * The heartbeat pair is defined by its TEXT, not just its shape: a relay
+ * answers `room-ping` with a fixed auto-response pair that compares bytes, so
+ * `{"type": "room-ping"}` (with a space) would go unanswered and the browser
+ * would be judged stale. This refuses every serialisation other than
+ * {@link ROOM_PING_TEXT} and {@link ROOM_PONG_TEXT} — whitespace, a trailing
+ * newline, an escaped character, a duplicated or extra member. A receiver
+ * that holds the raw text checks it here before (or instead of) parsing.
+ */
+export function validateRoomHeartbeatText(text: string): RoomPingFrame | RoomPongFrame {
+  if (text === ROOM_PING_TEXT) return { type: ROOM_PING_FRAME };
+  if (text === ROOM_PONG_TEXT) return { type: ROOM_PONG_FRAME };
+  throw new ProtocolError(`room heartbeat: must be exactly ${ROOM_PING_TEXT} or ${ROOM_PONG_TEXT}`);
 }
 
 /**

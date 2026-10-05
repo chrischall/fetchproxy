@@ -1,0 +1,127 @@
+{
+  "description": "fetchproxy protocol 4 room<->extension frame vectors: bridge-role, bridge-serve, room-ping, room-pong. Written from the spec (mcp-host docs/superpowers/specs/2026-10-05-multi-browser-bridge-design.md §5.8) and the plan's F1 section, independently of the implementation. `valid` frames must be accepted by validateFrame and come back equal; `invalid` frames must be refused. `literals` are the only texts a room-ping / room-pong may be on the wire; `invalidTexts` are other serialisations that must be refused. `accepts` names, per frame type, the entry the extension's hello must list for that frame to cross the link. Every transcription (mcp-host's room) is tested against this file.",
+  "accepts": {
+    "bridge-role": "bridge-role",
+    "bridge-serve": "bridge-serve",
+    "room-ping": "room-ping",
+    "room-pong": "room-ping"
+  },
+  "literals": {
+    "room-ping": "{\"type\":\"room-ping\"}",
+    "room-pong": "{\"type\":\"room-pong\"}"
+  },
+  "labelMaxLength": 64,
+  "valid": [
+    { "name": "bridge-role serving, can serve", "frame": { "type": "bridge-role", "role": "serving", "canServe": true } },
+    { "name": "bridge-role serving, cannot serve", "frame": { "type": "bridge-role", "role": "serving", "canServe": false } },
+    {
+      "name": "bridge-role standby with the serving browser",
+      "frame": { "type": "bridge-role", "role": "standby", "canServe": true, "serving": { "label": "Chrome on MacBook", "since": 1791196800000 } }
+    },
+    {
+      "name": "bridge-role standby, unconfirmed browser",
+      "frame": { "type": "bridge-role", "role": "standby", "canServe": false, "serving": { "label": "Safari · iPhone", "since": 1791196800000 } }
+    },
+    {
+      "name": "bridge-role standby, one-character label",
+      "frame": { "type": "bridge-role", "role": "standby", "canServe": true, "serving": { "label": "x", "since": 0 } }
+    },
+    {
+      "name": "bridge-role standby, 64-character label",
+      "frame": { "type": "bridge-role", "role": "standby", "canServe": true, "serving": { "label": "LLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLL", "since": 1791196800000 } }
+    },
+    { "name": "bridge-serve", "frame": { "type": "bridge-serve" } },
+    { "name": "room-ping", "frame": { "type": "room-ping" } },
+    { "name": "room-pong", "frame": { "type": "room-pong" } }
+  ],
+  "invalid": [
+    { "name": "bridge-role missing role", "frame": { "type": "bridge-role", "canServe": true } },
+    { "name": "bridge-role unknown role", "frame": { "type": "bridge-role", "role": "primary", "canServe": true } },
+    { "name": "bridge-role role not a string", "frame": { "type": "bridge-role", "role": 1, "canServe": true } },
+    { "name": "bridge-role missing canServe", "frame": { "type": "bridge-role", "role": "serving" } },
+    { "name": "bridge-role canServe a string", "frame": { "type": "bridge-role", "role": "serving", "canServe": "true" } },
+    { "name": "bridge-role canServe a number", "frame": { "type": "bridge-role", "role": "serving", "canServe": 1 } },
+    {
+      "name": "bridge-role serving carries serving",
+      "frame": { "type": "bridge-role", "role": "serving", "canServe": true, "serving": { "label": "Chrome", "since": 1791196800000 } }
+    },
+    { "name": "bridge-role standby without serving", "frame": { "type": "bridge-role", "role": "standby", "canServe": true } },
+    { "name": "bridge-role standby serving null", "frame": { "type": "bridge-role", "role": "standby", "canServe": true, "serving": null } },
+    { "name": "bridge-role standby serving a string", "frame": { "type": "bridge-role", "role": "standby", "canServe": true, "serving": "Chrome" } },
+    { "name": "bridge-role standby serving an array", "frame": { "type": "bridge-role", "role": "standby", "canServe": true, "serving": [] } },
+    {
+      "name": "bridge-role serving missing label",
+      "frame": { "type": "bridge-role", "role": "standby", "canServe": true, "serving": { "since": 1791196800000 } }
+    },
+    {
+      "name": "bridge-role serving empty label",
+      "frame": { "type": "bridge-role", "role": "standby", "canServe": true, "serving": { "label": "", "since": 1791196800000 } }
+    },
+    {
+      "name": "bridge-role serving 65-character label",
+      "frame": { "type": "bridge-role", "role": "standby", "canServe": true, "serving": { "label": "LLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLL", "since": 1791196800000 } }
+    },
+    {
+      "name": "bridge-role serving label with a control character",
+      "frame": { "type": "bridge-role", "role": "standby", "canServe": true, "serving": { "label": "Chrome\u0007", "since": 1791196800000 } }
+    },
+    {
+      "name": "bridge-role serving label with a newline",
+      "frame": { "type": "bridge-role", "role": "standby", "canServe": true, "serving": { "label": "Chrome\nSafari", "since": 1791196800000 } }
+    },
+    {
+      "name": "bridge-role serving label with a bidi override",
+      "frame": { "type": "bridge-role", "role": "standby", "canServe": true, "serving": { "label": "‮emorhC", "since": 1791196800000 } }
+    },
+    {
+      "name": "bridge-role serving label not a string",
+      "frame": { "type": "bridge-role", "role": "standby", "canServe": true, "serving": { "label": 7, "since": 1791196800000 } }
+    },
+    { "name": "bridge-role serving missing since", "frame": { "type": "bridge-role", "role": "standby", "canServe": true, "serving": { "label": "Chrome" } } },
+    {
+      "name": "bridge-role serving since fractional",
+      "frame": { "type": "bridge-role", "role": "standby", "canServe": true, "serving": { "label": "Chrome", "since": 1791196800000.5 } }
+    },
+    { "name": "bridge-role serving since negative", "frame": { "type": "bridge-role", "role": "standby", "canServe": true, "serving": { "label": "Chrome", "since": -1 } } },
+    {
+      "name": "bridge-role serving since a string",
+      "frame": { "type": "bridge-role", "role": "standby", "canServe": true, "serving": { "label": "Chrome", "since": "1791196800000" } }
+    },
+    {
+      "name": "bridge-role serving since unsafe integer",
+      "frame": { "type": "bridge-role", "role": "standby", "canServe": true, "serving": { "label": "Chrome", "since": 9007199254740993 } }
+    },
+    {
+      "name": "bridge-role serving extra member",
+      "frame": { "type": "bridge-role", "role": "standby", "canServe": true, "serving": { "label": "Chrome", "since": 1791196800000, "tokenId": "brt_0123456789abcdef01234567" } }
+    },
+    { "name": "bridge-role extra member", "frame": { "type": "bridge-role", "role": "serving", "canServe": true, "accountId": "acc_f05c0ebf831e35df687660d1" } },
+    { "name": "bridge-role prototype-pollution key", "frame": { "type": "bridge-role", "role": "serving", "canServe": true, "__proto__": { "polluted": 1 } } },
+    {
+      "name": "bridge-role serving prototype-pollution key",
+      "frame": { "type": "bridge-role", "role": "standby", "canServe": true, "serving": { "label": "Chrome", "since": 1791196800000, "__proto__": { "polluted": 1 } } }
+    },
+    { "name": "bridge-serve extra member", "frame": { "type": "bridge-serve", "tokenId": "brt_0123456789abcdef01234567" } },
+    { "name": "bridge-serve prototype-pollution key", "frame": { "type": "bridge-serve", "__proto__": { "polluted": 1 } } },
+    { "name": "room-ping extra member", "frame": { "type": "room-ping", "at": 1791196800000 } },
+    { "name": "room-ping prototype-pollution key", "frame": { "type": "room-ping", "__proto__": { "polluted": 1 } } },
+    { "name": "room-pong extra member", "frame": { "type": "room-pong", "at": 1791196800000 } },
+    { "name": "room-pong prototype-pollution key", "frame": { "type": "room-pong", "__proto__": { "polluted": 1 } } }
+  ],
+  "invalidTexts": [
+    { "name": "room-ping with a space after the colon", "text": "{\"type\": \"room-ping\"}" },
+    { "name": "room-ping pretty-printed", "text": "{\n  \"type\": \"room-ping\"\n}" },
+    { "name": "room-ping with a trailing newline", "text": "{\"type\":\"room-ping\"}\n" },
+    { "name": "room-ping with a leading space", "text": " {\"type\":\"room-ping\"}" },
+    { "name": "room-ping with an extra member", "text": "{\"type\":\"room-ping\",\"at\":1}" },
+    { "name": "room-ping with an extra member first", "text": "{\"at\":1,\"type\":\"room-ping\"}" },
+    { "name": "room-ping with a duplicated type", "text": "{\"type\":\"room-ping\",\"type\":\"room-ping\"}" },
+    { "name": "room-ping with an escaped character", "text": "{\"type\":\"room\\u002dping\"}" },
+    { "name": "room-ping upper case", "text": "{\"type\":\"ROOM-PING\"}" },
+    { "name": "room-pong with a space after the colon", "text": "{\"type\": \"room-pong\"}" },
+    { "name": "room-pong with an extra member", "text": "{\"type\":\"room-pong\",\"at\":1}" },
+    { "name": "room-pong with a trailing newline", "text": "{\"type\":\"room-pong\"}\n" },
+    { "name": "bridge-serve is not a heartbeat", "text": "{\"type\":\"bridge-serve\"}" },
+    { "name": "empty text", "text": "" }
+  ]
+}

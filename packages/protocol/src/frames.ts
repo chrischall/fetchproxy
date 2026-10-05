@@ -818,8 +818,10 @@ export interface HelloFrameFromExtension {
    * the base set — the mirror of `HelloFrameFromServer.accepts`. A host sends
    * such a frame only to an extension that listed it, so an older extension
    * (whose validator refuses the type) never sees one. Today: `'peer-gone'`,
-   * and, from a hosted relay only, {@link ACCOUNT_KEY_FRAME} and
-   * {@link ACCOUNT_ATTEST_FRAME}.
+   * and, from a hosted relay only, {@link ACCOUNT_KEY_FRAME},
+   * {@link ACCOUNT_ATTEST_FRAME}, and the room frames' entries
+   * ({@link ROOM_FRAME_ACCEPTS}: {@link BRIDGE_ROLE_FRAME},
+   * {@link BRIDGE_SERVE_FRAME}, {@link ROOM_PING_FRAME}).
    */
   accepts?: string[];
   /**
@@ -1091,6 +1093,124 @@ export interface AccountAttestFrame {
   sig: string;
 }
 
+/*
+ * Room ↔ extension frames (mcp-host 2026-10-05 multi-browser spec §5.8),
+ * additive within protocol 4 — no `PROTOCOL_VERSION` bump. They exist only on
+ * a REMOTE link to a hosted relay that admits several browsers to one account
+ * room and lets one of them serve at a time. Each crosses the link only when
+ * the extension's own hello listed the gating entry in `accepts`
+ * (`ROOM_FRAME_ACCEPTS`), because an older extension's `validateFrame`
+ * refuses an unknown type and closes the link `1002`. The loopback
+ * concentrator never sends, relays or answers any of them.
+ *
+ * None carries authority. `bridge-role` is display only: a relay can lie about
+ * the role and gains nothing by it (it already chooses where it routes).
+ * `bridge-serve` is a request the relay may refuse. The heartbeat pair is
+ * liveness evidence for the relay and nothing for the extension.
+ */
+
+/** Frame type of {@link BridgeRoleFrame}, and its `accepts` entry. */
+export const BRIDGE_ROLE_FRAME = 'bridge-role' as const;
+
+/** Frame type of {@link BridgeServeFrame}, and its `accepts` entry. */
+export const BRIDGE_SERVE_FRAME = 'bridge-serve' as const;
+
+/**
+ * Frame type of {@link RoomPingFrame}, and the `accepts` entry that gates BOTH
+ * heartbeat frames: an extension that lists it sends pings and receives pongs.
+ */
+export const ROOM_PING_FRAME = 'room-ping' as const;
+
+/** Frame type of {@link RoomPongFrame}. Gated on {@link ROOM_PING_FRAME}. */
+export const ROOM_PONG_FRAME = 'room-pong' as const;
+
+/**
+ * The only text a `room-ping` may be on the wire. Fixed so a relay can answer
+ * it with a fixed auto-response pair that matches byte for byte (Cloudflare's
+ * `WebSocketRequestResponsePair`) without waking anything.
+ */
+export const ROOM_PING_TEXT = '{"type":"room-ping"}' as const;
+
+/** The only text a `room-pong` may be on the wire. See {@link ROOM_PING_TEXT}. */
+export const ROOM_PONG_TEXT = '{"type":"room-pong"}' as const;
+
+/** Upper bound, in UTF-16 code units, of {@link BridgeRoleServing.label}. */
+export const BRIDGE_ROLE_LABEL_MAX = 64;
+
+/** The four room frame types. */
+export type RoomFrameType =
+  | typeof BRIDGE_ROLE_FRAME
+  | typeof BRIDGE_SERVE_FRAME
+  | typeof ROOM_PING_FRAME
+  | typeof ROOM_PONG_FRAME;
+
+/**
+ * Per room frame type, the entry the EXTENSION's hello must list in `accepts`
+ * for that frame to cross the link in either direction. A relay sends
+ * `bridge-role` / `room-pong` only to an extension that listed the entry, and
+ * honours `bridge-serve` / `room-ping` only from one that did; an extension
+ * sends the latter two only on a link whose hello listed them. Frozen.
+ */
+export const ROOM_FRAME_ACCEPTS: Readonly<Record<RoomFrameType, string>> = Object.freeze({
+  [BRIDGE_ROLE_FRAME]: BRIDGE_ROLE_FRAME,
+  [BRIDGE_SERVE_FRAME]: BRIDGE_SERVE_FRAME,
+  [ROOM_PING_FRAME]: ROOM_PING_FRAME,
+  [ROOM_PONG_FRAME]: ROOM_PING_FRAME,
+});
+
+/** Who is serving the account, as a standby browser is told it. */
+export interface BridgeRoleServing {
+  /**
+   * The serving credential's display name and nothing else — never a token
+   * id or an account id. 1–{@link BRIDGE_ROLE_LABEL_MAX} characters, no
+   * control or bidi-override characters. Display text: render it as text.
+   */
+  label: string;
+  /** When that browser started serving, Unix ms. A non-negative safe integer. */
+  since: number;
+}
+
+/**
+ * Relay → extension: whether THIS browser serves the account's bridged MCPs.
+ * Sent on attach, on every role change and on hello. `serving` is present
+ * exactly when `role` is `standby`. `canServe` is this browser's eligibility
+ * (false while it is not confirmed for the account).
+ *
+ * Display only. A relay that sends one can lie about the role; it grants the
+ * extension nothing and changes nothing it enforces. docs/SECURITY.md
+ * §T-room-frames.
+ */
+export type BridgeRoleFrame =
+  | { type: typeof BRIDGE_ROLE_FRAME; role: 'serving'; canServe: boolean }
+  | {
+      type: typeof BRIDGE_ROLE_FRAME;
+      role: 'standby';
+      canServe: boolean;
+      serving: BridgeRoleServing;
+    };
+
+/**
+ * Extension → relay: "serve the account from this browser". Carries nothing.
+ * The relay decides (eligibility, rate limit) and answers with a
+ * {@link BridgeRoleFrame}.
+ */
+export interface BridgeServeFrame {
+  type: typeof BRIDGE_SERVE_FRAME;
+}
+
+/** Extension → relay heartbeat. Always exactly {@link ROOM_PING_TEXT}. */
+export interface RoomPingFrame {
+  type: typeof ROOM_PING_FRAME;
+}
+
+/** Relay → extension heartbeat answer. Always exactly {@link ROOM_PONG_TEXT}. */
+export interface RoomPongFrame {
+  type: typeof ROOM_PONG_FRAME;
+}
+
+/** Any of the four room ↔ extension frames. */
+export type RoomFrame = BridgeRoleFrame | BridgeServeFrame | RoomPingFrame | RoomPongFrame;
+
 export type Frame =
   | HelloFrame
   | ReadyFrame
@@ -1100,7 +1220,8 @@ export type Frame =
   | ExtensionDisconnectedFrame
   | PeerGoneFrame
   | AccountKeyFrame
-  | AccountAttestFrame;
+  | AccountAttestFrame
+  | RoomFrame;
 
 // --- Inner frames (inside ciphertext) ---
 

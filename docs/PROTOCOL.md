@@ -107,6 +107,7 @@ All frames are JSON objects with a `type` discriminator. Unknown `type` closes t
 - A server hello with no `answersExtNonce`, or one that is not exactly 32 raw bytes. The **value** 32 zero bytes is accepted here: it means "this hello answers no extension session", and refusing a hello for that is a gate's job, not the validator's
 - A `ready` with no `mcpSessionPub`, or one that is not exactly 32 raw bytes
 - An `account-key` or `account-attest` with a missing, malformed or unexpected field (see [§`account-key`](#account-key-relay--extension) and [§`account-attest`](#account-attest-relay--extension)), including a display string carrying a control or bidi-override character
+- A `bridge-role`, `bridge-serve`, `room-ping` or `room-pong` with a missing, malformed or unexpected field (see [§Room frames](#room-frames-bridge-role-bridge-serve-room-ping-room-pong)), including a `bridge-role` label carrying a control or bidi-override character
 
 ### Top-level frames (in plaintext on the wire)
 
@@ -648,6 +649,75 @@ whose own hello listed it in `accepts` (`"account-key"`, `"account-attest"` —
 refuses the types and closes the link `1002`. An MCP's `validateFrame`
 accepts both types, and neither the host nor a peer has a branch for them, so
 one arriving at an MCP is dropped rather than closing its socket.
+
+#### Room frames: `bridge-role`, `bridge-serve`, `room-ping`, `room-pong`
+
+Additive within protocol 4 (no `PROTOCOL_VERSION` bump). They exist only on a
+**remote** link to a hosted relay whose account room admits several browsers
+and lets one of them **serve** the account's bridged MCPs at a time (mcp-host's
+`BridgeRoom`). The loopback concentrator has one extension and no room: it
+never sends, answers or relays any of the four, in either direction.
+
+```jsonc
+// relay → extension: this browser's role in the account room
+{ "type": "bridge-role", "role": "serving", "canServe": true }
+{ "type": "bridge-role", "role": "standby", "canServe": true,
+  "serving": { "label": "Chrome on MacBook",   // the serving credential's display name
+               "since": 1791196800000 } }      // when it started serving, Unix ms
+
+// extension → relay: "serve the account from this browser"
+{ "type": "bridge-serve" }
+
+// extension → relay heartbeat, and the relay's answer: EXACTLY these texts
+{"type":"room-ping"}
+{"type":"room-pong"}
+```
+
+- **`bridge-role`** is sent on attach, on every role change and on hello.
+  `serving` is required when `role` is `standby` and refused when it is
+  `serving`. `label` is 1–64 characters with no control or bidi-override
+  character (it is shown in the popup), and is the serving credential's display
+  name and nothing else — never a token id or an account id. `since` is a
+  non-negative safe integer. `canServe` is whether this browser is eligible to
+  serve (false while it is not confirmed for the account). It is **display
+  only**: see `docs/SECURITY.md` §T-room-frames.
+- **`bridge-serve`** carries nothing. The relay decides — the browser must be
+  eligible, and switches are rate-limited and logged — and answers with a
+  `bridge-role`. A relay drops one from an ineligible browser.
+- **`room-ping` / `room-pong`** are a liveness heartbeat. The extension sends
+  the ping on each open remote link from its keepalive alarm. They are defined
+  by their **text**, not just their shape, so a relay can answer with a fixed
+  auto-response pair that compares bytes and never wakes (Cloudflare's
+  `WebSocketRequestResponsePair`). `validateRoomHeartbeatText()` refuses every
+  other serialisation — whitespace, a trailing newline, an escaped character,
+  an extra or duplicated member — and `validateFrame` refuses a parsed
+  heartbeat with any member besides `type`.
+
+**Gating.** Each crosses the link only when the **extension's** hello listed
+the gating entry in `accepts`, because an older extension's `validateFrame`
+refuses the types and closes the link `1002`:
+
+| Frame | Direction | `accepts` entry |
+|---|---|---|
+| `bridge-role` | relay → extension | `"bridge-role"` (`BRIDGE_ROLE_FRAME`) |
+| `bridge-serve` | extension → relay | `"bridge-serve"` (`BRIDGE_SERVE_FRAME`) |
+| `room-ping` | extension → relay | `"room-ping"` (`ROOM_PING_FRAME`) |
+| `room-pong` | relay → extension | `"room-ping"` — the ping's entry covers both |
+
+`ROOM_FRAME_ACCEPTS` holds that table; `roomFrameAccepted(accepts, type)` asks
+it, and `roomFrameText(accepts, frame)` returns the exact text to send or
+throws when the entry is missing — after running the frame through
+`validateFrame`, so a sender cannot put on the wire what the receiver would
+refuse. A relay uses both directions of the gate: it sends `bridge-role` and
+`room-pong` only to an extension that listed their entries, and honours
+`bridge-serve` and `room-ping` only from one that did. An MCP's `validateFrame`
+accepts all four types, and neither the host nor a peer has a branch for them,
+so one arriving at an MCP is dropped rather than closing its socket.
+
+Valid and invalid instances of each frame, and the two literal texts, are in
+`packages/protocol/tests/vectors/bridge-role.json`, written from the mcp-host
+multi-browser spec (§5.8) rather than from the implementation. mcp-host's
+transcription is tested against that file.
 
 ### Inner frames (inside ciphertext)
 
@@ -1289,7 +1359,7 @@ A relay must accept the connection with `fetchproxy.bridge.v1` selected. Subprot
 
 1. **Forward `hello` verbatim in BOTH directions.** `ready.sessionSig` covers `(mcpHelloNonce || extHelloNonce || extensionSessionPub || mcpSessionPub)` and the MCP verifies it against the extension hello *it was handed*, so a relay that mints a hello of its own is closed by the MCP as a MITM — correctly. The extension's hello has to reach every MCP unmodified, and each MCP's hello has to reach the extension unmodified. Since protocol 4 the server hello's own `sessionSig` covers `sessionPub` and `answersExtNonce` too, so a relay cannot substitute an ephemeral it holds the private half of, and cannot re-point a hello at an extension session it was not minted for.
 2. **Route on its OWN bookkeeping, never on what a frame asserts.** `mcpId` is `<serverName>:<version>:<16-hex>`, minted by the MCP. A relay serving more than one user must resolve the destination from the socket a hello arrived on and refuse any frame carrying an `mcpId` it did not itself bind to that user. The extension does the same in the other direction: an `mcpId` belongs to the link it said hello on, and a frame arriving on any other link is dropped.
-3. **Mint nothing else, except `account-key` and `account-attest`, and only to an extension that listed them in `accepts`.** Those two are relay-minted by design ([§`account-key`](#account-key-relay--extension), [§`account-attest`](#account-attest-relay--extension)); a relay drops either one arriving from an MCP, which would be an MCP vouching for itself, and never forwards one to an MCP. `frame` payloads are AES-256-GCM under a key derived from the MCP's identity, so a relay cannot read or forge one — but `pair-pending` and `ready` are cleartext, so pass them through unmodified. What keeps the pair code meaningful is no longer the relay's good behaviour: an MCP shows only the code it derived itself from the pair transcript, and a `pair-pending` carrying any other number closes the connection with a logged alarm. A relay that rewrites one breaks the link it is relaying rather than choosing what the user compares.
+3. **Mint nothing else, except `account-key`, `account-attest`, `bridge-role` and `room-pong`, each only to an extension that listed its `accepts` entry.** Those are relay-minted by design ([§`account-key`](#account-key-relay--extension), [§`account-attest`](#account-attest-relay--extension), [§Room frames](#room-frames-bridge-role-bridge-serve-room-ping-room-pong)); `room-pong` is gated on the `room-ping` entry. A relay consumes `bridge-serve` and `room-ping` itself, and only from an extension that listed them. It drops any of these six arriving from an MCP — an account frame from an MCP would be an MCP vouching for itself — and never forwards one to an MCP. `frame` payloads are AES-256-GCM under a key derived from the MCP's identity, so a relay cannot read or forge one — but `pair-pending` and `ready` are cleartext, so pass them through unmodified. What keeps the pair code meaningful is no longer the relay's good behaviour: an MCP shows only the code it derived itself from the pair transcript, and a `pair-pending` carrying any other number closes the connection with a logged alarm. A relay that rewrites one breaks the link it is relaying rather than choosing what the user compares.
 4. **Expect a reconnect to invalidate everything derived from the old hello, and never replay a cached one.** The extension's nonce is per connection, so when the browser leg drops, every MCP link built on that hello has to be re-established. Since protocol 4 a cached *server* hello is worse than useless: the `sessionPub` it names has had its private half zeroed, so the extension would derive a key nobody holds. A relay re-sends nothing and lets each MCP hello afresh — [§The ephemeral's lifetime](#the-ephemerals-lifetime).
 
 **`download` is local-only.** It answers with a filesystem path on the browser's machine, so the extension refuses it on a remote link (`ok: false`, with a reason naming why) rather than returning a path that cannot resolve — and rather than letting a remote MCP write files onto somebody's machine. Every other verb crosses unchanged.
