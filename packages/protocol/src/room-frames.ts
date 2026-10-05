@@ -1,4 +1,4 @@
-import { ROOM_FRAME_ACCEPTS, type RoomFrame, type RoomFrameType } from './frames.js';
+import { ROOM_FRAME_ACCEPTS, type Frame, type RoomFrame, type RoomFrameType } from './frames.js';
 import { ProtocolError, validateFrame } from './validate.js';
 
 /**
@@ -23,15 +23,17 @@ export function roomFrameAccepted(accepts: readonly string[], type: RoomFrameTyp
  * `1002`, so sending one ungated breaks the link rather than informing it.
  *
  * The frame is run through {@link validateFrame} first and the REBUILT copy is
- * serialised, so a caller cannot send what the receiver would refuse (an
- * over-long or control-character label, an extra member such as a token id)
- * and the heartbeat pair comes out as exactly `ROOM_PING_TEXT` /
+ * both gated and serialised: the caller's object is never read again after
+ * validation, so an accessor or a Proxy cannot pass the gate as one type and
+ * go out as another, and a caller cannot send what the receiver would refuse
+ * (an over-long or control-character label, an extra member such as a token
+ * id). The heartbeat pair comes out as exactly `ROOM_PING_TEXT` /
  * `ROOM_PONG_TEXT`.
  */
 export function roomFrameText(accepts: readonly string[], frame: RoomFrame): string {
-  const type =
-    typeof frame === 'object' && frame !== null ? (frame as { type?: unknown }).type : undefined;
-  if (typeof type !== 'string' || !Object.prototype.hasOwnProperty.call(ROOM_FRAME_ACCEPTS, type)) {
+  const checked: Frame = validateFrame(frame);
+  const type: string = checked.type;
+  if (!Object.prototype.hasOwnProperty.call(ROOM_FRAME_ACCEPTS, type)) {
     throw new ProtocolError(`room frame: unknown type ${JSON.stringify(type)}`);
   }
   const t = type as RoomFrameType;
@@ -40,5 +42,5 @@ export function roomFrameText(accepts: readonly string[], frame: RoomFrame): str
       `${t}: the extension's hello did not list ${JSON.stringify(ROOM_FRAME_ACCEPTS[t])} in accepts`,
     );
   }
-  return JSON.stringify(validateFrame(frame));
+  return JSON.stringify(checked);
 }
