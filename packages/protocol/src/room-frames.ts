@@ -17,21 +17,65 @@ export function roomFrameAccepted(accepts: readonly string[], type: RoomFrameTyp
 }
 
 /**
+ * The deepest a room frame nests (`bridge-role` → `serving` → `label` is 2).
+ * A snapshot deeper than this is refused rather than followed, so a cyclic
+ * object cannot overflow the stack.
+ */
+const ROOM_FRAME_SNAPSHOT_DEPTH = 4;
+
+/**
+ * A plain-data copy of `value`: every own enumerable member is read exactly
+ * once (`Object.keys`, then one `[[Get]]` each), and the copy has no
+ * accessors, no prototype tricks and no `toJSON`. Everything after this works
+ * on the copy only, so a getter or a Proxy in the caller's code has no
+ * second read to answer differently.
+ */
+function snapshot(value: unknown, depth: number): unknown {
+  if (value === null || typeof value !== 'object') return value;
+  if (depth > ROOM_FRAME_SNAPSHOT_DEPTH) {
+    throw new ProtocolError('room frame: nested too deeply');
+  }
+  if (Array.isArray(value)) {
+    const len = value.length;
+    const out: unknown[] = [];
+    for (let i = 0; i < len; i++) out.push(snapshot(value[i], depth + 1));
+    return out;
+  }
+  const src = value as Record<string, unknown>;
+  const out: Record<string, unknown> = {};
+  for (const k of Object.keys(src)) {
+    // defineProperty, not assignment: an own `__proto__` key stays a plain
+    // member (and is then refused as an unexpected field).
+    Object.defineProperty(out, k, {
+      value: snapshot(src[k], depth + 1),
+      enumerable: true,
+      writable: true,
+      configurable: true,
+    });
+  }
+  return out;
+}
+
+/**
  * The exact text to put on the wire for a room frame, or a `ProtocolError`
  * when the extension's hello did not list the frame's gating entry in
  * `accepts` — an older extension refuses the unknown type and closes the link
  * `1002`, so sending one ungated breaks the link rather than informing it.
  *
- * The frame is run through {@link validateFrame} first and the REBUILT copy is
- * both gated and serialised: the caller's object is never read again after
- * validation, so an accessor or a Proxy cannot pass the gate as one type and
- * go out as another, and a caller cannot send what the receiver would refuse
- * (an over-long or control-character label, an extra member such as a token
- * id). The heartbeat pair comes out as exactly `ROOM_PING_TEXT` /
+ * The caller's object is read exactly once, into a plain-data snapshot (each
+ * own enumerable member read once; no accessors survive). Only that snapshot
+ * is validated, gated and serialised. Validating alone is not enough: some
+ * validators (the encrypted `frame`, `ready`, parts of `hello`) return their
+ * input rather than a rebuilt copy, so without the snapshot a getter could
+ * validate as `frame`, pass the gate as `room-ping` and serialise as a third
+ * type. With it, an accessor or a Proxy cannot pass the check as one value
+ * and go out as another, and a caller cannot send what the receiver would
+ * refuse (an over-long or control-character label, an extra member such as a
+ * token id). The heartbeat pair comes out as exactly `ROOM_PING_TEXT` /
  * `ROOM_PONG_TEXT`.
  */
 export function roomFrameText(accepts: readonly string[], frame: RoomFrame): string {
-  const checked: Frame = validateFrame(frame);
+  const checked: Frame = validateFrame(snapshot(frame, 0));
   const type: string = checked.type;
   if (!Object.prototype.hasOwnProperty.call(ROOM_FRAME_ACCEPTS, type)) {
     throw new ProtocolError(`room frame: unknown type ${JSON.stringify(type)}`);

@@ -375,6 +375,101 @@ describe('roomFrameText', () => {
     expect(() => roomFrameText(all, fromOther)).toThrow(ProtocolError);
   });
 
+  // Some validators (encrypted 'frame', 'ready', parts of 'hello') return
+  // their input object rather than a rebuilt copy, so the gate and the
+  // serialiser must never see the caller's object at all — only a snapshot
+  // taken before validation. This sequence passed validation as an encrypted
+  // frame, the gate as room-ping, and went out as extension-disconnected.
+  it('refuses a getter that validates as a non-room frame and then answers as a room frame', () => {
+    let n = 0;
+    const seq = ['frame', 'room-ping', 'extension-disconnected'];
+    const f = {
+      mcpId: 'srv:1.0:0123456789abcdef',
+      seq: 1,
+      iv: 'AAAA',
+      ciphertext: 'AAAA',
+    } as Record<string, unknown>;
+    Object.defineProperty(f, 'type', {
+      enumerable: true,
+      get: () => seq[Math.min(n++, seq.length - 1)],
+    });
+    expect(() => roomFrameText(all, f as unknown as RoomFrame)).toThrow(ProtocolError);
+    expect(n).toBe(1);
+  });
+
+  it('reads every member of a plain object exactly once', () => {
+    const reads = new Map<string, number>();
+    const counted = (o: Record<string, unknown>): Record<string, unknown> => {
+      const out: Record<string, unknown> = {};
+      for (const [k, v] of Object.entries(o)) {
+        const inner =
+          v !== null && typeof v === 'object' ? counted(v as Record<string, unknown>) : v;
+        Object.defineProperty(out, k, {
+          enumerable: true,
+          get: () => {
+            reads.set(k, (reads.get(k) ?? 0) + 1);
+            return inner;
+          },
+        });
+      }
+      return out;
+    };
+    const frame = counted({ ...STANDBY, serving: { label: 'Firefox', since: 7 } });
+    const text = roomFrameText(all, frame as unknown as BridgeRoleFrame);
+    expect(JSON.parse(text)).toEqual({ ...STANDBY, serving: { label: 'Firefox', since: 7 } });
+    for (const [k, c] of reads) expect([k, c]).toEqual([k, 1]);
+    expect([...reads.keys()].sort()).toEqual([
+      'canServe',
+      'label',
+      'role',
+      'serving',
+      'since',
+      'type',
+    ]);
+  });
+
+  // roomFrameText snapshots first, so these call validateFrame directly: the
+  // validator's own read-once rebuild stays pinned as a second layer.
+  it('validateFrame rebuilds bridge-role from a single read of each member', () => {
+    let l = 0;
+    const flipLabel = {
+      type: 'bridge-role',
+      role: 'standby',
+      canServe: true,
+      serving: {
+        since: 1,
+        get label() {
+          return l++ === 0 ? 'Chrome' : 'tok_SECRET‮';
+        },
+      },
+    };
+    expect(validateFrame(flipLabel)).toEqual({
+      type: 'bridge-role',
+      role: 'standby',
+      canServe: true,
+      serving: { label: 'Chrome', since: 1 },
+    });
+
+    for (const role of ['standby', 'serving'] as const) {
+      let c = 0;
+      const flipServe: Record<string, unknown> = {
+        type: 'bridge-role',
+        role,
+        get canServe() {
+          return c++ === 0 ? true : 'yes';
+        },
+      };
+      if (role === 'standby') flipServe.serving = { label: 'Chrome', since: 1 };
+      expect((validateFrame(flipServe) as BridgeRoleFrame).canServe).toBe(true);
+    }
+  });
+
+  it('refuses a cyclic object instead of overflowing the stack', () => {
+    const a: Record<string, unknown> = { type: 'bridge-serve' };
+    a.self = a;
+    expect(() => roomFrameText(all, a as unknown as RoomFrame)).toThrow(ProtocolError);
+  });
+
   it('reads a Proxy once per member too', () => {
     const reads = new Map<PropertyKey, number>();
     const target = {
