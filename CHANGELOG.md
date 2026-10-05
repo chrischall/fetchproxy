@@ -1,5 +1,22 @@
 # Changelog
 
+## [3.6.0](https://github.com/chrischall/fetchproxy/compare/v3.5.1...v3.6.0) (2026-10-05)
+
+
+### Features
+
+* **protocol:** bridge-role, bridge-serve and room-ping frames for hosted relays ([#439](https://github.com/chrischall/fetchproxy/issues/439)) ([ea1e43c](https://github.com/chrischall/fetchproxy/commit/ea1e43ceca7326e103c7bf683c897959ec293660))
+
+
+### Bug Fixes
+
+* **protocol:** snapshot a room frame before validating so what is checked is what is sent ([#441](https://github.com/chrischall/fetchproxy/issues/441)) ([aa73cc9](https://github.com/chrischall/fetchproxy/commit/aa73cc92c8fde276502f71a47ad2e0cfea2b314c))
+
+
+### Documentation
+
+* **spec:** Safari ContextMint Bridge ships as its own App Store app ([#437](https://github.com/chrischall/fetchproxy/issues/437)) ([e07dbb3](https://github.com/chrischall/fetchproxy/commit/e07dbb3144b491d97aff7b92d9afc6069d52e22b))
+
 ## [3.5.1](https://github.com/chrischall/fetchproxy/compare/v3.5.0...v3.5.1) (2026-10-01)
 
 
