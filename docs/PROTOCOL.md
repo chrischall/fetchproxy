@@ -707,8 +707,10 @@ refuses the types and closes the link `1002`:
 `ROOM_FRAME_ACCEPTS` holds that table; `roomFrameAccepted(accepts, type)` asks
 it, and `roomFrameText(accepts, frame)` returns the exact text to send or
 throws when the entry is missing — after running the frame through
-`validateFrame`, so a sender cannot put on the wire what the receiver would
-refuse. A relay uses both directions of the gate: it sends `bridge-role` and
+`validateFrame` and then gating and serialising only the validator's rebuilt
+copy. Each member of the caller's object is read once, so a sender cannot put
+on the wire what the receiver would refuse, even from an object whose getters
+answer differently on a second read. A relay uses both directions of the gate: it sends `bridge-role` and
 `room-pong` only to an extension that listed their entries, and honours
 `bridge-serve` and `room-ping` only from one that did. An MCP's `validateFrame`
 accepts all four types, and neither the host nor a peer has a branch for them,

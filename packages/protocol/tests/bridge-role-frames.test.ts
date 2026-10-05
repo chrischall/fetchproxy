@@ -314,6 +314,103 @@ describe('roomFrameText', () => {
     expect(() => roomFrameText(all, ctl as BridgeRoleFrame)).toThrow(/control/);
   });
 
+  // A caller's object is read ONCE: what is checked is what is sent. An
+  // accessor or a Proxy that answers differently on a second read must not
+  // get past the gate or the label check (JSON.parse input has no accessors,
+  // so this guards the SENDING side's own code, not the wire).
+  it('checks and sends the same label even when the getter changes its answer', () => {
+    let n = 0;
+    const flip = {
+      type: 'bridge-role',
+      role: 'standby',
+      canServe: true,
+      serving: {
+        since: 1,
+        get label() {
+          return n++ === 0 ? 'Chrome' : 'tok_SECRET\u202e';
+        },
+      },
+    } as unknown as BridgeRoleFrame;
+    const text = roomFrameText(all, flip);
+    expect(text).toBe(
+      '{"type":"bridge-role","role":"standby","canServe":true,"serving":{"label":"Chrome","since":1}}',
+    );
+    expect(validateFrame(JSON.parse(text))).toEqual({
+      type: 'bridge-role',
+      role: 'standby',
+      canServe: true,
+      serving: { label: 'Chrome', since: 1 },
+    });
+  });
+
+  it('checks and sends the same canServe even when the getter changes its answer', () => {
+    let n = 0;
+    const flip = {
+      type: 'bridge-role',
+      role: 'serving',
+      get canServe() {
+        return n++ === 0 ? true : 'yes';
+      },
+    } as unknown as BridgeRoleFrame;
+    expect(roomFrameText(all, flip)).toBe(
+      '{"type":"bridge-role","role":"serving","canServe":true}',
+    );
+  });
+
+  it('gates on the type it validated, not on a second read of it', () => {
+    let n = 0;
+    const toOther = {
+      get type() {
+        return n++ === 0 ? 'room-ping' : 'extension-disconnected';
+      },
+    } as unknown as RoomFrame;
+    expect(roomFrameText(all, toOther)).toBe(ROOM_PING_TEXT);
+
+    let m = 0;
+    const fromOther = {
+      get type() {
+        return m++ === 0 ? 'extension-disconnected' : 'room-ping';
+      },
+    } as unknown as RoomFrame;
+    expect(() => roomFrameText(all, fromOther)).toThrow(ProtocolError);
+  });
+
+  it('reads a Proxy once per member too', () => {
+    const reads = new Map<PropertyKey, number>();
+    const target = {
+      type: 'bridge-role',
+      role: 'standby',
+      canServe: false,
+      serving: { label: 'Firefox', since: 7 },
+    };
+    const proxy = new Proxy(target, {
+      get(t, k, r) {
+        const c = (reads.get(k) ?? 0) + 1;
+        reads.set(k, c);
+        if (k === 'type' && c > 1) return 'extension-disconnected';
+        if (k === 'canServe' && c > 1) return 'nope';
+        return Reflect.get(t, k, r);
+      },
+    }) as unknown as BridgeRoleFrame;
+    const text = roomFrameText(all, proxy);
+    expect(validateFrame(JSON.parse(text))).toEqual(target);
+  });
+
+  it("serialises the validator's rebuilt copy, never the caller's object", () => {
+    // A non-enumerable toJSON is invisible to the exact-fields check
+    // (Object.keys) but JSON.stringify(callerObject) would call it.
+    const sneaky = { type: 'bridge-serve' } as unknown as RoomFrame;
+    Object.defineProperty(sneaky, 'toJSON', {
+      enumerable: false,
+      value: () => ({ type: 'bridge-serve', tokenId: 'brt_0123456789abcdef01234567' }),
+    });
+    expect(roomFrameText(all, sneaky)).toBe('{"type":"bridge-serve"}');
+
+    const role = { ...STANDBY } as BridgeRoleFrame;
+    Object.defineProperty(role, 'toJSON', { enumerable: false, value: () => 'raw' });
+    expect(roomFrameText(all, role)).toBe(JSON.stringify(validateFrame({ ...STANDBY })));
+  });
+
   it('refuses a heartbeat object with extra members', () => {
     expect(() => roomFrameText(all, { type: 'room-ping', at: 1 } as unknown as RoomFrame)).toThrow(
       /unexpected field/,

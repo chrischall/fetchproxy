@@ -1183,24 +1183,29 @@ const BRIDGE_ROLE_SERVING_FIELDS = ['label', 'since'] as const;
  */
 function validateBridgeRole(raw: Record<string, unknown>): BridgeRoleFrame {
   const L = BRIDGE_ROLE_FRAME;
+  // Every member is read ONCE into a local and the rebuilt frame is made from
+  // those locals, so an accessor or a Proxy on the sending side cannot answer
+  // the check with one value and the copy with another.
   const role = raw.role;
   if (role !== 'serving' && role !== 'standby') {
     throw new ProtocolError(`${L}.role: must be one of serving, standby`);
   }
-  assertBoolean(raw.canServe, `${L}.canServe`);
+  const canServe = raw.canServe;
+  assertBoolean(canServe, `${L}.canServe`);
   assertExactFields(raw, BRIDGE_ROLE_FIELDS, L);
+  const serving = raw.serving;
   if (role === 'serving') {
-    if (raw.serving !== undefined) {
+    if (serving !== undefined) {
       throw new ProtocolError(`${L}.serving: must be absent when role is serving`);
     }
-    return { type: BRIDGE_ROLE_FRAME, role, canServe: raw.canServe };
+    return { type: BRIDGE_ROLE_FRAME, role, canServe };
   }
-  const serving = raw.serving;
   if (serving === undefined) {
     throw new ProtocolError(`${L}.serving: required when role is standby`);
   }
   assertObject(serving, `${L}.serving`);
-  assertDisplayString(serving.label, `${L}.serving.label`, 1, BRIDGE_ROLE_LABEL_MAX);
+  const label = serving.label;
+  assertDisplayString(label, `${L}.serving.label`, 1, BRIDGE_ROLE_LABEL_MAX);
   const since = serving.since;
   if (typeof since !== 'number' || !Number.isSafeInteger(since) || since < 0) {
     throw new ProtocolError(`${L}.serving.since: expected non-negative safe integer (Unix ms)`);
@@ -1209,8 +1214,8 @@ function validateBridgeRole(raw: Record<string, unknown>): BridgeRoleFrame {
   return {
     type: BRIDGE_ROLE_FRAME,
     role,
-    canServe: raw.canServe,
-    serving: { label: serving.label, since },
+    canServe,
+    serving: { label, since },
   };
 }
 
