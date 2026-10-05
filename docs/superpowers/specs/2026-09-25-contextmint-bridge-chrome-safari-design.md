@@ -1,7 +1,10 @@
 # ContextMint Bridge — store-ready Chrome + Safari extensions (design)
 
 **Date:** 2026-09-25
-**Status:** Approved by owner 2026-09-25 (decisions at the end); ready for an implementation plan
+**Status:** Approved by owner 2026-09-25 (decisions at the end); ready for an implementation plan.
+**Partly superseded 2026-10-05:** Safari packaging and distribution (decision 1 and
+*Safari: signing, distribution, release*) — Safari now ships as its own App Store app.
+See those two places, struck through and updated in place.
 **Supersedes:** the *Identity* section of
 [`2026-05-21-transporter-cws-launch-design.md`](./2026-05-21-transporter-cws-launch-design.md).
 That spec's permission, privacy and release-artifact reasoning still holds; its
@@ -21,7 +24,9 @@ Bridge**, to:
    `app.nullnet.mcphost`): a **ContextMint for Mac v0** built for it (scoped in by the
    owner, 2026-09-25, so the Safari extension can be tested on this Mac), then the
    **iOS/iPadOS app**. Everything goes under `mcphost`.
-   There is no standalone "ContextMint Bridge" Apple app.
+   ~~There is no standalone "ContextMint Bridge" Apple app.~~ *Superseded
+   2026-10-05: Safari ships as its own App Store app — see* Safari: signing,
+   distribution, release.
 
 Today the only install path is `git clone` → `npm run build` → Load Unpacked. The
 README already links a CWS listing that was never published
@@ -298,24 +303,52 @@ app; it gets a paragraph recording this.
 
 ## Safari: signing, distribution, release
 
-- **Distribution: inside ContextMint's App Store listings.** No separate Apple
+> **Superseded 2026-10-05 (owner).** Safari no longer ships inside ContextMint. It
+> ships as **its own App Store app, ContextMint Bridge** — a close-to-empty
+> container app whose only job is to carry the Safari web extension, with one App
+> Store Connect record for iOS and macOS (universal purchase). It replaces the copy
+> embedded in mcp-host-app; the two are not run side by side. Plan:
+> [nullnet-app/contextmint-bridge `docs/superpowers/plans/2026-10-05-safari-extension-standalone.md`](https://github.com/nullnet-app/contextmint-bridge/blob/main/docs/superpowers/plans/2026-10-05-safari-extension-standalone.md).
+>
+> - **Bundle IDs (plan D2):** container app `app.nullnet.contextmint.bridge`;
+>   Safari web extension appex `app.nullnet.contextmint.bridge.extension`. Both are
+>   iOS + macOS. This reuses the pair withdrawn on 2026-09-25: it was never
+>   registered, and the appex ID is prefixed by its own container's, so Apple's
+>   prefix rule is met.
+> - **No App Group, no keychain access group, no restricted entitlement, no App ID
+>   capabilities.** Nothing passes between the container and the appex; the
+>   extension's state stays in Safari's own extension storage. The only entitlement
+>   is the App Sandbox on the macOS targets.
+> - **No runtime link to the ContextMint app (plan D3).** The extension drops
+>   native messaging; pairing starts in the popup's **Connect** against the gateway,
+>   and ContextMint's "is Safari connected" view comes from the account's presence
+>   API.
+> - **Packaging and signing (plan D1):** a checked-in XcodeGen project under
+>   `apple/` in `nullnet-app/contextmint-bridge`, built from the tagged tree on the
+>   `[self-hosted, macOS]` runner and uploaded to TestFlight on every release. The
+>   bridge repo now signs for Apple; its version is the extension's release-please
+>   version.
+>
+> The original text is kept below, struck through.
+
+- ~~**Distribution: inside ContextMint's App Store listings.** No separate Apple
   product, so no separate App Store record; the extension reaches users as a
   ContextMint app update. App Review sees the extension's permissions as part of
-  ContextMint's submission.
-- **Bundle IDs** (owner, 2026-09-25 — everything under `mcphost`): the extension
+  ContextMint's submission.~~
+- ~~**Bundle IDs** (owner, 2026-09-25 — everything under `mcphost`): the extension
   appex is **`app.nullnet.mcphost.bridge`**, inside `app.nullnet.mcphost`. Apple
   requires an appex ID to be prefixed by its containing app's, which is why the
   earlier `app.nullnet.contextmint.bridge[.extension]` pair was withdrawn before
   anything was registered. The macOS app shares `app.nullnet.mcphost` (universal
   purchase: one App Store Connect record gains a macOS platform) and embeds the same
-  `app.nullnet.mcphost.bridge`.
-- **App Group** shared by app and appex: `group.app.nullnet.mcphost` (gateway URL,
+  `app.nullnet.mcphost.bridge`.~~
+- ~~**App Group** shared by app and appex: `group.app.nullnet.mcphost` (gateway URL,
   extension status). **Keychain access group** shared by app and appex: the
-  `mcpb_*` token.
-- **Signing and CI** are mcp-host-app's existing ones: nullnet team, the shared
+  `mcpb_*` token.~~
+- ~~**Signing and CI** are mcp-host-app's existing ones: nullnet team, the shared
   distribution cert, the `[self-hosted, macOS]` runner, its versioning
   (`run_number*100+run_attempt`), TestFlight then review. The bridge repo signs
-  nothing for Apple.
+  nothing for Apple.~~
 - **What iOS is for.** No MCP runs on a phone, so iOS uses only the remote
   (`wss://`) ContextMint gateway target, and iOS suspends Safari's extensions when
   Safari leaves the screen. Until the spike says otherwise, iOS v1 is scoped to
@@ -425,8 +458,13 @@ signed extension and the pairing hand-off need.
 ## Decisions (owner, 2026-09-25)
 
 1. ~~Bundle IDs `app.nullnet.contextmint.bridge[.extension]`~~ — withdrawn the same
-   day, never registered. Safari ships inside ContextMint on iOS and macOS;
-   appex `app.nullnet.mcphost.bridge`, App Group `group.app.nullnet.mcphost`.
+   day, never registered. ~~Safari ships inside ContextMint on iOS and macOS;
+   appex `app.nullnet.mcphost.bridge`, App Group `group.app.nullnet.mcphost`.~~
+   **Superseded 2026-10-05 (owner):** Safari ships as its own App Store app,
+   ContextMint Bridge, replacing the copy embedded in ContextMint. Container
+   `app.nullnet.contextmint.bridge`, appex `app.nullnet.contextmint.bridge.extension`
+   (iOS + macOS, one universal-purchase record), with **no App Group** and no keychain
+   access group. Plan: [nullnet-app/contextmint-bridge `docs/superpowers/plans/2026-10-05-safari-extension-standalone.md`](https://github.com/nullnet-app/contextmint-bridge/blob/main/docs/superpowers/plans/2026-10-05-safari-extension-standalone.md).
 2. Extension packages **move** to `nullnet-app/contextmint-bridge`.
 3. CWS publisher of record: **nullnet** group publisher.
 4. **Pairing hand-off is hybrid:** the `mcpb_*` token in a keychain access group
