@@ -20,7 +20,10 @@ const PX_BODY = `<!DOCTYPE html><html lang="en"><head>
   <h1>Access to this page has been denied</h1>
 </body></html>`;
 
-const AWS_WAF_BODY = `<!DOCTYPE html><html><head><title>Just a moment...</title></head>
+// Title deliberately NOT "Just a moment…": that is Cloudflare's JS
+// challenge interstitial title (fleet-audit #1182) and would now trip the
+// Cloudflare arm, masking what the 200-status AWS case below asserts.
+const AWS_WAF_BODY = `<!DOCTYPE html><html><head><title>Human Verification</title></head>
 <body><div id="challenge"></div>
 <script type="text/javascript" src="https://xxxx.token.awswaf.com/xxxx/challenge.js"></script>
 <script>AwsWafIntegration.checkForceRefresh();</script>
@@ -33,6 +36,17 @@ const CLOUDFLARE_BODY = `<!DOCTYPE html><html><head>
 <h1>Sorry, you have been blocked</h1>
 <p>You are unable to access this website</p></div>
 <div class="cf-wrapper">Ray ID: 8xxxxxxxxxxxxxxx</div>
+</body></html>`;
+
+// Cloudflare's JS-challenge interstitial ("Just a moment…") — a different
+// page from the "Attention Required!" block page. Served as 403 or 503,
+// and occasionally 200, so the arm must not gate on status (#1182).
+const CLOUDFLARE_CHALLENGE_BODY = `<!DOCTYPE html><html lang="en-US"><head>
+<title>Just a moment...</title>
+<meta http-equiv="refresh" content="390">
+</head><body><div class="main-wrapper" role="main">
+<noscript>Enable JavaScript and cookies to continue</noscript></div>
+<script>(function(){window._cf_chl_opt={cvId: '3',cZone: "example.com",cType: 'managed'};})();</script>
 </body></html>`;
 
 const DATADOME_BODY = `<!DOCTYPE html><html><head><title>Blocked</title></head>
@@ -144,6 +158,36 @@ describe('classifyBotWall', () => {
         blocked: true,
         vendor: 'cloudflare',
       });
+    });
+
+    // #1182: the "Just a moment…" JS challenge, without the header —
+    // bridge callers pass no headers, so the body is the only signal.
+    it.each([403, 503, 200])(
+      'detects the JS-challenge interstitial served as HTTP %i',
+      (status) => {
+        expect(classifyBotWall(CLOUDFLARE_CHALLENGE_BODY, status)).toEqual({
+          blocked: true,
+          vendor: 'cloudflare',
+        });
+      },
+    );
+
+    it('detects the _cf_chl_opt marker alone', () => {
+      expect(
+        classifyBotWall('<script>window._cf_chl_opt={cType:1}</script>', 200),
+      ).toEqual({ blocked: true, vendor: 'cloudflare' });
+    });
+
+    it('detects a <title>Just a moment title alone, case-insensitively', () => {
+      expect(
+        classifyBotWall('<html><head><TITLE lang="en">  just A MOMENT…</TITLE></head></html>', 503),
+      ).toEqual({ blocked: true, vendor: 'cloudflare' });
+    });
+
+    it('does NOT flag "Just a moment" outside the <title>', () => {
+      const body = `<!DOCTYPE html><html><head><title>Checkout</title></head>
+<body><p>Just a moment while we load your order…</p></body></html>`;
+      expect(classifyBotWall(body, 200)).toEqual({ blocked: false });
     });
   });
 

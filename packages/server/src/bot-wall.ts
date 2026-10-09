@@ -64,6 +64,20 @@ const AWS_WAF_BODY_MARKERS = ['AWSWAFCAPTCHA', 'awswaf.com'] as const;
 const CLOUDFLARE_BODY_MARKER = 'Attention Required! | Cloudflare';
 
 /**
+ * Cloudflare JS-challenge interstitial ("Just a moment…") markers — a
+ * different page from the block page above, served as 403/503 and
+ * sometimes 200 (fleet-audit #1182). The same two definitive markers as
+ * mcp-utils `isCloudflareChallenge`: the `_cf_chl_opt` challenge-options
+ * bootstrap, or a `<title>` that opens with "Just a moment"
+ * (case-insensitive). The title is anchored to the `<title>` element so
+ * body copy that merely says "just a moment" never trips the wall.
+ */
+const CLOUDFLARE_CHALLENGE_MARKERS = [
+  /_cf_chl_opt/,
+  /<title[^>]*>\s*Just a moment/i,
+] as const;
+
+/**
  * DataDome challenge marker — the captcha-delivery script host the
  * DataDome interstitial loads. Matched with a size guard so it can't
  * false-positive inside a gargantuan legitimate SSR page that mentions
@@ -119,9 +133,14 @@ export function classifyBotWall(
     }
   }
 
-  // 3. Cloudflare — the `cf-mitigated` header (any status) or the
-  //    block-page title in the body.
-  if ('cf-mitigated' in h || body.includes(CLOUDFLARE_BODY_MARKER)) {
+  // 3. Cloudflare — the `cf-mitigated` header (any status), the
+  //    block-page title, or the JS-challenge interstitial markers in the
+  //    body (any status — bridge callers often pass no headers).
+  if (
+    'cf-mitigated' in h ||
+    body.includes(CLOUDFLARE_BODY_MARKER) ||
+    CLOUDFLARE_CHALLENGE_MARKERS.some((re) => re.test(body))
+  ) {
     return { blocked: true, vendor: 'cloudflare' };
   }
 
