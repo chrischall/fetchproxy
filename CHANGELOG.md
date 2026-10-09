@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.6.1](https://github.com/chrischall/fetchproxy/compare/v3.6.0...v3.6.1) (2026-10-09)
+
+
+### Bug Fixes
+
+* **server:** classify Cloudflare "Just a moment" JS challenge as a bot wall ([#446](https://github.com/chrischall/fetchproxy/issues/446)) ([165284c](https://github.com/chrischall/fetchproxy/commit/165284c467beeb75cb4da1842ab06b7e333f8cf6))
+
 ## [3.6.0](https://github.com/chrischall/fetchproxy/compare/v3.5.1...v3.6.0) (2026-10-05)
 
 
