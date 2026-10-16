@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.6.2](https://github.com/chrischall/fetchproxy/compare/v3.6.1...v3.6.2) (2026-10-16)
+
+
+### Bug Fixes
+
+* **server:** bound the Cloudflare challenge scan and refuse IP-literal domains ([#450](https://github.com/chrischall/fetchproxy/issues/450)) ([6cec1a5](https://github.com/chrischall/fetchproxy/commit/6cec1a54fbd8857fecc14cb2c16ca875e9516178))
+
 ## [3.6.1](https://github.com/chrischall/fetchproxy/compare/v3.6.0...v3.6.1) (2026-10-09)
 
 
