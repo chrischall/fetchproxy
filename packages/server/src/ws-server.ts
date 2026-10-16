@@ -1,5 +1,6 @@
 import {
   generateMcpId,
+  isIpLiteralHost,
   isPublicSuffix,
   KNOWN_CAPABILITIES,
   undeclaredKeys,
@@ -1787,6 +1788,13 @@ export class FetchproxyServer {
     // which profiles are legal, and the far end's verdict is the one that
     // silently wins.
     for (const d of opts.domains) {
+      // fleet-audit #1247: the same IP-literal refusal `validateHello` makes,
+      // judged here for the reason #365 gives above.
+      if (typeof d === 'string' && isIpLiteralHost(d)) {
+        throw new Error(
+          `FetchproxyServer: opts.domains entry ${JSON.stringify(d)} is an IP address — declare the site's DNS hostname; IP-literal origins (LAN, loopback, link-local) are not reachable through the bridge`,
+        );
+      }
       if (typeof d === 'string' && isPublicSuffix(d)) {
         throw new Error(
           `FetchproxyServer: opts.domains entry ${JSON.stringify(d)} is a public suffix — declare a registrable domain (e.g. "example.${d}"), not the suffix every site under it shares`,

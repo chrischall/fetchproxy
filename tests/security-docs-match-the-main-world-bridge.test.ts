@@ -32,3 +32,18 @@ describe('SECURITY.md describes where the MAIN-world bridge runs', () => {
     expect(sec).not.toMatch(/wraps `client\.link\.request` on \*\*every\*\* page/);
   });
 });
+
+// fleet-audit #1245: the README's architecture table said every fetch ran in
+// the page MAIN world, while SECURITY.md §T-in-page-fetch says ordinary fetches
+// run in the content script's isolated world and only `fetch_in_page` requests
+// use the MAIN world — the very residual risk that capability confines.
+describe('README says where the extension runs fetch', () => {
+  const readme = read('README.md');
+
+  it('names the isolated content script, with MAIN world only for fetch_in_page', () => {
+    const row = readme.split('\n').find((l) => l.startsWith('| ContextMint Bridge |')) ?? '';
+    expect(row).toMatch(/content script/);
+    expect(row).toMatch(/fetch_in_page/);
+    expect(row).not.toMatch(/in the page MAIN world of a matching tab/);
+  });
+});

@@ -189,6 +189,46 @@ describe('classifyBotWall', () => {
 <body><p>Just a moment while we load your order…</p></body></html>`;
       expect(classifyBotWall(body, 200)).toEqual({ blocked: false });
     });
+
+    // fleet-audit #1189: the title rule used to run `<title[^>]*>` over the
+    // WHOLE body, which is quadratic over a body of repeated `<title` — one
+    // hostile response (the extension caps bodies at 5 MiB) pinned the MCP's
+    // event loop for minutes. Each payload below took seconds or more before
+    // the fix; a linear scan finishes in milliseconds.
+    function elapsedMs(fn: () => void): number {
+      const t = performance.now();
+      fn();
+      return performance.now() - t;
+    }
+
+    it.each([
+      ['repeated <title with no closing >', '<title'],
+      ['repeated <title + attribute run with no closing >', '<title lang="en" '],
+    ])('is linear on %s', (_label, unit) => {
+      const evil = unit.repeat(Math.ceil((5 * 1024 * 1024) / unit.length));
+      let result: unknown;
+      const ms = elapsedMs(() => {
+        result = classifyBotWall(evil, 200);
+      });
+      expect(result).toEqual({ blocked: false });
+      expect(ms).toBeLessThan(1500);
+    });
+
+    it('is linear on a 240 KB body of repeated <title (the audit probe size)', () => {
+      const evil = '<title'.repeat(40_000);
+      const ms = elapsedMs(() => classifyBotWall(evil, 503));
+      expect(ms).toBeLessThan(500);
+    });
+
+    it('still detects a challenge title after a large <head> preamble', () => {
+      const body = `<!DOCTYPE html><html><head>${'<meta name="x" content="y">'.repeat(200)}<title>Just a moment...</title></head></html>`;
+      expect(classifyBotWall(body, 403)).toEqual({ blocked: true, vendor: 'cloudflare' });
+    });
+
+    it('still detects the _cf_chl_opt marker anywhere in the body', () => {
+      const body = `${'x'.repeat(200_000)}<script>window._cf_chl_opt={cType:1}</script>`;
+      expect(classifyBotWall(body, 200)).toEqual({ blocked: true, vendor: 'cloudflare' });
+    });
   });
 
   describe('DataDome', () => {

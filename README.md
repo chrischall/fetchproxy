@@ -51,7 +51,7 @@ The pieces (the extension in its own repo):
 | [`@fetchproxy/protocol`](packages/protocol) | Wire types, validators, crypto wrappers. Shared between server and extension. | `packages/protocol/` |
 | [`@fetchproxy/test-helpers`](packages/test-helpers) | Vitest mocks for downstream MCP test suites — drop-in `FetchproxyServer` replacement that captures constructor opts and exposes spy-able verbs. | `packages/test-helpers/` |
 | [`@fetchproxy/cli`](packages/cli) | `fpx` — one-shot CLI for the bridge: per-service profiles, authenticated fetch/read/session verbs for skills and shell scripts. | `packages/cli/` |
-| ContextMint Bridge | Browser extension. Connects to the WS, runs `fetch(url, { credentials: 'include' })` in the page MAIN world of a matching tab, returns the response. | [nullnet-app/contextmint-bridge](https://github.com/nullnet-app/contextmint-bridge) |
+| ContextMint Bridge | Browser extension. Connects to the WS, runs `fetch(url, { credentials: 'include' })` in the content script (isolated world) of a matching tab — the page MAIN world only for `fetch_in_page` requests (see [SECURITY.md §T-in-page-fetch](docs/SECURITY.md#t-in-page-fetch--fetch_in_page-capability-misuse)) — and returns the response. | [nullnet-app/contextmint-bridge](https://github.com/nullnet-app/contextmint-bridge) |
 
 The extension is its own repo and release line; it depends on `@fetchproxy/protocol` from npm, and the protocol number is the contract between the two halves.
 

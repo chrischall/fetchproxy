@@ -37,6 +37,7 @@ import {
 } from './account-attest.js';
 import { isValidJsonPointer } from './json-pointer.js';
 import { isPublicSuffix } from './public-suffix.js';
+import { isIpLiteralHost } from './ip-literal.js';
 
 /**
  * Thrown by `validateFrame` / `validateInnerFrame` when a structurally
@@ -725,6 +726,14 @@ function validateHello(raw: Record<string, unknown>): HelloFrame {
       }
       if (!HOSTNAME_RE.test(d)) {
         throw new ProtocolError(`hello.domains: invalid hostname ${JSON.stringify(d)}`);
+      }
+      // fleet-audit #1247: HOSTNAME_RE matches dotted-decimal IPv4, and an IP
+      // literal aims the user's browser — and that origin's credentials — at
+      // their own LAN or loopback. See ip-literal.ts.
+      if (isIpLiteralHost(d)) {
+        throw new ProtocolError(
+          `hello.domains: ${JSON.stringify(d)} is an IP address — declare the site's DNS hostname; IP-literal origins (LAN, loopback, link-local) are not reachable through the bridge`,
+        );
       }
       // A `domains` entry is matched exact-or-subdomain on every side, so a
       // public suffix claims every site anybody can register under it while

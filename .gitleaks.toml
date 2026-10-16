@@ -1,0 +1,21 @@
+# gitleaks config: the default ruleset, plus a narrow allowlist for synthetic
+# protocol test vectors (chrischall/fleet-audit#1373). Every hit below is a
+# placeholder built from sequential hex (account-attest.gen.mjs derives the
+# brt_/acc_/reg_ ids from a 00..1f seed) or a frozen throwaway session key from
+# a capture that never existed outside it (cross-version/v3-fixtures.ts). None
+# is a credential. Scoped to one rule and to test paths only, so a genuine
+# secret anywhere else — including non-test source — still fails.
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Synthetic protocol test vectors and fixtures"
+targetRules = ["generic-api-key"]
+paths = [
+  '''^packages/protocol/tests/vectors/''',
+  '''^packages/protocol/tests/account-frames\.test\.ts$''',
+  '''^packages/protocol/tests/bridge-role-frames\.test\.ts$''',
+  '''^packages/server/tests/cross-version/v3-fixtures\.ts$''',
+  '''^packages/server/tests/host-account-frames\.test\.ts$''',
+]
