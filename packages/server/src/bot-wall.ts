@@ -71,11 +71,34 @@ const CLOUDFLARE_BODY_MARKER = 'Attention Required! | Cloudflare';
  * bootstrap, or a `<title>` that opens with "Just a moment"
  * (case-insensitive). The title is anchored to the `<title>` element so
  * body copy that merely says "just a moment" never trips the wall.
+ *
+ * The title rule is the one regex here that can backtrack, so it is both
+ * bounded and run over a head of the body only (fleet-audit #1189). The
+ * unbounded `<title[^>]*>` this replaced was quadratic over a body of
+ * repeated `<title` — one hostile response (bodies can be 5 MiB) pinned the
+ * MCP's event loop for tens of minutes. The attribute run is capped at 256
+ * chars and the scan at {@link CLOUDFLARE_TITLE_SCAN_MAX}, mirroring
+ * mcp-utils `detectEdgeBlock`'s head slice: a challenge page is a few KB with
+ * its `<title>` at the top. The `_cf_chl_opt` marker is a plain substring
+ * test, linear on any input, so it still reads the whole body.
+ *
+ * This is a deliberate second copy of mcp-utils' markers, not the shared
+ * implementation (fleet-audit #1246): @fetchproxy/server cannot import
+ * mcp-utils (the dependency runs the other way). If a marker changes here,
+ * change mcp-utils `isCloudflareChallenge` / `detectEdgeBlock` with it — and
+ * keep the bound, which is the part that matters.
  */
-const CLOUDFLARE_CHALLENGE_MARKERS = [
-  /_cf_chl_opt/,
-  /<title[^>]*>\s*Just a moment/i,
-] as const;
+const CLOUDFLARE_CHL_OPT_MARKER = '_cf_chl_opt';
+const CLOUDFLARE_TITLE_RE = /<title(?:\s[^>]{0,256})?>\s*Just a moment/i;
+const CLOUDFLARE_TITLE_SCAN_MAX = 64 * 1024;
+
+/** The Cloudflare "Just a moment…" JS-challenge interstitial — linear in `body`. */
+function isCloudflareJsChallenge(body: string): boolean {
+  return (
+    body.includes(CLOUDFLARE_CHL_OPT_MARKER) ||
+    CLOUDFLARE_TITLE_RE.test(body.slice(0, CLOUDFLARE_TITLE_SCAN_MAX))
+  );
+}
 
 /**
  * DataDome challenge marker — the captcha-delivery script host the
@@ -139,7 +162,7 @@ export function classifyBotWall(
   if (
     'cf-mitigated' in h ||
     body.includes(CLOUDFLARE_BODY_MARKER) ||
-    CLOUDFLARE_CHALLENGE_MARKERS.some((re) => re.test(body))
+    isCloudflareJsChallenge(body)
   ) {
     return { blocked: true, vendor: 'cloudflare' };
   }

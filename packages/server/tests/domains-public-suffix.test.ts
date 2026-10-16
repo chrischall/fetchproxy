@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { isPublicSuffix } from '@fetchproxy/protocol';
+import { isIpLiteralHost, isPublicSuffix } from '@fetchproxy/protocol';
 import { FetchproxyServer } from '../src/index.js';
 
 /**
@@ -92,6 +92,31 @@ describe('FetchproxyServer constructor — opts.domains public-suffix refusal', 
         }
       })();
       expect(refused, d).toBe(isPublicSuffix(d));
+    }
+  });
+});
+
+describe('FetchproxyServer constructor — opts.domains IP-literal refusal (fleet-audit #1247)', () => {
+  it.each(['192.168.1.1', '127.0.0.1', '169.254.169.254', '10.0.0.1'])(
+    'refuses %s and names the option',
+    (d) => {
+      expect(() => new FetchproxyServer({ ...base, domains: ['example.com', d] })).toThrow(
+        /FetchproxyServer: opts\.domains entry .* is an IP address/,
+      );
+    },
+  );
+
+  it('agrees with the protocol predicate', () => {
+    for (const d of ['192.168.1.1', '0x7f.0.0.1', '1password.com', '123.example.com']) {
+      const refused = (() => {
+        try {
+          new FetchproxyServer({ ...base, domains: [d] });
+          return false;
+        } catch {
+          return true;
+        }
+      })();
+      expect(refused, d).toBe(isIpLiteralHost(d));
     }
   });
 });

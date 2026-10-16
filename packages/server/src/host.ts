@@ -1184,7 +1184,12 @@ export async function startHost(opts: HostOpts): Promise<HostHandle> {
             // refusal is final and stays latched until this socket closes.
             if (ownRetryableRefusal) resetSessionPromise();
             resolveOwnSession(ownSession);
-          } else {
+          } else if (identified === 'extension' && extensionWs === ws) {
+            // fleet-audit #1244: relay only what the extension sent, like
+            // `hello-rejected` and `pair-pending` below. A ready from a peer or
+            // an unidentified socket would otherwise reach the named peer, which
+            // rejects it by closing its own host link and re-electing — over a
+            // frame the extension never sent. Dropped silently.
             const slot = peers.get(frame.mcpId);
             if (slot) slot.ws.send(JSON.stringify(frame));
           }

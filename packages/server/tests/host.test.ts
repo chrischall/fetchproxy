@@ -291,6 +291,107 @@ describe('host (concentrator)', () => {
     oldPeer.close();
   });
 
+  // fleet-audit #1244: `ready` was the one extension-originated frame the host
+  // relayed without checking who sent it. A registered peer (or a socket that
+  // never said hello) could hand another peer a `ready` it would then reject —
+  // closing its own host link and re-electing over a frame the extension never
+  // sent. Gated now like `hello-rejected` and `pair-pending`.
+  it('relays a ready to a peer only when the extension sent it', async () => {
+    const el = await electRole({ host: '127.0.0.1', port: 0 });
+    if (el.role !== 'host') throw new Error('expected host');
+    const port = (el.server.address() as AddressInfo).port;
+    const idDir = mkdtempSync(join(tmpdir(), 'fp-host-'));
+    const ownId = await loadOrCreateIdentity('opentable-mcp', idDir);
+    const victimId = await loadOrCreateIdentity('resy-mcp', idDir);
+    const otherId = await loadOrCreateIdentity('tock-mcp', idDir);
+
+    host = await startHost({
+      httpServer: el.server,
+      ownIdentity: ownId,
+      ownMcpId: 'opentable-mcp:0.9.1:abc1234567890de1',
+      ownServerName: 'opentable-mcp',
+      ownVersion: '0.9.1',
+      ownDomains: ['opentable.com'],
+      extensionTrust: blankTrust(),
+    });
+
+    const open = (ws: WebSocket) => new Promise<void>((r) => ws.once('open', () => r()));
+    const framesOf = (ws: WebSocket): string[] => {
+      const seen: string[] = [];
+      ws.on('message', (data: Buffer) => seen.push(JSON.parse(data.toString()).type));
+      return seen;
+    };
+    const victimMcpId = 'resy-mcp:0.0.1:abc1234567890de2';
+
+    const victim = new WebSocket(`ws://127.0.0.1:${port}`);
+    await open(victim);
+    const victimSeen = framesOf(victim);
+    victim.send(
+      JSON.stringify(
+        await buildTestPeerHello({
+          identity: victimId,
+          mcpId: victimMcpId,
+          serverName: 'resy-mcp',
+          version: '0.0.1',
+          domains: ['resy.com'],
+        }),
+      ),
+    );
+    const other = new WebSocket(`ws://127.0.0.1:${port}`);
+    await open(other);
+    other.send(
+      JSON.stringify(
+        await buildTestPeerHello({
+          identity: otherId,
+          mcpId: 'tock-mcp:0.0.1:abc1234567890de3',
+          serverName: 'tock-mcp',
+          version: '0.0.1',
+          domains: ['exploretock.com'],
+        }),
+      ),
+    );
+    const stranger = new WebSocket(`ws://127.0.0.1:${port}`);
+    await open(stranger);
+
+    const ext = new WebSocket(`ws://127.0.0.1:${port}`);
+    await open(ext);
+    ext.send(
+      JSON.stringify({
+        type: 'hello',
+        protocolVersion: 4,
+        role: 'extension',
+        platform: 'chrome',
+        extensionId: 'fetchproxy',
+        version: '0.4.0',
+        identityX25519Pub: 'AAAA',
+        identityEd25519Pub: 'AAAA',
+        sessionNonce: 'AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA=',
+      } satisfies HelloFrameFromExtension),
+    );
+    await vi.waitFor(() => expect(victimSeen).toContain('hello'));
+
+    const forged = JSON.stringify({
+      type: 'ready',
+      mcpId: victimMcpId,
+      extensionSessionPub: Buffer.alloc(32, 1).toString('base64'),
+      mcpSessionPub: Buffer.alloc(32, 2).toString('base64'),
+      sessionSig: Buffer.alloc(64, 3).toString('base64'),
+    });
+    other.send(forged);
+    stranger.send(forged);
+    await new Promise((r) => setTimeout(r, 100));
+    expect(victimSeen).not.toContain('ready');
+
+    // Positive control: the same frame from the extension is relayed.
+    ext.send(forged);
+    await vi.waitFor(() => expect(victimSeen).toContain('ready'));
+
+    victim.close();
+    other.close();
+    stranger.close();
+    ext.close();
+  });
+
   it('forgets an unapproved pair code when the extension closes (#283)', async () => {
     const el = await electRole({ host: '127.0.0.1', port: 0 });
     if (el.role !== 'host') throw new Error('expected host');

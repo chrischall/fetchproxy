@@ -20,6 +20,7 @@ export * from './pair-code.js';
 export * from './seal.js';
 export { toB64, fromB64, toHex, concatBytes } from './encoding.js';
 export { isPublicSuffix } from './public-suffix.js';
+export { isIpLiteralHost } from './ip-literal.js';
 export {
   evalJsonPointer,
   isValidJsonPointer,

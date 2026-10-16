@@ -185,6 +185,29 @@ describe('validateFrame', () => {
       expect(() => validateFrame({ ...validHello, domains: ['ok.com', '!!!'] })).toThrow(/domains/);
     });
 
+    // fleet-audit #1247: HOSTNAME_RE matches dotted-decimal IPv4, so an IP
+    // literal used to pass, letting a paired MCP reach a LAN/loopback origin
+    // through the user's browser with that origin's ambient credentials.
+    it.each([
+      '127.0.0.1',
+      '10.0.0.1',
+      '192.168.1.1',
+      '169.254.169.254',
+      '8.8.8.8',
+      '0x7f.0.0.1',
+      '1.0x7f',
+    ])('rejects the IP-literal domain %s and names the remedy', (d) => {
+      expect(() => validateFrame({ ...validHello, domains: ['ok.com', d] })).toThrow(
+        /IP address/,
+      );
+    });
+
+    it('still accepts hostnames that merely contain digits', () => {
+      expect(() =>
+        validateFrame({ ...validHello, domains: ['1password.com', 'api2.example.io', '123.example.com'] }),
+      ).not.toThrow();
+    });
+
     it('accepts hello without capabilities (defaults to fetch downstream)', () => {
       expect(() => validateFrame(validHello)).not.toThrow();
     });
