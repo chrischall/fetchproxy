@@ -19,5 +19,9 @@
     "typescript": "^7.0.2",
     "vitest": "^5.0.0"
   },
-  "license": "MIT"
+  "license": "MIT",
+  "allowScripts": {
+    "esbuild": false,
+    "fsevents": false
+  }
 }
