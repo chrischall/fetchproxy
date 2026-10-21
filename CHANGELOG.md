@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.6.3](https://github.com/chrischall/fetchproxy/compare/v3.6.2...v3.6.3) (2026-10-21)
+
+
+### Bug Fixes
+
+* **deps:** bump vite from 8.3.2 to 8.3.5 in the security group across 1 directory ([#454](https://github.com/chrischall/fetchproxy/issues/454)) ([e4045ab](https://github.com/chrischall/fetchproxy/commit/e4045abfd59722eb3a8460dd3bcfef8ce8f052ad))
+
 ## [3.6.2](https://github.com/chrischall/fetchproxy/compare/v3.6.1...v3.6.2) (2026-10-16)
 
 
