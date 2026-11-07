@@ -1,4 +1,8 @@
-import { CAPABILITY_UNAVAILABLE_CODE, parseCapabilityUnavailable } from '@fetchproxy/protocol';
+import {
+  CAPABILITY_UNAVAILABLE_CODE,
+  RESPONSE_TOO_LARGE_CODE,
+  parseCapabilityUnavailable,
+} from '@fetchproxy/protocol';
 
 /**
  * Classifies the raw `error` string the extension puts on the wire
@@ -52,8 +56,14 @@ export type FetchErrorKind =
   | 'capability_unavailable'
   /** Request or response body exceeded the bridge's size cap. The MCP
    * is moving too much data through the per-request frame; consider
-   * a different endpoint or paginating. */
+   * a different endpoint or paginating. #460: also a binary body over
+   * `MAX_BINARY_RESPONSE_BYTES` (wire code `'response_too_large'`). */
   | 'body_too_large'
+  /** #460: the request needs a mode the paired extension does not support
+   * (a binary fetch to a build that predates it). Not produced by
+   * `classifyFetchError` — emitted directly by `FetchproxyServer.fetch()`
+   * when it refuses locally. Fixed by updating the extension. */
+  | 'extension_update_required'
   /** 0.8.0+: server-side `fetchTimeoutMs` fired before the bridge
    * responded. Not produced by `classifyFetchError` — emitted directly
    * by `FetchproxyServer.fetch()` when its own timer wins the race. */
@@ -95,6 +105,7 @@ export function classifyFetchError(
   code?: string,
 ): FetchErrorKind {
   if (code === CAPABILITY_UNAVAILABLE_CODE) return 'capability_unavailable';
+  if (code === RESPONSE_TOO_LARGE_CODE) return 'body_too_large';
   // Checked FIRST: `fetch threw:` means the page's own `fetch()` ran and
   // threw, so the request was attempted in a tab. Its message is whatever the
   // page's error said, and a page error that happens to contain Chrome's

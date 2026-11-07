@@ -52,6 +52,7 @@ describe('bridgeHealth().session', () => {
       pairCode: null,
       extensionConnected: false,
       unavailableCapabilities: [],
+      features: [],
       platform: null,
     });
   });
@@ -64,6 +65,7 @@ describe('bridgeHealth().session', () => {
       pairCode: null,
       extensionConnected: false,
       unavailableCapabilities: [],
+      features: [],
       platform: null,
     });
   });
@@ -78,6 +80,7 @@ describe('bridgeHealth().session', () => {
       pairCode: null,
       extensionConnected: true,
       unavailableCapabilities: [],
+      features: [],
       platform: null,
     });
   });
@@ -90,6 +93,7 @@ describe('bridgeHealth().session', () => {
       pairCode: '4570-3512',
       extensionConnected: true,
       unavailableCapabilities: [],
+      features: [],
       platform: null,
     });
   });
@@ -118,6 +122,7 @@ describe('bridgeHealth().session', () => {
       pairCode: null,
       extensionConnected: true,
       unavailableCapabilities: [],
+      features: [],
       platform: null,
     });
   });

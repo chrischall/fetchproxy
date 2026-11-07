@@ -589,3 +589,21 @@ describe('capture-redirect / graphql parsing', () => {
     expect(() => asGraphql(['graphql', '-p', 'x'])).toThrow(UsageError);
   });
 });
+
+describe('--output (#460)', () => {
+  it('parses -o / --output on get and request', () => {
+    for (const argv of [
+      ['get', 'https://x.com/a.pdf', '-p', 'x', '-o', 'a.pdf'],
+      ['request', 'https://x.com/a.pdf', '-p', 'x', '--output', 'a.pdf'],
+    ]) {
+      const cmd = parseCliArgs(argv) as Extract<ReturnType<typeof parseCliArgs>, { kind: 'fetch' }>;
+      expect(cmd.output, `--output lost on: ${argv[0]}`).toBe('a.pdf');
+    }
+  });
+
+  it('is absent by default, so an ordinary fetch is unchanged', () => {
+    const cmd = parseCliArgs(['get', 'https://x.com/a', '-p', 'x']) as
+      Extract<ReturnType<typeof parseCliArgs>, { kind: 'fetch' }>;
+    expect(cmd.output).toBeUndefined();
+  });
+});

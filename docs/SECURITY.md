@@ -474,6 +474,21 @@ Names the MCP does not know are dropped, and the validator bounds the list (≤ 
 
 **Residual risk:** a party already positioned to relay the extension's frames can make an MCP believe *fewer* capabilities are available than really are, and make its error text blame the browser for it. That is a downgrade to refusal, never an escalation. If the list ever needs to be tamper-evident, the additive fix is an encrypted `session-info` frame (extension → MCP, inside the session, sent only to servers that list it in `accepts`) carrying the same list; this change does not add it.
 
+### T-binary-fetch — A background fetch that ignores CORS (#460)
+
+`fetch` with `responseType: "base64"` runs from the extension's **background worker**, not a tab ([PROTOCOL.md §Binary fetch](PROTOCOL.md#binary-fetch-460)). The manifest's `host_permissions` (`<all_urls>`) mean CORS does not apply there — that is the point, since signed file hosts send no CORS headers — so the extension's own code is the only scope gate, and it has to be at least as tight as the tab path's.
+
+**Defence, in the extension (`background/handlers/fetch-binary.ts` in contextmint-bridge):**
+
+- the request URL must be on the MCP's declared `domains` (the same `isUrlAllowedForAnyDomain` the text path uses), checked before any request is made;
+- the **final** URL after redirects (`response.url`) must be on them too, checked before a byte of the body is read; otherwise the body is cancelled and the request refused. So a declared host with an open redirect cannot be used to READ an undeclared, cookie-authenticated resource (the user's mail, their bank) without CORS standing in the way;
+- `inPage` is refused in this mode, and no tab is involved, so no CSRF token is injected;
+- the body is capped at `MAX_BINARY_RESPONSE_BYTES` early on `content-length` and again while streaming.
+
+**What is not narrowed, and why that is acceptable.** Intermediate redirect hops cannot be inspected from `fetch()` — a `manual` redirect is an opaque response with no `Location` — so a hop may pass through an undeclared host, carrying that host's cookies. Its response body is never read and nothing about it reaches the MCP, and a page-level `fetch()` (and `download`) has always followed the same hops; the browser sends that request either way. What changes relative to the tab path is that the browser may attach `SameSite=Strict`/`Lax` cookies to a request from an extension with host permission where a cross-site tab fetch would not, and that a CORS-less declared host becomes readable. Both are within the scope the user approved: the domains are what they paired the MCP to act on as them.
+
+**The capability flag is advisory.** `features: ["fetch_base64"]` on the extension hello is unsigned, like `unavailableCapabilities` ([§T-unavailable-caps](#t-unavailable-caps--tampering-with-this-browser-cannot-serve-x-418)). Stripping it makes the MCP refuse locally (a relay could already drop frames). Adding it makes the MCP send a binary request to an extension that does not understand it; that extension answers in text, and the server refuses any answer lacking the authenticated `bodyEncoding: "base64"` marker rather than decode text as bytes. It feeds nothing but that local refusal and the health report — never trust, pinning, the pair code, key derivation or a grant.
+
 ## What protocol 4 does not fix
 
 3.0.0 is the largest change to this document's crypto since 0.2.0, which makes it exactly the version whose residuals are worth writing down before somebody infers them away. v4 gives forward secrecy for past sessions and binds every frame to its `mcpId`, its ordinal and its direction. That is all it gives. Each of the following is true the day it ships:

@@ -1,3 +1,4 @@
+import { writeFileSync } from 'node:fs';
 import { classifyBotWall, FetchproxyServer } from '@fetchproxy/server';
 import type { Command } from '../args.js';
 import type { Profile } from '../profiles.js';
@@ -19,6 +20,15 @@ export interface VerbServer {
       credentials?: 'include' | 'omit';
     },
   ): Promise<{ status: number; body: string; url: string }>;
+  /** #460: the same request with the body returned as bytes. */
+  requestBytes(
+    method: string,
+    path: string,
+    opts?: {
+      headers?: Record<string, string>; body?: string; domain?: string;
+      credentials?: 'include' | 'omit';
+    },
+  ): Promise<{ status: number; url: string; headers: Record<string, string>; bytes: Uint8Array }>;
   readCookies(o: { keys: string[]; domain?: string; subdomain?: string }): Promise<string>;
   readLocalStorage(o: { keys: string[]; domain?: string; subdomain?: string }): Promise<Record<string, string>>;
   readSessionStorage(o: { keys: string[]; domain?: string; subdomain?: string }): Promise<Record<string, string>>;
@@ -144,13 +154,27 @@ export function assertUrlOnProfile(url: string, profile: Profile): string {
 // hand-rolled in resy-mcp, @chrischall/mcp-utils and onehome-mcp; it belongs
 // in the library, and this is the deletion that says so.
 
+/** Where `--output` puts the bytes. Injected so tests never touch the disk. */
+export type BytesWriter = (path: string, bytes: Uint8Array) => void;
+
+const defaultBytesWriter: BytesWriter = (path, bytes) => writeFileSync(path, bytes);
+
 export async function runFetch(
   cmd: Extract<Command, { kind: 'fetch' }>,
   profile: Profile,
   io: Io,
   makeServer: VerbServerFactory = defaultServerFactory,
+  writeBytes: BytesWriter = defaultBytesWriter,
 ): Promise<number> {
   const domain = assertUrlOnProfile(cmd.url, profile);
+  // #460: a binary fetch runs from the extension's background worker, not a
+  // tab, so the two tab-selecting flags would be silently meaningless.
+  if (cmd.output !== undefined && (cmd.inPage || cmd.viaTab !== undefined)) {
+    throw new UsageError(
+      '--output cannot be combined with --in-page or --via-tab',
+      'a binary download is fetched by the extension itself, not through a tab — drop the tab flag',
+    );
+  }
   // Same reasoning as the relay-tab check below: the extension refuses an
   // undeclared capability, but that refusal arrives after the bridge is up and
   // reads as a bridge error rather than the usage error it is. Worse here,
@@ -174,6 +198,28 @@ export async function runFetch(
   });
   try {
     await server.listen();
+    if (cmd.output !== undefined) {
+      const bin = await server.requestBytes(cmd.method, cmd.url, {
+        headers: Object.keys(cmd.headers).length ? cmd.headers : undefined,
+        body: cmd.body,
+        domain,
+        ...(cmd.noCredentials ? { credentials: 'omit' as const } : {}),
+      });
+      writeBytes(cmd.output, bin.bytes);
+      if (cmd.json) {
+        io.out(JSON.stringify({
+          status: bin.status, url: bin.url, headers: bin.headers,
+          bytes: bin.bytes.length, path: cmd.output,
+        }, null, 2));
+      } else {
+        io.err(`wrote ${bin.bytes.length} bytes to ${cmd.output}`);
+      }
+      if (bin.status < 200 || bin.status >= 300) {
+        io.err(`HTTP ${bin.status} ${bin.url}`);
+        return EXIT.HTTP;
+      }
+      return EXIT.OK;
+    }
     const res = await server.request(cmd.method, cmd.url, {
       headers: Object.keys(cmd.headers).length ? cmd.headers : undefined,
       body: cmd.body,

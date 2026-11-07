@@ -313,7 +313,29 @@ interface HttpResponse {
 | HTTP status outside `expectStatus` (when set) | Throws `FetchproxyHttpError` with the full `HttpResponse` attached. |
 | Any successful HTTP exchange when no `expectStatus` is set | Resolves; the caller inspects `response.status` themselves. |
 | Programmer error (bad subdomain, undeclared domain, missing capability) | Throws a plain `Error` synchronously at the call site. |
+| The paired extension predates binary fetch (3.7.0+, #460) | `requestBytes()` / `getBytes()` throw `FetchproxyExtensionUpdateRequiredError` (hinted: update ContextMint Bridge) — locally when the extension hello lacks `fetch_base64`, or when the answer comes back without the `bodyEncoding` marker. `fetch()` returns `{ ok: false, kind: 'extension_update_required' }`. |
+| A binary body over the 16 MiB cap (3.7.0+, #460) | Throws `FetchproxyResponseTooLargeError` (`.limitBytes`, `.declaredBytes`). |
 | This browser cannot serve the verb's capability (3.3.0+, #418) | Throws `FetchproxyCapabilityUnavailableError` (a hinted `FetchproxyProtocolError`) — locally when the session listed it, or from the extension's `capability_unavailable` reply. `fetch()` returns `{ ok: false, kind: 'capability_unavailable' }` instead. |
+
+### `await fp.requestBytes(method, path, opts?)` / `fp.getBytes(path, opts?)` — binary downloads (3.7.0+, #460)
+
+The text shortcuts decode the body as UTF-8, which corrupts a PDF, an office file or an image beyond repair. These return the body's **bytes**, intact:
+
+```ts
+const file = await fp.getBytes('https://files.example.com/signed/123?sig=…');
+// { status: 200, url: <final url after redirects>,
+//   headers: { 'content-type': 'application/pdf', 'content-length': '48213',
+//              'content-disposition': 'attachment; filename="report.pdf"' },
+//   bytes: Uint8Array }
+```
+
+- Same path resolution, declared-domain guard, `expectStatus`, `credentials` and error model as `request()`; `inPage` and `viaTab` are not accepted (`BinaryRequestOpts`).
+- The extension runs it from its **background worker**, not a tab, so a file host that sends no CORS headers is readable, and redirects are followed. Both the request URL and the **final** URL must be on the declared `domains` — to read a signed CDN host, declare it (that is a scope change, so the user re-approves once). See `docs/SECURITY.md` §T-binary-fetch for why this does not widen what the extension can reach.
+- Bodies are capped at `MAX_BINARY_RESPONSE_BYTES` (16 MiB, exported) — derived from the hosted relay's 32 MiB message limit. Over it: `FetchproxyResponseTooLargeError`.
+- Needs a ContextMint Bridge build that lists `fetch_base64` in `bridgeHealth().session.features`; otherwise `FetchproxyExtensionUpdateRequiredError`, with no round trip.
+- Only `content-type`, `content-length` and `content-disposition` are relayed, each only when present. Check them before trusting the body.
+
+The low-level equivalent is `fetch({ ...init, responseType: 'base64' })`, whose `ok` envelope then carries `bodyEncoding: 'base64'`, `headers`, and `body` as base64 — but `requestBytes()` also refuses an answer without the marker and re-checks the final URL, so prefer it.
 
 ### `await fp.fetch(init): Promise<FetchResult | FetchResultError>`
 

@@ -42,6 +42,10 @@ export interface MockFetchproxyServerInstance {
   close: Mock<() => Promise<void>>;
   request: Mock<(...args: unknown[]) => Promise<unknown>>;
   fetch: Mock<(...args: unknown[]) => Promise<unknown>>;
+  /** #460: binary fetch (`{ status, url, headers, bytes }`). */
+  requestBytes: Mock<(...args: unknown[]) => Promise<unknown>>;
+  /** #460: `requestBytes('GET', …)`. */
+  getBytes: Mock<(...args: unknown[]) => Promise<unknown>>;
   captureRequestHeader: Mock<(...args: unknown[]) => Promise<string>>;
   bridgeHealth: Mock<() => unknown>;
 }
@@ -101,6 +105,8 @@ export function createMockFetchproxyServer(): MockFetchproxyServerHelpers {
     close: Mock<() => Promise<void>>;
     request: Mock<(...args: unknown[]) => Promise<unknown>>;
     fetch: Mock<(...args: unknown[]) => Promise<unknown>>;
+    requestBytes: Mock<(...args: unknown[]) => Promise<unknown>>;
+    getBytes: Mock<(...args: unknown[]) => Promise<unknown>>;
     captureRequestHeader: Mock<(...args: unknown[]) => Promise<string>>;
     bridgeHealth: Mock<() => unknown>;
 
@@ -115,6 +121,8 @@ export function createMockFetchproxyServer(): MockFetchproxyServerHelpers {
       this.close = vi.fn(async () => undefined);
       this.request = vi.fn(async () => undefined);
       this.fetch = vi.fn(async () => undefined);
+      this.requestBytes = vi.fn(async () => undefined);
+      this.getBytes = vi.fn(async () => undefined);
       this.captureRequestHeader = vi.fn(async () => '');
       this.bridgeHealth = vi.fn(() => undefined);
       instances.push(this);
@@ -131,6 +139,8 @@ export function createMockFetchproxyServer(): MockFetchproxyServerHelpers {
       inst.close.mockClear();
       inst.request.mockClear();
       inst.fetch.mockClear();
+      inst.requestBytes.mockClear();
+      inst.getBytes.mockClear();
       inst.captureRequestHeader.mockClear();
       inst.bridgeHealth.mockClear();
     }

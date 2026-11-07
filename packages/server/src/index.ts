@@ -4,6 +4,8 @@ export type {
   FetchResult,
   FetchResultError,
   HttpResponse,
+  BinaryResponse,
+  BinaryRequestOpts,
   RequestOpts,
   BodylessRequestOpts,
   FetchCallOpts,
@@ -23,6 +25,8 @@ export {
   FetchproxyTabOpeningError,
   FetchproxyWaitedError,
   FetchproxyCapabilityUnavailableError,
+  FetchproxyExtensionUpdateRequiredError,
+  FetchproxyResponseTooLargeError,
   protocolErrorFrom,
   FetchproxyTimeoutError,
   isRetrySafeOnTimeout,
@@ -74,7 +78,9 @@ export {
 } from './parse-html.js';
 // Batch-paging primitives that pair with the fan-out kit above.
 export { chunk, sleep } from './batch.js';
-export type { Capability, FetchInit, Platform } from '@fetchproxy/protocol';
+export type { Capability, ExtensionFeature, FetchInit, Platform } from '@fetchproxy/protocol';
+// #460: the binary cap, so a consumer can size its own limits against it.
+export { MAX_BINARY_RESPONSE_BYTES } from '@fetchproxy/protocol';
 // #208: the pin an MCP holds on the extension's identity. Exported so a tool
 // (fpx, an MCP's own healthcheck) can show what is pinned and drop one on
 // purpose — a refusal the user cannot inspect or undo is a refusal they will
