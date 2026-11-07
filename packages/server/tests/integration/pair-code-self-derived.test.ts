@@ -566,6 +566,7 @@ describe('a peer judging a pair code it did not receive from our own host (M1)',
       pairCode: null,
       extensionConnected: false,
       unavailableCapabilities: [],
+      features: [],
       platform: null,
     });
 

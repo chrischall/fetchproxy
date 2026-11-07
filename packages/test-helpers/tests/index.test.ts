@@ -264,4 +264,20 @@ describe('vi.mock(@fetchproxy/server) hoisted pattern (README usage)', () => {
     expect(opts?.domains).toEqual(['example.com']);
     expect(opts?.keepAliveIntervalMs).toBe(25_000);
   });
+
+  describe('#460 binary fetch spies', () => {
+    it('exposes requestBytes / getBytes as vi.fn() spies that reset with the rest', async () => {
+      const helpers = createMockFetchproxyServer();
+      const inst = new helpers.MockServer({ serverName: 'x', version: '0', domains: ['example.com'] });
+      expect(vi.isMockFunction(inst.requestBytes)).toBe(true);
+      expect(vi.isMockFunction(inst.getBytes)).toBe(true);
+      const bytes = new Uint8Array([0, 255]);
+      inst.getBytes.mockResolvedValue({ status: 200, url: 'https://example.com/f', headers: {}, bytes });
+      expect(await inst.getBytes('/f')).toMatchObject({ bytes });
+      void inst.requestBytes('GET', '/f');
+      helpers.reset();
+      expect(inst.getBytes).not.toHaveBeenCalled();
+      expect(inst.requestBytes).not.toHaveBeenCalled();
+    });
+  });
 });

@@ -9,6 +9,11 @@ import {
   capabilityUnavailableMessage,
   parseCapabilityUnavailable,
   CAPABILITY_UNAVAILABLE_CODE,
+  EXTENSION_FEATURE_FETCH_BASE64,
+  MAX_BINARY_RESPONSE_BYTES,
+  RESPONSE_TOO_LARGE_CODE,
+  isBase64Body,
+  parseResponseTooLarge,
 } from '@fetchproxy/protocol';
 import type {
   Capability,
@@ -23,9 +28,14 @@ import type {
   FetchInit,
   ReadCookiesInitV3,
   DownloadResult,
+  ExtensionFeature,
   Platform,
 } from '@fetchproxy/protocol';
-import { unavailableCapabilityFor, type ExtensionSessionInfo } from './session-info.js';
+import {
+  missingFeatureFor,
+  unavailableCapabilityFor,
+  type ExtensionSessionInfo,
+} from './session-info.js';
 import { electRole } from './election.js';
 import { startHost, type HostHandle } from './host.js';
 import { startPeer, type PeerHandle } from './peer.js';
@@ -466,8 +476,19 @@ export interface FetchResult {
   status: number;
   /** Final URL after redirects, as observed by the browser. */
   url: string;
-  /** Raw response body as a UTF-8 string. */
+  /**
+   * Raw response body as a UTF-8 string — or, when `bodyEncoding` is
+   * `'base64'`, the body's bytes as standard padded base64.
+   */
   body: string;
+  /**
+   * #460: `'base64'` only on the answer to a `responseType: 'base64'`
+   * request, from an extension that honoured it. Absent on a text answer.
+   * `requestBytes()` decodes it for you and refuses an answer without it.
+   */
+  bodyEncoding?: 'base64';
+  /** #460: on a binary answer, the relayed response headers (lower-cased). */
+  headers?: Record<string, string>;
   /**
    * 0.8.0+: true when the server's lazy-revive retry path actually
    * fired for this call (a `content_script_unreachable` first attempt —
@@ -523,9 +544,44 @@ export interface FetchResultError {
    * `pairCode`). `request()` and the verb shortcuts rethrow it unchanged.
    * #418: also set when `kind === 'capability_unavailable'` was decided
    * locally — the `FetchproxyCapabilityUnavailableError` it threw.
+   * #460: and when `kind === 'extension_update_required'` — the
+   * `FetchproxyExtensionUpdateRequiredError` it threw.
    */
   cause?: unknown;
+  /**
+   * #460: the extension's machine-readable `code`, when its refusal carried
+   * one (`'capability_unavailable'`, `'response_too_large'`). Additive; the
+   * `error` string stays the source of truth.
+   */
+  code?: string;
 }
+
+/**
+ * #460: what `requestBytes()` / `getBytes()` resolve with — a response whose
+ * body came through the bridge as BYTES, intact.
+ */
+export interface BinaryResponse {
+  /** Upstream HTTP status code. */
+  status: number;
+  /** Final URL after redirects, as the extension observed it. Inside the declared domains. */
+  url: string;
+  /**
+   * The relayed response headers, lower-cased, each present only when the
+   * response carried it: `content-type`, `content-length`,
+   * `content-disposition`. Check them before trusting the body.
+   */
+  headers: Record<string, string>;
+  /** The response body, byte for byte. At most `MAX_BINARY_RESPONSE_BYTES`. */
+  bytes: Uint8Array;
+}
+
+/**
+ * #460: options for `requestBytes()` / `getBytes()`. `request()`'s options
+ * minus the two that select a TAB: a binary fetch runs from the extension's
+ * background worker, not a page, so `inPage` cannot apply and `viaTab` would
+ * name a relay that is never used.
+ */
+export type BinaryRequestOpts = Omit<RequestOpts, 'inPage' | 'viaTab'>;
 
 /**
  * Public response shape returned by the convenience helpers
@@ -953,6 +1009,70 @@ export class FetchproxyCapabilityUnavailableError extends FetchproxyHintedError 
   }
 }
 
+/**
+ * #460: the paired extension cannot serve a mode this request needs — today a
+ * binary fetch (`requestBytes()` / `responseType: 'base64'`) to a ContextMint
+ * Bridge build that predates it.
+ *
+ * Thrown two ways, with the same fields:
+ *
+ * - locally, with no round trip, when the extension's hello did not list the
+ *   feature (`bridgeHealth().session.features`);
+ * - on the answer, when the extension replied to a binary request WITHOUT the
+ *   `bodyEncoding: 'base64'` marker — an older build that ignored the field
+ *   and answered in text. That text is never decoded as bytes.
+ *
+ * Hinted because the remedy is specific and is NOT the MCP's to make: update
+ * the browser extension. Not a pairing problem, not a scope problem.
+ */
+export class FetchproxyExtensionUpdateRequiredError extends FetchproxyHintedError {
+  /** The feature the extension lacks (`'fetch_base64'`). */
+  readonly feature: string;
+
+  constructor(originalError: string, info: { feature: string }) {
+    super(
+      originalError,
+      `this MCP needs the browser extension to support "${info.feature}" (binary ` +
+        `downloads through the bridge), and the ContextMint Bridge build it is paired ` +
+        `with does not. Update ContextMint Bridge (Chrome Web Store / App Store, or ` +
+        `rebuild a sideloaded copy and reload it), then retry. Nothing is wrong with ` +
+        `the MCP or your pairing, and re-pairing will not change it.`,
+    );
+    this.name = 'FetchproxyExtensionUpdateRequiredError';
+    this.feature = info.feature;
+  }
+}
+
+/**
+ * #460: the extension refused a binary body over its size cap
+ * (`MAX_BINARY_RESPONSE_BYTES`), either before reading it (`content-length`
+ * over the cap) or part-way through (no length, or one that lied).
+ *
+ * Mapped from the wire `code: 'response_too_large'` or the fixed wording
+ * `responseTooLargeMessage()`. Hinted for the reason its siblings are: untyped,
+ * it would fall into the CLI's blanket "version mismatch" advice.
+ */
+export class FetchproxyResponseTooLargeError extends FetchproxyHintedError {
+  /** The cap the extension enforced, in bytes, when it said; else `null`. */
+  readonly limitBytes: number | null;
+  /** The response's `content-length`, when the refusal came from it; else `null`. */
+  readonly declaredBytes: number | null;
+
+  constructor(originalError: string, info: { limitBytes: number | null; declaredBytes: number | null }) {
+    const cap = info.limitBytes ?? MAX_BINARY_RESPONSE_BYTES;
+    super(
+      originalError,
+      `the file is larger than the ${cap}-byte cap one bridge response can carry, so the ` +
+        `extension refused it rather than send a frame the bridge cannot deliver. This is ` +
+        `not a version or pairing problem: fetch a smaller rendition if the site offers ` +
+        `one, or download it directly in the browser.`,
+    );
+    this.name = 'FetchproxyResponseTooLargeError';
+    this.limitBytes = info.limitBytes;
+    this.declaredBytes = info.declaredBytes;
+  }
+}
+
 /** Which wait timed out, so the hint can name what would have ended it. */
 export type WaitedOp = 'capture' | 'capture_redirect' | 'download';
 
@@ -1041,6 +1161,15 @@ export function protocolErrorFrom(
     return new FetchproxyCapabilityUnavailableError(error, {
       capability: unavailable?.capability ?? fromOp,
       platform: unavailable?.platform ?? null,
+    });
+  }
+  // #460: a binary body over the cap, recognised by its code (what a later
+  // extension may rely on after rewording) or by the fixed wording.
+  const tooLarge = parseResponseTooLarge(error);
+  if (tooLarge !== null || response?.code === RESPONSE_TOO_LARGE_CODE) {
+    return new FetchproxyResponseTooLargeError(error, {
+      limitBytes: tooLarge?.limitBytes ?? null,
+      declaredBytes: tooLarge?.declaredBytes ?? null,
     });
   }
   // Exact, not a substring: 'timeout' is the extension's whole rejection for a
@@ -1283,6 +1412,13 @@ export interface BridgeSessionState {
    * §T-unavailable-caps).
    */
   unavailableCapabilities: Capability[];
+  /**
+   * #460: optional behaviours the extension behind the CURRENT session said it
+   * supports — known names only, sorted. `['fetch_base64']` means
+   * `requestBytes()` will be served. Empty when nothing is linked or the
+   * extension predates #460. Advisory, like `unavailableCapabilities`.
+   */
+  features: ExtensionFeature[];
   /** #418: the browser behind the current session (`'chrome'`, `'safari'`, …), or `null` when unlinked. */
   platform: Platform | null;
 }
@@ -1499,6 +1635,23 @@ function assertSubdomainLabel(label: string): void {
  * guards against an absolute URL being passed that escapes the declared
  * domain set.
  */
+/**
+ * `RequestOpts.expectStatus`: throw `FetchproxyHttpError` when the status is
+ * not the one (or one of the ones) asked for. `asHttp` supplies the
+ * `HttpResponse` the error carries, for a response that is not one.
+ */
+function assertExpectedStatus(
+  response: { status: number; url: string },
+  expected: number | number[] | undefined,
+  asHttp: () => HttpResponse = () => response as HttpResponse,
+): void {
+  if (expected === undefined) return;
+  const matched = Array.isArray(expected)
+    ? expected.includes(response.status)
+    : response.status === expected;
+  if (!matched) throw new FetchproxyHttpError(asHttp());
+}
+
 function assertUrlInDomains(field: string, url: string, domains: readonly string[]): void {
   let parsed: URL;
   try {
@@ -2471,6 +2624,17 @@ export class FetchproxyServer {
           cause: err,
         };
       }
+      // #460: refused locally because the extension cannot serve the
+      // request's mode (binary). Nothing was sent.
+      if (err instanceof FetchproxyExtensionUpdateRequiredError) {
+        return {
+          ok: false,
+          error: err.originalError,
+          kind: 'extension_update_required',
+          retryAttempted: false,
+          cause: err,
+        };
+      }
       // B-BUG-13: the frame never reached the bridge, so nothing ran in a
       // tab. Honour fetch()'s envelope contract instead of rejecting, and
       // keep the original error so request() can rethrow it typed.
@@ -2655,7 +2819,17 @@ export class FetchproxyServer {
     if (result.kind === 'capability_unavailable') {
       return protocolErrorFrom(result.error, undefined, { code: CAPABILITY_UNAVAILABLE_CODE, op });
     }
-    return protocolErrorFrom(result.error);
+    if (
+      result.kind === 'extension_update_required' &&
+      result.cause instanceof FetchproxyExtensionUpdateRequiredError
+    ) {
+      return result.cause;
+    }
+    return protocolErrorFrom(
+      result.error,
+      undefined,
+      result.code !== undefined ? { code: result.code, op } : undefined,
+    );
   }
 
   /**
@@ -2680,6 +2854,115 @@ export class FetchproxyServer {
     path: string,
     opts: RequestOpts = {},
   ): Promise<HttpResponse> {
+    const init = this.resolveRequestInit('request', method, path, opts);
+    const result = await this.fetch(
+      init,
+      opts.retryOnTimeout !== undefined ? { retryOnTimeout: opts.retryOnTimeout } : {},
+    );
+    if (!result.ok) this.throwFetchFailure(result, init.url, method, opts.retryOnTimeout);
+    const response: HttpResponse = {
+      status: result.status,
+      body: result.body,
+      url: result.url,
+    };
+    assertExpectedStatus(response, opts.expectStatus);
+    return response;
+  }
+
+  /**
+   * #460: like `request()`, but the response body comes back as BYTES,
+   * intact — a PDF, an office file, an image — together with the relayed
+   * `content-type` / `content-length` / `content-disposition` headers and the
+   * final URL after redirects.
+   *
+   * The extension runs it from its background worker rather than a tab, so a
+   * file host that sends no CORS headers is still readable, and it follows
+   * redirects. Both the request URL and the FINAL URL must be inside the
+   * declared `domains` — the extension enforces that, and so does this method
+   * on the answer. To read a signed file host, declare it.
+   *
+   * Bodies are capped at `MAX_BINARY_RESPONSE_BYTES` (16 MiB): over it the
+   * extension refuses with `FetchproxyResponseTooLargeError`. An extension
+   * that predates binary fetch is refused with
+   * `FetchproxyExtensionUpdateRequiredError` — locally when its hello says so,
+   * and on the answer when it replied in text anyway.
+   */
+  async requestBytes(
+    method: string,
+    path: string,
+    opts: BinaryRequestOpts = {},
+  ): Promise<BinaryResponse> {
+    const init: FetchInit = {
+      ...this.resolveRequestInit('requestBytes', method, path, opts),
+      responseType: 'base64',
+    };
+    const result = await this.fetch(
+      init,
+      opts.retryOnTimeout !== undefined ? { retryOnTimeout: opts.retryOnTimeout } : {},
+    );
+    if (!result.ok) this.throwFetchFailure(result, init.url, method, opts.retryOnTimeout);
+    // The marker, not the hello's advisory `features`, is what the bytes are
+    // trusted on: an older extension ignores `responseType` and answers in
+    // text, and decoding that as base64 would hand back garbage silently.
+    if (result.bodyEncoding !== 'base64') {
+      throw new FetchproxyExtensionUpdateRequiredError(
+        'the paired ContextMint Bridge extension answered a binary request as text',
+        { feature: EXTENSION_FEATURE_FETCH_BASE64 },
+      );
+    }
+    // Belt and braces over the extension's own final-URL check: whatever
+    // relayed this answer, bytes from a host the user never declared are not
+    // handed to the caller.
+    try {
+      assertUrlInDomains('requestBytes final url', result.url, this.opts.domains);
+    } catch (err) {
+      throw new FetchproxyProtocolError((err as Error).message);
+    }
+    // The wire validator already checked this; repeated because `fetch()` is
+    // overridable and Node's decoder skips characters it does not understand.
+    if (!isBase64Body(result.body)) {
+      throw new FetchproxyProtocolError('requestBytes: the extension sent a body that is not base64');
+    }
+    const decoded = Buffer.from(result.body, 'base64');
+    const response: BinaryResponse = {
+      status: result.status,
+      url: result.url,
+      headers: { ...(result.headers ?? {}) },
+      bytes: new Uint8Array(decoded.buffer, decoded.byteOffset, decoded.byteLength),
+    };
+    assertExpectedStatus(response, opts.expectStatus, () => ({
+      status: response.status,
+      url: response.url,
+      // FetchproxyHttpError carries an HttpResponse; a binary body has no
+      // honest text form, so the bytes stay on the BinaryResponse.
+      body: '',
+    }));
+    return response;
+  }
+
+  /** #460: `requestBytes('GET', path, opts)`. */
+  getBytes(path: string, opts: Omit<BinaryRequestOpts, 'body'> = {}): Promise<BinaryResponse> {
+    return this.requestBytes('GET', path, opts);
+  }
+
+  /**
+   * Resolve `path` + options into the wire `FetchInit` — URL building, the
+   * declared-domain guard, the relay tab. Shared by `request()` and
+   * `requestBytes()` so the two can never disagree about which URLs are
+   * reachable.
+   *
+   * Path resolution:
+   *  - Absolute URL (`https://...`) → used as-is (still guarded against
+   *    leaving the declared domain set).
+   *  - Relative path → joined with `https://${subdomain}.${baseDomain}`
+   *    (or `https://${baseDomain}` if no subdomain is given).
+   */
+  private resolveRequestInit(
+    caller: 'request' | 'requestBytes',
+    method: string,
+    path: string,
+    opts: RequestOpts,
+  ): FetchInit {
     if (opts.subdomain !== undefined) assertSubdomainLabel(opts.subdomain);
     const baseDomain = this.resolveBaseDomain(opts.domain);
     const isAbsolute =
@@ -2698,7 +2981,7 @@ export class FetchproxyServer {
         host = new URL(path).host;
       } catch {
         throw new Error(
-          `FetchproxyServer.request: absolute path is not a valid URL: ${JSON.stringify(path)}`,
+          `FetchproxyServer.${caller}: absolute path is not a valid URL: ${JSON.stringify(path)}`,
         );
       }
     } else {
@@ -2709,7 +2992,7 @@ export class FetchproxyServer {
     // declared domain set. The extension would refuse it anyway; this
     // gives the MCP author a clear error at the call site instead of a
     // generic "domain not allowed" from the bridge.
-    assertUrlInDomains('request url', url, this.opts.domains);
+    assertUrlInDomains(`${caller} url`, url, this.opts.domains);
     // 1.12.0+: `viaTab` overrides which tab relays the request — see
     // RequestOpts.viaTab for why API-only hosts need it. Guarded the same way
     // the request URL is: it changes which page performs the fetch, and that
@@ -2720,13 +3003,13 @@ export class FetchproxyServer {
         new URL(opts.viaTab);
       } catch {
         throw new Error(
-          `FetchproxyServer.request: viaTab is not a valid URL: ${JSON.stringify(opts.viaTab)}`,
+          `FetchproxyServer.${caller}: viaTab is not a valid URL: ${JSON.stringify(opts.viaTab)}`,
         );
       }
       assertUrlInDomains('viaTab', opts.viaTab, this.opts.domains);
       tabUrl = opts.viaTab;
     }
-    const init: FetchInit = {
+    return {
       url,
       method,
       tabUrl,
@@ -2741,49 +3024,37 @@ export class FetchproxyServer {
       // every version before this option existed.
       ...(opts.credentials === 'omit' ? { credentials: 'omit' as const } : {}),
     };
-    const result = await this.fetch(
-      init,
-      opts.retryOnTimeout !== undefined ? { retryOnTimeout: opts.retryOnTimeout } : {},
+  }
+
+  /** Turn a failed `fetch()` envelope into the throw `request()` has always made. */
+  private throwFetchFailure(
+    result: FetchResultError,
+    url: string,
+    method: string,
+    retryOnTimeout: boolean | undefined,
+  ): never {
+    // B-BUG-13: a local send failure keeps the typed error it always threw.
+    if (result.kind === 'session_not_ready' && result.cause instanceof Error) {
+      throw result.cause;
+    }
+    // #418: a local capability refusal keeps its typed error too.
+    if (
+      result.kind === 'capability_unavailable' &&
+      result.cause instanceof FetchproxyCapabilityUnavailableError
+    ) {
+      throw result.cause;
+    }
+    // retryAttempted rides on the envelope — per-call local context,
+    // so it's race-safe across concurrent calls. Test subclasses
+    // overriding fetch() may not set the field; default to `false`
+    // (the field is declared optional for that reason).
+    throw this._typedErrorFor(
+      result,
+      url,
+      'fetch',
+      result.retryAttempted ?? false,
+      isRetrySafeOnTimeout(method, retryOnTimeout),
     );
-    if (!result.ok) {
-      // B-BUG-13: a local send failure keeps the typed error it always threw.
-      if (result.kind === 'session_not_ready' && result.cause instanceof Error) {
-        throw result.cause;
-      }
-      // #418: a local capability refusal keeps its typed error too.
-      if (
-        result.kind === 'capability_unavailable' &&
-        result.cause instanceof FetchproxyCapabilityUnavailableError
-      ) {
-        throw result.cause;
-      }
-      // retryAttempted rides on the envelope — per-call local context,
-      // so it's race-safe across concurrent calls. Test subclasses
-      // overriding fetch() may not set the field; default to `false`
-      // (the field is declared optional for that reason).
-      throw this._typedErrorFor(
-        result,
-        init.url,
-        'fetch',
-        result.retryAttempted ?? false,
-        isRetrySafeOnTimeout(method, opts.retryOnTimeout),
-      );
-    }
-    const response: HttpResponse = {
-      status: result.status,
-      body: result.body,
-      url: result.url,
-    };
-    if (opts.expectStatus !== undefined) {
-      const expected = opts.expectStatus;
-      const matched = Array.isArray(expected)
-        ? expected.includes(response.status)
-        : response.status === expected;
-      if (!matched) {
-        throw new FetchproxyHttpError(response);
-      }
-    }
-    return response;
   }
 
   /** Issue a GET against `path` (resolved via `request()` rules). */
@@ -3905,6 +4176,10 @@ export class FetchproxyServer {
             status: inner.status,
             url: inner.url,
             body: inner.body,
+            // #460: carried only when present, so a text answer's envelope
+            // has exactly the keys it always had.
+            ...(inner.bodyEncoding !== undefined ? { bodyEncoding: inner.bodyEncoding } : {}),
+            ...(inner.headers !== undefined ? { headers: { ...inner.headers } } : {}),
             retryAttempted: false,
           });
         } else {
@@ -3922,6 +4197,7 @@ export class FetchproxyServer {
           error: inner.error,
           kind: classifyFetchError(inner.error, inner.code),
           retryAttempted: false,
+          ...(inner.code !== undefined ? { code: inner.code } : {}),
         });
       }
       return;
@@ -4281,6 +4557,7 @@ export class FetchproxyServer {
         pairCode,
         extensionConnected: false,
         unavailableCapabilities: [],
+        features: [],
         platform: null,
       };
     }
@@ -4298,6 +4575,7 @@ export class FetchproxyServer {
       pairCode,
       extensionConnected,
       unavailableCapabilities: info ? [...info.unavailableCapabilities] : [],
+      features: info ? [...info.features] : [],
       platform: info?.platform ?? null,
     };
   }
@@ -4312,11 +4590,22 @@ export class FetchproxyServer {
    */
   private refuseIfUnavailable(inner: InnerFrame, info: ExtensionSessionInfo | null): void {
     const cap = unavailableCapabilityFor(inner, info);
-    if (cap === null || info === null) return;
-    throw new FetchproxyCapabilityUnavailableError(
-      capabilityUnavailableMessage(cap, info.platform),
-      { capability: cap, platform: info.platform },
-    );
+    if (cap !== null && info !== null) {
+      throw new FetchproxyCapabilityUnavailableError(
+        capabilityUnavailableMessage(cap, info.platform),
+        { capability: cap, platform: info.platform },
+      );
+    }
+    // #460: a request needing a feature the extension did not advertise —
+    // a binary fetch to an extension that predates it, which would ignore
+    // `responseType` and answer in text. Refused before a seq is claimed.
+    const feature = missingFeatureFor(inner, info);
+    if (feature !== null) {
+      throw new FetchproxyExtensionUpdateRequiredError(
+        `the paired ContextMint Bridge extension does not support "${feature}"`,
+        { feature },
+      );
+    }
   }
 
   /**

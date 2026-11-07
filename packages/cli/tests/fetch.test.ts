@@ -300,3 +300,56 @@ describe('assertHostOnProfile — domain case is not a rule the server has', () 
     expect(() => assertHostOnProfile('NotExample.com', prof)).toThrow(UsageError);
   });
 });
+
+describe('runFetch --output (#460): binary download through the bridge', () => {
+  const ALL = Uint8Array.from({ length: 256 }, (_, i) => i);
+  const binServer = (status = 200): VerbServer & { closed: boolean } =>
+    stubServer({
+      requestBytes: vi.fn(async () => ({
+        status,
+        url: CMD.url,
+        headers: { 'content-type': 'application/pdf' },
+        bytes: ALL,
+      })),
+    } as never);
+
+  it('writes the exact bytes to the file and reports on stderr, nothing on stdout', async () => {
+    const io = memIo();
+    const server = binServer();
+    const writes: Array<[string, Uint8Array]> = [];
+    const code = await runFetch({ ...CMD, output: 'out.pdf' }, PROFILE, io, () => server,
+      (p, b) => { writes.push([p, b]); });
+    expect(code).toBe(EXIT.OK);
+    expect(server.request).not.toHaveBeenCalled();
+    expect(server.requestBytes).toHaveBeenCalledWith('GET', CMD.url, expect.objectContaining({ domain: 'tripadvisor.com' }));
+    expect(writes).toHaveLength(1);
+    expect(writes[0][0]).toBe('out.pdf');
+    expect(Array.from(writes[0][1])).toEqual(Array.from(ALL));
+    expect(io.outs).toEqual([]);
+    expect(io.errs.join('\n')).toMatch(/256 bytes/);
+  });
+
+  it('--json prints status, url, headers, byte count and path — never the bytes', async () => {
+    const io = memIo();
+    await runFetch({ ...CMD, output: 'out.pdf', json: true }, PROFILE, io, () => binServer(), () => {});
+    expect(JSON.parse(io.outs[0])).toEqual({
+      status: 200, url: CMD.url, headers: { 'content-type': 'application/pdf' }, bytes: 256, path: 'out.pdf',
+    });
+  });
+
+  it('non-2xx: still writes the body, exits 4 with the status', async () => {
+    const io = memIo();
+    const code = await runFetch({ ...CMD, output: 'out.pdf' }, PROFILE, io, () => binServer(404), () => {});
+    expect(code).toBe(EXIT.HTTP);
+    expect(io.errs.join('\n')).toMatch(/HTTP 404/);
+  });
+
+  it('refuses --output with --in-page or --via-tab: a binary fetch runs from the background, not a tab', async () => {
+    const factory = vi.fn();
+    await expect(runFetch({ ...CMD, output: 'o', inPage: true } as never,
+      { ...PROFILE, inPage: true }, memIo(), factory)).rejects.toThrow(UsageError);
+    await expect(runFetch({ ...CMD, output: 'o', viaTab: 'https://www.tripadvisor.com/' } as never,
+      PROFILE, memIo(), factory)).rejects.toThrow(UsageError);
+    expect(factory).not.toHaveBeenCalled();
+  });
+});

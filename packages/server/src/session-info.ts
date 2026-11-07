@@ -1,5 +1,8 @@
 import {
+  EXTENSION_FEATURE_FETCH_BASE64,
   KNOWN_CAPABILITIES,
+  KNOWN_EXTENSION_FEATURES,
+  type ExtensionFeature,
   type Capability,
   type HelloFrameFromExtension,
   type InnerFrame,
@@ -21,6 +24,13 @@ export interface ExtensionSessionInfo {
   platform: Platform;
   /** Known capability names only, sorted and de-duplicated. */
   unavailableCapabilities: Capability[];
+  /**
+   * #460: the hello's `features`, known names only, sorted and de-duplicated.
+   * Advisory like `unavailableCapabilities`: it only ever makes this MCP
+   * refuse a request locally. What a binary answer is TRUSTED on is its own
+   * `bodyEncoding` marker, never this list.
+   */
+  features: ExtensionFeature[];
 }
 
 export function sessionInfoFromHello(hello: HelloFrameFromExtension): ExtensionSessionInfo {
@@ -32,7 +42,43 @@ export function sessionInfoFromHello(hello: HelloFrameFromExtension): ExtensionS
         known.add(c as Capability);
     }
   }
-  return { platform: hello.platform, unavailableCapabilities: [...known].sort() };
+  const features = new Set<ExtensionFeature>();
+  const rawFeatures: unknown = hello.features;
+  if (Array.isArray(rawFeatures)) {
+    for (const f of rawFeatures) {
+      if (typeof f === 'string' && KNOWN_EXTENSION_FEATURES.has(f as ExtensionFeature))
+        features.add(f as ExtensionFeature);
+    }
+  }
+  return {
+    platform: hello.platform,
+    unavailableCapabilities: [...known].sort(),
+    features: [...features].sort(),
+  };
+}
+
+/**
+ * #460: the extension feature an outbound request needs, or null. Today one:
+ * a `fetch` asking for `responseType: 'base64'` needs `fetch_base64`.
+ */
+export function featureForRequest(inner: InnerFrame): ExtensionFeature | null {
+  if (inner.type !== 'request' || inner.op !== 'fetch') return null;
+  return inner.init.responseType === 'base64' ? EXTENSION_FEATURE_FETCH_BASE64 : null;
+}
+
+/**
+ * #460: the feature `inner` needs that the session's extension did NOT list,
+ * or null. `info === null` (no hello to judge — a peer behind a host too old
+ * to relay it) returns null: the request goes out and the answer's own
+ * `bodyEncoding` marker decides.
+ */
+export function missingFeatureFor(
+  inner: InnerFrame,
+  info: ExtensionSessionInfo | null,
+): ExtensionFeature | null {
+  const feature = featureForRequest(inner);
+  if (feature === null || info === null) return null;
+  return info.features.includes(feature) ? null : feature;
 }
 
 /**

@@ -280,9 +280,16 @@ is also what every server hello is minted in answer to.
   "identityX25519Pub": "<base64 raw 32B>",   // 0.4.0+: long-term
   "identityEd25519Pub": "<base64 raw 32B>",  // 0.4.0+: signs the ready
   "sessionNonce": "<base64 raw 32B, fresh per connection>",
-  "unavailableCapabilities": ["download"]    // #418, optional — see below
+  "unavailableCapabilities": ["download"],   // #418, optional — see below
+  "features": ["fetch_base64"]               // #460, optional — see below
 }
 ```
+
+`features` (#460, optional) lists behaviours this extension build supports
+beyond protocol 4's base. Today one: `fetch_base64`, the binary `fetch` mode.
+Sent only when non-empty, sorted and de-duplicated; same validator bounds and
+unknown-name tolerance as `unavailableCapabilities`, and equally unsigned and
+advisory. See [§Binary fetch](#binary-fetch-460).
 
 `unavailableCapabilities` (#418, optional) lists the capabilities **this
 browser** cannot serve, found by runtime API detection — Safari has no
@@ -773,7 +780,9 @@ Semantics:
 
   Use it only where the isolated world genuinely fails. Some edge bot-managers accept a request from the page and reject the byte-identical one from the isolated world: on opentable.com a GraphQL **mutation** POST 403s from the isolated world and returns 200 from the page, while GraphQL queries and REST writes pass from either. The cost is that page script can see and patch `window.fetch`, so a flagged request loses the isolated world's tamper resistance — see `T-in-page-fetch` in [SECURITY.md](./SECURITY.md). Flag individual calls, never everything.
 
-**Body size caps:** request body ≤ 1 MB, response body ≤ 5 MB. Larger bodies are rejected with `ok: false` — including on the `inPage` path, which re-checks the response cap in the content script before the body leaves it.
+- `responseType`: optional, `"base64"` or absent (#460). Absent is text, unchanged. `"base64"` asks for the body's BYTES and changes where and how the request runs — see [§Binary fetch](#binary-fetch-460). Cannot be combined with `inPage: true`.
+
+**Body size caps:** request body ≤ 1 MB, response body ≤ 5 MB. Larger bodies are rejected with `ok: false` — including on the `inPage` path, which re-checks the response cap in the content script before the body leaves it. A binary (`responseType: "base64"`) response has its own cap, `MAX_BINARY_RESPONSE_BYTES` = 16 MiB.
 
 ##### `op: "read_cookies"`
 
@@ -964,6 +973,98 @@ signature, and covering this field would change a signed payload — a wire
 break. So the list is advisory: it can only make an MCP believe *fewer*
 capabilities are available, never gain one. The analysis, and the optional
 tamper-evident follow-up, are in `docs/SECURITY.md` §T-unavailable-caps.
+
+## Binary fetch (#460)
+
+`fetch` decodes the body with `response.text()`, which is lossy for anything
+that is not UTF-8 text: invalid sequences become U+FFFD and cannot be
+recovered. A PDF, a zip-based office file or an image came back corrupted, and
+a hosted MCP whose files live on a host outside its egress allowlist had no
+route to the bytes. Binary fetch is an opt-in mode of the same verb, additive
+inside protocol 4: no `PROTOCOL_VERSION` bump, no new capability, and nothing
+any signature covers changes.
+
+**Request.** `init.responseType: "base64"`. Everything else is an ordinary
+`fetch` init; `tabUrl` is still required and still domain-checked.
+
+**Response.**
+
+```jsonc
+{
+  "type": "response", "id": 7, "ok": true, "op": "fetch",
+  "status": 200,
+  "url": "https://files.example.com/signed/7?sig=…",   // FINAL url, after redirects
+  "body": "JVBERi0xLjcK…",                             // standard padded base64 of the bytes
+  "bodyEncoding": "base64",
+  "headers": {                                         // relayed subset, lower-cased, each only if present
+    "content-type": "application/pdf",
+    "content-length": "48213",
+    "content-disposition": "attachment; filename=\"report.pdf\""
+  }
+}
+```
+
+The bytes ride in the existing `body` field rather than a new one, so every
+published validator still accepts the frame (they require `body` to be a
+string and ignore the rest); `bodyEncoding` is what makes it unambiguous. A
+text answer carries neither `bodyEncoding` nor `headers` and is byte-for-byte
+what it always was. The validator requires a `bodyEncoding: "base64"` body to
+be strict standard padded base64 (Node's decoder silently skips characters it
+does not understand), and `headers` to be a string map.
+
+**Where it runs.** In the extension's background service worker (event page on
+Safari), not a tab: the extension's `host_permissions` make CORS irrelevant
+there, so a signed file host that sends no CORS headers is readable, and
+`redirect: "follow"` reaches it. Cookies are the browser's for the URL
+(`credentials` is honoured; default `include`).
+
+**Scope — it reaches nothing a text fetch could not be pointed at.** The
+request URL must be on the MCP's declared `domains`, exactly as for text, and
+so must the **final** URL after redirects: an answer whose `response.url`
+left the declared domains is refused before a byte of its body is read. To
+read a signed CDN host, declare it. Intermediate redirect hops are not
+inspectable from `fetch()` (a `manual` redirect is opaque), but they reveal
+nothing to the MCP — their bodies are never read — and a page-level `fetch` has
+always followed the same hops. See `docs/SECURITY.md` §T-binary-fetch.
+
+**Size.** `MAX_BINARY_RESPONSE_BYTES` = 16 MiB of BYTES, derived from the
+transports rather than picked: a binary frame is about 16/9 of the body on the
+wire, so 16 MiB is ~28.5 MiB sealed — under the hosted relay's 32 MiB
+WebSocket message limit (`HOSTED_RELAY_MESSAGE_BYTES`) and `MAX_FRAME_BYTES`
+(42 MiB). The extension refuses early when `content-length` exceeds the cap,
+and again while streaming when the length is absent or lies. The refusal is
+`{ ok: false, op: "fetch", code: "response_too_large", error }` with the fixed
+wording from `responseTooLargeMessage()`, which starts `response body too
+large:` — the prefix every published server already classifies as
+`body_too_large`. The extension's per-frame size gate still applies on top.
+
+**Capability negotiation.** The extension lists `fetch_base64` in its hello
+`features`. A server (3.7.0+):
+
+- refuses a binary request **locally, with no round trip**, when the session's
+  extension hello did not list it — `FetchproxyExtensionUpdateRequiredError`
+  (`.feature`, `.hint`: update ContextMint Bridge); `fetch()` returns the
+  envelope `{ ok: false, kind: "extension_update_required" }`;
+- refuses any answer to a binary request that lacks `bodyEncoding: "base64"`
+  with the same error. This, not the advisory hello list, is what the bytes are
+  trusted on: an older extension ignores `responseType` (its validator predates
+  it) and answers in text, and that text is never decoded as bytes;
+- maps `code: "response_too_large"` / the fixed wording to
+  `FetchproxyResponseTooLargeError` (`.limitBytes`, `.declaredBytes`);
+- re-checks the final URL against its declared `domains` before returning.
+
+`requestBytes(method, path, opts)` / `getBytes(path, opts)` on
+`FetchproxyServer` resolve `{ status, url, headers, bytes: Uint8Array }`. The
+`fpx` CLI exposes it as `fpx get|request <url> -o <file>`.
+
+### Compatibility
+
+| MCP | Extension | What happens |
+|---|---|---|
+| < 3.7.0 | new | Never sends `responseType`, so nothing changes. The extra hello field is ignored (`return raw`). |
+| 3.7.0+ | old (no `features`) | `requestBytes()` refuses locally: update the extension. Text fetches are unaffected. |
+| 3.7.0+ | old, but a relay added `features` | The old extension ignores `responseType` and answers in text; the answer has no marker and is refused with the same update error. |
+| new peer | old host | An old host relays the extension hello as the parsed object, so `features` reaches the peer intact. A host too old to relay the extension hello at all leaves the peer with no list: the request is sent and the marker decides. |
 
 ## The ephemeral's lifetime
 

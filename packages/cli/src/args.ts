@@ -28,7 +28,9 @@ export type Command =
   | { kind: 'trust'; action: 'clear'; serverName?: string; all?: boolean }
   | { kind: 'fetch'; profile: string; method: string; url: string;
       headers: Record<string, string>; body?: string; json: boolean; viaTab?: string;
-      inPage: boolean; noCredentials: boolean }
+      inPage: boolean; noCredentials: boolean;
+      /** #460: write the response BYTES here (binary-safe) instead of printing text. */
+      output?: string }
   | { kind: 'read'; profile: string; bucket: Bucket; keys: string[];
       storageDomain?: string; storageSubdomain?: string }
   | { kind: 'session'; profile: string; storageDomain?: string; storageSubdomain?: string }
@@ -391,6 +393,7 @@ export function parseCliArgs(
         'via-tab': { type: 'string' },
         'in-page': { type: 'boolean', default: false },
         'no-credentials': { type: 'boolean', default: false },
+        output: { type: 'string', short: 'o' },
         // SECONDS on the command line, like every other timeout the CLI takes.
         'capture-timeout': { type: 'string' },
         subdomain: { type: 'string' },
@@ -610,7 +613,8 @@ export function parseCliArgs(
       return { kind: 'fetch', profile, method: 'GET', url, headers, body: undefined,
         json: values.json ?? false, viaTab: values['via-tab'],
         inPage: values['in-page'] ?? false,
-        noCredentials: values['no-credentials'] ?? false };
+        noCredentials: values['no-credentials'] ?? false,
+        ...(values.output !== undefined ? { output: values.output } : {}) };
     }
     if (cmd === 'post-json') {
       const rawBody = rest[1];
@@ -628,13 +632,15 @@ export function parseCliArgs(
       return { kind: 'fetch', profile, method: 'POST', url, headers, body,
         json: values.json ?? false, viaTab: values['via-tab'],
         inPage: values['in-page'] ?? false,
-        noCredentials: values['no-credentials'] ?? false };
+        noCredentials: values['no-credentials'] ?? false,
+        ...(values.output !== undefined ? { output: values.output } : {}) };
     }
     const body = values.data === undefined ? undefined : resolveBody(values.data, readFile);
     return { kind: 'fetch', profile, method: (values.method ?? 'GET').toUpperCase(), url,
       headers, body, json: values.json ?? false, viaTab: values['via-tab'],
       inPage: values['in-page'] ?? false,
-      noCredentials: values['no-credentials'] ?? false };
+      noCredentials: values['no-credentials'] ?? false,
+      ...(values.output !== undefined ? { output: values.output } : {}) };
   }
 
   throw new UsageError(`unknown command ${JSON.stringify(cmd)}`, 'run: fpx --help');

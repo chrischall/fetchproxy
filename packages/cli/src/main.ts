@@ -27,9 +27,9 @@ const USAGE = `fpx ${VERSION} — fetchproxy CLI: authenticated fetches through 
   fpx pair -p <name> [--domain <apex>] [--subdomain <label>]
   fpx health -p <name>
   fpx trust list | clear <server-name> | clear --all
-  fpx get <url> -p <name> [--json] [-H 'K: V']… [--via-tab <url>] [--in-page] [--no-credentials]
+  fpx get <url> -p <name> [--json] [-H 'K: V']… [--via-tab <url>] [--in-page] [--no-credentials] [-o <file>]
   fpx post-json <url> <body|@file> -p <name> [--json] [-H …]… [--via-tab <url>] [--in-page] [--no-credentials]
-  fpx request <url> -p <name> [-X METHOD] [-H …]… [-d body|@file] [--json] [--via-tab <url>] [--in-page] [--no-credentials]
+  fpx request <url> -p <name> [-X METHOD] [-H …]… [-d body|@file] [--json] [--via-tab <url>] [--in-page] [--no-credentials] [-o <file>]
   fpx cookies|local-storage|session-storage|indexeddb [keys…] -p <name> [--storage-domain d] [--storage-subdomain s]
   fpx capture [header@host…] -p <name> [--capture-timeout <s>]
   fpx write-cookies <name=value|name=@file…> | --from-stdin -p <name> [--storage-domain d] [--storage-subdomain s]
@@ -44,6 +44,11 @@ const USAGE = `fpx ${VERSION} — fetchproxy CLI: authenticated fetches through 
 request's own host. Needed for API hosts that serve no page — e.g. fetch
 api.example.com through --via-tab https://www.example.com/. Must be on a
 declared domain.
+
+-o/--output writes the response BYTES to a file (PDFs, office files, images),
+fetched by the extension's background worker — so a file host that sends no
+CORS headers still works — and capped at 16 MiB. Needs a ContextMint Bridge
+that supports binary fetch; cannot be combined with --via-tab or --in-page.
 
 A cookie value typed on the command line lands in shell history, in ps output
 and in /proc/<pid>/cmdline. Keep it off argv: name=@file reads the value from

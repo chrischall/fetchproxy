@@ -90,6 +90,7 @@
 
 import { sha256 } from './crypto.js';
 import { fromB64 } from './encoding.js';
+import type { FetchResponseType } from './binary-fetch.js';
 
 export const PROTOCOL_VERSION = 4 as const;
 
@@ -852,6 +853,23 @@ export interface HelloFrameFromExtension {
    * §T-unavailable-caps.
    */
   unavailableCapabilities?: Capability[];
+  /**
+   * #460: optional behaviours THIS extension build supports beyond protocol
+   * 4's base, so a server can tell before sending whether a request will be
+   * understood — today only `'fetch_base64'` (`FetchInit.responseType`). Sent
+   * only when non-empty, sorted and de-duplicated — build it with
+   * `extensionFeaturesHelloField()`.
+   *
+   * Additive and shape-checked like `unavailableCapabilities` (≤ 32 strings
+   * of 1–64 characters, unknown names admitted, so a newer extension is never
+   * refused by an older validator). UNSIGNED and advisory: a relay can strip
+   * an entry (the server then refuses locally, which a relay could already
+   * cause by dropping frames) or add one (the server then sends a request the
+   * extension answers in text, and the server refuses that answer for lacking
+   * the `bodyEncoding` marker). It must never feed trust, pinning, the pair
+   * code, key derivation or a grant. docs/SECURITY.md §T-binary-fetch.
+   */
+  features?: string[];
 }
 
 export type HelloFrame = HelloFrameFromServer | HelloFrameFromExtension;
@@ -1266,6 +1284,25 @@ export interface FetchInit {
    * anonymous, and an anonymous 200 is worse than an honest failure.
    */
   credentials?: 'include' | 'omit';
+  /**
+   * #460: `'base64'` asks for the response BODY AS BYTES. Absent means text,
+   * exactly as before — a request without it is byte-for-byte unchanged.
+   *
+   * The extension answers with the bytes base64-encoded in `body`, marked
+   * `bodyEncoding: 'base64'`, plus a relayed header subset
+   * (`RELAYED_RESPONSE_HEADERS`). It runs the request from its background
+   * worker rather than a tab, so a file host that sends no CORS headers is
+   * still readable, and caps the body at `MAX_BINARY_RESPONSE_BYTES` (refusing
+   * early on `content-length`, and again while streaming). The URL, and the
+   * FINAL URL after redirects, must both be on the MCP's declared domains.
+   * `inPage` cannot be combined with it.
+   *
+   * A server must check the extension lists `fetch_base64` in its hello
+   * `features` before sending this: an older extension ignores the field and
+   * answers in text, which is why a server also refuses any answer that does
+   * not carry the `bodyEncoding` marker. See `binary-fetch.ts`.
+   */
+  responseType?: FetchResponseType;
 }
 
 export interface InnerPing {
@@ -1610,7 +1647,23 @@ export interface InnerResponseFetchOk {
   op: 'fetch';
   status: number;
   url: string;
+  /**
+   * The response body. Text as the page decoded it — unless `bodyEncoding` is
+   * `'base64'`, in which case it is the body's BYTES as standard padded base64.
+   */
   body: string;
+  /**
+   * #460: present, and `'base64'`, only on the answer to a request that asked
+   * for `responseType: 'base64'`. A receiver must treat its ABSENCE on such an
+   * answer as "this extension does not do binary" — never decode text as bytes.
+   */
+  bodyEncoding?: 'base64';
+  /**
+   * #460: on a binary answer, the relayed subset of the response's headers
+   * (`RELAYED_RESPONSE_HEADERS`, lower-cased names), each present only when the
+   * response carried it. Absent on a text answer, which stays unchanged.
+   */
+  headers?: Record<string, string>;
 }
 
 export interface InnerResponseReadCookiesOk {

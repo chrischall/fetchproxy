@@ -28,6 +28,12 @@ import {
   MAX_CAPABILITY_NAME_LENGTH,
   MAX_UNAVAILABLE_CAPABILITIES,
 } from './capability-availability.js';
+import {
+  FETCH_RESPONSE_TYPE_BASE64,
+  MAX_EXTENSION_FEATURES,
+  MAX_EXTENSION_FEATURE_LENGTH,
+  isBase64Body,
+} from './binary-fetch.js';
 import { isValidMcpId } from './mcp-id.js';
 import {
   ACCOUNT_ATTEST_CONSENTS,
@@ -860,6 +866,9 @@ function validateHello(raw: Record<string, unknown>): HelloFrame {
     if (raw.unavailableCapabilities !== undefined) {
       assertUnavailableCapabilities(raw.unavailableCapabilities);
     }
+    // #460: optional behaviours this extension supports. Shape only, unknown
+    // names admitted — the same posture as `unavailableCapabilities`.
+    if (raw.features !== undefined) assertExtensionFeatures(raw.features);
     return raw as unknown as HelloFrame;
   }
   throw new ProtocolError(`hello.role: must be 'server' or 'extension', got ${String(role)}`);
@@ -976,6 +985,24 @@ function assertAcceptsList(accepts: unknown): void {
   for (const a of accepts) {
     if (typeof a !== 'string') {
       throw new ProtocolError(`hello.accepts: entry must be string, got ${typeof a}`);
+    }
+  }
+}
+
+function assertExtensionFeatures(list: unknown): void {
+  const label = 'hello.features';
+  if (!Array.isArray(list)) throw new ProtocolError(`${label}: expected array`);
+  if (list.length > MAX_EXTENSION_FEATURES) {
+    throw new ProtocolError(`${label}: at most ${MAX_EXTENSION_FEATURES} entries, got ${list.length}`);
+  }
+  for (const f of list) {
+    if (typeof f !== 'string') {
+      throw new ProtocolError(`${label}: entry must be string, got ${typeof f}`);
+    }
+    if (f.length < 1 || f.length > MAX_EXTENSION_FEATURE_LENGTH) {
+      throw new ProtocolError(
+        `${label}: entry must be 1-${MAX_EXTENSION_FEATURE_LENGTH} characters, got ${f.length}`,
+      );
     }
   }
 }
@@ -1296,6 +1323,15 @@ function validateInnerRequest(raw: Record<string, unknown>): InnerFrame {
       // that omits it is unaffected.
       if (raw.init.credentials !== 'include' && raw.init.credentials !== 'omit') {
         throw new ProtocolError("inner.init.credentials: must be 'include' or 'omit'");
+      }
+    }
+    if (raw.init.responseType !== undefined) {
+      // #460: closed set. Absent means text; the one other value asks the
+      // extension for the body's bytes. An older extension never reaches
+      // here (its validator predates the field and ignores it), which is why
+      // the server also refuses a binary request's answer without the marker.
+      if (raw.init.responseType !== FETCH_RESPONSE_TYPE_BASE64) {
+        throw new ProtocolError("inner.init.responseType: must be 'base64' when present");
       }
     }
     return raw as unknown as InnerFrame;
@@ -1687,6 +1723,18 @@ function validateInnerResponse(raw: Record<string, unknown>): InnerFrame {
       assertPositiveInt(raw.status, 'inner.status');
       assertString(raw.url, 'inner.url');
       assertString(raw.body, 'inner.body');
+      if (raw.bodyEncoding !== undefined) {
+        // #460: the only encoding is base64, and a body marked with it must
+        // BE base64 — strictly, because Node's decoder skips characters it
+        // does not understand and would hand back the wrong bytes silently.
+        if (raw.bodyEncoding !== 'base64') {
+          throw new ProtocolError("inner.bodyEncoding: must be 'base64' when present");
+        }
+        if (!isBase64Body(raw.body)) {
+          throw new ProtocolError('inner.body: not standard padded base64 under bodyEncoding base64');
+        }
+      }
+      if (raw.headers !== undefined) assertStringMap(raw.headers, 'inner.headers');
       return raw as unknown as InnerFrame;
     }
     if (op === 'read_cookies') {
