@@ -1,5 +1,17 @@
 # Changelog
 
+## [3.7.0](https://github.com/chrischall/fetchproxy/compare/v3.6.3...v3.7.0) (2026-11-07)
+
+
+### Features
+
+* **fetch:** return binary response bodies and headers for hosted file downloads ([#461](https://github.com/chrischall/fetchproxy/issues/461)) ([2955db3](https://github.com/chrischall/fetchproxy/commit/2955db301387a56829bd28a23b7d2d0837e0f059))
+
+
+### Bug Fixes
+
+* **deps:** bump ws from 8.22.0 to 8.22.1 in the production-dependencies group ([#458](https://github.com/chrischall/fetchproxy/issues/458)) ([9491d46](https://github.com/chrischall/fetchproxy/commit/9491d46a321a96683d26608d8d2d5ce77a059c45))
+
 ## [3.6.3](https://github.com/chrischall/fetchproxy/compare/v3.6.2...v3.6.3) (2026-10-21)
 
 
