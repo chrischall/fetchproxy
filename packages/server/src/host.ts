@@ -236,6 +236,7 @@ export interface HostOpts {
   ownDomSelectors?: DomSelectorDecl[];
   ownDomListSelectors?: DomListSelectorDecl[];
   ownGraphqlOps?: GraphqlOpDeclaration[];
+  ownTabDomains?: string[];
   /**
    * 0.4.0+: invoked once on receipt of the extension hello with the
    * joint pair code `SHA256(mcpPub || extPub)`. The MCP can print this
@@ -394,6 +395,7 @@ export async function startHost(opts: HostOpts): Promise<HostHandle> {
     domSelectors: opts.ownDomSelectors,
     domListSelectors: opts.ownDomListSelectors,
     graphqlOps: opts.ownGraphqlOps,
+    tabDomains: opts.ownTabDomains,
   };
   const generateSessionKeypair = opts.generateSessionKeypair ?? generateX25519;
 

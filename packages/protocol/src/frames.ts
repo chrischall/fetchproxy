@@ -649,6 +649,18 @@ export interface HelloFrameFromServer {
    */
   domains: string[];
   /**
+   * Optional non-empty subset of `domains` the extension should keep a tab
+   * open on. Absent means every declared domain. Each entry must equal a
+   * `domains` entry exactly.
+   *
+   * For an MCP that declares a domain only to capture traffic another site
+   * generates (Teams declares `sharepoint.com` for requests its own tab makes),
+   * so no page there is wanted. This narrows which tabs get opened and nothing
+   * else: it grants no access, is not part of the approved scope, and changing
+   * it never forces a re-pair. An extension that predates it ignores it.
+   */
+  tabDomains?: string[];
+  /**
    * Optional non-empty list of inner-verb capabilities this MCP wants
    * to use. Defaults to `['fetch']` when absent — pre-capability MCPs
    * keep working without code changes. Unknown values are rejected by

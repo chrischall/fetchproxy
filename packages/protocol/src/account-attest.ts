@@ -229,6 +229,7 @@ const NON_SCOPE_HELLO_FIELDS = [
   'serverName',
   'version',
   'accepts',
+  'tabDomains',
   'identityX25519Pub',
   'identityEd25519Pub',
   'sessionNonce',
