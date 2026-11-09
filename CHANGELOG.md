@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.8.0](https://github.com/chrischall/fetchproxy/compare/v3.7.0...v3.8.0) (2026-11-09)
+
+
+### Features
+
+* **protocol,server:** let an MCP name which declared domains get a tab ([#462](https://github.com/chrischall/fetchproxy/issues/462)) ([47d39fe](https://github.com/chrischall/fetchproxy/commit/47d39fe720339dbb4f9f21d08ce51951570b7149))
+
 ## [3.7.0](https://github.com/chrischall/fetchproxy/compare/v3.6.3...v3.7.0) (2026-11-07)
 
 
