@@ -88,6 +88,7 @@ export interface PeerOpts {
   domSelectors?: DomSelectorDecl[];
   domListSelectors?: DomListSelectorDecl[];
   graphqlOps?: GraphqlOpDeclaration[];
+  tabDomains?: string[];
   /**
    * 1.12.0+ (#208): this MCP's pin on the extension's identity. Same store the
    * host path uses — a peer that becomes the host after an election must
@@ -317,6 +318,7 @@ export async function startPeer(opts: PeerOpts): Promise<InternalPeerHandle> {
     localStoragePointers: opts.localStoragePointers,
     sessionStoragePointers: opts.sessionStoragePointers,
     graphqlOps: opts.graphqlOps,
+    tabDomains: opts.tabDomains,
     // 2.5.0: let a host ≥2.5.0 tell us when the extension leaves, so
     // `extensionConnected()` / `sessionLinked()` can go back to false.
     // 2.6.0: `hello-rejected` for the same reason, from the extension.

@@ -5,6 +5,7 @@ import {
   KNOWN_CAPABILITIES,
   undeclaredKeys,
   validateCaptureHeaderDecls,
+  assertTabDomains,
   assertCookiePath,
   capabilityUnavailableMessage,
   parseCapabilityUnavailable,
@@ -194,6 +195,13 @@ export interface FetchproxyServerOpts {
    * user to re-approve in the extension popup with a diff UI.
    */
   domains: string[];
+  /**
+   * Optional non-empty subset of `domains` the extension should keep a tab
+   * open on; absent means every declared domain. For a domain declared only
+   * to capture traffic another site's tab generates. Grants nothing, and
+   * changing it does not force a re-pair.
+   */
+  tabDomains?: string[];
   /**
    * Optional non-empty list of inner-verb capabilities this MCP wants
    * to use. Defaults to `['fetch']`. Including `'read_cookies'` unlocks
@@ -1692,6 +1700,7 @@ interface ResolvedOpts {
   domSelectors: DomSelectorDecl[];
   domListSelectors: DomListSelectorDecl[];
   graphqlOps: GraphqlOpDeclaration[];
+  tabDomains?: string[];
   fetchTimeoutMs?: number;
   /** #237: reply grace on a verb the caller gave its own `timeoutMs`. */
   verbDeadlineGraceMs: number;
@@ -1959,6 +1968,9 @@ export class FetchproxyServer {
     // non-empty and contain only known capability strings — guard at the
     // call site so the error is clear rather than mysteriously bouncing
     // off the extension's validator later.
+    if (opts.tabDomains !== undefined) {
+      assertTabDomains(opts.tabDomains, opts.domains, 'FetchproxyServer: opts.tabDomains');
+    }
     let capabilities: Capability[];
     if (opts.capabilities === undefined) {
       capabilities = ['fetch'];
@@ -2037,6 +2049,7 @@ export class FetchproxyServer {
         name: d.name,
         operationName: d.operationName,
       })),
+      ...(opts.tabDomains !== undefined ? { tabDomains: [...opts.tabDomains] } : {}),
       // 0.8.0+: timer + lazy-revive default to ON. Every realty MCP
       // adapter was about to set these to the same numbers anyway; the
       // back-door is `0` (explicit opt-out) if a caller genuinely wants
@@ -2180,6 +2193,7 @@ export class FetchproxyServer {
         ownDomSelectors: this.opts.domSelectors,
         ownDomListSelectors: this.opts.domListSelectors,
         ownGraphqlOps: this.opts.graphqlOps,
+        ownTabDomains: this.opts.tabDomains,
         onPairCode: this.opts.onPairCode,
         extensionTrust: this.extensionTrust(),
       });
@@ -2223,6 +2237,7 @@ export class FetchproxyServer {
         domSelectors: this.opts.domSelectors,
         domListSelectors: this.opts.domListSelectors,
         graphqlOps: this.opts.graphqlOps,
+        tabDomains: this.opts.tabDomains,
         extensionTrust: this.extensionTrust(),
         requireExtensionIdentity: this.opts.requireExtensionIdentity,
       });

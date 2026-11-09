@@ -26,6 +26,8 @@ export interface BuildServerHelloOpts {
   serverName: string;
   version: string;
   domains: string[];
+  /** Optional subset of `domains` to keep a tab open on. Omitted from the wire when absent. */
+  tabDomains?: string[];
   /** Optional. Defaults to `['fetch']` to preserve pre-capability behavior. */
   capabilities?: Capability[];
   /** 0.3.0+: declared scope. Omitted from the wire when empty/absent. */
@@ -114,6 +116,7 @@ export async function buildServerHello(
   // only when non-empty — the host's own hello (and every pre-2.5 peer)
   // carries no such field.
   if (opts.accepts && opts.accepts.length > 0) hello.accepts = [...opts.accepts];
+  if (opts.tabDomains && opts.tabDomains.length > 0) hello.tabDomains = [...opts.tabDomains];
   // Only emit non-empty scope fields. Keeps the wire compact for the
   // fetch-only common case and makes the security-significant decls
   // (which the popup shows the user) obvious by their presence.

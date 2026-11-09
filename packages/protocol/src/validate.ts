@@ -710,6 +710,27 @@ export function validateFrame(raw: unknown): Frame {
   throw new ProtocolError(`unknown frame type: ${String(t)}`);
 }
 
+/**
+ * `tabDomains` must be a non-empty list of exact `domains` entries. Exact, not
+ * exact-or-subdomain: an entry names the page the extension opens, and that
+ * should be a page the user approved by name.
+ */
+export function assertTabDomains(
+  value: unknown,
+  domains: readonly string[],
+  label: string,
+): asserts value is string[] {
+  if (!Array.isArray(value)) throw new ProtocolError(`${label}: expected array`);
+  if (value.length === 0) throw new ProtocolError(`${label}: must be non-empty`);
+  for (const d of value) {
+    if (typeof d !== 'string' || !domains.includes(d)) {
+      throw new ProtocolError(
+        `${label}: ${JSON.stringify(d)} is not one of the declared domains [${domains.join(', ')}]`,
+      );
+    }
+  }
+}
+
 function validateHello(raw: Record<string, unknown>): HelloFrame {
   if (raw.protocolVersion !== PROTOCOL_VERSION) {
     throw new ProtocolError(`hello.protocolVersion: must be ${PROTOCOL_VERSION}`);
@@ -821,6 +842,9 @@ function validateHello(raw: Record<string, unknown>): HelloFrame {
     // has never heard of is a newer peer talking to an older host, not an
     // error — so only the shape is checked.
     if (raw.accepts !== undefined) assertAcceptsList(raw.accepts);
+    if (raw.tabDomains !== undefined) {
+      assertTabDomains(raw.tabDomains, raw.domains as string[], 'hello.tabDomains');
+    }
     if (raw.graphqlOps !== undefined) {
       assertGraphqlOpsArray(raw.graphqlOps, 'hello.graphqlOps');
     }

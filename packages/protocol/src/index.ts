@@ -8,6 +8,7 @@ export {
   validateFrame,
   validateInnerFrame,
   validateCaptureHeaderDecls,
+  assertTabDomains,
   peekHelloVersion,
   validateRoomHeartbeatText,
   ProtocolError,
